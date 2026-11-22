@@ -1,0 +1,910 @@
+// @ts-nocheck
+import React, { useEffect, useState } from "react";
+import { Building2, X, Save, CheckCircle2, Image as ImageIcon, Phone, Mail, MapPin, User, Award, ShieldCheck, Sparkles, PenTool, Smartphone, QrCode } from "lucide-react";
+import QRCode from "react-qr-code";
+import { DirectUploadButton } from "../DirectUploadButton";
+import { updateSchool } from "../../school-firebase";
+import { DigitalSignatureModal, type DigitalSignatureTab } from "./DigitalSignatureModal";
+import { cleanLogoUrl, isAppLogo, getSavedSchoolLogo, getVisibleSchoolRegNo } from "./feeReceiptUtils";
+import { setSchoolLogoSync } from "../../utils/schoolIndexedDb";
+import { uploadImageToImgBB } from "../../services/imgbbService";
+import { DEFAULT_ERP_APP_DOWNLOAD_URL } from "./marksheetBacksideUtils";
+import {
+  DEFAULT_SCHOOL_DOCUMENT_PRINT_FIELDS,
+  type School,
+  type SchoolDocumentKey,
+  type SchoolDocumentPrintFields,
+  type SchoolPrintField,
+  type SchoolProfileCustomField,
+} from "../../school-types";
+
+export interface SchoolHeaderDetails {
+  schoolName: string;
+  tagline: string;
+  affiliation: string;
+  address: string;
+  phone: string;
+  email: string;
+  logoUrl: string;
+  principalName: string;
+  principalTitle: string;
+  code: string;
+  principalPhone?: string;
+  directorName?: string;
+  directorPhone?: string;
+  managerName?: string;
+  managerPhone?: string;
+  accountantName?: string;
+  principalSignatureUrl?: string;
+  directorSignatureUrl?: string;
+  managerSignatureUrl?: string;
+  accountantSignatureUrl?: string;
+  principalPhotoUrl?: string;
+  directorPhotoUrl?: string;
+  erpAppUrl?: string;
+  erpAppFeatures?: string[];
+  upiId?: string;
+  customFields?: SchoolProfileCustomField[];
+  documentPrintFields?: SchoolDocumentPrintFields;
+}
+
+interface Props {
+  isOpen?: boolean;
+  onClose: () => void;
+  school?: School;
+  schoolId?: string;
+  currentDetails?: SchoolHeaderDetails;
+  initialDetails?: SchoolHeaderDetails;
+  onApply?: (details: SchoolHeaderDetails) => void;
+  onSave?: (details: SchoolHeaderDetails) => void;
+  title?: string;
+  subtitle?: string;
+}
+
+export const SchoolHeaderEditorModal: React.FC<Props> = ({
+  isOpen = true,
+  onClose,
+  school,
+  schoolId,
+  currentDetails,
+  initialDetails,
+  onApply,
+  onSave,
+  title = "School Details & Template Customizer",
+  subtitle = "Apne school ka naam, logo, address aur principal details yahan se likhein aur customize karein"
+}) => {
+  const resolvedSchoolId = schoolId || school?.id || "";
+  const createDefaultData = (): SchoolHeaderDetails => {
+    const rawLogo = currentDetails?.logoUrl || initialDetails?.logoUrl || school?.logoUrl;
+    const resolvedLogo = getSavedSchoolLogo(rawLogo, resolvedSchoolId);
+    return {
+      schoolName: currentDetails?.schoolName || initialDetails?.schoolName || school?.name || "",
+      tagline: currentDetails?.tagline || initialDetails?.tagline || school?.tagline || "",
+      affiliation: currentDetails?.affiliation || initialDetails?.affiliation || school?.affiliation || "",
+      address: currentDetails?.address || initialDetails?.address || school?.address || "",
+      phone: currentDetails?.phone || initialDetails?.phone || school?.mobile || school?.phone || "",
+      email: currentDetails?.email || initialDetails?.email || school?.email || "",
+      logoUrl: resolvedLogo,
+      principalName: currentDetails?.principalName || initialDetails?.principalName || school?.principalName || "",
+      principalTitle: currentDetails?.principalTitle || initialDetails?.principalTitle || "Principal",
+      code: getVisibleSchoolRegNo(school, currentDetails?.code ?? initialDetails?.code),
+      principalPhone: currentDetails?.principalPhone || initialDetails?.principalPhone || school?.principalPhone || "",
+      directorName: currentDetails?.directorName || initialDetails?.directorName || school?.directorName || "",
+      directorPhone: currentDetails?.directorPhone || initialDetails?.directorPhone || school?.directorPhone || "",
+      managerName: currentDetails?.managerName || initialDetails?.managerName || school?.managerName || "",
+      managerPhone: currentDetails?.managerPhone || initialDetails?.managerPhone || school?.managerPhone || "",
+      accountantName: currentDetails?.accountantName || initialDetails?.accountantName || school?.accountantName || "",
+      principalSignatureUrl: currentDetails?.principalSignatureUrl || initialDetails?.principalSignatureUrl || school?.principalSignatureUrl || "",
+      directorSignatureUrl: currentDetails?.directorSignatureUrl || initialDetails?.directorSignatureUrl || school?.directorSignatureUrl || "",
+      managerSignatureUrl: currentDetails?.managerSignatureUrl || initialDetails?.managerSignatureUrl || school?.managerSignatureUrl || "",
+      accountantSignatureUrl: currentDetails?.accountantSignatureUrl || initialDetails?.accountantSignatureUrl || school?.accountantSignatureUrl || "",
+      principalPhotoUrl: currentDetails?.principalPhotoUrl || initialDetails?.principalPhotoUrl || school?.principalPhotoUrl || "",
+      directorPhotoUrl: currentDetails?.directorPhotoUrl || initialDetails?.directorPhotoUrl || school?.directorPhotoUrl || "",
+      erpAppUrl: currentDetails?.erpAppUrl || initialDetails?.erpAppUrl || school?.erpAppUrl || DEFAULT_ERP_APP_DOWNLOAD_URL,
+      erpAppFeatures: currentDetails?.erpAppFeatures || initialDetails?.erpAppFeatures || school?.erpAppFeatures || [],
+      upiId: currentDetails?.upiId || initialDetails?.upiId || school?.upiId || "",
+      customFields: currentDetails?.customFields || initialDetails?.customFields || school?.customFields || [],
+      documentPrintFields: currentDetails?.documentPrintFields || initialDetails?.documentPrintFields || school?.documentPrintFields || {},
+    };
+  };
+
+  const [details, setDetails] = useState<SchoolHeaderDetails>(createDefaultData);
+  const [savingDefault, setSavingDefault] = useState(false);
+  const [savedSuccess, setSavedSuccess] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [showDigitalSignatureModal, setShowDigitalSignatureModal] = useState(false);
+  const [digitalSigTab, setDigitalSigTab] = useState<DigitalSignatureTab>("principal");
+
+  // CRITICAL FIX: Only populate details when the modal transitions from closed to open.
+  // Never wipe user edits while they are actively typing inside the open modal!
+  const prevOpenRef = React.useRef(false);
+
+  useEffect(() => {
+    if (isOpen && !prevOpenRef.current) {
+      setDetails(createDefaultData());
+    }
+    prevOpenRef.current = Boolean(isOpen);
+  }, [isOpen]);
+
+  if (isOpen === false) return null;
+
+  const targetSchoolId = resolvedSchoolId;
+
+  const saveToFirebase = async (dataToSave: SchoolHeaderDetails) => {
+    let cleanedLogo = cleanLogoUrl(dataToSave.logoUrl);
+    if (cleanedLogo && cleanedLogo.startsWith("data:image/")) {
+      try {
+        cleanedLogo = await uploadImageToImgBB(cleanedLogo, `logo_${targetSchoolId}_${Date.now()}.png`);
+      } catch (e) {
+        console.warn("[SchoolHeaderEditorModal] Logo CDN upload fallback:", e);
+      }
+    }
+
+    if (cleanedLogo && !isAppLogo(cleanedLogo)) {
+      setSchoolLogoSync(targetSchoolId, cleanedLogo);
+    } else if (!cleanedLogo) {
+      setSchoolLogoSync(targetSchoolId, "");
+    }
+
+    await updateSchool(targetSchoolId, {
+      name: dataToSave.schoolName,
+      tagline: dataToSave.tagline,
+      affiliation: dataToSave.affiliation,
+      address: dataToSave.address,
+      phone: dataToSave.phone,
+      mobile: dataToSave.phone,
+      email: dataToSave.email,
+      logoUrl: cleanedLogo,
+      principalName: dataToSave.principalName,
+      principalTitle: dataToSave.principalTitle || "Principal / Authorized Signatory",
+      principalPhone: dataToSave.principalPhone || "",
+      directorName: dataToSave.directorName || "",
+      directorPhone: dataToSave.directorPhone || "",
+      managerName: dataToSave.managerName || "",
+      managerPhone: dataToSave.managerPhone || "",
+      accountantName: dataToSave.accountantName || "",
+      principalSignatureUrl: dataToSave.principalSignatureUrl || "",
+      directorSignatureUrl: dataToSave.directorSignatureUrl || "",
+      managerSignatureUrl: dataToSave.managerSignatureUrl || "",
+      accountantSignatureUrl: dataToSave.accountantSignatureUrl || "",
+      principalPhotoUrl: dataToSave.principalPhotoUrl || "",
+      directorPhotoUrl: dataToSave.directorPhotoUrl || "",
+      erpAppUrl: (dataToSave.erpAppUrl || "").trim(),
+      erpAppFeatures: dataToSave.erpAppFeatures || [],
+      upiId: (dataToSave.upiId || "").trim(),
+      customFields: dataToSave.customFields || [],
+      documentPrintFields: dataToSave.documentPrintFields || {},
+      code: (dataToSave.code || "").trim(),
+    });
+  };
+
+  const handleApply = async () => {
+    setSavingDefault(true);
+    setSaveError(null);
+    try {
+      if (targetSchoolId) {
+        await saveToFirebase(details);
+      }
+    } catch (err) {
+      console.warn("Could not auto-save to Firebase on apply:", err);
+    } finally {
+      setSavingDefault(false);
+    }
+    if (onApply) onApply(details);
+    if (onSave) onSave(details);
+    onClose();
+  };
+
+  const handleSaveAsSchoolDefault = async () => {
+    setSavingDefault(true);
+    setSaveError(null);
+    try {
+      if (targetSchoolId) {
+        await saveToFirebase(details);
+      }
+      setSavedSuccess(true);
+      setTimeout(() => setSavedSuccess(false), 2500);
+      if (onApply) onApply(details);
+      if (onSave) onSave(details);
+    } catch (err) {
+      console.error("Failed to update school profile:", err);
+      setSaveError("School profile save karne mein dikkat aayi. Kripya dobara try karein.");
+    } finally {
+      setSavingDefault(false);
+    }
+  };
+
+  const documentOptions: { key: SchoolDocumentKey; label: string }[] = [
+    { key: "idCard", label: "ID Card" },
+    { key: "certificate", label: "Certificate" },
+    { key: "marksheet", label: "Marksheet" },
+    { key: "feeReceipt", label: "Fee Receipt" },
+  ];
+  const fieldOptions: { key: SchoolPrintField; label: string }[] = [
+    { key: "schoolName", label: "School name" },
+    { key: "address", label: "School address" },
+    { key: "phone", label: "School phone" },
+    { key: "email", label: "School email" },
+    { key: "affiliation", label: "Board / affiliation" },
+    { key: "code", label: "School code" },
+    { key: "principalName", label: "Principal name" },
+    { key: "principalPhone", label: "Principal mobile" },
+    { key: "directorName", label: "Director name" },
+    { key: "directorPhone", label: "Director mobile" },
+    { key: "managerName", label: "Manager name" },
+    { key: "managerPhone", label: "Manager mobile" },
+    { key: "customFields", label: "Extra school details" },
+  ];
+  const fieldsForDocument = (document: SchoolDocumentKey) =>
+    details.documentPrintFields?.[document] ?? DEFAULT_SCHOOL_DOCUMENT_PRINT_FIELDS[document];
+  const toggleDocumentField = (document: SchoolDocumentKey, field: SchoolPrintField, enabled: boolean) => {
+    const current = fieldsForDocument(document);
+    const fields = enabled
+      ? Array.from(new Set([...current, field]))
+      : current.filter(item => item !== field);
+    setDetails(previous => ({
+      ...previous,
+      documentPrintFields: {
+        ...previous.documentPrintFields,
+        [document]: fields,
+      },
+    }));
+  };
+  const setDocumentFields = (document: SchoolDocumentKey, fields: SchoolPrintField[]) => {
+    setDetails(previous => ({
+      ...previous,
+      documentPrintFields: {
+        ...previous.documentPrintFields,
+        [document]: fields,
+      },
+    }));
+  };
+  const addCustomField = (defaultLabel = "") => {
+    setDetails(previous => ({
+      ...previous,
+      customFields: [
+        ...(previous.customFields || []),
+        { id: `school-field-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`, label: defaultLabel, value: "" },
+      ],
+    }));
+  };
+
+  return (
+    <div className="fixed inset-0 z-[9999] flex items-center justify-center p-3 sm:p-5 bg-slate-950/70 backdrop-blur-xs animate-in fade-in duration-150">
+      <div className="w-full max-w-2xl bg-white dark:bg-slate-900 rounded-3xl shadow-2xl border border-slate-200 dark:border-slate-800 overflow-hidden flex flex-col max-h-[92vh]">
+        {/* Modal Header */}
+        <div className="px-5 py-4 bg-gradient-to-r from-indigo-50 via-blue-50 to-sky-50 dark:from-indigo-900 dark:via-slate-900 dark:to-blue-900 text-slate-900 dark:text-white border-b-2 border-indigo-700 dark:border-indigo-500/40 flex items-center justify-between shrink-0">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-xl bg-indigo-100 dark:bg-white/10 border border-indigo-700/40 dark:border-transparent flex items-center justify-center text-amber-700 dark:text-amber-300">
+              <Building2 className="w-5 h-5" />
+            </div>
+            <div>
+              <h2 className="text-base font-black leading-tight text-slate-900 dark:text-white">{title}</h2>
+              <p className="text-xs text-slate-700 dark:text-indigo-200 font-semibold">{subtitle}</p>
+            </div>
+          </div>
+          <button
+            onClick={onClose}
+            className="p-1.5 rounded-full hover:bg-indigo-100 dark:hover:bg-white/10 text-slate-700 hover:text-slate-950 dark:text-slate-300 dark:hover:text-white transition"
+          >
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+
+        {/* Modal Body */}
+        <div className="p-5 overflow-y-auto space-y-4 flex-1">
+          {saveError && (
+            <div className="p-3 rounded-xl bg-rose-50 dark:bg-rose-950/40 border border-rose-400/40 text-rose-700 dark:text-rose-300 text-xs font-bold">
+              {saveError}
+            </div>
+          )}
+          {savedSuccess && (
+            <div className="p-3 bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-500/30 rounded-2xl flex items-center gap-2 text-emerald-800 dark:text-emerald-200 text-xs font-bold">
+              <CheckCircle2 className="w-4 h-4 text-emerald-500 shrink-0" />
+              <span>School details default profile mein successfully save ho gaye hain!</span>
+            </div>
+          )}
+
+          {/* School Name & Tagline */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div>
+              <label className="text-xs font-bold text-slate-700 dark:text-slate-300 block mb-1">
+                School / Institution Name *
+              </label>
+              <input
+                type="text"
+                value={details.schoolName}
+                onChange={e => setDetails(p => ({ ...p, schoolName: e.target.value }))}
+                placeholder="e.g. Life Maker Public School"
+                className="w-full px-3 py-2 text-xs font-bold rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white focus:ring-2 focus:ring-indigo-500 outline-hidden"
+              />
+            </div>
+            <div>
+              <label className="text-xs font-bold text-slate-700 dark:text-slate-300 block mb-1">
+                School Tagline / Slogan
+              </label>
+              <input
+                type="text"
+                value={details.tagline}
+                onChange={e => setDetails(p => ({ ...p, tagline: e.target.value }))}
+                placeholder="e.g. Learn • Lead • Succeed"
+                className="w-full px-3 py-2 text-xs font-medium rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white focus:ring-2 focus:ring-indigo-500 outline-hidden"
+              />
+            </div>
+          </div>
+
+          {/* Affiliation / Board & School Code */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div>
+              <label className="text-xs font-bold text-slate-700 dark:text-slate-300 block mb-1">
+                Board Affiliation / Recognition Line
+              </label>
+              <input
+                type="text"
+                value={details.affiliation}
+                onChange={e => setDetails(p => ({ ...p, affiliation: e.target.value }))}
+                placeholder="e.g. Affiliated to CBSE / State Board, New Delhi"
+                className="w-full px-3 py-2 text-xs font-medium rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white focus:ring-2 focus:ring-indigo-500 outline-hidden"
+              />
+            </div>
+            <div>
+              <label className="text-xs font-bold text-slate-700 dark:text-slate-300 block mb-1">
+                School Registration / U-DISE / Affiliation No. (Optional)
+              </label>
+              <input
+                type="text"
+                value={details.code}
+                onChange={e => setDetails(p => ({ ...p, code: e.target.value }))}
+                placeholder="e.g. 1042 / UDISE-2130 (या खाली रहने दें)"
+                className="w-full px-3 py-2 text-xs font-mono font-bold rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white focus:ring-2 focus:ring-indigo-500 outline-hidden"
+              />
+              <p className="text-[10px] text-slate-500 mt-1">यह पब्लिक डॉक्यूमेंट्स पर दिखने वाला रजिस्ट्रेशन नंबर है। स्कूल लॉक कोड यहाँ न डालें।</p>
+            </div>
+          </div>
+
+          {/* Address */}
+          <div>
+            <label className="text-xs font-bold text-slate-700 dark:text-slate-300 block mb-1">
+              Complete School Address
+            </label>
+              <textarea
+                rows={2}
+              value={details.address}
+              onChange={e => setDetails(p => ({ ...p, address: e.target.value }))}
+              placeholder="e.g. Dharaka Market, Affour, Nagra, Saran (Bihar)"
+                className="w-full resize-y px-3 py-2 text-xs font-medium rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white focus:ring-2 focus:ring-indigo-500 outline-hidden"
+            />
+          </div>
+
+          {/* Contact Details (Phone, Email & UPI ID for Fee Due Slip QR) */}
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <div>
+              <label className="text-xs font-bold text-slate-700 dark:text-slate-300 block mb-1">
+                Office Helpline / Phone
+              </label>
+              <input
+                type="text"
+                value={details.phone}
+                onChange={e => setDetails(p => ({ ...p, phone: e.target.value }))}
+                placeholder="+91 98765 43210 / 0612-224455"
+                className="w-full px-3 py-2 text-xs font-medium rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white focus:ring-2 focus:ring-indigo-500 outline-hidden"
+              />
+            </div>
+            <div>
+              <label className="text-xs font-bold text-slate-700 dark:text-slate-300 block mb-1">
+                Official Email / Website
+              </label>
+              <input
+                type="text"
+                value={details.email}
+                onChange={e => setDetails(p => ({ ...p, email: e.target.value }))}
+                placeholder="info@school.org / www.school.org"
+                className="w-full px-3 py-2 text-xs font-medium rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white focus:ring-2 focus:ring-indigo-500 outline-hidden"
+              />
+            </div>
+            <div>
+              <label className="text-xs font-bold text-emerald-700 dark:text-emerald-400 block mb-1">
+                School Payment UPI ID (Due QR)
+              </label>
+              <input
+                type="text"
+                value={details.upiId || ""}
+                onChange={e => setDetails(p => ({ ...p, upiId: e.target.value }))}
+                placeholder="e.g. schoolfee@sbi / 9876543210@ybl"
+                className="w-full px-3 py-2 text-xs font-mono font-bold rounded-xl border border-emerald-300 dark:border-emerald-700 bg-emerald-50/50 dark:bg-slate-800 text-slate-900 dark:text-white focus:ring-2 focus:ring-emerald-500 outline-hidden"
+              />
+            </div>
+          </div>
+
+          {/* Logo Section */}
+          <div className="p-3 bg-slate-50 dark:bg-slate-800/60 rounded-2xl border border-slate-200 dark:border-slate-700 flex flex-col sm:flex-row items-center gap-4">
+            <div className="w-16 h-16 rounded-xl bg-white dark:bg-slate-700 border-2 border-indigo-200 dark:border-slate-600 overflow-hidden flex items-center justify-center shrink-0 shadow-xs">
+              {details.logoUrl && !isAppLogo(details.logoUrl) ? (
+                <img
+                  src={cleanLogoUrl(details.logoUrl)}
+                  alt="School Logo"
+                  className="w-full h-full object-contain p-0.5"
+                  onError={(e) => {
+                    (e.target as HTMLElement).style.display = 'none';
+                    const fb = (e.target as HTMLElement).parentElement?.querySelector('.header-logo-fallback') as HTMLElement;
+                    if (fb) fb.style.display = 'flex';
+                  }}
+                />
+              ) : null}
+              <div className={`text-xs font-black text-indigo-700 dark:text-indigo-300 uppercase header-logo-fallback ${details.logoUrl && !isAppLogo(details.logoUrl) ? 'hidden' : 'flex'}`}>
+                {details.schoolName.slice(0, 2) || "LOGO"}
+              </div>
+            </div>
+            <div className="flex-1 min-w-0 space-y-1.5 w-full">
+              <div className="flex items-center justify-between">
+                <label className="text-xs font-bold text-slate-700 dark:text-slate-300 block">
+                  School Logo (Upload Photo / Image URL):
+                </label>
+                {details.logoUrl && !isAppLogo(details.logoUrl) && (
+                  <span className="text-[10px] text-emerald-600 dark:text-emerald-400 font-bold">
+                    ✓ School Logo Active
+                  </span>
+                )}
+              </div>
+              <div className="flex items-center gap-2 flex-wrap">
+                <DirectUploadButton
+                  kind="image"
+                  compact
+                  currentUrl={details.logoUrl}
+                  onUploaded={url => {
+                    const cleaned = cleanLogoUrl(url);
+                    setDetails(p => ({ ...p, logoUrl: cleaned }));
+                    if (cleaned && !isAppLogo(cleaned) && typeof localStorage !== 'undefined') {
+                      localStorage.setItem("nst_active_school_logo", cleaned);
+                      localStorage.setItem("nst_school_logo", cleaned);
+                    }
+                    if (targetSchoolId) {
+                      updateSchool(targetSchoolId, { logoUrl: cleaned }).catch(() => {});
+                    }
+                  }}
+                  onClear={() => {
+                    setDetails(p => ({ ...p, logoUrl: "" }));
+                    if (typeof localStorage !== 'undefined') {
+                      localStorage.removeItem("nst_active_school_logo");
+                      localStorage.removeItem("nst_school_logo");
+                    }
+                    if (targetSchoolId) {
+                      updateSchool(targetSchoolId, { logoUrl: "" }).catch(() => {});
+                    }
+                  }}
+                  label="Upload School Logo"
+                />
+                <input
+                  type="text"
+                  value={details.logoUrl}
+                  onChange={e => {
+                    const cleaned = cleanLogoUrl(e.target.value);
+                    setDetails(p => ({ ...p, logoUrl: cleaned }));
+                    if (cleaned && !isAppLogo(cleaned) && typeof localStorage !== 'undefined') {
+                      localStorage.setItem("nst_active_school_logo", cleaned);
+                      localStorage.setItem("nst_school_logo", cleaned);
+                    }
+                  }}
+                  placeholder="Ya school logo image ka direct link paste karein"
+                  className="flex-1 min-w-[180px] px-3 py-1.5 text-xs rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-800 dark:text-white"
+                />
+              </div>
+            </div>
+          </div>
+
+          {/* Principal & Signatory Details */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2 border-t border-slate-200 dark:border-slate-800">
+            <div>
+              <label className="text-xs font-bold text-slate-700 dark:text-slate-300 block mb-1">
+                Principal / Headmaster Name
+              </label>
+              <input
+                type="text"
+                value={details.principalName}
+                onChange={e => setDetails(p => ({ ...p, principalName: e.target.value }))}
+                placeholder="Dr. Rajeshwar Sharma"
+                className="w-full px-3 py-2 text-xs font-bold rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white focus:ring-2 focus:ring-indigo-500 outline-hidden"
+              />
+            </div>
+            <div>
+              <label className="text-xs font-bold text-slate-700 dark:text-slate-300 block mb-1">
+                Principal Designation / Title
+              </label>
+              <input
+                type="text"
+                value={details.principalTitle}
+                onChange={e => setDetails(p => ({ ...p, principalTitle: e.target.value }))}
+                placeholder="Principal / Head of Institution"
+                className="w-full px-3 py-2 text-xs font-medium rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white focus:ring-2 focus:ring-indigo-500 outline-hidden"
+              />
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div>
+              <label className="text-xs font-bold text-slate-700 dark:text-slate-300 block mb-1">Principal Mobile Number</label>
+              <input
+                type="tel"
+                value={details.principalPhone || ""}
+                onChange={e => setDetails(p => ({ ...p, principalPhone: e.target.value }))}
+                placeholder="Principal mobile number"
+                className="w-full px-3 py-2 text-xs rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white"
+              />
+            </div>
+            <div>
+              <label className="text-xs font-bold text-slate-700 dark:text-slate-300 block mb-1">Director Name (अलग पद)</label>
+              <input
+                type="text"
+                value={details.directorName || ""}
+                onChange={e => setDetails(p => ({ ...p, directorName: e.target.value }))}
+                placeholder="Director full name"
+                className="w-full px-3 py-2 text-xs rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white"
+              />
+            </div>
+            <div>
+              <label className="text-xs font-bold text-slate-700 dark:text-slate-300 block mb-1">Director Mobile Number</label>
+              <input
+                type="tel"
+                value={details.directorPhone || ""}
+                onChange={e => setDetails(p => ({ ...p, directorPhone: e.target.value }))}
+                placeholder="Director mobile number"
+                className="w-full px-3 py-2 text-xs rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white"
+              />
+            </div>
+            <div>
+              <label className="text-xs font-bold text-slate-700 dark:text-slate-300 block mb-1">Manager Name (अलग पद)</label>
+              <input
+                type="text"
+                value={details.managerName || ""}
+                onChange={e => setDetails(p => ({ ...p, managerName: e.target.value }))}
+                placeholder="Manager full name"
+                className="w-full px-3 py-2 text-xs rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white"
+              />
+            </div>
+            <div>
+              <label className="text-xs font-bold text-slate-700 dark:text-slate-300 block mb-1">Manager Mobile Number</label>
+              <input
+                type="tel"
+                value={details.managerPhone || ""}
+                onChange={e => setDetails(p => ({ ...p, managerPhone: e.target.value }))}
+                placeholder="Manager mobile number"
+                className="w-full px-3 py-2 text-xs rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white"
+              />
+            </div>
+            <div className="sm:col-span-2">
+              <label className="text-xs font-bold text-emerald-700 dark:text-emerald-400 block mb-1">Accountant Name (Fee Receipt Default Signatory)</label>
+              <input
+                type="text"
+                value={details.accountantName || ""}
+                onChange={e => setDetails(p => ({ ...p, accountantName: e.target.value }))}
+                placeholder="Head Accountant / Cashier name"
+                className="w-full px-3 py-2 text-xs font-semibold rounded-xl border border-emerald-300 dark:border-emerald-700 bg-emerald-50/40 dark:bg-slate-800 text-slate-900 dark:text-white"
+              />
+            </div>
+          </div>
+
+          {/* Digital Signatures Studio (Principal, Director, Manager & Accountant) */}
+          <div className="p-4 bg-gradient-to-br from-indigo-50/80 via-blue-50/40 to-amber-50/40 dark:from-indigo-950/40 dark:via-blue-950/20 dark:to-slate-900 rounded-2xl border border-indigo-200/80 dark:border-indigo-800/50 space-y-3">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+              <div>
+                <div className="flex items-center gap-1.5 text-xs font-black text-indigo-950 dark:text-indigo-200">
+                  <PenTool className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
+                  <span>Digital Signatures Studio (Principal, Director, Manager &amp; Accountant)</span>
+                </div>
+                <p className="text-[11px] text-slate-600 dark:text-slate-400 mt-0.5">
+                  Fee Receipt पर Accountant (या Manager) के हस्ताक्षर अलग से दिखते हैं। नीचे किसी भी पद पर क्लिक करके sign करें।
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setDigitalSigTab("principal");
+                  setShowDigitalSignatureModal(true);
+                }}
+                className="inline-flex items-center justify-center gap-1.5 px-3.5 py-2 bg-gradient-to-r from-indigo-600 to-blue-600 hover:from-indigo-500 hover:to-blue-500 text-white text-xs font-bold rounded-xl shadow-md shadow-indigo-600/20 active:scale-95 transition-all shrink-0 cursor-pointer"
+              >
+                <PenTool className="w-3.5 h-3.5" />
+                <span>✍️ Signature Studio खोलें</span>
+              </button>
+            </div>
+
+            {/* Signature status chips / mini previews */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 pt-1">
+              {[
+                { key: "principal" as const, roleLabel: "Principal Signature", nameVal: details.principalName || "Principal", urlVal: details.principalSignatureUrl, clearKey: "principalSignatureUrl" as const },
+                { key: "director" as const, roleLabel: "Director Signature", nameVal: details.directorName || "Director", urlVal: details.directorSignatureUrl, clearKey: "directorSignatureUrl" as const },
+                { key: "manager" as const, roleLabel: "Manager Signature", nameVal: details.managerName || "Manager", urlVal: details.managerSignatureUrl, clearKey: "managerSignatureUrl" as const },
+                { key: "accountant" as const, roleLabel: "Accountant (Fee Receipt)", nameVal: details.accountantName || "Accountant", urlVal: details.accountantSignatureUrl, clearKey: "accountantSignatureUrl" as const },
+              ].map((sigItem) => (
+                <div key={sigItem.key} className="p-2.5 bg-white dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700 flex items-center justify-between gap-2">
+                  <div className="min-w-0">
+                    <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block">{sigItem.roleLabel}</span>
+                    <span className="text-xs font-bold text-slate-800 dark:text-white truncate block">
+                      {sigItem.nameVal}
+                    </span>
+                  </div>
+                  {sigItem.urlVal ? (
+                    <div className="flex items-center gap-2">
+                      <img
+                        src={sigItem.urlVal}
+                        alt={sigItem.roleLabel}
+                        className="h-8 max-w-[80px] object-contain border border-slate-200 dark:border-slate-700 rounded-md p-1 bg-white cursor-pointer"
+                        onClick={() => {
+                          setDigitalSigTab(sigItem.key);
+                          setShowDigitalSignatureModal(true);
+                        }}
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setDetails(p => ({ ...p, [sigItem.clearKey]: "" }))}
+                        className="text-[10px] text-rose-500 hover:underline cursor-pointer"
+                      >
+                        Remove
+                      </button>
+                    </div>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setDigitalSigTab(sigItem.key);
+                        setShowDigitalSignatureModal(true);
+                      }}
+                      className="text-[11px] text-indigo-600 dark:text-indigo-400 font-bold hover:underline cursor-pointer"
+                    >
+                      + Add Sign
+                    </button>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* School ERP Mobile App Download Link & Live QR Code */}
+          <div className="p-4 bg-gradient-to-br from-emerald-50/90 via-teal-50/40 to-cyan-50/50 dark:from-emerald-950/35 dark:via-slate-900 dark:to-slate-900 rounded-2xl border border-emerald-200 dark:border-emerald-800/60 space-y-3">
+            <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3">
+              <div className="flex-1 space-y-2">
+                <div className="flex items-center gap-1.5 text-xs font-black text-emerald-950 dark:text-emerald-200">
+                  <Smartphone className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
+                  <span>School ERP App Download Link &amp; QR Code</span>
+                </div>
+                <p className="text-[11px] text-slate-600 dark:text-slate-400 leading-snug">
+                  Yahan apne School ERP App (Play Store / APK / Web App) ka download link daalein — iska QR Code auto-generate hokar Marksheet Page-2 aur documents par dikhega.
+                </p>
+                <div>
+                  <label className="text-[10px] font-black uppercase tracking-wider text-emerald-900 dark:text-emerald-300 block mb-1">
+                    App Download URL (Play Store / APK / Portal Link)
+                  </label>
+                  <input
+                    type="url"
+                    value={details.erpAppUrl || ""}
+                    onChange={e => setDetails(p => ({ ...p, erpAppUrl: e.target.value }))}
+                    placeholder={DEFAULT_ERP_APP_DOWNLOAD_URL}
+                    className="w-full px-3 py-2 text-xs font-semibold rounded-xl border border-emerald-300 dark:border-emerald-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white focus:ring-2 focus:ring-emerald-500 outline-hidden"
+                  />
+                </div>
+                <p className="text-[10px] font-bold text-emerald-800 dark:text-emerald-300 bg-white/80 dark:bg-slate-800/70 px-2.5 py-1.5 rounded-lg border border-emerald-200/80 dark:border-emerald-800/60">
+                  📲 Scan QR → Download School ERP App → Create Account → Link Account using Student&apos;s ID Card QR Code
+                </p>
+              </div>
+              <div className="shrink-0 flex flex-col items-center justify-center p-2.5 bg-white rounded-xl border border-emerald-300 shadow-xs self-center sm:self-start">
+                <QRCode
+                  value={(details.erpAppUrl || "").trim() || DEFAULT_ERP_APP_DOWNLOAD_URL}
+                  size={68}
+                  level="M"
+                />
+                <span className="text-[8.5px] font-black uppercase tracking-wider text-emerald-900 mt-1 flex items-center gap-0.5">
+                  <QrCode className="w-2.5 h-2.5" /> App QR Live
+                </span>
+              </div>
+            </div>
+          </div>
+
+          <section className="space-y-3 border-t border-slate-200 dark:border-slate-800 pt-4">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <h3 className="text-sm font-black text-slate-800 dark:text-white">Extra School Details</h3>
+                <p className="text-[11px] text-slate-500">Apni zaroorat ke mutabik fields jodein; phir documents ke liye unhe select karein.</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => addCustomField("")}
+                className="shrink-0 rounded-xl bg-indigo-600 hover:bg-indigo-700 active:scale-95 px-3.5 py-2 text-xs font-bold text-white transition-all shadow-sm"
+              >
+                + Add Detail
+              </button>
+            </div>
+
+            {/* Quick Suggestions Chips */}
+            <div className="flex flex-wrap items-center gap-1.5 p-2 bg-slate-50 dark:bg-slate-800/50 rounded-xl border border-slate-200 dark:border-slate-700">
+              <span className="text-[11px] font-bold text-slate-500 mr-1">Quick Add:</span>
+              {[
+                "UDISE Code",
+                "Registration No",
+                "Estd. Year",
+                "Trust / Society",
+                "Website URL",
+                "Office Timings"
+              ].map(sug => (
+                <button
+                  key={sug}
+                  type="button"
+                  onClick={() => addCustomField(sug)}
+                  className="px-2.5 py-1 rounded-lg bg-white dark:bg-slate-700 border border-slate-200 dark:border-slate-600 hover:border-indigo-400 text-[11px] font-semibold text-slate-700 dark:text-slate-200 hover:text-indigo-600 transition-colors shadow-2xs"
+                >
+                  + {sug}
+                </button>
+              ))}
+            </div>
+
+            {(!details.customFields || details.customFields.length === 0) ? (
+              <div className="text-center py-5 border-2 border-dashed border-slate-200 dark:border-slate-700 rounded-2xl text-xs text-slate-400">
+                Koi extra detail add nahi hai. Upar <strong className="text-indigo-600 dark:text-indigo-400">+ Add Detail</strong> ya Quick Add button par click karein.
+              </div>
+            ) : (
+              (details.customFields || []).map((field, index) => (
+                <div key={field.id || index} className="grid grid-cols-[1fr_1fr_auto] gap-2 items-center">
+                  <input
+                    value={field.label}
+                    onChange={e => setDetails(p => ({
+                      ...p,
+                      customFields: (p.customFields || []).map((item, i) => i === index ? { ...item, label: e.target.value } : item),
+                    }))}
+                    placeholder="Detail name (e.g. UDISE No.)"
+                    className="min-w-0 rounded-xl border border-slate-300 bg-slate-50 px-3 py-2 text-xs font-semibold dark:border-slate-700 dark:bg-slate-800 dark:text-white"
+                  />
+                  <input
+                    value={field.value}
+                    onChange={e => setDetails(p => ({
+                      ...p,
+                      customFields: (p.customFields || []).map((item, i) => i === index ? { ...item, value: e.target.value } : item),
+                    }))}
+                    placeholder="Value (e.g. 10245089)"
+                    className="min-w-0 rounded-xl border border-slate-300 bg-slate-50 px-3 py-2 text-xs font-medium dark:border-slate-700 dark:bg-slate-800 dark:text-white"
+                  />
+                  <button
+                    type="button"
+                    aria-label={`Remove detail ${index + 1}`}
+                    onClick={() => setDetails(p => ({ ...p, customFields: (p.customFields || []).filter((_, i) => i !== index) }))}
+                    className="rounded-xl border border-red-200 dark:border-red-900/50 hover:bg-red-50 dark:hover:bg-red-950/30 px-3 py-2 text-xs font-bold text-red-600 transition-colors"
+                  >
+                    Remove
+                  </button>
+                </div>
+              ))
+            )}
+          </section>
+
+          <section className="space-y-3 border-t border-slate-200 dark:border-slate-800 pt-4">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <h3 className="text-sm font-black text-slate-800 dark:text-white">Choose details for each printout</h3>
+                <p className="text-[11px] text-slate-500">School details can be shown or hidden separately on each document.</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setDetails(previous => ({
+                  ...previous,
+                  documentPrintFields: {
+                    ...previous.documentPrintFields,
+                    idCard: DEFAULT_SCHOOL_DOCUMENT_PRINT_FIELDS.idCard,
+                    certificate: DEFAULT_SCHOOL_DOCUMENT_PRINT_FIELDS.certificate,
+                    marksheet: DEFAULT_SCHOOL_DOCUMENT_PRINT_FIELDS.marksheet,
+                    feeReceipt: DEFAULT_SCHOOL_DOCUMENT_PRINT_FIELDS.feeReceipt,
+                  },
+                }))}
+                className="rounded-lg bg-indigo-600 px-3 py-2 text-[10px] font-bold text-white"
+              >
+                Recommended for all
+              </button>
+            </div>
+            <div className="grid grid-cols-1 gap-3">
+              {documentOptions.map(document => (
+                <details key={document.key} className="rounded-xl border border-slate-200 p-3 dark:border-slate-700" open={document.key === "idCard"}>
+                  <summary className="cursor-pointer text-xs font-black text-slate-800 dark:text-white">{document.label}</summary>
+                  <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
+                    <p className="text-[10px] text-slate-500">Blank school fields print nahi honge.</p>
+                    <div className="flex gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setDocumentFields(document.key, DEFAULT_SCHOOL_DOCUMENT_PRINT_FIELDS[document.key])}
+                        className="rounded-lg border border-indigo-200 px-2.5 py-1.5 text-[10px] font-bold text-indigo-700 dark:border-indigo-800 dark:text-indigo-300"
+                      >
+                        Recommended
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setDocumentFields(document.key, fieldOptions.map(field => field.key))}
+                        className="rounded-lg border border-slate-200 px-2.5 py-1.5 text-[10px] font-bold text-slate-700 dark:border-slate-700 dark:text-slate-300"
+                      >
+                        All fields
+                      </button>
+                    </div>
+                  </div>
+                  <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-3">
+                    {fieldOptions.map(field => (
+                      <label key={field.key} className="flex items-center gap-2 text-[11px] text-slate-700 dark:text-slate-300">
+                        <input
+                          type="checkbox"
+                          checked={fieldsForDocument(document.key).includes(field.key)}
+                          onChange={e => toggleDocumentField(document.key, field.key, e.target.checked)}
+                        />
+                        {field.label}
+                      </label>
+                    ))}
+                  </div>
+                </details>
+              ))}
+            </div>
+          </section>
+        </div>
+
+        {/* Modal Footer */}
+        <div className="p-4 bg-slate-50 dark:bg-slate-800/80 border-t border-slate-200 dark:border-slate-700 flex flex-col sm:flex-row items-center justify-between gap-2 shrink-0">
+          <button
+            type="button"
+            onClick={handleSaveAsSchoolDefault}
+            disabled={savingDefault}
+            className="w-full sm:w-auto px-4 py-2.5 rounded-xl text-xs font-black bg-slate-200 dark:bg-slate-700 hover:bg-slate-300 dark:hover:bg-slate-600 text-slate-800 dark:text-white transition flex items-center justify-center gap-1.5"
+          >
+            <ShieldCheck className="w-3.5 h-3.5 text-indigo-500" />
+            <span>{savingDefault ? "Saving Default..." : "💾 Save as School Default"}</span>
+          </button>
+
+          <div className="flex items-center gap-2 w-full sm:w-auto">
+            <button
+              type="button"
+              onClick={onClose}
+              className="flex-1 sm:flex-none px-4 py-2.5 rounded-xl text-xs font-bold bg-transparent hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300 transition"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={handleApply}
+              className="flex-1 sm:flex-none px-5 py-2.5 rounded-xl text-xs font-black bg-gradient-to-r from-indigo-600 to-blue-600 hover:from-indigo-700 hover:to-blue-700 text-white shadow-md shadow-indigo-500/20 active:scale-95 transition flex items-center justify-center gap-1.5"
+            >
+              <CheckCircle2 className="w-4 h-4" />
+              <span>✓ Apply Details</span>
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {showDigitalSignatureModal && targetSchoolId && (
+        <DigitalSignatureModal
+          isOpen={showDigitalSignatureModal}
+          onClose={() => setShowDigitalSignatureModal(false)}
+          initialTab={digitalSigTab}
+          school={
+            {
+              ...(school || {}),
+              id: targetSchoolId,
+              name: details.schoolName,
+              principalName: details.principalName,
+              directorName: details.directorName,
+              managerName: details.managerName,
+              accountantName: details.accountantName,
+              principalSignatureUrl: details.principalSignatureUrl,
+              directorSignatureUrl: details.directorSignatureUrl,
+              managerSignatureUrl: details.managerSignatureUrl,
+              accountantSignatureUrl: details.accountantSignatureUrl,
+            } as School
+          }
+          schoolId={targetSchoolId}
+          onSignaturesUpdated={updated => {
+            setDetails(p => ({
+              ...p,
+              principalSignatureUrl: updated.principalSignatureUrl !== undefined ? updated.principalSignatureUrl : p.principalSignatureUrl,
+              directorSignatureUrl: updated.directorSignatureUrl !== undefined ? updated.directorSignatureUrl : p.directorSignatureUrl,
+              managerSignatureUrl: updated.managerSignatureUrl !== undefined ? updated.managerSignatureUrl : p.managerSignatureUrl,
+              accountantSignatureUrl: updated.accountantSignatureUrl !== undefined ? updated.accountantSignatureUrl : p.accountantSignatureUrl,
+              directorName: updated.directorName !== undefined ? updated.directorName : p.directorName,
+              managerName: updated.managerName !== undefined ? updated.managerName : p.managerName,
+              accountantName: updated.accountantName !== undefined ? updated.accountantName : p.accountantName,
+            }));
+          }}
+        />
+      )}
+    </div>
+  );
+};

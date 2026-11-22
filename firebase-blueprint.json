@@ -1,0 +1,156 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "Application user profile for students, teachers, school admins, parents, drivers, and superadmins.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "maxLength": 128 },
+        "name": { "type": "string", "maxLength": 160 },
+        "email": { "type": "string", "format": "email", "maxLength": 160 },
+        "mobile": { "type": "string", "maxLength": 24 },
+        "role": { "type": "string", "maxLength": 40 },
+        "schoolId": { "type": "string", "maxLength": 128 },
+        "classLevel": { "type": "string", "maxLength": 40 },
+        "subscriptionTier": { "type": "string", "maxLength": 40 },
+        "createdAt": { "type": "string", "maxLength": 64 }
+      },
+      "required": ["name"]
+    },
+    "School": {
+      "title": "School",
+      "description": "School ERP tenant profile, public website configuration, branding, and subscription state.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "name": { "type": "string", "maxLength": 200 },
+        "code": { "type": "string", "maxLength": 40 },
+        "address": { "type": "string", "maxLength": 400 },
+        "phone": { "type": "string", "maxLength": 64 },
+        "email": { "type": "string", "maxLength": 160 },
+        "adminEmail": { "type": "string", "maxLength": 160 },
+        "active": { "type": "boolean" }
+      },
+      "required": ["name"]
+    },
+    "AdmissionApplication": {
+      "title": "AdmissionApplication",
+      "description": "Online admission application submitted from the public school website or admin portal.",
+      "type": "object",
+      "properties": {
+        "applicationNo": { "type": "string", "maxLength": 64 },
+        "schoolId": { "type": "string", "maxLength": 128 },
+        "studentName": { "type": "string", "maxLength": 160 },
+        "fatherName": { "type": "string", "maxLength": 160 },
+        "phone": { "type": "string", "maxLength": 32 },
+        "className": { "type": "string", "maxLength": 80 },
+        "status": { "type": "string", "maxLength": 40 },
+        "appliedAt": { "type": "string", "maxLength": 64 }
+      },
+      "required": ["studentName", "phone"]
+    },
+    "PublicInquiry": {
+      "title": "PublicInquiry",
+      "description": "Admission enquiry submitted by prospective parents on the public school website.",
+      "type": "object",
+      "properties": {
+        "schoolId": { "type": "string", "maxLength": 128 },
+        "parentName": { "type": "string", "maxLength": 160 },
+        "studentName": { "type": "string", "maxLength": 160 },
+        "phone": { "type": "string", "maxLength": 32 },
+        "classInterested": { "type": "string", "maxLength": 80 },
+        "message": { "type": "string", "maxLength": 1000 },
+        "status": { "type": "string", "maxLength": 40 }
+      },
+      "required": ["phone"]
+    },
+    "BusLiveLocation": {
+      "title": "BusLiveLocation",
+      "description": "Real-time GPS telemetry reported by school bus drivers for live tracking and 1 KM alerts.",
+      "type": "object",
+      "properties": {
+        "busId": { "type": "string", "maxLength": 128 },
+        "busNumber": { "type": "string", "maxLength": 64 },
+        "lat": { "type": "number" },
+        "lng": { "type": "number" },
+        "speed": { "type": "number" },
+        "status": { "type": "string", "maxLength": 40 },
+        "updatedAt": { "type": "string", "maxLength": 64 }
+      },
+      "required": ["lat", "lng"]
+    },
+    "SchoolRecord": {
+      "title": "SchoolRecord",
+      "description": "Generic school ERP subcollection document (students, teachers, staff, classes, sessions, fees, attendance, exams, homework, notices, library, inventory).",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "schoolId": { "type": "string", "maxLength": 128 }
+      }
+    },
+    "FeedbackEntry": {
+      "title": "FeedbackEntry",
+      "description": "User bug report, feedback, or feature suggestion.",
+      "type": "object",
+      "properties": {
+        "message": { "type": "string", "maxLength": 2000 },
+        "userId": { "type": "string", "maxLength": 128 },
+        "createdAt": { "type": "string", "maxLength": 64 }
+      }
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/User" },
+      "description": "User profile documents with role protection and owner-scoped updates."
+    },
+    "/schools/{schoolId}": {
+      "schema": { "$ref": "#/entities/School" },
+      "description": "School profile and public website settings."
+    },
+    "/schools/{schoolId}/admissions/{admId}": {
+      "schema": { "$ref": "#/entities/AdmissionApplication" },
+      "description": "Online admission applications for a school."
+    },
+    "/schools/{schoolId}/inquiries/{inqId}": {
+      "schema": { "$ref": "#/entities/PublicInquiry" },
+      "description": "Admission enquiries submitted from the public website."
+    },
+    "/schools/{schoolId}/bus_live_locations/{busId}": {
+      "schema": { "$ref": "#/entities/BusLiveLocation" },
+      "description": "Live GPS tracking telemetry for school buses."
+    },
+    "/schools/{schoolId}/students/{studentId}": {
+      "schema": { "$ref": "#/entities/SchoolRecord" },
+      "description": "Enrolled student records."
+    },
+    "/schools/{schoolId}/teachers/{teacherId}": {
+      "schema": { "$ref": "#/entities/SchoolRecord" },
+      "description": "School teacher records."
+    },
+    "/schools/{schoolId}/fees/{feeId}": {
+      "schema": { "$ref": "#/entities/SchoolRecord" },
+      "description": "Student fee receipts and monthly ledger records."
+    },
+    "/schools/{schoolId}/attendance/{attendanceId}": {
+      "schema": { "$ref": "#/entities/SchoolRecord" },
+      "description": "Daily student and staff attendance logs."
+    },
+    "/schools/{schoolId}/classes/{classId}": {
+      "schema": { "$ref": "#/entities/SchoolRecord" },
+      "description": "Class definitions and class-wise fee structures."
+    },
+    "/schools/{schoolId}/sessions/{sessionId}": {
+      "schema": { "$ref": "#/entities/SchoolRecord" },
+      "description": "Academic year sessions."
+    },
+    "/schools/{schoolId}/notices/{noticeId}": {
+      "schema": { "$ref": "#/entities/SchoolRecord" },
+      "description": "School notices and announcements."
+    },
+    "/app_feedback/{feedbackId}": {
+      "schema": { "$ref": "#/entities/FeedbackEntry" },
+      "description": "User submitted app feedback."
+    }
+  }
+}

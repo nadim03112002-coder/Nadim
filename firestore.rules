@@ -1,0 +1,534 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ── GLOBAL DEFAULT-DENY SAFETY NET ─────────────────────────────────────
+    // Every path not explicitly matched below is strictly denied.
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // ── HARDENED PRIMITIVE HELPERS ─────────────────────────────────────────
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_.\\-:]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    // Verified SuperAdmin check: requires email_verified == true to block email spoofing
+    function isSuperAdmin() {
+      return isSignedIn() && (
+        (
+          request.auth.token.email_verified == true &&
+          request.auth.token.email in [
+            'nsbdhdh70@gmail.com',
+            'nadimanwar794@gmail.com',
+            'nsdimanwar794@gmail.com',
+            'nadiman0636indo@gmail.com',
+            'n44438403@gmail.com',
+            'ghduug6@gmail.com'
+          ]
+        ) ||
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+      );
+    }
+
+    function isUserSelf(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isReasonableDoc(data) {
+      return data is map && data.keys().size() <= 120;
+    }
+
+    function isSafeOptionalString(data, field, maxLen) {
+      return !(field in data) || data[field] == null || (data[field] is string && data[field].size() <= maxLen);
+    }
+
+    // Prevent privilege escalation: non-superadmins can NEVER assign admin/superadmin roles
+    function hasNoAdminEscalation(data) {
+      return (!( 'isSuperAdmin' in data ) || data.isSuperAdmin == false)
+        && (!( 'isAdmin' in data ) || data.isAdmin == false)
+        && (!( 'role' in data ) || !(data.role in ['SUPERADMIN', 'ADMIN', 'SUPER_ADMIN']));
+    }
+
+    function isValidUserCreate(data) {
+      return isReasonableDoc(data)
+        && isSafeOptionalString(data, 'name', 160)
+        && isSafeOptionalString(data, 'email', 160)
+        && isSafeOptionalString(data, 'mobile', 32)
+        && isSafeOptionalString(data, 'schoolId', 128)
+        && (isSuperAdmin() || hasNoAdminEscalation(data));
+    }
+
+    function isValidUserUpdate(data, prev) {
+      return isReasonableDoc(data)
+        && isSafeOptionalString(data, 'name', 160)
+        && isSafeOptionalString(data, 'email', 160)
+        && isSafeOptionalString(data, 'mobile', 32)
+        && (
+          isSuperAdmin() || (
+            hasNoAdminEscalation(data)
+            && !data.diff(prev).affectedKeys().hasAny(['role', 'isAdmin', 'isSuperAdmin', 'subscriptionTier', 'credits'])
+          )
+        );
+    }
+
+    function isValidAdmissionCreate(data) {
+      return isReasonableDoc(data)
+        && ('studentName' in data) && data.studentName is string && data.studentName.size() >= 1 && data.studentName.size() <= 160
+        && ('phone' in data) && data.phone is string && data.phone.size() >= 6 && data.phone.size() <= 32
+        && isSafeOptionalString(data, 'fatherName', 160)
+        && isSafeOptionalString(data, 'motherName', 160)
+        && isSafeOptionalString(data, 'className', 80)
+        && isSafeOptionalString(data, 'address', 500)
+        && (!( 'status' in data ) || data.status in ['pending', 'submitted', 'payment_submitted', 'new']);
+    }
+
+    function isValidInquiryCreate(data) {
+      return isReasonableDoc(data)
+        && ('phone' in data) && data.phone is string && data.phone.size() >= 6 && data.phone.size() <= 32
+        && isSafeOptionalString(data, 'parentName', 160)
+        && isSafeOptionalString(data, 'studentName', 160)
+        && isSafeOptionalString(data, 'message', 1000)
+        && isSafeOptionalString(data, 'classInterested', 80);
+    }
+
+    function isValidTestAttemptCreate(data) {
+      return isReasonableDoc(data)
+        && isSafeOptionalString(data, 'studentName', 160)
+        && isSafeOptionalString(data, 'phone', 32)
+        && isSafeOptionalString(data, 'className', 80);
+    }
+
+    function isValidBusLocation(data) {
+      return isReasonableDoc(data)
+        && ('lat' in data) && data.lat is number && data.lat >= -90 && data.lat <= 90
+        && ('lng' in data) && data.lng is number && data.lng >= -180 && data.lng <= 180
+        && isSafeOptionalString(data, 'busNumber', 64)
+        && isSafeOptionalString(data, 'driverName', 120)
+        && isSafeOptionalString(data, 'route', 240);
+    }
+
+    function isValidFeedbackCreate(data) {
+      return isReasonableDoc(data)
+        && isSafeOptionalString(data, 'message', 2500)
+        && isSafeOptionalString(data, 'text', 2500)
+        && isSafeOptionalString(data, 'userId', 128);
+    }
+
+    // ── 1. STRICT SUPERADMIN-ONLY SYSTEM COLLECTIONS ───────────────────────
+    match /admins/{adminUid} {
+      allow read: if isSuperAdmin() || isUserSelf(adminUid);
+      allow write: if isSuperAdmin();
+    }
+
+    match /admin_secure/{docId} {
+      allow read, write: if isSuperAdmin();
+    }
+
+    match /admin_settings/{docId} {
+      allow read: if isSignedIn();
+      allow write: if isSuperAdmin();
+    }
+
+    match /admin_stats/{docId} {
+      allow read, write: if isSuperAdmin();
+    }
+
+    match /trash_homework_entries/{docId} {
+      allow read, write: if isSuperAdmin();
+    }
+
+    match /trash_lucent_entries/{docId} {
+      allow read, write: if isSuperAdmin();
+    }
+
+    match /system_settings/{docId} {
+      allow read: if true;
+      allow write: if isSuperAdmin();
+    }
+
+    match /settings/{docId} {
+      allow read: if true;
+      allow write: if isSuperAdmin();
+    }
+
+    match /config/{docId} {
+      allow read: if true;
+      allow write: if isSuperAdmin();
+    }
+
+    match /redeem_codes/{codeId} {
+      allow read: if isSignedIn();
+      allow write: if isSuperAdmin();
+    }
+
+    // ── 2. USERS COLLECTION (Anti-Escalation & Owner-Scoped) ───────────────
+    match /users/{userId} {
+      allow get: if isValidId(userId) && (isSuperAdmin() || isSignedIn());
+      allow list: if isSuperAdmin() || isSignedIn();
+      allow create: if isValidId(userId) && isSignedIn() && isValidUserCreate(incoming())
+        && (isSuperAdmin() || isUserSelf(userId));
+      allow update: if isValidId(userId) && isSignedIn() && isValidUserUpdate(incoming(), existing())
+        && (isSuperAdmin() || isUserSelf(userId));
+      allow delete: if isValidId(userId) && isSuperAdmin();
+
+      match /{userSubcollections=**} {
+        allow read, write: if isSuperAdmin() || isUserSelf(userId);
+      }
+    }
+
+    match /user_data/{userId} {
+      allow read, write: if isValidId(userId) && (isSuperAdmin() || isUserSelf(userId));
+    }
+
+    match /user_coins/{userId} {
+      allow read: if isValidId(userId) && (isSuperAdmin() || isUserSelf(userId));
+      allow write: if isValidId(userId) && (isSuperAdmin() || isUserSelf(userId));
+    }
+
+    match /user_themes/{userId} {
+      allow read, write: if isValidId(userId) && (isSuperAdmin() || isUserSelf(userId));
+    }
+
+    match /user_animations/{userId} {
+      allow read, write: if isValidId(userId) && (isSuperAdmin() || isUserSelf(userId));
+    }
+
+    // ── 3. STUDY CONTENT COLLECTIONS (Public Read, SuperAdmin Write) ───────
+    match /content_data/{contentId} {
+      allow read: if true;
+      allow write: if isValidId(contentId) && isSuperAdmin();
+      match /{subCollection=**} {
+        allow read: if true;
+        allow write: if isSuperAdmin();
+      }
+    }
+
+    match /custom_syllabus/{syllabusId} {
+      allow read: if true;
+      allow write: if isValidId(syllabusId) && isSuperAdmin();
+    }
+
+    match /homework_entries/{entryId} {
+      allow read: if true;
+      allow write: if isValidId(entryId) && isSuperAdmin();
+    }
+
+    match /lucent_entries/{entryId} {
+      allow read: if true;
+      allow write: if isValidId(entryId) && isSuperAdmin();
+    }
+
+    match /mcq_lessons/{lessonId} {
+      allow read: if true;
+      allow write: if isValidId(lessonId) && isSuperAdmin();
+    }
+
+    match /lesson_meta/{metaId} {
+      allow read: if true;
+      allow write: if isValidId(metaId) && isSuperAdmin();
+    }
+
+    match /compre_notes/{noteId} {
+      allow read: if true;
+      allow write: if isValidId(noteId) && isSuperAdmin();
+    }
+
+    match /challenge_20/{challengeId} {
+      allow read: if true;
+      allow write: if isValidId(challengeId) && isSuperAdmin();
+    }
+
+    match /weekly_tests/{testId} {
+      allow read: if true;
+      allow write: if isValidId(testId) && isSuperAdmin();
+    }
+
+    match /competition_mcqs/{mcqId} {
+      allow read: if true;
+      allow write: if isValidId(mcqId) && isSuperAdmin();
+    }
+
+    match /daily_gk/{gkId} {
+      allow read: if true;
+      allow write: if isValidId(gkId) && isSuperAdmin();
+    }
+
+    match /published_themes/{themeId} {
+      allow read: if true;
+      allow write: if isValidId(themeId) && isSuperAdmin();
+    }
+
+    match /published_animations/{animId} {
+      allow read: if true;
+      allow write: if isValidId(animId) && isSuperAdmin();
+    }
+
+    // ── 4. SCHOOL ERP ECOSYSTEM ────────────────────────────────────────────
+    match /schools/{schoolId} {
+      // School profile & website metadata is public so the public school website loads immediately
+      allow read: if true;
+      allow create, update: if isValidId(schoolId) && isSignedIn() && isReasonableDoc(incoming());
+      allow delete: if isValidId(schoolId) && isSuperAdmin();
+
+      // Public-Website Readable Collections (Classes, Fee Chart, Sessions, Notices, Holidays, Events, Seats, Bus Routes)
+      match /classes/{classId} {
+        allow read: if true;
+        allow create, update: if isValidId(classId) && isSignedIn() && isReasonableDoc(incoming());
+        allow delete: if isValidId(classId) && isSignedIn();
+      }
+
+      match /sessions/{sessionId} {
+        allow read: if true;
+        allow create, update: if isValidId(sessionId) && isSignedIn() && isReasonableDoc(incoming());
+        allow delete: if isValidId(sessionId) && isSignedIn();
+      }
+
+      match /notices/{noticeId} {
+        allow read: if true;
+        allow create, update: if isValidId(noticeId) && isSignedIn() && isReasonableDoc(incoming());
+        allow delete: if isValidId(noticeId) && isSignedIn();
+      }
+
+      match /holidays/{holidayId} {
+        allow read: if true;
+        allow create, update: if isValidId(holidayId) && isSignedIn() && isReasonableDoc(incoming());
+        allow delete: if isValidId(holidayId) && isSignedIn();
+      }
+
+      match /events/{eventId} {
+        allow read: if true;
+        allow create, update: if isValidId(eventId) && isSignedIn() && isReasonableDoc(incoming());
+        allow delete: if isValidId(eventId) && isSignedIn();
+      }
+
+      match /class_seat_configs/{seatId} {
+        allow read: if true;
+        allow create, update: if isValidId(seatId) && isSignedIn() && isReasonableDoc(incoming());
+        allow delete: if isValidId(seatId) && isSignedIn();
+      }
+
+      match /bus_routes/{routeId} {
+        allow read: if true;
+        allow create, update: if isValidId(routeId) && isSignedIn() && isReasonableDoc(incoming());
+        allow delete: if isValidId(routeId) && isSignedIn();
+      }
+
+      // Public Website Submission Forms: Create-only for visitors, Read/Manage for signed-in staff/admin
+      match /admissions/{admId} {
+        allow get: if isValidId(admId) && (isSignedIn() || true);
+        allow list: if isSignedIn();
+        allow create: if isValidId(admId) && isValidAdmissionCreate(incoming());
+        allow update: if isValidId(admId) && isSignedIn() && isReasonableDoc(incoming());
+        allow delete: if isValidId(admId) && isSignedIn();
+      }
+
+      match /inquiries/{inqId} {
+        allow read: if isSignedIn();
+        allow create: if isValidId(inqId) && isValidInquiryCreate(incoming());
+        allow update, delete: if isValidId(inqId) && isSignedIn();
+      }
+
+      match /public_test_attempts/{attemptId} {
+        allow get: if isValidId(attemptId);
+        allow list: if isSignedIn();
+        allow create: if isValidId(attemptId) && isValidTestAttemptCreate(incoming());
+        allow update, delete: if isValidId(attemptId) && isSignedIn();
+      }
+
+      // Live Bus GPS Telemetry (Validated coordinates, requires active session)
+      match /bus_live_locations/{busId} {
+        allow read: if isSignedIn();
+        allow create, update: if isValidId(busId) && isSignedIn() && isValidBusLocation(incoming());
+        allow delete: if isValidId(busId) && isSignedIn();
+      }
+
+      // Authenticated School ERP Operational Subcollections (Students, Teachers, Staff, Fees, Attendance, Exams, Certificates, etc.)
+      match /students/{studentId} {
+        allow read: if isSignedIn();
+        allow create, update: if isValidId(studentId) && isSignedIn() && isReasonableDoc(incoming());
+        allow delete: if isValidId(studentId) && isSignedIn();
+      }
+
+      match /teachers/{teacherId} {
+        allow read: if isSignedIn();
+        allow create, update: if isValidId(teacherId) && isSignedIn() && isReasonableDoc(incoming());
+        allow delete: if isValidId(teacherId) && isSignedIn();
+      }
+
+      match /staff/{staffId} {
+        allow read: if isSignedIn();
+        allow create, update: if isValidId(staffId) && isSignedIn() && isReasonableDoc(incoming());
+        allow delete: if isValidId(staffId) && isSignedIn();
+      }
+
+      match /accountants/{accId} {
+        allow read: if isSignedIn();
+        allow create, update: if isValidId(accId) && isSignedIn() && isReasonableDoc(incoming());
+        allow delete: if isValidId(accId) && isSignedIn();
+      }
+
+      match /fees/{feeId} {
+        allow read: if isSignedIn();
+        allow create, update: if isValidId(feeId) && isSignedIn() && isReasonableDoc(incoming());
+        allow delete: if isValidId(feeId) && isSignedIn();
+      }
+
+      match /attendance/{attendanceId} {
+        allow read: if isSignedIn();
+        allow create, update: if isValidId(attendanceId) && isSignedIn() && isReasonableDoc(incoming());
+        allow delete: if isValidId(attendanceId) && isSignedIn();
+      }
+
+      match /homework/{hwId} {
+        allow read: if isSignedIn();
+        allow create, update: if isValidId(hwId) && isSignedIn() && isReasonableDoc(incoming());
+        allow delete: if isValidId(hwId) && isSignedIn();
+      }
+
+      match /exams/{examId} {
+        allow read: if isSignedIn();
+        allow create, update: if isValidId(examId) && isSignedIn() && isReasonableDoc(incoming());
+        allow delete: if isValidId(examId) && isSignedIn();
+      }
+
+      match /certificates/{certId} {
+        allow get: if isValidId(certId); // Allows QR certificate verification
+        allow list: if isSignedIn();
+        allow create, update: if isValidId(certId) && isSignedIn() && isReasonableDoc(incoming());
+        allow delete: if isValidId(certId) && isSignedIn();
+      }
+
+      match /admit_cards/{cardId} {
+        allow get: if isValidId(cardId); // Allows QR admit-card verification
+        allow list: if isSignedIn();
+        allow create, update: if isValidId(cardId) && isSignedIn() && isReasonableDoc(incoming());
+        allow delete: if isValidId(cardId) && isSignedIn();
+      }
+
+      match /inventory/{itemId} {
+        allow read: if isSignedIn();
+        allow create, update: if isValidId(itemId) && isSignedIn() && isReasonableDoc(incoming());
+        allow delete: if isValidId(itemId) && isSignedIn();
+      }
+
+      match /library/{bookId} {
+        allow read: if isSignedIn();
+        allow create, update: if isValidId(bookId) && isSignedIn() && isReasonableDoc(incoming());
+        allow delete: if isValidId(bookId) && isSignedIn();
+      }
+
+      // Any other school ERP subcollection (subjects, lessons, expenses, parent_queries, timetables, etc.)
+      match /{subCol}/{docId} {
+        allow read: if isSignedIn();
+        allow create, update: if isValidId(docId) && isSignedIn() && isReasonableDoc(incoming());
+        allow delete: if isValidId(docId) && isSignedIn();
+      }
+    }
+
+    match /schoolPlanRequests/{reqId} {
+      allow read: if isSuperAdmin() || isSignedIn();
+      allow create: if isValidId(reqId) && isSignedIn() && isReasonableDoc(incoming());
+      allow update, delete: if isValidId(reqId) && isSuperAdmin();
+    }
+
+    // ── 5. COACHING ECOSYSTEM ──────────────────────────────────────────────
+    match /coaching/{coachingId} {
+      allow read: if isSignedIn();
+      allow write: if isValidId(coachingId) && isSignedIn();
+      match /{subCol=**} {
+        allow read, write: if isSignedIn();
+      }
+    }
+
+    // ── 6. COMMUNITY, LEADERBOARDS, FEEDBACK & LOGS ────────────────────────
+    match /daily_challenge_leaderboard/{docId} {
+      allow read: if true;
+      allow write: if isValidId(docId) && isSignedIn() && isReasonableDoc(incoming());
+    }
+
+    match /practice_set_leaderboards/{docId} {
+      allow read: if true;
+      allow write: if isValidId(docId) && isSignedIn() && isReasonableDoc(incoming());
+    }
+
+    match /suggestion_leaderboard/{docId} {
+      allow read: if true;
+      allow write: if isValidId(docId) && isSignedIn() && isReasonableDoc(incoming());
+    }
+
+    match /friend_requests/{reqId} {
+      allow read, write: if isValidId(reqId) && isSignedIn() && isReasonableDoc(incoming());
+    }
+
+    match /app_feedback/{feedbackId} {
+      allow read, update, delete: if isSuperAdmin();
+      allow create: if isValidId(feedbackId) && isValidFeedbackCreate(incoming());
+    }
+
+    match /app_feedbacks/{feedbackId} {
+      allow read, update, delete: if isSuperAdmin();
+      allow create: if isValidId(feedbackId) && isValidFeedbackCreate(incoming());
+    }
+
+    match /suggestions/{suggestionId} {
+      allow read: if isSignedIn();
+      allow create: if isValidId(suggestionId) && isSignedIn() && isValidFeedbackCreate(incoming());
+      allow update, delete: if isValidId(suggestionId) && isSuperAdmin();
+    }
+
+    match /demand_requests/{reqId} {
+      allow read: if isSuperAdmin() || isSignedIn();
+      allow create: if isValidId(reqId) && isSignedIn() && isReasonableDoc(incoming());
+      allow update, delete: if isValidId(reqId) && isSuperAdmin();
+    }
+
+    match /notifications/{notifId} {
+      allow read: if isSignedIn();
+      allow create, update: if isValidId(notifId) && isSignedIn() && isReasonableDoc(incoming());
+      allow delete: if isValidId(notifId) && isSuperAdmin();
+    }
+
+    match /whatsapp_direct/{docId} {
+      allow read, write: if isValidId(docId) && isSignedIn() && isReasonableDoc(incoming());
+    }
+
+    match /public_activity/{docId} {
+      allow read: if isSignedIn();
+      allow create: if isValidId(docId) && isSignedIn() && isReasonableDoc(incoming());
+      allow update, delete: if isSuperAdmin();
+    }
+
+    match /ai_interactions/{docId} {
+      allow read, delete: if isSuperAdmin();
+      allow create, update: if isValidId(docId) && isSignedIn() && isReasonableDoc(incoming());
+    }
+
+    match /universal_analysis_logs/{docId} {
+      allow read, delete: if isSuperAdmin();
+      allow create: if isValidId(docId) && isSignedIn() && isReasonableDoc(incoming());
+    }
+
+    match /activity_logs/{logId} {
+      allow read, update, delete: if isSuperAdmin();
+      allow create: if isValidId(logId) && isReasonableDoc(incoming());
+    }
+
+    match /error_logs/{logId} {
+      allow read, update, delete: if isSuperAdmin();
+      allow create: if isValidId(logId) && isReasonableDoc(incoming());
+    }
+  }
+}

@@ -1,0 +1,1921 @@
+import express from "express";
+import fs from "fs";
+import os from "os";
+import path from "path";
+import crypto from "crypto";
+import webpush from "web-push";
+import JSZip from "jszip";
+import {
+  getPublicRazorpayConfig,
+  saveSchoolRazorpayConfig,
+  testSchoolRazorpayConnection,
+  createSchoolRazorpayOrder,
+  verifySchoolRazorpayCheckout,
+  handleSchoolRazorpayWebhook,
+} from "./api/_razorpay";
+import {
+  resolveSchoolBranding,
+  buildSchoolWebManifest,
+  injectSchoolBrandingIntoHtml,
+  resolveSchoolAssetPayload,
+} from "./api/_schoolBranding";
+
+// Prevent transient socket resets (e.g. pre-warmer closing connections early)
+// or background async errors from terminating the dev/prod server process.
+process.on("uncaughtException", (err: any) => {
+  if (
+    err?.code === "EPIPE" ||
+    err?.code === "ECONNRESET" ||
+    err?.code === "EADDRINUSE" ||
+    String(err?.message || "").includes("24678") ||
+    String(err?.message || "").includes("WebSocket") ||
+    String(err?.message || "").includes("EADDRINUSE")
+  ) {
+    console.warn("[Server] Suppressed transient socket/port notice:", err?.message || err);
+    return;
+  }
+  console.error("[Server] Uncaught exception:", err?.message || err);
+});
+
+process.on("unhandledRejection", (reason: any) => {
+  console.warn("[Server] Unhandled rejection notice:", reason?.message || reason);
+});
+
+function resolvePort(): number {
+  const portFlagIdx = process.argv.indexOf("--port");
+  if (portFlagIdx !== -1 && process.argv[portFlagIdx + 1]) {
+    const parsed = Number(process.argv[portFlagIdx + 1]);
+    if (Number.isFinite(parsed) && parsed > 0) return parsed;
+  }
+  const equalFlag = process.argv.find((a) => a.startsWith("--port="));
+  if (equalFlag) {
+    const parsed = Number(equalFlag.split("=")[1]);
+    if (Number.isFinite(parsed) && parsed > 0) return parsed;
+  }
+  return Number(process.env.PORT || 3000);
+}
+
+const PORT = resolvePort();
+const isProduction = process.env.NODE_ENV === "production";
+const ROOT_DIR = process.cwd();
+const TMP_DIR = os.tmpdir();
+const VAPID_FILE = path.join(TMP_DIR, "nsta-vapid-keys.json");
+const LEGACY_VAPID_FILE = path.join(ROOT_DIR, ".vapid-keys.json");
+const SUBS_FILE = path.join(TMP_DIR, "nsta-push-subscriptions.json");
+const LEGACY_SUBS_FILE = path.join(ROOT_DIR, ".push-subscriptions.json");
+const RTDB_BASE_URL = process.env.FIREBASE_DATABASE_URL || "https://nst2512-6a2e4-default-rtdb.asia-southeast1.firebasedatabase.app";
+const FIREBASE_PROJECT_ID = process.env.FIREBASE_PROJECT_ID || "nst2512-6a2e4";
+
+let activeVapidKeys: { publicKey: string; privateKey: string } = { publicKey: "", privateKey: "" };
+
+let cachedFcmAccessToken: { token: string; expiresAt: number } | null = null;
+
+function normalizeServiceAccount(
+  rawEmail?: string,
+  rawKey?: string
+): { clientEmail: string; privateKey: string } | null {
+  if (!rawEmail || !rawKey) return null;
+  const match = rawEmail.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/);
+  const clientEmail = match ? match[0] : rawEmail.trim().replace(/^["']+|["',\s]+$/g, "");
+
+  let key = rawKey.replace(/\\n/g, "\n").trim();
+  if (key.startsWith("nMI")) {
+    key = key.slice(1);
+  }
+  if (!key.includes("-----BEGIN PRIVATE KEY-----")) {
+    key = `-----BEGIN PRIVATE KEY-----\n${key}\n-----END PRIVATE KEY-----`;
+  }
+  return { clientEmail, privateKey: key };
+}
+
+async function getFcmAccessToken(): Promise<string | null> {
+  let clientEmail = (process.env.FIREBASE_CLIENT_EMAIL || "").trim();
+  let rawPrivateKey = (process.env.FIREBASE_PRIVATE_KEY || "").trim();
+
+  if (!clientEmail || !rawPrivateKey) {
+    const rtdbCreds = await rtdbGet<{ clientEmail?: string; privateKey?: string }>(
+      "system_config/firebase_service_account"
+    );
+    if (rtdbCreds?.clientEmail && rtdbCreds?.privateKey) {
+      clientEmail = rtdbCreds.clientEmail;
+      rawPrivateKey = rtdbCreds.privateKey;
+    }
+  }
+
+  const normalized = normalizeServiceAccount(clientEmail, rawPrivateKey);
+  if (!normalized) return null;
+
+  if (cachedFcmAccessToken && Date.now() < cachedFcmAccessToken.expiresAt - 60_000) {
+    return cachedFcmAccessToken.token;
+  }
+
+  try {
+    const nowSec = Math.floor(Date.now() / 1000);
+    const b64url = (input: string | Buffer) =>
+      Buffer.from(input).toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+
+    const header = b64url(JSON.stringify({ alg: "RS256", typ: "JWT" }));
+    const claim = b64url(
+      JSON.stringify({
+        iss: normalized.clientEmail,
+        scope: "https://www.googleapis.com/auth/firebase.messaging",
+        aud: "https://oauth2.googleapis.com/token",
+        iat: nowSec,
+        exp: nowSec + 3600,
+      })
+    );
+    const unsignedJwt = `${header}.${claim}`;
+    const signer = crypto.createSign("RSA-SHA256");
+    signer.update(unsignedJwt);
+    signer.end();
+    const signature = b64url(signer.sign(normalized.privateKey));
+    const assertion = `${unsignedJwt}.${signature}`;
+
+    const tokenRes = await fetch("https://oauth2.googleapis.com/token", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer",
+        assertion,
+      }).toString(),
+    });
+    if (!tokenRes.ok) return null;
+    const tokenJson = (await tokenRes.json()) as { access_token?: string; expires_in?: number };
+    if (!tokenJson.access_token) return null;
+
+    cachedFcmAccessToken = {
+      token: tokenJson.access_token,
+      expiresAt: Date.now() + Number(tokenJson.expires_in || 3600) * 1000,
+    };
+    return tokenJson.access_token;
+  } catch (err) {
+    console.warn("[Server FCM] Access token generation error:", err);
+    return null;
+  }
+}
+
+function normalizeClassToken(val?: string): string {
+  return String(val || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+function stripClassPrefixToken(norm: string): string {
+  return norm.replace(/^(cls|class|std|grade)/, "");
+}
+
+function doesClassMatch(
+  candidateClassId?: string,
+  candidateClassName?: string,
+  targetClassId?: string,
+  targetClassName?: string
+): boolean {
+  const cTokens = [normalizeClassToken(candidateClassId), normalizeClassToken(candidateClassName)].filter(Boolean);
+  const tTokens = [normalizeClassToken(targetClassId), normalizeClassToken(targetClassName)].filter(Boolean);
+  if (tTokens.length === 0) return true;
+  if (cTokens.length === 0) return false;
+  for (const c of cTokens) {
+    const cs = stripClassPrefixToken(c);
+    for (const t of tTokens) {
+      const ts = stripClassPrefixToken(t);
+      if (c === t || (cs && ts && cs === ts) || c.includes(t) || t.includes(c)) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+let cachedFcmTokens: Record<string, any> | null = null;
+let lastFcmTokensFetchMs = 0;
+let activeFcmTokensPromise: Promise<Record<string, any> | null> | null = null;
+
+async function getCachedFcmTokens(): Promise<Record<string, any> | null> {
+  const now = Date.now();
+  if (cachedFcmTokens && now - lastFcmTokensFetchMs < 3 * 60 * 1000) {
+    return cachedFcmTokens;
+  }
+  if (!activeFcmTokensPromise) {
+    activeFcmTokensPromise = rtdbGet<Record<string, any>>("fcm_tokens")
+      .then((res) => {
+        if (res && typeof res === "object") {
+          cachedFcmTokens = res;
+          lastFcmTokensFetchMs = Date.now();
+        }
+        return cachedFcmTokens;
+      })
+      .finally(() => {
+        activeFcmTokensPromise = null;
+      });
+  }
+  return activeFcmTokensPromise;
+}
+
+async function dispatchFcmToUsers(
+  recipientIds: string[],
+  broadcast: boolean,
+  payload: { id?: string; title: string; body: string; type?: string; url?: string; icon?: string; senderId?: string; senderDeviceId?: string },
+  filter?: { schoolId?: string; classId?: string; className?: string },
+  exclude?: { senderIds?: string[]; senderFcmToken?: string; senderDeviceId?: string }
+): Promise<number> {
+  const accessToken = await getFcmAccessToken();
+  if (!accessToken) return 0;
+
+  const allTokens = await getCachedFcmTokens();
+  if (!allTokens || typeof allTokens !== "object") return 0;
+
+  const cleanSet = new Set(recipientIds.map((id) => String(id).trim().replace(/[.#$[\]/]/g, "_")));
+  const rawSet = new Set(recipientIds.map((id) => String(id).trim()));
+
+  const excludeRawSet = new Set((exclude?.senderIds || []).map((id) => String(id).trim()).filter(Boolean));
+  const excludeCleanSet = new Set(Array.from(excludeRawSet).map((id) => id.replace(/[.#$[\]/]/g, "_")));
+  const excludedToken = exclude?.senderFcmToken ? String(exclude.senderFcmToken).trim() : "";
+  const excludedDeviceId = exclude?.senderDeviceId ? String(exclude.senderDeviceId).trim() : "";
+
+  const tokenToKeysMap = new Map<string, string[]>();
+  for (const [key, entry] of Object.entries(allTokens)) {
+    if (!entry?.token) continue;
+    if (filter?.schoolId && entry.schoolId && entry.schoolId !== filter.schoolId) continue;
+
+    const entryUserId = entry.userId ? String(entry.userId).trim() : "";
+    const entryStudentId = entry.studentId ? String(entry.studentId).trim() : "";
+    const entryDeviceId = entry.deviceId ? String(entry.deviceId).trim() : "";
+
+    // Never echo FCM push notification back to the sender's device or user identity
+    if (excludedToken && String(entry.token).trim() === excludedToken) continue;
+    if (excludedDeviceId && entryDeviceId && entryDeviceId === excludedDeviceId) continue;
+    if (excludeCleanSet.has(key) || excludeRawSet.has(key)) continue;
+    if (entryUserId && (excludeRawSet.has(entryUserId) || excludeCleanSet.has(entryUserId.replace(/[.#$[\]/]/g, "_")))) continue;
+    if (entryStudentId && (excludeRawSet.has(entryStudentId) || excludeCleanSet.has(entryStudentId.replace(/[.#$[\]/]/g, "_")))) continue;
+
+    const explicitIdMatch =
+      cleanSet.has(key) ||
+      (entryUserId && (rawSet.has(entryUserId) || cleanSet.has(entryUserId.replace(/[.#$[\]/]/g, "_")))) ||
+      (entryStudentId && (rawSet.has(entryStudentId) || cleanSet.has(entryStudentId.replace(/[.#$[\]/]/g, "_"))));
+
+    if (!explicitIdMatch && (filter?.classId || filter?.className)) {
+      if (!doesClassMatch(entry.classId, entry.className, filter.classId, filter.className)) {
+        continue;
+      }
+    }
+
+    const isMatch =
+      (broadcast && !filter?.classId && !filter?.className) ||
+      (broadcast && (filter?.classId || filter?.className) && doesClassMatch(entry.classId, entry.className, filter.classId, filter.className)) ||
+      (cleanSet.size === 0 && broadcast) ||
+      explicitIdMatch;
+
+    if (isMatch) {
+      const keys = tokenToKeysMap.get(entry.token) || [];
+      keys.push(key);
+      tokenToKeysMap.set(entry.token, keys);
+    }
+  }
+
+  let sent = 0;
+  await Promise.allSettled(
+    Array.from(tokenToKeysMap.entries()).map(async ([fcmToken, keys]) => {
+      try {
+        const res = await fetch(
+          `https://fcm.googleapis.com/v1/projects/${FIREBASE_PROJECT_ID}/messages:send`,
+          {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${accessToken}`,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              message: {
+                token: fcmToken,
+                notification: {
+                  title: payload.title,
+                  body: payload.body,
+                },
+                data: {
+                  title: payload.title,
+                  body: payload.body,
+                  type: String(payload.type || "DEFAULT"),
+                  url: String(payload.url || "/"),
+                  icon: String(payload.icon || "/icons/icon-192.png?v=3"),
+                  senderId: String(payload.senderId || ""),
+                  senderDeviceId: String(payload.senderDeviceId || ""),
+                  urgent: "1",
+                },
+                android: {
+                  priority: "HIGH",
+                  notification: {
+                    channel_id: "default",
+                    notification_priority: "PRIORITY_MAX",
+                    default_sound: true,
+                    default_vibrate_timings: true,
+                    visibility: "PUBLIC",
+                  },
+                },
+                webpush: {
+                  headers: {
+                    Urgency: "high",
+                    TTL: "604800",
+                  },
+                  notification: {
+                    title: payload.title,
+                    body: payload.body,
+                    icon: payload.icon || "/icons/icon-192.png?v=3",
+                    badge: "/icons/badge-monochrome.png?v=4",
+                    requireInteraction: true,
+                    silent: false,
+                    vibrate: [500, 200, 500, 200, 500],
+                    renotify: true,
+                    tag: `nsta-alert-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+                    timestamp: Date.now(),
+                  },
+                  fcm_options: {
+                    link: payload.url || "/",
+                  },
+                },
+              },
+            }),
+          }
+        );
+        if (res.ok) {
+          sent++;
+        } else {
+          const errText = await res.text().catch(() => "");
+          const isDeadToken =
+            res.status === 404 ||
+            res.status === 410 ||
+            res.status === 403 ||
+            res.status === 400 ||
+            errText.includes("UNREGISTERED") ||
+            errText.includes("THIRD_PARTY_PERMISSION_DENIED") ||
+            errText.includes("SENDER_ID_MISMATCH") ||
+            errText.includes("INVALID_ARGUMENT") ||
+            errText.includes("NOT_FOUND") ||
+            errText.includes("Device unregistered") ||
+            errText.includes("NotRegistered");
+
+          if (isDeadToken) {
+            // Automatically prune dead/unregistered/expired tokens from RTDB so subsequent dispatches succeed cleanly
+            console.info("[Server FCM] Auto-pruning invalid/unregistered token for keys:", keys);
+            await Promise.allSettled(
+              keys.map((k) => {
+                if (cachedFcmTokens) delete cachedFcmTokens[k];
+                return rtdbDelete(`fcm_tokens/${k}`);
+              })
+            );
+          } else {
+            console.warn("[Server FCM Send Error]", res.status, errText);
+          }
+        }
+      } catch (err) {
+        console.info("[Server FCM Dispatch Warning]", err);
+      }
+    })
+  );
+  return sent;
+}
+
+export interface LinkedStudentPushMeta {
+  id: string;
+  schoolId: string;
+  schoolName?: string;
+  classId?: string;
+  className?: string;
+  name: string;
+  rollNo?: string;
+  admissionNo?: string;
+  pendingDues?: number;
+  monthlyFee?: number;
+}
+
+export interface StoredPushSubscription {
+  id: string;
+  userId: string;
+  schoolId?: string;
+  deviceId?: string;
+  subscription: webpush.PushSubscription;
+  students: LinkedStudentPushMeta[];
+  autoMonthlyEnabled: boolean;
+  notifiedMonthsByStudent: Record<string, string>;
+  updatedAt: string;
+}
+
+interface StudentDueSnapshot {
+  studentId: string;
+  schoolId: string;
+  schoolName?: string;
+  studentName?: string;
+  classId?: string;
+  className?: string;
+  rollNo?: string;
+  pendingDues: number;
+  monthlyFee?: number;
+  updatedAt: string;
+}
+
+const subscriptionsMap = new Map<string, StoredPushSubscription>();
+const studentDuesMap = new Map<string, StudentDueSnapshot>();
+
+function getCurrentMonthCode(): string {
+  const now = new Date();
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+}
+
+function hashEndpoint(endpoint: string): string {
+  return crypto.createHash("sha256").update(endpoint).digest("hex").slice(0, 28);
+}
+
+async function rtdbGet<T = any>(rtdbPath: string): Promise<T | null> {
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 3500);
+    const res = await fetch(`${RTDB_BASE_URL}/${rtdbPath}.json`, { signal: controller.signal });
+    clearTimeout(timer);
+    if (!res.ok) return null;
+    return (await res.json()) as T;
+  } catch {
+    return null;
+  }
+}
+
+async function rtdbPut(rtdbPath: string, payload: unknown): Promise<void> {
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 3500);
+    await fetch(`${RTDB_BASE_URL}/${rtdbPath}.json`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+      signal: controller.signal,
+    });
+    clearTimeout(timer);
+  } catch {
+    // Non-fatal fallback to local disk
+  }
+}
+
+async function rtdbDelete(rtdbPath: string): Promise<void> {
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 3500);
+    await fetch(`${RTDB_BASE_URL}/${rtdbPath}.json`, {
+      method: "DELETE",
+      signal: controller.signal,
+    });
+    clearTimeout(timer);
+  } catch {
+    // Ignore
+  }
+}
+
+function saveLocalSubscriptions(): void {
+  try {
+    const obj = {
+      subscriptions: Array.from(subscriptionsMap.values()),
+      dues: Array.from(studentDuesMap.values()),
+    };
+    fs.writeFileSync(SUBS_FILE, JSON.stringify(obj, null, 2), "utf8");
+  } catch {
+    // Ignore write failure on read-only fs
+  }
+}
+
+function applyVapidDetailsSafe(publicKey: string, privateKey: string): { publicKey: string; privateKey: string } {
+  const rawSubject = (process.env.VAPID_SUBJECT || "mailto:support@nsta.app").trim();
+  const subject =
+    rawSubject.startsWith("mailto:") || rawSubject.startsWith("https://")
+      ? rawSubject
+      : "mailto:support@nsta.app";
+  try {
+    webpush.setVapidDetails(subject, publicKey, privateKey);
+    activeVapidKeys = { publicKey, privateKey };
+    return activeVapidKeys;
+  } catch {
+    const generated = webpush.generateVAPIDKeys();
+    webpush.setVapidDetails("mailto:support@nsta.app", generated.publicKey, generated.privateKey);
+    activeVapidKeys = { publicKey: generated.publicKey, privateKey: generated.privateKey };
+    return activeVapidKeys;
+  }
+}
+
+function initPushEngineSync(): { publicKey: string; privateKey: string } {
+  let publicKey = (process.env.VAPID_PUBLIC_KEY || "").trim();
+  let privateKey = (process.env.VAPID_PRIVATE_KEY || "").trim();
+
+  if (!publicKey || !privateKey) {
+    for (const candidate of [VAPID_FILE, LEGACY_VAPID_FILE]) {
+      try {
+        if (fs.existsSync(candidate)) {
+          const saved = JSON.parse(fs.readFileSync(candidate, "utf8"));
+          if (saved?.publicKey && saved?.privateKey) {
+            publicKey = saved.publicKey;
+            privateKey = saved.privateKey;
+            break;
+          }
+        }
+      } catch {}
+    }
+  }
+
+  if (!publicKey || !privateKey) {
+    const generated = webpush.generateVAPIDKeys();
+    publicKey = generated.publicKey;
+    privateKey = generated.privateKey;
+    try {
+      fs.writeFileSync(VAPID_FILE, JSON.stringify({ publicKey, privateKey }, null, 2), "utf8");
+    } catch {}
+  }
+
+  const keys = applyVapidDetailsSafe(publicKey, privateKey);
+
+  // Hydrate local disk subscriptions immediately without blocking on network
+  for (const candidate of [SUBS_FILE, LEGACY_SUBS_FILE]) {
+    try {
+      if (fs.existsSync(candidate)) {
+        const parsed = JSON.parse(fs.readFileSync(candidate, "utf8"));
+        if (Array.isArray(parsed?.subscriptions)) {
+          for (const sub of parsed.subscriptions) {
+            if (sub?.id && sub?.subscription?.endpoint) {
+              subscriptionsMap.set(sub.id, sub);
+            }
+          }
+        }
+        if (Array.isArray(parsed?.dues)) {
+          for (const d of parsed.dues) {
+            if (d?.schoolId && d?.studentId) {
+              studentDuesMap.set(`${d.schoolId}__${d.studentId}`, d);
+            }
+          }
+        }
+      }
+    } catch {}
+  }
+
+  return keys;
+}
+
+async function hydrateRemotePushEngine(): Promise<void> {
+  try {
+    if (!process.env.VAPID_PUBLIC_KEY || !process.env.VAPID_PRIVATE_KEY) {
+      const remoteKeys = await rtdbGet<{ publicKey?: string; privateKey?: string }>("system_config/school_webpush_vapid");
+      if (remoteKeys?.publicKey && remoteKeys?.privateKey) {
+        const applied = applyVapidDetailsSafe(remoteKeys.publicKey, remoteKeys.privateKey);
+        try {
+          fs.writeFileSync(VAPID_FILE, JSON.stringify(applied, null, 2), "utf8");
+        } catch {}
+      } else if (activeVapidKeys.publicKey && activeVapidKeys.privateKey) {
+        await rtdbPut("system_config/school_webpush_vapid", activeVapidKeys);
+      }
+    }
+
+    const [remoteSubs, remoteDues] = await Promise.all([
+      rtdbGet<Record<string, StoredPushSubscription>>("school_webpush_subs"),
+      rtdbGet<Record<string, StudentDueSnapshot>>("school_webpush_dues"),
+    ]);
+
+    if (remoteSubs && typeof remoteSubs === "object") {
+      for (const [id, sub] of Object.entries(remoteSubs)) {
+        if (sub && sub.subscription?.endpoint) {
+          subscriptionsMap.set(id, {
+            ...sub,
+            id,
+            students: Array.isArray(sub.students) ? sub.students : [],
+            notifiedMonthsByStudent: sub.notifiedMonthsByStudent || {},
+          });
+        }
+      }
+    }
+
+    if (remoteDues && typeof remoteDues === "object") {
+      for (const [key, snap] of Object.entries(remoteDues)) {
+        if (snap && snap.studentId) {
+          studentDuesMap.set(key, snap);
+        }
+      }
+    }
+
+    saveLocalSubscriptions();
+  } catch (err: any) {
+    console.warn("[Server] Remote push hydration skipped:", err?.message || err);
+  }
+}
+
+let lastRemotePushSyncMs = 0;
+let activePushSyncPromise: Promise<void> | null = null;
+
+async function ensureFreshPushSubscriptions(force = false): Promise<void> {
+  const now = Date.now();
+  if (!force && subscriptionsMap.size > 0 && now - lastRemotePushSyncMs < 10 * 60 * 1000) {
+    return;
+  }
+  if (!activePushSyncPromise) {
+    activePushSyncPromise = hydrateRemotePushEngine()
+      .then(() => {
+        lastRemotePushSyncMs = Date.now();
+      })
+      .finally(() => {
+        activePushSyncPromise = null;
+      });
+  }
+  await activePushSyncPromise;
+}
+
+async function dispatchWebPush(
+  record: StoredPushSubscription,
+  payload: {
+    id?: string;
+    title: string;
+    body: string;
+    type?: string;
+    url?: string;
+    studentId?: string;
+    schoolId?: string;
+    urgent?: boolean;
+    icon?: string;
+    senderPhoto?: string;
+  }
+): Promise<boolean> {
+  try {
+    const effectiveIcon = payload.icon || payload.senderPhoto || "/icons/icon-192.png?v=3";
+    await webpush.sendNotification(
+      record.subscription,
+      JSON.stringify({
+        notification: {
+          title: payload.title,
+          body: payload.body,
+          icon: effectiveIcon,
+          badge: "/icons/badge-monochrome.png?v=4",
+          silent: false,
+          renotify: true,
+          requireInteraction: true,
+          vibrate: [500, 200, 500, 200, 500],
+          tag: `nsta-alert-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+          timestamp: Date.now(),
+        },
+        data: {
+          id: payload.id || "",
+          title: payload.title,
+          body: payload.body,
+          type: payload.type || "SCHOOL_ALERT",
+          url: payload.url || "/",
+          studentId: payload.studentId || "",
+          schoolId: payload.schoolId || "",
+          icon: effectiveIcon,
+          senderPhoto: effectiveIcon,
+          urgent: payload.urgent !== false ? "1" : "0",
+        },
+      }),
+      {
+        TTL: 60 * 60 * 24 * 7, // Hold up to 7 days if phone is switched off / offline
+        urgency: "high",
+      }
+    );
+    return true;
+  } catch (err: any) {
+    if (err?.statusCode === 404 || err?.statusCode === 410) {
+      subscriptionsMap.delete(record.id);
+      saveLocalSubscriptions();
+      void rtdbDelete(`school_webpush_subs/${record.id}`);
+    } else {
+      console.warn("[Server WebPush] Send warning:", err?.statusCode || "", err?.body || err?.message || err);
+    }
+    return false;
+  }
+}
+
+async function runMonthlyAutoFeeNotifier(): Promise<number> {
+  const monthCode = getCurrentMonthCode();
+  const monthLabel = new Date(`${monthCode}-01T00:00:00`).toLocaleDateString("en-IN", {
+    month: "long",
+    year: "numeric",
+  });
+  let sentCount = 0;
+
+  for (const record of subscriptionsMap.values()) {
+    if (record.autoMonthlyEnabled === false) continue;
+    let changed = false;
+
+    for (const st of record.students || []) {
+      if (!st?.id) continue;
+      const dueKey = `${st.schoolId}__${st.id}`;
+      const latestSnap = studentDuesMap.get(dueKey);
+      const pendingDues =
+        latestSnap !== undefined
+          ? Number(latestSnap.pendingDues || 0)
+          : Number(st.pendingDues || 0);
+
+      if (pendingDues <= 0) continue;
+      if (record.notifiedMonthsByStudent?.[st.id] === monthCode) continue;
+
+      const sName = latestSnap?.studentName || st.name || "Student";
+      const clsLabel = latestSnap?.className || st.className || "";
+      const schName = latestSnap?.schoolName || st.schoolName || "School";
+
+      const ok = await dispatchWebPush(record, {
+        title: `🏫 ${schName} • मासिक शुल्क अनुस्मारक`,
+        body: `${sName}${clsLabel ? ` (${clsLabel})` : ""} का ${monthLabel} तक कुल देय शुल्क ₹${pendingDues.toLocaleString("en-IN")} जमा करना बाकी है। पासबुक देखने के लिए टैप करें।`,
+        type: "MONTHLY_FEE",
+        studentId: st.id,
+        schoolId: st.schoolId,
+        url: `/?schoolPortal=1&studentId=${encodeURIComponent(st.id)}&schoolTab=fees`,
+        urgent: true,
+      });
+
+      if (ok) {
+        record.notifiedMonthsByStudent = {
+          ...(record.notifiedMonthsByStudent || {}),
+          [st.id]: monthCode,
+        };
+        changed = true;
+        sentCount++;
+      }
+    }
+
+    if (changed) {
+      record.updatedAt = new Date().toISOString();
+      subscriptionsMap.set(record.id, record);
+      void rtdbPut(`school_webpush_subs/${record.id}`, record);
+    }
+  }
+
+  if (sentCount > 0) {
+    saveLocalSubscriptions();
+  }
+  return sentCount;
+}
+
+async function startServer() {
+  initPushEngineSync();
+  const app = express();
+
+  app.use(
+    express.json({
+      limit: "5mb",
+      verify: (req: any, _res, buf) => {
+        if (req.originalUrl?.includes("/api/razorpay/webhook")) {
+          req.rawBody = buf.toString("utf8");
+        }
+      },
+    })
+  );
+
+  // 1. Public VAPID key for browser PushManager.subscribe()
+  app.get("/api/school-push/vapid-public-key", (_req, res) => {
+    res.json({ publicKey: activeVapidKeys.publicKey });
+  });
+
+  // Public Google Maps JS API key lookup (supports per-school server env overrides by schoolId or schoolCode + default fallback)
+  app.get("/api/public-config/maps-key", (req, res) => {
+    const rawSchoolId = typeof req.query?.schoolId === "string" ? req.query.schoolId.trim() : "";
+    const rawSchoolCode = typeof req.query?.schoolCode === "string" ? req.query.schoolCode.trim() : "";
+    const candidates = [rawSchoolId, rawSchoolCode].filter(Boolean);
+    let schoolKey = "";
+
+    let parsedJsonMap: Record<string, unknown> | null = null;
+    if (candidates.length > 0 && process.env.SCHOOL_MAPS_API_KEYS_JSON) {
+      try {
+        const parsed = JSON.parse(process.env.SCHOOL_MAPS_API_KEYS_JSON);
+        if (parsed && typeof parsed === "object") {
+          parsedJsonMap = parsed as Record<string, unknown>;
+        }
+      } catch {
+        // Ignore malformed SCHOOL_MAPS_API_KEYS_JSON and fall back to default key
+      }
+    }
+
+    for (const candidate of candidates) {
+      const normalizedEnvSuffix = candidate.toUpperCase().replace(/[^A-Z0-9]/g, "_");
+      const perSchoolEnvVal = process.env[`GOOGLE_MAPS_API_KEY_${normalizedEnvSuffix}`];
+      if (typeof perSchoolEnvVal === "string" && perSchoolEnvVal.trim()) {
+        schoolKey = perSchoolEnvVal.trim();
+        break;
+      }
+
+      if (parsedJsonMap) {
+        const matched =
+          parsedJsonMap[candidate] ??
+          parsedJsonMap[candidate.toLowerCase()] ??
+          parsedJsonMap[candidate.toUpperCase()] ??
+          parsedJsonMap[normalizedEnvSuffix];
+        if (typeof matched === "string" && matched.trim()) {
+          schoolKey = matched.trim();
+          break;
+        }
+      }
+    }
+
+    const defaultKey = (
+      process.env.VITE_GOOGLE_MAPS_API_KEY ||
+      process.env.GOOGLE_MAPS_API_KEY ||
+      ""
+    ).trim();
+
+    const apiKey = schoolKey || defaultKey;
+    res.json({
+      apiKey,
+      scope: schoolKey ? "school" : "default",
+    });
+  });
+
+  // Resolve shortened Google Maps links (e.g. https://maps.app.goo.gl/...) to coordinates
+  const handleResolveMapsLink = async (rawUrl: string) => {
+    const trimmed = String(rawUrl || "").trim();
+    if (!trimmed) return { ok: false, error: "Empty URL" };
+
+    let parsedUrl: URL;
+    try {
+      parsedUrl = new URL(trimmed);
+    } catch {
+      return { ok: false, error: "Invalid URL format" };
+    }
+
+    if (!["http:", "https:"].includes(parsedUrl.protocol)) {
+      return { ok: false, error: "Unsupported protocol" };
+    }
+
+    const host = parsedUrl.hostname.toLowerCase();
+    const isAllowedHost =
+      host === "maps.app.goo.gl" ||
+      host === "goo.gl" ||
+      host === "g.co" ||
+      host === "maps.google.com" ||
+      host === "google.com" ||
+      host === "www.google.com" ||
+      /^(maps\.)?google\.[a-z.]{2,6}$/i.test(host);
+
+    if (!isAllowedHost) {
+      return { ok: false, error: "Only Google Maps URLs are supported" };
+    }
+
+    const extractCoordsFromText = (text: string): { lat: number; lng: number } | null => {
+      if (!text) return null;
+      const normalized = text.replace(/%2C/gi, ",").replace(/\\u0026/gi, "&").replace(/&amp;/gi, "&");
+      const patterns = [
+        /@(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)/i,
+        /!3d(-?\d+(?:\.\d+)?)!4d(-?\d+(?:\.\d+)?)/i,
+        /[?&](?:q|query|ll|center|sll|destination|daddr)=(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)/i,
+        /\/(?:search|place|dir)\/[^/?#]*?(-?\d{1,2}\.\d{3,})\s*,\s*(-?\d{1,3}\.\d{3,})/i,
+        /center=(-?\d{1,2}\.\d{3,})\s*,\s*(-?\d{1,3}\.\d{3,})/i,
+        /\[null,null,(-?\d{1,2}\.\d{4,}),(-?\d{1,3}\.\d{4,})\]/,
+      ];
+      for (const re of patterns) {
+        const m = normalized.match(re);
+        if (m) {
+          const lat = Number(m[1]);
+          const lng = Number(m[2]);
+          if (
+            Number.isFinite(lat) &&
+            Number.isFinite(lng) &&
+            lat >= -90 &&
+            lat <= 90 &&
+            lng >= -180 &&
+            lng <= 180 &&
+            (Math.abs(lat) > 0.001 || Math.abs(lng) > 0.001)
+          ) {
+            return { lat: Number(lat.toFixed(6)), lng: Number(lng.toFixed(6)) };
+          }
+        }
+      }
+      return null;
+    };
+
+    const direct = extractCoordsFromText(trimmed);
+    if (direct) return { ok: true, ...direct, resolvedUrl: trimmed };
+
+    try {
+      const resp = await fetch(trimmed, {
+        method: "GET",
+        redirect: "follow",
+        headers: {
+          "User-Agent": "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36",
+          "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+          "Accept-Language": "en-US,en;q=0.9",
+        },
+        signal: AbortSignal.timeout(7000),
+      });
+
+      const finalUrl = resp.url || trimmed;
+      const fromFinalUrl = extractCoordsFromText(finalUrl);
+      if (fromFinalUrl) {
+        return { ok: true, ...fromFinalUrl, resolvedUrl: finalUrl };
+      }
+
+      const body = await resp.text();
+      const fromBody = extractCoordsFromText(body.slice(0, 200000));
+      if (fromBody) {
+        return { ok: true, ...fromBody, resolvedUrl: finalUrl };
+      }
+
+      return { ok: false, error: "Could not find coordinates in link", resolvedUrl: finalUrl };
+    } catch (err: any) {
+      return { ok: false, error: err?.message || "Failed to resolve Google Maps link" };
+    }
+  };
+
+  app.post("/api/resolve-maps-link", async (req, res) => {
+    const url = typeof req.body?.url === "string" ? req.body.url : "";
+    const result = await handleResolveMapsLink(url);
+    res.status(result.ok ? 200 : 400).json(result);
+  });
+
+  app.get("/api/resolve-maps-link", async (req, res) => {
+    const url = typeof req.query?.url === "string" ? req.query.url : "";
+    const result = await handleResolveMapsLink(url);
+    res.status(result.ok ? 200 : 400).json(result);
+  });
+
+  // 2. Subscribe or update linked students for a device (supports Multi-Student under 1 User ID)
+  app.post("/api/school-push/subscribe", async (req, res) => {
+    try {
+      const { userId, schoolId, deviceId, subscription, students, autoMonthlyEnabled = true } = req.body || {};
+      if (!subscription?.endpoint || !subscription?.keys?.p256dh || !subscription?.keys?.auth) {
+        return res.status(400).json({ error: "Invalid Web Push subscription payload" });
+      }
+
+      const subId = hashEndpoint(subscription.endpoint);
+      const existing = subscriptionsMap.get(subId);
+
+      // Merge student list cleanly so multiple QR-scanned children stay registered
+      const incomingStudents: LinkedStudentPushMeta[] = Array.isArray(students) ? students : [];
+      const mergedMap = new Map<string, LinkedStudentPushMeta>();
+      for (const prev of existing?.students || []) {
+        if (prev?.id) mergedMap.set(prev.id, prev);
+      }
+      for (const next of incomingStudents) {
+        if (next?.id) {
+          const prev = mergedMap.get(next.id);
+          mergedMap.set(next.id, { ...(prev || {}), ...next });
+
+          if (typeof next.pendingDues === "number") {
+            const dKey = `${next.schoolId}__${next.id}`;
+            const dueSnap: StudentDueSnapshot = {
+              studentId: next.id,
+              schoolId: next.schoolId,
+              schoolName: next.schoolName,
+              studentName: next.name,
+              classId: next.classId,
+              className: next.className,
+              rollNo: next.rollNo,
+              pendingDues: next.pendingDues,
+              monthlyFee: next.monthlyFee,
+              updatedAt: new Date().toISOString(),
+            };
+            studentDuesMap.set(dKey, dueSnap);
+            void rtdbPut(`school_webpush_dues/${dKey}`, dueSnap);
+          }
+        }
+      }
+
+      // If caller explicitly sent replaceStudents: true, use exact incoming list
+      const finalStudents =
+        req.body?.replaceStudents === true ? incomingStudents : Array.from(mergedMap.values());
+
+      const resolvedSchoolId = String(
+        schoolId || finalStudents?.[0]?.schoolId || existing?.schoolId || ""
+      ).trim();
+
+      const resolvedDeviceId = String(deviceId || existing?.deviceId || "").trim();
+
+      const record: StoredPushSubscription = {
+        id: subId,
+        userId: String(userId || existing?.userId || "guest"),
+        ...(resolvedSchoolId ? { schoolId: resolvedSchoolId } : {}),
+        ...(resolvedDeviceId ? { deviceId: resolvedDeviceId } : {}),
+        subscription,
+        students: finalStudents,
+        autoMonthlyEnabled: Boolean(autoMonthlyEnabled),
+        notifiedMonthsByStudent: existing?.notifiedMonthsByStudent || {},
+        updatedAt: new Date().toISOString(),
+      };
+
+      subscriptionsMap.set(subId, record);
+      saveLocalSubscriptions();
+      await rtdbPut(`school_webpush_subs/${subId}`, record);
+
+      // Trigger monthly check asynchronously so newly opted-in parents get this month's pending due summary if unpaid
+      setTimeout(() => {
+        void runMonthlyAutoFeeNotifier();
+      }, 1500);
+
+      return res.json({ ok: true, subId, linkedCount: finalStudents.length });
+    } catch (err: any) {
+      return res.status(500).json({ error: err?.message || "Failed to save subscription" });
+    }
+  });
+
+  // 3. Unsubscribe device
+  app.post("/api/school-push/unsubscribe", async (req, res) => {
+    const endpoint = req.body?.endpoint;
+    if (endpoint) {
+      const subId = hashEndpoint(String(endpoint));
+      subscriptionsMap.delete(subId);
+      saveLocalSubscriptions();
+      await rtdbDelete(`school_webpush_subs/${subId}`);
+    }
+    res.json({ ok: true });
+  });
+
+  // 4. Sync latest pending dues for a student (from Admin Fee Manager or Student Ledger)
+  app.post("/api/school-push/sync-dues", async (req, res) => {
+    const items = Array.isArray(req.body?.items) ? req.body.items : req.body?.studentId ? [req.body] : [];
+    for (const item of items) {
+      if (!item?.studentId || !item?.schoolId) continue;
+      const dKey = `${item.schoolId}__${item.studentId}`;
+      const snap: StudentDueSnapshot = {
+        studentId: String(item.studentId),
+        schoolId: String(item.schoolId),
+        schoolName: item.schoolName || "",
+        studentName: item.studentName || "",
+        classId: item.classId || "",
+        className: item.className || "",
+        rollNo: item.rollNo || "",
+        pendingDues: Math.max(0, Number(item.pendingDues || 0)),
+        monthlyFee: Number(item.monthlyFee || 0),
+        updatedAt: new Date().toISOString(),
+      };
+      studentDuesMap.set(dKey, snap);
+      void rtdbPut(`school_webpush_dues/${dKey}`, snap);
+    }
+    saveLocalSubscriptions();
+    res.json({ ok: true, count: items.length });
+  });
+
+  // 5. Send instant Lock Screen Push Notification (Notices, Holidays, Fee Receipts, Homework, or Test)
+  app.post("/api/school-push/send", async (req, res) => {
+    try {
+      const {
+        notifId,
+        schoolId,
+        classId,
+        className,
+        studentIds,
+        userId,
+        classBroadcast,
+        schoolBroadcast,
+        senderId,
+        senderIds,
+        senderDeviceId,
+        senderEndpoint,
+        senderFcmToken,
+        allowSelf,
+        title,
+        body,
+        type = "SCHOOL_NOTICE",
+        url = "/?schoolPortal=1",
+        urgent = true,
+        icon,
+        senderPhoto,
+      } = req.body || {};
+
+      if (!title || !body) {
+        return res.status(400).json({ error: "title and body are required" });
+      }
+
+      await ensureFreshPushSubscriptions();
+
+      const isSelfAllowed = Boolean(allowSelf);
+      const excludedIdSet = new Set<string>();
+      if (!isSelfAllowed) {
+        if (senderId && String(senderId).trim()) excludedIdSet.add(String(senderId).trim());
+        if (Array.isArray(senderIds)) {
+          senderIds.forEach((id: any) => {
+            if (id && String(id).trim()) excludedIdSet.add(String(id).trim());
+          });
+        }
+      }
+      const cleanSenderEndpoint = !isSelfAllowed && senderEndpoint ? String(senderEndpoint).trim() : "";
+      const cleanSenderDeviceId = !isSelfAllowed && senderDeviceId ? String(senderDeviceId).trim() : "";
+      const cleanSenderFcmToken = !isSelfAllowed && senderFcmToken ? String(senderFcmToken).trim() : "";
+
+      const targetStudentSet = Array.isArray(studentIds) && studentIds.length > 0
+        ? new Set(studentIds.map(String).filter((id) => isSelfAllowed || !excludedIdSet.has(id)))
+        : null;
+
+      let delivered = 0;
+      let matchedDevices = 0;
+      const effectiveIcon = icon || senderPhoto || "/icons/icon-192.png?v=3";
+
+      for (const record of subscriptionsMap.values()) {
+        // Strictly avoid echoing push notifications back to the sender's own device or user identity
+        if (!isSelfAllowed) {
+          if (cleanSenderEndpoint && record.subscription?.endpoint === cleanSenderEndpoint) {
+            continue;
+          }
+          if (cleanSenderDeviceId && record.deviceId && record.deviceId === cleanSenderDeviceId) {
+            continue;
+          }
+          if (record.userId && excludedIdSet.has(String(record.userId).trim())) {
+            continue;
+          }
+        }
+
+        const eligibleStudents = (record.students || []).filter(
+          (s) => s && (isSelfAllowed || !excludedIdSet.has(String(s.id).trim()))
+        );
+
+        let matchedStudent: LinkedStudentPushMeta | undefined;
+
+        if (
+          userId &&
+          (isSelfAllowed || !excludedIdSet.has(String(userId).trim())) &&
+          (record.userId === String(userId) || eligibleStudents.some((s) => String(s.id) === String(userId)))
+        ) {
+          matchedStudent = eligibleStudents[0] || ({ id: String(userId), schoolId: schoolId || "" } as any);
+        }
+
+        if (!matchedStudent && targetStudentSet && targetStudentSet.size > 0) {
+          matchedStudent = eligibleStudents.find((s) => targetStudentSet.has(String(s.id)));
+          if (!matchedStudent && targetStudentSet.has(String(record.userId))) {
+            matchedStudent = eligibleStudents[0] || ({ id: String(record.userId), schoolId: schoolId || "" } as any);
+          }
+        }
+
+        if (!matchedStudent && (classId || className) && (classBroadcast || !targetStudentSet)) {
+          matchedStudent = eligibleStudents.find((s) => {
+            if (schoolId && s.schoolId && s.schoolId !== schoolId) return false;
+            return doesClassMatch(s.classId, s.className, classId, className);
+          });
+        }
+
+        if (!matchedStudent && (schoolBroadcast || (!targetStudentSet && !userId && !classId && !className))) {
+          if (schoolId) {
+            const schoolMatched = eligibleStudents.find((s) => !s.schoolId || s.schoolId === schoolId);
+            if (schoolMatched) {
+              matchedStudent = schoolMatched;
+            } else if (
+              (record.schoolId === schoolId || (!record.schoolId && (!record.students || record.students.length === 0))) &&
+              (!record.students || record.students.length === 0 || eligibleStudents.length > 0)
+            ) {
+              matchedStudent = eligibleStudents[0] || ({ id: "all", schoolId } as any);
+            }
+          } else if (!record.students || record.students.length === 0 || eligibleStudents.length > 0) {
+            matchedStudent = eligibleStudents[0] || ({ id: "all", schoolId: "" } as any);
+          }
+        }
+
+        if (!matchedStudent) continue;
+        matchedDevices++;
+
+        const targetUrl =
+          matchedStudent?.id && matchedStudent.id !== "all" && !url.includes("studentId=")
+            ? `${url}${url.includes("?") ? "&" : "?"}studentId=${encodeURIComponent(matchedStudent.id)}`
+            : url;
+
+        const ok = await dispatchWebPush(record, {
+          id: notifId,
+          title,
+          body,
+          type,
+          url: targetUrl,
+          studentId: matchedStudent?.id,
+          schoolId: matchedStudent?.schoolId || schoolId,
+          urgent,
+          icon: effectiveIcon,
+          senderPhoto: effectiveIcon,
+        });
+        if (ok) delivered++;
+      }
+
+      // Also dispatch FCM push to all matching recipient devices (excluding sender)
+      const fcmRecipientSet = new Set<string>();
+      if (userId && (isSelfAllowed || !excludedIdSet.has(String(userId).trim()))) {
+        fcmRecipientSet.add(String(userId));
+      }
+      if (Array.isArray(studentIds)) {
+        for (const sid of studentIds) {
+          const s = String(sid);
+          if (s && (isSelfAllowed || !excludedIdSet.has(s))) {
+            fcmRecipientSet.add(s);
+          }
+        }
+      }
+
+      // Add linked parent userIds for targeted students (skipping sender's own device/userId)
+      if (Array.isArray(studentIds) && studentIds.length > 0) {
+        const studentIdSet = new Set(studentIds.map(String));
+        for (const sub of subscriptionsMap.values()) {
+          if (!isSelfAllowed) {
+            if (cleanSenderEndpoint && sub.subscription?.endpoint === cleanSenderEndpoint) continue;
+            if (cleanSenderDeviceId && sub.deviceId && sub.deviceId === cleanSenderDeviceId) continue;
+            if (sub.userId && excludedIdSet.has(String(sub.userId).trim())) continue;
+          }
+          const hasStudent = (sub.students || []).some((s) => studentIdSet.has(String(s.id)));
+          if (hasStudent && sub.userId && (isSelfAllowed || !excludedIdSet.has(String(sub.userId).trim()))) {
+            fcmRecipientSet.add(String(sub.userId));
+          }
+        }
+      }
+
+      const isFcmBroadcast =
+        Boolean(schoolBroadcast) ||
+        Boolean(classBroadcast) ||
+        (!userId && (!studentIds || studentIds.length === 0 || studentIds.includes("all")));
+      const fcmDelivered = await dispatchFcmToUsers(
+        Array.from(fcmRecipientSet),
+        isFcmBroadcast,
+        {
+          id: notifId,
+          title,
+          body,
+          type,
+          url,
+          icon: effectiveIcon,
+          senderId: senderId ? String(senderId) : "",
+          senderDeviceId: cleanSenderDeviceId,
+        },
+        { schoolId, classId, className },
+        isSelfAllowed
+          ? undefined
+          : {
+              senderIds: Array.from(excludedIdSet),
+              senderFcmToken: cleanSenderFcmToken,
+              senderDeviceId: cleanSenderDeviceId,
+            }
+      );
+      delivered += fcmDelivered;
+
+      return res.json({ ok: true, matchedDevices, delivered });
+    } catch (err: any) {
+      return res.status(500).json({ error: err?.message || "Push send failed" });
+    }
+  });
+
+  // 6. Trigger Monthly Fee Due Push Notifications (manual 1-click from Admin OR automated)
+  app.post("/api/school-push/trigger-monthly", async (req, res) => {
+    try {
+      await ensureFreshPushSubscriptions();
+      const { schoolId, schoolName, monthLabel, duesList } = req.body || {};
+      // If Admin passed explicit live duesList from FeeManager, update snapshots & push customized per-student amounts
+      if (Array.isArray(duesList) && duesList.length > 0) {
+        let delivered = 0;
+        let matchedStudents = 0;
+        const dueLookup = new Map<string, any>();
+
+        for (const item of duesList) {
+          if (!item?.studentId) continue;
+          const sid = String(schoolId || item.schoolId || "");
+          const lookupKey = sid ? `${sid}__${item.studentId}` : String(item.studentId);
+          dueLookup.set(lookupKey, item);
+          if (sid) {
+            const dKey = `${sid}__${item.studentId}`;
+            const snap: StudentDueSnapshot = {
+              studentId: String(item.studentId),
+              schoolId: sid,
+              schoolName: schoolName || item.schoolName || "",
+              studentName: item.studentName || "",
+              classId: item.classId || "",
+              className: item.className || "",
+              rollNo: item.rollNo || "",
+              pendingDues: Math.max(0, Number(item.pendingDues || 0)),
+              monthlyFee: Number(item.monthlyFee || 0),
+              updatedAt: new Date().toISOString(),
+            };
+            studentDuesMap.set(dKey, snap);
+            void rtdbPut(`school_webpush_dues/${dKey}`, snap);
+          }
+        }
+        saveLocalSubscriptions();
+
+        const mCode = getCurrentMonthCode();
+        for (const record of subscriptionsMap.values()) {
+          for (const st of record.students || []) {
+            const targetSchoolId = String(st.schoolId || schoolId || "");
+            const compositeKey = targetSchoolId ? `${targetSchoolId}__${st.id}` : String(st.id);
+            const dueItem =
+              dueLookup.get(compositeKey) ||
+              (!schoolId || st.schoolId === schoolId ? dueLookup.get(String(st.id)) : undefined);
+            if (!dueItem || Number(dueItem.pendingDues || 0) <= 0) continue;
+            matchedStudents++;
+            const amt = Number(dueItem.pendingDues);
+            const sName = dueItem.studentName || st.name || "Student";
+            const cName = dueItem.className || st.className || "";
+            const schTitle = schoolName || dueItem.schoolName || st.schoolName || "School";
+
+            const ok = await dispatchWebPush(record, {
+              title: `🏫 ${schTitle} • मासिक शुल्क सूचना`,
+              body: `${sName}${cName ? ` (${cName})` : ""} का ${monthLabel || mCode} तक कुल देय शुल्क ₹${amt.toLocaleString("en-IN")} बकाया है। विवरण देखने के लिए टैप करें।`,
+              type: "MONTHLY_FEE",
+              studentId: st.id,
+              schoolId: targetSchoolId,
+              url: `/?schoolPortal=1&schoolId=${encodeURIComponent(targetSchoolId)}&studentId=${encodeURIComponent(st.id)}&schoolTab=fees`,
+              urgent: true,
+            });
+            if (ok) {
+              delivered++;
+              record.notifiedMonthsByStudent = {
+                ...(record.notifiedMonthsByStudent || {}),
+                [compositeKey]: mCode,
+              };
+              subscriptionsMap.set(record.id, record);
+              void rtdbPut(`school_webpush_subs/${record.id}`, record);
+            }
+          }
+        }
+        saveLocalSubscriptions();
+        return res.json({ ok: true, matchedStudents, delivered });
+      }
+
+      const autoSent = await runMonthlyAutoFeeNotifier();
+      return res.json({ ok: true, delivered: autoSent });
+    } catch (err: any) {
+      return res.status(500).json({ error: err?.message || "Monthly trigger failed" });
+    }
+  });
+
+  // Also handle /api/notifications/push via both Web Push and FCM HTTP v1
+  app.post("/api/notifications/push", async (req, res) => {
+    const { recipientIds = [], broadcast = false, title, body, url, type, icon } = req.body || {};
+    let delivered = 0;
+    if (title && body) {
+      await ensureFreshPushSubscriptions();
+      for (const record of subscriptionsMap.values()) {
+        if (
+          broadcast ||
+          !Array.isArray(recipientIds) ||
+          recipientIds.length === 0 ||
+          recipientIds.includes(record.userId) ||
+          record.students.some((s) => recipientIds.includes(s.id))
+        ) {
+          const ok = await dispatchWebPush(record, { title, body, type, url, urgent: true });
+          if (ok) delivered++;
+        }
+      }
+      const fcmDelivered = await dispatchFcmToUsers(
+        Array.isArray(recipientIds) ? recipientIds : [],
+        Boolean(broadcast),
+        { title, body, type, url, icon }
+      );
+      delivered += fcmDelivered;
+    }
+    res.json({ ok: true, delivered });
+  });
+
+  // Dedicated Background Test endpoint that schedules push from server after delaySeconds
+  // This ensures that when the user switches to another app or locks the phone,
+  // the push is sent by the server over the internet, waking up Android OS over other apps.
+  app.post("/api/notifications/test-background", async (req, res) => {
+    const { delaySeconds = 5, userId, title, body } = req.body || {};
+    const delay = Math.max(1, Math.min(60, Number(delaySeconds) || 5));
+    const testTitle = title || "🔔 NSTA Background Notification Test";
+    const testBody = body || "Aap doosra app chala rahe the tab bhi notification screen par pop-up hua! (Test Successful)";
+
+    res.json({ ok: true, scheduledInSeconds: delay, message: `Server will push in ${delay} seconds.` });
+
+    setTimeout(async () => {
+      let delivered = 0;
+      const targetUserId = userId ? String(userId).trim() : "";
+
+      // Ensure remote subscriptions are freshly loaded
+      await ensureFreshPushSubscriptions(true).catch(() => {});
+
+      for (const record of subscriptionsMap.values()) {
+        const isMatch =
+          !targetUserId ||
+          targetUserId === "all" ||
+          targetUserId === "guest" ||
+          record.userId === targetUserId ||
+          record.id === targetUserId ||
+          (record.students || []).some((s) => s.id === targetUserId);
+
+        if (isMatch) {
+          const ok = await dispatchWebPush(record, {
+            title: testTitle,
+            body: testBody,
+            type: "TEST",
+            url: "/",
+            urgent: true,
+          });
+          if (ok) delivered++;
+        }
+      }
+
+      // If targeted user had no exact match, broadcast test push to all known active subscriptions
+      if (delivered === 0 && subscriptionsMap.size > 0) {
+        for (const record of subscriptionsMap.values()) {
+          const ok = await dispatchWebPush(record, {
+            title: testTitle,
+            body: testBody,
+            type: "TEST",
+            url: "/",
+            urgent: true,
+          });
+          if (ok) delivered++;
+        }
+      }
+
+      const fcmDelivered = await dispatchFcmToUsers(
+        targetUserId ? [targetUserId] : [],
+        !targetUserId || delivered === 0,
+        {
+          title: testTitle,
+          body: testBody,
+          type: "TEST",
+          url: "/",
+        }
+      );
+      delivered += fcmDelivered;
+      console.log(`[Server] Background test push delivered to ${delivered} endpoints after ${delay}s.`);
+    }, delay * 1000);
+  });
+
+  // Unified Service Worker endpoint for PWA & Web Push (guarantees proper mime type & headers)
+  app.get(["/sw.js", "/firebase-messaging-sw.js"], (req, res) => {
+    res.setHeader("Content-Type", "application/javascript");
+    res.setHeader("Service-Worker-Allowed", "/");
+    res.setHeader("Cache-Control", "public, max-age=0, must-revalidate");
+    const requestedFile = req.path.endsWith("firebase-messaging-sw.js") ? "firebase-messaging-sw.js" : "sw.js";
+    const primaryPath = path.join(ROOT_DIR, "public", requestedFile);
+    if (fs.existsSync(primaryPath)) {
+      return res.sendFile(primaryPath);
+    }
+    const fallbackPath = path.join(ROOT_DIR, "public", "firebase-messaging-sw.js");
+    if (fs.existsSync(fallbackPath)) {
+      return res.sendFile(fallbackPath);
+    }
+    res.status(404).send("// Service worker not found");
+  });
+
+  // Digital Asset Links for Android App / Trusted Web Activity (TWA) verification
+  app.get("/.well-known/assetlinks.json", (_req, res) => {
+    res.setHeader("Content-Type", "application/json");
+    const assetlinksPath = path.join(ROOT_DIR, "public", ".well-known", "assetlinks.json");
+    if (fs.existsSync(assetlinksPath)) {
+      res.sendFile(assetlinksPath);
+    } else {
+      res.json([
+        {
+          relation: ["delegate_permission/common.handle_all_urls"],
+          target: {
+            namespace: "android_app",
+            package_name: "app.vercel.sms2027.twa",
+            sha256_cert_fingerprints: [
+              "6A:E1:82:0D:45:BB:8F:02:B9:D6:E4:6A:70:8E:20:83:2F:9D:7A:0C:88:2E:36:77:96:80:97:D7:35:84:2A:1D"
+            ]
+          }
+        }
+      ]);
+    }
+  });
+
+  // Telegram helper proxy routes (parity with serverless api/push-router.ts)
+  app.get("/api/telegram/health", async (_req, res) => {
+    const token = (process.env.TELEGRAM_BOT_TOKEN || process.env.VITE_TELEGRAM_BOT_TOKEN || "").trim();
+    if (!token) return res.status(200).json({ ok: false, error: "TELEGRAM_BOT_TOKEN not configured" });
+    try {
+      const r = await fetch(`https://api.telegram.org/bot${token}/getMe`);
+      const data = (await r.json().catch(() => ({ ok: false }))) as any;
+      return res.status(r.ok ? 200 : 502).json({ ok: Boolean(data?.ok), bot: data?.result, error: data?.description });
+    } catch (err: any) {
+      return res.status(502).json({ ok: false, error: err?.message || "Telegram health check failed" });
+    }
+  });
+
+  app.post("/api/telegram/sendMessage", async (req, res) => {
+    const token = (process.env.TELEGRAM_BOT_TOKEN || process.env.VITE_TELEGRAM_BOT_TOKEN || "").trim();
+    const defaultChatId = (process.env.TELEGRAM_CHAT_CHANNEL_ID || process.env.VITE_TELEGRAM_CHAT_CHANNEL_ID || "").trim();
+    if (!token) return res.status(400).json({ ok: false, error: "TELEGRAM_BOT_TOKEN not configured" });
+    try {
+      const { text, chat_id, reply_to_message_id, parse_mode = "HTML" } = req.body || {};
+      const r = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          chat_id: chat_id || defaultChatId,
+          text,
+          reply_to_message_id,
+          parse_mode,
+        }),
+      });
+      const data = await r.json().catch(() => ({ ok: false }));
+      return res.status(r.ok ? 200 : 502).json(data);
+    } catch (err: any) {
+      return res.status(502).json({ ok: false, error: err?.message || "Telegram sendMessage failed" });
+    }
+  });
+
+  const telegramFilePathCache = new Map<string, { filePath: string; expiresAt: number }>();
+
+  app.get("/api/telegram/file", async (req, res) => {
+    const fileId = String(req.query?.fileId || req.query?.file_id || "").trim();
+    const rawFilePath = String(req.query?.path || "").trim();
+    const token = String(req.query?.token || process.env.TELEGRAM_BOT_TOKEN || process.env.VITE_TELEGRAM_BOT_TOKEN || "").trim();
+    if (!token) return res.status(400).json({ error: "TELEGRAM_BOT_TOKEN not configured" });
+
+    let resolvedPath = rawFilePath;
+    if (fileId) {
+      if (!/^[A-Za-z0-9_-]{10,200}$/.test(fileId)) {
+        return res.status(400).json({ error: "Invalid fileId format" });
+      }
+      const cached = telegramFilePathCache.get(fileId);
+      if (cached && cached.expiresAt > Date.now()) {
+        resolvedPath = cached.filePath;
+      } else {
+        try {
+          const tgRes = await fetch(`https://api.telegram.org/bot${token}/getFile?file_id=${encodeURIComponent(fileId)}`);
+          const tgJson = (await tgRes.json().catch(() => null)) as any;
+          if (!tgRes.ok || !tgJson?.ok || !tgJson?.result?.file_path) {
+            return res.status(404).json({ error: tgJson?.description || "Telegram file not found" });
+          }
+          resolvedPath = String(tgJson.result.file_path);
+          telegramFilePathCache.set(fileId, {
+            filePath: resolvedPath,
+            expiresAt: Date.now() + 30 * 60 * 1000,
+          });
+        } catch (err: any) {
+          return res.status(502).json({ error: err?.message || "Failed to resolve Telegram fileId" });
+        }
+      }
+    }
+
+    if (!resolvedPath || resolvedPath.includes("..") || resolvedPath.startsWith("/")) {
+      return res.status(400).json({ error: "Missing or invalid file path" });
+    }
+    res.setHeader("Cache-Control", "public, max-age=1800");
+    return res.redirect(302, `https://api.telegram.org/file/bot${token}/${resolvedPath}`);
+  });
+
+  // ── PER-SCHOOL RAZORPAY ONLINE FEE & AUTO-WEBHOOK ENDPOINTS ──────────────
+  const notifyRazorpayFeeReceipt = async (info: {
+    schoolId: string;
+    studentId: string;
+    studentName: string;
+    amount: number;
+    monthLabel: string;
+    receiptNo: string;
+    purpose?: "fee_payment" | "store_order";
+  }) => {
+    const isStore = info.purpose === "store_order";
+    const title = isStore
+      ? `🛍️ स्कूल स्टोर रसीद • ₹${info.amount.toLocaleString("en-IN")} प्राप्त`
+      : `✅ शुल्क रसीद • ₹${info.amount.toLocaleString("en-IN")} प्राप्त`;
+    const body = isStore
+      ? `${info.studentName} का स्कूल स्टोर ऑर्डर ₹${info.amount.toLocaleString("en-IN")} NSTA Online से जमा हो गया है। रसीद: ${info.receiptNo}`
+      : `${info.studentName} (${info.monthLabel}) का ऑनलाइन शुल्क ₹${info.amount.toLocaleString("en-IN")} सफलतापूर्वक जमा हो गया है। रसीद: ${info.receiptNo}`;
+    const url = `/?schoolPortal=1&schoolId=${encodeURIComponent(info.schoolId)}&studentId=${encodeURIComponent(info.studentId)}&schoolTab=${isStore ? "store" : "fees"}`;
+
+    for (const record of subscriptionsMap.values()) {
+      const hasStudent = (record.students || []).some(
+        (s) => s.id === info.studentId && (!s.schoolId || s.schoolId === info.schoolId)
+      );
+      if (hasStudent) {
+        await dispatchWebPush(record, {
+          title,
+          body,
+          type: isStore ? "STORE_RECEIPT" : "FEE_RECEIPT",
+          studentId: info.studentId,
+          schoolId: info.schoolId,
+          url,
+          urgent: true,
+        });
+      }
+    }
+    await dispatchFcmToUsers(
+      [info.studentId],
+      false,
+      { title, body, type: isStore ? "STORE_RECEIPT" : "FEE_RECEIPT", url },
+      { schoolId: info.schoolId }
+    );
+  };
+
+  app.get("/api/razorpay/config", async (req, res) => {
+    try {
+      const schoolId = String(req.query?.schoolId || "").trim();
+      if (!schoolId) return res.status(400).json({ ok: false, error: "schoolId is required" });
+      const proto = String(req.headers["x-forwarded-proto"] || req.protocol || "https").split(",")[0].trim();
+      const host = String(req.headers["x-forwarded-host"] || req.get("host") || "");
+      const originBase = host ? `${proto}://${host}` : "";
+      const data = await getPublicRazorpayConfig(schoolId, originBase);
+      return res.json(data);
+    } catch (err: any) {
+      return res.status(500).json({ ok: false, error: err?.message || "Failed to load Razorpay config" });
+    }
+  });
+
+  app.post("/api/razorpay/config", async (req, res) => {
+    try {
+      const result = await saveSchoolRazorpayConfig(req.body || {});
+      return res.status(result.status).json(result.body);
+    } catch (err: any) {
+      return res.status(500).json({ ok: false, error: err?.message || "Failed to save Razorpay config" });
+    }
+  });
+
+  app.post("/api/razorpay/test", async (req, res) => {
+    try {
+      const schoolId = String(req.body?.schoolId || req.query?.schoolId || "").trim();
+      const result = await testSchoolRazorpayConnection(schoolId);
+      return res.status(result.status).json(result.body);
+    } catch (err: any) {
+      return res.status(500).json({ ok: false, error: err?.message || "Razorpay test failed" });
+    }
+  });
+
+  app.post("/api/razorpay/create-order", async (req, res) => {
+    try {
+      const result = await createSchoolRazorpayOrder(req.body || {});
+      return res.status(result.status).json(result.body);
+    } catch (err: any) {
+      return res.status(500).json({ ok: false, error: err?.message || "Order creation failed" });
+    }
+  });
+
+  app.post("/api/razorpay/verify-payment", async (req, res) => {
+    try {
+      const result = await verifySchoolRazorpayCheckout(req.body || {}, notifyRazorpayFeeReceipt);
+      return res.status(result.status).json(result.body);
+    } catch (err: any) {
+      return res.status(500).json({ ok: false, error: err?.message || "Payment verification failed" });
+    }
+  });
+
+  app.post("/api/razorpay/webhook", async (req: any, res) => {
+    try {
+      const signature = String(req.headers["x-razorpay-signature"] || "");
+      const querySchoolId = String(req.query?.schoolId || "");
+      const result = await handleSchoolRazorpayWebhook({
+        rawBody: req.rawBody || "",
+        parsedBody: req.body,
+        signature,
+        querySchoolId,
+        onNotify: notifyRazorpayFeeReceipt,
+      });
+      return res.status(result.status).json(result.body);
+    } catch (err: any) {
+      return res.status(500).json({ ok: false, error: err?.message || "Webhook error" });
+    }
+  });
+
+  // Dev-only Source Code ZIP export endpoint
+  app.get("/api/export-source-zip", async (req, res) => {
+    if (isProduction) {
+      return res.status(403).json({ error: "Source export is disabled in production" });
+    }
+    try {
+      const liteMode = req.query?.lite === "1";
+      const includeModels = !liteMode && req.query?.includeModels !== "0";
+      const includeWasm = !liteMode && req.query?.includeWasm !== "0";
+      const includeAssets = req.query?.includeAssets === "1";
+      const zip = new JSZip();
+
+      const excludedDirs = new Set([
+        "node_modules",
+        ".git",
+        ".aistudio",
+        "dist",
+        ".vite",
+      ]);
+      const excludedFiles = new Set([
+        ".env",
+        ".env.local",
+        ".env.production",
+        ".vapid-keys.json",
+        ".push-subscriptions.json",
+      ]);
+
+      const walkDir = (dir: string, relBase = "") => {
+        const entries = fs.readdirSync(dir, { withFileTypes: true });
+        for (const entry of entries) {
+          const relPath = relBase ? `${relBase}/${entry.name}` : entry.name;
+          const fullPath = path.join(dir, entry.name);
+
+          if (entry.isDirectory()) {
+            if (excludedDirs.has(entry.name)) continue;
+            if (!includeAssets && relPath === "public/assets/aistudio") continue;
+            if (!includeModels && relPath === "public/models") continue;
+            if (!includeWasm && relPath === "public/onnx-wasm") continue;
+            walkDir(fullPath, relPath);
+          } else if (entry.isFile()) {
+            if (excludedFiles.has(entry.name) || entry.name.endsWith(".log")) continue;
+            zip.file(relPath, fs.readFileSync(fullPath));
+          }
+        }
+      };
+
+      walkDir(ROOT_DIR);
+
+      const dateTag = new Date().toISOString().slice(0, 10);
+      const zipName =
+        includeModels && includeWasm
+          ? `nsta-app-full-${dateTag}.zip`
+          : `nsta-app-source-${dateTag}.zip`;
+
+      res.setHeader("Content-Type", "application/zip");
+      res.setHeader(
+        "Content-Disposition",
+        `attachment; filename="${zipName}"`
+      );
+
+      const stream = zip.generateNodeStream({
+        type: "nodebuffer",
+        streamFiles: true,
+        compression: "DEFLATE",
+        compressionOptions: { level: 1 },
+      });
+      stream.pipe(res);
+    } catch (err: any) {
+      console.error("[Server] Source ZIP export failed:", err);
+      if (!res.headersSent) {
+        res.status(500).json({ error: err?.message || "Failed to generate source ZIP" });
+      }
+    }
+  });
+
+  // Periodic background scheduler (checks every 15 minutes for new month's pending fee alerts)
+  setInterval(() => {
+    void runMonthlyAutoFeeNotifier();
+  }, 15 * 60 * 1000);
+
+  // Serve ONNX WebAssembly & JS runtime files directly from node_modules with proper MIME headers
+  // This bypasses Vite's /public directory dynamic import restriction entirely
+  app.use(
+    "/onnx-wasm",
+    express.static(path.join(ROOT_DIR, "node_modules/onnxruntime-web/dist"), {
+      setHeaders: (res, filePath) => {
+        if (filePath.endsWith(".wasm")) {
+          res.setHeader("Content-Type", "application/wasm");
+        } else if (filePath.endsWith(".mjs") || filePath.endsWith(".js")) {
+          res.setHeader("Content-Type", "text/javascript");
+        }
+      },
+    })
+  );
+
+  // Dynamic multi-school PWA manifest & asset proxy (matches Vercel api/push-router.ts)
+  const getServerRequestOrigin = (req: express.Request): string => {
+    const proto = String(req.headers["x-forwarded-proto"] || req.protocol || "http").split(",")[0].trim() || "http";
+    const host = String(req.headers["x-forwarded-host"] || req.get("host") || `localhost:${PORT}`).split(",")[0].trim();
+    return `${proto}://${host}`;
+  };
+
+  app.get(["/api/manifest", "/manifest.webmanifest"], async (req, res) => {
+    try {
+      const origin = getServerRequestOrigin(req);
+      const schoolQuery = String(req.query?.school || req.query?.schoolId || req.query?.s || "").trim();
+      const branding = await resolveSchoolBranding({ origin, pathname: "/", schoolQuery });
+      const manifest = buildSchoolWebManifest(branding);
+      res.setHeader("Content-Type", "application/manifest+json; charset=utf-8");
+      res.setHeader("Cache-Control", "public, max-age=0, must-revalidate");
+      return res.status(200).send(JSON.stringify(manifest, null, 2));
+    } catch (err: any) {
+      return res.status(500).json({ error: err?.message || "Failed to generate manifest" });
+    }
+  });
+
+  app.get("/api/school-asset", async (req, res) => {
+    try {
+      const schoolQuery = String(req.query?.school || req.query?.schoolId || req.query?.s || "").trim();
+      const type = String(req.query?.type || "icon") === "og" ? "og" : "icon";
+      const asset = await resolveSchoolAssetPayload({ schoolQuery, type });
+      if ("redirectUrl" in asset) {
+        res.setHeader("Cache-Control", "public, max-age=300");
+        return res.redirect(302, asset.redirectUrl);
+      }
+      res.setHeader("Content-Type", asset.contentType);
+      res.setHeader("Cache-Control", "public, max-age=3600, stale-while-revalidate=86400");
+      return res.status(200).send(asset.buffer);
+    } catch (err: any) {
+      return res.redirect(302, "/icons/icon-512.png?v=3");
+    }
+  });
+
+  const isSpaHtmlNavigationRequest = (req: express.Request): boolean => {
+    if (req.method !== "GET") return false;
+    const p = req.path || "/";
+    if (
+      p.startsWith("/api/") ||
+      p.startsWith("/src/") ||
+      p.startsWith("/@") ||
+      p.startsWith("/node_modules/") ||
+      p.startsWith("/assets/") ||
+      p.startsWith("/icons/") ||
+      p.startsWith("/branding/") ||
+      p.startsWith("/onnx-wasm/") ||
+      p.startsWith("/models/") ||
+      p.startsWith("/.well-known/") ||
+      p.includes(".")
+    ) {
+      return false;
+    }
+    return true;
+  };
+
+  if (!isProduction) {
+    const { createServer: createViteServer } = await import("vite");
+    const vite = await createViteServer({
+      server: { middlewareMode: true, hmr: false, ws: false },
+      appType: "spa",
+    });
+
+    // Inject dynamic school OG/title/manifest/splash before Vite serves raw index.html
+    app.use(async (req, res, next) => {
+      if (!isSpaHtmlNavigationRequest(req)) return next();
+      try {
+        const origin = getServerRequestOrigin(req);
+        const schoolQuery = String(req.query?.school || req.query?.schoolId || req.query?.s || "").trim();
+        const template = fs.readFileSync(path.join(ROOT_DIR, "index.html"), "utf-8");
+        const [transformed, branding] = await Promise.all([
+          vite.transformIndexHtml(req.originalUrl, template),
+          resolveSchoolBranding({ origin, pathname: req.path, schoolQuery }),
+        ]);
+        const brandedHtml = injectSchoolBrandingIntoHtml(transformed, branding);
+        res.status(200).set({ "Content-Type": "text/html; charset=utf-8" }).end(brandedHtml);
+      } catch (e: any) {
+        if (vite?.ssrFixStacktrace) vite.ssrFixStacktrace(e);
+        next(e);
+      }
+    });
+
+    app.use(vite.middlewares);
+    // Dev SPA fallback so any route or query loads index.html seamlessly
+    app.use(async (req, res, next) => {
+      if (req.method !== "GET" || req.path.startsWith("/api/") || req.path.includes(".")) {
+        return next();
+      }
+      try {
+        const origin = getServerRequestOrigin(req);
+        const schoolQuery = String(req.query?.school || req.query?.schoolId || req.query?.s || "").trim();
+        const template = fs.readFileSync(path.join(ROOT_DIR, "index.html"), "utf-8");
+        const [transformed, branding] = await Promise.all([
+          vite.transformIndexHtml(req.originalUrl, template),
+          resolveSchoolBranding({ origin, pathname: req.path, schoolQuery }),
+        ]);
+        const brandedHtml = injectSchoolBrandingIntoHtml(transformed, branding);
+        res.status(200).set({ "Content-Type": "text/html; charset=utf-8" }).end(brandedHtml);
+      } catch (e: any) {
+        if (vite?.ssrFixStacktrace) vite.ssrFixStacktrace(e);
+        next(e);
+      }
+    });
+  } else {
+    const distPath = path.join(ROOT_DIR, "dist");
+    app.use(express.static(distPath, { index: false }));
+    app.use(async (req, res, next) => {
+      if (req.method !== "GET" || req.path.startsWith("/api/")) {
+        return next();
+      }
+      try {
+        const origin = getServerRequestOrigin(req);
+        const schoolQuery = String(req.query?.school || req.query?.schoolId || req.query?.s || "").trim();
+        const template = fs.readFileSync(path.join(distPath, "index.html"), "utf-8");
+        const branding = await resolveSchoolBranding({ origin, pathname: req.path, schoolQuery });
+        const brandedHtml = injectSchoolBrandingIntoHtml(template, branding);
+        res.status(200).set({ "Content-Type": "text/html; charset=utf-8" }).end(brandedHtml);
+      } catch {
+        res.sendFile(path.join(distPath, "index.html"));
+      }
+    });
+  }
+
+  // Global Express error handler so middleware errors never terminate the process
+  app.use((err: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+    console.error("[Server] Express middleware error:", err?.message || err);
+    if (!res.headersSent) {
+      res.status(err?.status || 500).json({ error: err?.message || "Internal Server Error" });
+    }
+  });
+
+  let retryTimer: NodeJS.Timeout | null = null;
+  const httpServer = app.listen(PORT, "0.0.0.0", () => {
+    console.log(`[Server] Running on http://0.0.0.0:${PORT} (${isProduction ? "production" : "development"})`);
+    // Hydrate remote RTDB push state asynchronously so server startup & pre-warming are never blocked
+    void hydrateRemotePushEngine();
+  });
+
+  httpServer.on("error", (err: any) => {
+    if (err?.code === "EADDRINUSE") {
+      console.warn(`[Server] Port ${PORT} temporarily busy, will retry listening in 1s...`);
+      if (retryTimer) clearTimeout(retryTimer);
+      retryTimer = setTimeout(() => {
+        try {
+          httpServer.close();
+        } catch {}
+        try {
+          httpServer.listen(PORT, "0.0.0.0");
+        } catch (retryErr) {
+          console.warn("[Server] Port retry deferred:", retryErr);
+        }
+      }, 1000);
+      return;
+    }
+    console.error("[Server] HTTP server error:", err?.message || err);
+  });
+
+  httpServer.on("clientError", (err: any, socket) => {
+    if (err?.code === "ECONNRESET" || !socket.writable) return;
+    socket.end("HTTP/1.1 400 Bad Request\r\n\r\n");
+  });
+
+  const handleTermination = () => {
+    try {
+      if (retryTimer) clearTimeout(retryTimer);
+      httpServer.close(() => {
+        process.exit(0);
+      });
+    } catch {
+      process.exit(0);
+    }
+  };
+  process.on("SIGTERM", handleTermination);
+  process.on("SIGINT", handleTermination);
+}
+
+startServer().catch((err) => {
+  console.error("[Server] Fatal startup error:", err?.message || err);
+});

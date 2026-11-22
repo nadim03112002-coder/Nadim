@@ -1,0 +1,2419 @@
+// @ts-nocheck
+import React, { useState, useEffect, useCallback } from "react";
+import {
+  saveAttendance, subscribeToAttendance, getAttendance, getMonthlyAttendance, getAllSchoolAttendance, getStudents, getClasses, todayStr, currentMonthStr,
+  isStudentBirthdayToday, dispatchOfficialSchoolBirthdayWish, getTeachers, getLocalTeachers,
+  markStudentQrAttendance, calculateStayDuration, getSchool
+} from "../../school-firebase";
+import { hasFaceAttendanceAccess, type School, type SchoolStudent, type AttendanceRecord } from "../../school-types";
+import {
+  CheckCircle, XCircle, Download, Calendar, Users, ChevronLeft, ChevronRight,
+  Camera, QrCode, Phone, PhoneCall, Bell, Send, AlertTriangle, AlertCircle,
+  CheckCircle2, MessageCircle, ShieldAlert, Sparkles, PhoneOutgoing, Loader2,
+  Cake, Gift, Heart, Wifi, WifiOff, Cloud, CloudOff, RefreshCw, Volume2, Clock, LogOut,
+  Crown, Lock, Printer, CalendarRange, Layers
+} from "lucide-react";
+import { generateAttendanceMatrixPdf, type MatrixPdfSection } from "../../utils/attendanceMatrixPdf";
+import { toast } from "sonner";
+import { safeOpenExternalUrl } from "../../utils/safeBrowserActions";
+import { speakNotification } from "../../utils/voiceNotifyEngine";
+import { sendSchoolPushNotification } from "../../utils/schoolPushClient";
+import {
+  dispatchAttendanceBatchAlerts,
+  dispatchAttendanceParentAlert,
+} from "../../utils/attendanceAlertDispatcher";
+import {
+  subscribeAttendanceSchedule,
+  saveAttendanceSchedule,
+  getLiveShiftStatus,
+  formatTime12h,
+  DEFAULT_IN_CUTOFF_TIME,
+  DEFAULT_OUT_START_TIME,
+} from "../../utils/schoolAttendanceSchedule";
+import { QrAttendanceScannerModal } from "./QrAttendanceScannerModal";
+import { ClassQrCodeModal } from "./ClassQrCodeModal";
+import { StudentQuickActionModal } from "./StudentQuickActionModal";
+import { FaceAttendanceKioskModal } from "./FaceAttendanceKioskModal";
+import { UniversalFaceIdStudioModal } from "./UniversalFaceIdStudioModal";
+
+interface Props {
+  schoolId: string;
+  classId: string;
+  className: string;
+  teacherId: string;
+  school?: School | null;
+  onOpenPlanStore?: () => void;
+  onBack?: () => void;
+}
+
+export const AttendanceManager: React.FC<Props> = ({ schoolId, classId, className, teacherId, school, onOpenPlanStore, onBack }) => {
+  const [students, setStudents] = useState<SchoolStudent[]>([]);
+  const [fetchedSchool, setFetchedSchool] = useState<School | null>(null);
+  const activeSchool = school || fetchedSchool;
+  const hasFaceAccess = activeSchool
+    ? hasFaceAttendanceAccess(activeSchool)
+    : (schoolId === "demo_school" || schoolId?.startsWith("demo") || schoolId?.includes("demo"));
+
+  useEffect(() => {
+    if (!school && schoolId) {
+      getSchool(schoolId).then((s) => {
+        if (s) setFetchedSchool(s);
+      }).catch(() => {});
+    }
+  }, [school, schoolId]);
+
+  const [teachersList, setTeachersList] = useState<any[]>(() => {
+    try {
+      const local = getLocalTeachers(schoolId);
+      return Array.isArray(local) ? local : [];
+    } catch {
+      return [];
+    }
+  });
+
+  useEffect(() => {
+    if (schoolId) {
+      getTeachers(schoolId).then((list) => {
+        setTeachersList(Array.isArray(list) ? list : []);
+      }).catch(() => {});
+    }
+    const handleRemoved = (e: any) => {
+      if (e?.detail?.schoolId && e.detail.schoolId !== schoolId) return;
+      const rid = e?.detail?.teacherId || e?.detail?.staffId;
+      if (rid) setTeachersList((prev) => prev.filter((t) => t?.id !== rid));
+    };
+    window.addEventListener("teacher-deleted", handleRemoved);
+    window.addEventListener("staff-deleted", handleRemoved);
+    return () => {
+      window.removeEventListener("teacher-deleted", handleRemoved);
+      window.removeEventListener("staff-deleted", handleRemoved);
+    };
+  }, [schoolId]);
+
+  const [selectedDate, setSelectedDate] = useState(todayStr());
+  const [attendance, setAttendance] = useState<{ [id: string]: boolean }>({});
+  const [existingRecord, setExistingRecord] = useState<AttendanceRecord | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [viewMode, setViewMode] = useState<"mark" | "absentee" | "report" | "matrix">("mark");
+  const [monthlyData, setMonthlyData] = useState<AttendanceRecord[]>([]);
+  const [selectedMonth, setSelectedMonth] = useState(currentMonthStr());
+  const [loading, setLoading] = useState(true);
+  const [showFaceKiosk, setShowFaceKiosk] = useState(false);
+  const [faceKioskTestMode, setFaceKioskTestMode] = useState(false);
+  const [showFaceStudio, setShowFaceStudio] = useState(false);
+  const [showQrScanner, setShowQrScanner] = useState(false);
+  const [selectedStudentForModal, setSelectedStudentForModal] = useState<SchoolStudent | null>(null);
+  const [modalInitialTab, setModalInitialTab] = useState<"id_card" | "fees" | "attendance">("attendance");
+  const [showClassQrModal, setShowClassQrModal] = useState(false);
+  const [selectedCellInfo, setSelectedCellInfo] = useState<{ studentName: string; rollNo: string; date: string; info: any } | null>(null);
+
+  const [inCutoffTime, setInCutoffTime] = useState(DEFAULT_IN_CUTOFF_TIME);
+  const [outStartTime, setOutStartTime] = useState(DEFAULT_OUT_START_TIME);
+  const [showScheduleEditor, setShowScheduleEditor] = useState(false);
+  const [punchingOutId, setPunchingOutId] = useState<string | null>(null);
+  const [bulkOutLoading, setBulkOutLoading] = useState(false);
+  const [exportingPdfMode, setExportingPdfMode] = useState<"single" | "all_months" | "all_classes" | null>(null);
+
+  useEffect(() => {
+    if (!schoolId) return;
+    return subscribeAttendanceSchedule(schoolId, (sched) => {
+      setInCutoffTime(sched.inCutoffTime);
+      setOutStartTime(sched.outStartTime);
+    });
+  }, [schoolId]);
+
+  // Absentee Action Center & 2-Day Tracker States
+  const [yesterdayRecord, setYesterdayRecord] = useState<AttendanceRecord | null>(null);
+  const [broadcastingAbsentees, setBroadcastingAbsentees] = useState(false);
+  const [absenteeBroadcastToast, setAbsenteeBroadcastToast] = useState<string | null>(null);
+  const [absenteeCallNotes, setAbsenteeCallNotes] = useState<{ [id: string]: { note?: string; called?: boolean } }>(() => {
+    try {
+      const saved = localStorage.getItem(`nst_call_logs_${schoolId}_${classId}`);
+      return saved ? JSON.parse(saved) : {};
+    } catch {
+      return {};
+    }
+  });
+
+  // ── Offline Attendance Queue & Network State ─────────────────────────────
+  const [isOnline, setIsOnline] = useState<boolean>(() => typeof navigator !== "undefined" ? navigator.onLine : true);
+  const QUEUE_KEY = `nst_offline_attendance_queue_${schoolId}`;
+  const [offlineQueue, setOfflineQueue] = useState<any[]>(() => {
+    try {
+      const raw = localStorage.getItem(`nst_offline_attendance_queue_${schoolId}`);
+      return raw ? JSON.parse(raw) : [];
+    } catch {
+      return [];
+    }
+  });
+  const [offlineAlertMsg, setOfflineAlertMsg] = useState<string | null>(null);
+  const [isSyncingQueue, setIsSyncingQueue] = useState<boolean>(false);
+  const [resendingAlerts, setResendingAlerts] = useState<boolean>(false);
+
+  const getStoredQueue = useCallback((): any[] => {
+    try {
+      const raw = localStorage.getItem(QUEUE_KEY);
+      return raw ? JSON.parse(raw) : [];
+    } catch {
+      return [];
+    }
+  }, [QUEUE_KEY]);
+
+  const enqueueOfflineRecord = useCallback((record: AttendanceRecord) => {
+    const queue = getStoredQueue();
+    const id = `${record.classId}_${record.date}`;
+    const next = [
+      { id, date: record.date, classId: record.classId, className, record, timestamp: new Date().toISOString() },
+      ...queue.filter((q: any) => q.id !== id)
+    ];
+    try {
+      localStorage.setItem(QUEUE_KEY, JSON.stringify(next));
+    } catch {}
+    setOfflineQueue(next);
+  }, [QUEUE_KEY, className, getStoredQueue]);
+
+  const syncOfflineQueue = useCallback(async () => {
+    const queue = getStoredQueue();
+    if (queue.length === 0) return;
+    setIsSyncingQueue(true);
+    let synced = 0;
+    let totalAlertsSent = 0;
+    const remaining: any[] = [];
+    const today = todayStr();
+
+    for (const item of queue) {
+      try {
+        await saveAttendance(item.record);
+        synced++;
+        if (item.date === today && item.record?.students) {
+          const alertItems = Object.entries(item.record.students).map(([sid, st]: [string, any]) => ({
+            studentId: sid,
+            studentName: st?.name || "Student",
+            rollNo: st?.rollNo || "",
+            classId: item.classId || item.record.classId,
+            className: item.className || className,
+            status: st?.present === false ? ("absent" as const) : st?.status === "late" ? ("late" as const) : ("present" as const),
+            timeText: st?.inTime || undefined,
+          }));
+          if (alertItems.length > 0) {
+            const alertRes = await dispatchAttendanceBatchAlerts({
+              schoolId,
+              classId: item.classId || item.record.classId,
+              className: item.className || className,
+              date: item.date,
+              sourceLabel: "क्लास अटेंडेंस रजिस्टर (ऑफलाइन सिंक)",
+              items: alertItems,
+            }).catch(() => ({ messengerCount: 0, pushDelivered: 0, skippedCount: 0 }));
+            totalAlertsSent += Number(alertRes?.messengerCount || 0);
+          }
+        }
+      } catch (e) {
+        remaining.push(item);
+      }
+    }
+
+    try {
+      localStorage.setItem(QUEUE_KEY, JSON.stringify(remaining));
+    } catch {}
+    setOfflineQueue(remaining);
+    setIsSyncingQueue(false);
+
+    if (synced > 0) {
+      const alertSuffix = totalAlertsSent > 0 ? ` व ${totalAlertsSent} अभिभावकों को NSTA + Push अलर्ट भेजा गया` : "";
+      setOfflineAlertMsg(`☁️ बैकग्राउंड सिंक पूर्ण: ${synced} ऑफलाइन हाजिरी रिकॉर्ड्स क्लाउड पर सफलतापूर्वक सिंक हो गए${alertSuffix}!`);
+      speakNotification("अटेंडेंस सिंक पूर्ण", `${synced} हाजिरी रिकॉर्ड क्लाउड पर सिंक हो गए।`);
+      setTimeout(() => setOfflineAlertMsg(null), 5000);
+    }
+  }, [QUEUE_KEY, className, getStoredQueue, schoolId]);
+
+  // Network listener & auto-sync every 20s
+  useEffect(() => {
+    const handleOnline = () => {
+      setIsOnline(true);
+      syncOfflineQueue();
+    };
+    const handleOffline = () => {
+      setIsOnline(false);
+    };
+
+    window.addEventListener("online", handleOnline);
+    window.addEventListener("offline", handleOffline);
+
+    const interval = setInterval(() => {
+      if (typeof navigator !== "undefined" && navigator.onLine && getStoredQueue().length > 0) {
+        syncOfflineQueue();
+      }
+    }, 20000);
+
+    return () => {
+      window.removeEventListener("online", handleOnline);
+      window.removeEventListener("offline", handleOffline);
+      clearInterval(interval);
+    };
+  }, [syncOfflineQueue, getStoredQueue]);
+
+  // Birthday Detection for No-Punishment Policy & Greetings
+  const birthdayStudentsInClass = React.useMemo(() => {
+    return students.filter(s => isStudentBirthdayToday(s.dateOfBirth));
+  }, [students]);
+
+  const [wishingBirthdayId, setWishingBirthdayId] = useState<string | null>(null);
+  const [wishingClassBirthdays, setWishingClassBirthdays] = useState(false);
+  const [birthdayNoticeToast, setBirthdayNoticeToast] = useState<string | null>(null);
+
+  const handleWishSingleStudent = async (student: SchoolStudent) => {
+    setWishingBirthdayId(student.id);
+    try {
+      await dispatchOfficialSchoolBirthdayWish({
+        schoolId,
+        studentId: student.id,
+        studentName: student.name,
+        rollNo: student.rollNo,
+        className: className || "Class",
+        photoUrl: student.photoUrl,
+        dateOfBirth: student.dateOfBirth,
+        parentPhone: student.phone
+      });
+      setBirthdayNoticeToast(`🎉 ${student.name} को जन्मदिन की बधाई व शुभाशीर्वाद भेजा गया!`);
+      setTimeout(() => setBirthdayNoticeToast(null), 4000);
+    } catch (e: any) {
+      toast.error("Birthday wish error: " + (e?.message || "Error"));
+    } finally {
+      setWishingBirthdayId(null);
+    }
+  };
+
+  const handleWishAllClassBirthdays = async (list: SchoolStudent[]) => {
+    setWishingClassBirthdays(true);
+    try {
+      for (const st of list) {
+        await dispatchOfficialSchoolBirthdayWish({
+          schoolId,
+          studentId: st.id,
+          studentName: st.name,
+          rollNo: st.rollNo,
+          className: className || "Class",
+          photoUrl: st.photoUrl,
+          dateOfBirth: st.dateOfBirth,
+          parentPhone: st.phone
+        });
+      }
+      setBirthdayNoticeToast(`🎉 सभी ${list.length} छात्रों को जन्मदिन की शुभकामनाएं प्रेषित की गईं!`);
+      setTimeout(() => setBirthdayNoticeToast(null), 4000);
+    } catch (e: any) {
+      toast.error("Birthday wish error: " + (e?.message || "Error"));
+    } finally {
+      setWishingClassBirthdays(false);
+    }
+  };
+
+  // Calculate previous working day date
+  const getPreviousWorkingDateStr = (dateStr: string) => {
+    try {
+      const d = new Date(dateStr);
+      d.setDate(d.getDate() - 1);
+      if (d.getDay() === 0) { // If Sunday, skip to Saturday
+        d.setDate(d.getDate() - 1);
+      }
+      return d.toISOString().split("T")[0];
+    } catch {
+      return dateStr;
+    }
+  };
+
+  // Fetch yesterday's attendance to compute 2-day consecutive absentees
+  useEffect(() => {
+    const prevDate = getPreviousWorkingDateStr(selectedDate);
+    getAttendance(schoolId, classId, prevDate).then(rec => {
+      setYesterdayRecord(rec);
+    }).catch(() => setYesterdayRecord(null));
+  }, [schoolId, classId, selectedDate]);
+
+  useEffect(() => {
+    getStudents(schoolId, classId).then(s => {
+      setStudents(s);
+      const init: { [id: string]: boolean } = {};
+      s.forEach(st => (init[st.id] = true));
+      setAttendance(init);
+      setLoading(false);
+    });
+  }, [schoolId, classId]);
+
+  useEffect(() => {
+    const unsubscribe = subscribeToAttendance(schoolId, classId, selectedDate, (rec: AttendanceRecord | null) => {
+      setExistingRecord(rec);
+      if (rec) {
+        const m: { [id: string]: boolean } = {};
+        Object.entries(rec.students || {}).forEach(([id, v]: any) => (m[id] = v.present));
+        setAttendance(m);
+      } else {
+        const init: { [id: string]: boolean } = {};
+        students.forEach(s => (init[s.id] = true));
+        setAttendance(init);
+      }
+    });
+
+    return unsubscribe;
+  }, [schoolId, classId, selectedDate, students]);
+
+  useEffect(() => {
+    if (viewMode === "report" || viewMode === "matrix") {
+      let active = true;
+      getMonthlyAttendance(schoolId, classId, selectedMonth).then((localOrQuick) => {
+        if (active) setMonthlyData(localOrQuick);
+      });
+      getAllSchoolAttendance(schoolId).then((all) => {
+        if (!active) return;
+        const filtered = all.filter(
+          (r) => r.classId === classId && String(r.date || "").startsWith(selectedMonth)
+        );
+        if (filtered.length > 0) setMonthlyData(filtered);
+      }).catch(() => {});
+      return () => { active = false; };
+    }
+  }, [viewMode, selectedMonth, schoolId, classId]);
+
+  const toggleStudent = (id: string) => {
+    setAttendance(prev => ({ ...prev, [id]: !prev[id] }));
+    setSaved(false);
+  };
+
+  const markAll = (present: boolean) => {
+    const m: { [id: string]: boolean } = {};
+    students.forEach(s => (m[s.id] = present));
+    setAttendance(m);
+    setSaved(false);
+  };
+
+  const saveRecord = async () => {
+    setSaving(true);
+    const now = new Date();
+    const nowMs = now.getTime();
+    const nowTime = now.toLocaleTimeString("en-IN", {
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hour12: true,
+    });
+    const isToday = selectedDate === todayStr();
+
+    const studentsMap: AttendanceRecord["students"] = { ...(existingRecord?.students || {}) };
+    students.forEach(s => {
+      const previous = studentsMap[s.id];
+      const isPresent = attendance[s.id] ?? previous?.present ?? true;
+      studentsMap[s.id] = {
+        ...previous,
+        present: isPresent,
+        name: s.name,
+        rollNo: s.rollNo,
+        status: isPresent ? (previous?.status === "late" ? "late" : "present") : "absent",
+        inTime: isPresent ? (previous?.inTime || (isToday ? nowTime : undefined)) : previous?.inTime,
+        inTimestamp: isPresent ? (previous?.inTimestamp || (isToday ? nowMs : undefined)) : previous?.inTimestamp,
+      };
+    });
+    const record: AttendanceRecord = {
+      date: selectedDate,
+      schoolId,
+      classId,
+      sessionId: students[0]?.sessionId || "",
+      markedBy: teacherId,
+      students: studentsMap,
+      createdAt: new Date().toISOString()
+    };
+
+    let cloudSynced = false;
+    const isCurrentlyOnline = typeof navigator !== "undefined" ? navigator.onLine : true;
+
+    if (isCurrentlyOnline) {
+      try {
+        await saveAttendance(record);
+        cloudSynced = true;
+      } catch (err) {
+        console.warn("[Attendance] Cloud sync failed, fallback to offline queue:", err);
+      }
+    }
+
+    if (!cloudSynced) {
+      // Enqueue for offline sync
+      enqueueOfflineRecord(record);
+      const prs = Object.values(studentsMap).filter(st => st.present).length;
+      setOfflineAlertMsg(
+        `📶 हाजिरी फोन में सुरक्षित सेव हो गई है (${prs} उपस्थित)। इंटरनेट कमजोर या बंद होने के कारण यह ऑफलाइन सुरक्षित है, नेटवर्क आते ही अपने आप क्लाउड पर सिंक होकर अभिभावकों को अलर्ट भेज दिया जाएगा।`
+      );
+      speakNotification(
+        "हाजिरी ऑफलाइन सेव",
+        "कमजोर नेटवर्क के कारण हाजिरी डिवाइस में सुरक्षित सेव हो गई है। इंटरनेट आने पर स्वतः सिंक होगी।"
+      );
+    } else {
+      setSaved(true);
+      setExistingRecord(record);
+      setTimeout(() => setSaved(false), 2500);
+
+      // Dispatch NSTA Messenger (SCHOOL_DESK) + Push alerts to parents when today's attendance is saved
+      if (selectedDate === todayStr() && students.length > 0) {
+        const alertTimeText = new Date().toLocaleTimeString("en-IN", {
+          hour: "2-digit",
+          minute: "2-digit",
+          hour12: true,
+        });
+        try {
+          const res = await dispatchAttendanceBatchAlerts({
+            schoolId,
+            classId,
+            className,
+            date: selectedDate,
+            sourceLabel: "क्लास अटेंडेंस रजिस्टर",
+            items: students.map(s => ({
+              studentId: s.id,
+              studentName: s.name,
+              rollNo: s.rollNo,
+              classId,
+              className,
+              status:
+                studentsMap[s.id]?.present === false
+                  ? ("absent" as const)
+                  : studentsMap[s.id]?.status === "late"
+                  ? ("late" as const)
+                  : ("present" as const),
+              timeText: studentsMap[s.id]?.inTime || alertTimeText,
+            })),
+          });
+          if (res.messengerCount > 0) {
+            const msg = `📩 ${res.messengerCount} अभिभावकों को NSTA Messenger व Push (${res.pushDelivered} डिवाइस) अलर्ट भेजा गया!`;
+            toast.success(msg);
+            setAbsenteeBroadcastToast(msg);
+            setTimeout(() => setAbsenteeBroadcastToast(null), 5000);
+          } else if (res.skippedCount > 0) {
+            const msg = `✓ हाजिरी सेव हो गई! (आज के अलर्ट पहले ही भेजे जा चुके हैं — दोबारा भेजने के लिए नीचे 'Alerts Dubara Bhejein' दबाएं)`;
+            toast.info(msg);
+            setAbsenteeBroadcastToast(msg);
+            setTimeout(() => setAbsenteeBroadcastToast(null), 5000);
+          }
+        } catch (err) {
+          console.warn("[Attendance] Alert dispatch failed:", err);
+          toast.error("हाजिरी सेव हुई, पर अलर्ट भेजने में समस्या आई। 'Alerts Dubara Bhejein' बटन से पुनः प्रयास करें।");
+        }
+      }
+    }
+
+    setSaving(false);
+  };
+
+  const handleResendAttendanceAlerts = async () => {
+    if (!schoolId || students.length === 0 || resendingAlerts) return;
+    setResendingAlerts(true);
+    try {
+      const nowTime = new Date().toLocaleTimeString("en-IN", {
+        hour: "2-digit",
+        minute: "2-digit",
+        hour12: true,
+      });
+      const res = await dispatchAttendanceBatchAlerts({
+        schoolId,
+        classId,
+        className,
+        date: selectedDate,
+        sourceLabel: "क्लास अटेंडेंस रजिस्टर",
+        skipDedupe: true,
+        items: students.map(s => {
+          const entry = existingRecord?.students?.[s.id];
+          const isPresent = attendance[s.id] ?? entry?.present ?? true;
+          return {
+            studentId: s.id,
+            studentName: s.name,
+            rollNo: s.rollNo,
+            classId,
+            className,
+            status: !isPresent ? ("absent" as const) : entry?.status === "late" ? ("late" as const) : ("present" as const),
+            timeText: entry?.inTime || nowTime,
+          };
+        }),
+      });
+      const msg = `📩 ${res.messengerCount} अभिभावकों को NSTA Messenger (School Desk) व ${res.pushDelivered} डिवाइस पर Push अलर्ट भेजा गया!`;
+      toast.success(msg);
+      setAbsenteeBroadcastToast(msg);
+      setTimeout(() => setAbsenteeBroadcastToast(null), 5000);
+    } catch {
+      toast.error("अलर्ट भेजने में समस्या आई। कृपया इंटरनेट कनेक्शन जांचें।");
+    } finally {
+      setResendingAlerts(false);
+    }
+  };
+
+  const handleMarkSingleStudentOut = async (student: SchoolStudent) => {
+    if (!schoolId || !classId) return;
+    setPunchingOutId(student.id);
+    try {
+      // Ensure IN entry exists first if student was marked present without saving yet
+      const prevEntry = existingRecord?.students?.[student.id];
+      if (!prevEntry?.inTime && attendance[student.id]) {
+        const now = new Date();
+        const nowTime = now.toLocaleTimeString("en-IN", {
+          hour: "2-digit",
+          minute: "2-digit",
+          second: "2-digit",
+          hour12: true,
+        });
+        const studentsMap: AttendanceRecord["students"] = { ...(existingRecord?.students || {}) };
+        studentsMap[student.id] = {
+          ...(studentsMap[student.id] || {}),
+          present: true,
+          name: student.name,
+          rollNo: student.rollNo,
+          status: "present",
+          inTime: nowTime,
+          inTimestamp: now.getTime(),
+        };
+        await saveAttendance({
+          date: selectedDate,
+          schoolId,
+          classId,
+          sessionId: students[0]?.sessionId || "",
+          markedBy: teacherId,
+          students: studentsMap,
+          createdAt: existingRecord?.createdAt || now.toISOString(),
+        });
+      }
+
+      const res = await markStudentQrAttendance({
+        schoolId,
+        classId,
+        studentId: student.id,
+        studentName: student.name,
+        rollNo: student.rollNo,
+        date: selectedDate,
+        markedBy: teacherId,
+        scanMode: "out",
+        cutoffTime: inCutoffTime,
+        outStartTime,
+      });
+
+      if (res.success && !res.alreadyMarked) {
+        if (res.record) setExistingRecord(res.record);
+        toast.success(`🏃 ${student.name} का OUT (${res.outTime}) दर्ज व अभिभावक को सूचित किया गया!`);
+        void dispatchAttendanceParentAlert({
+          schoolId,
+          classId,
+          className,
+          studentId: student.id,
+          studentName: student.name,
+          rollNo: student.rollNo,
+          status: "out",
+          timeText: res.outTime || "",
+          stayDuration: res.stayDuration,
+          date: selectedDate,
+          sourceLabel: "क्लास अटेंडेंस रजिस्टर (OUT)",
+        });
+      } else {
+        toast.info(res.message);
+      }
+    } catch (err: any) {
+      toast.error(err?.message || "OUT दर्ज करने में त्रुटि।");
+    } finally {
+      setPunchingOutId(null);
+    }
+  };
+
+  const handleMarkAllStudentsOut = async () => {
+    if (!schoolId || !classId || students.length === 0) return;
+    setBulkOutLoading(true);
+    try {
+      const now = new Date();
+      const nowMs = now.getTime();
+      const nowTime = now.toLocaleTimeString("en-IN", {
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+        hour12: true,
+      });
+      const existing = (await getAttendance(schoolId, classId, selectedDate)) || existingRecord;
+      const studentsMap: AttendanceRecord["students"] = { ...(existing?.students || {}) };
+      const outTargets: SchoolStudent[] = [];
+
+      students.forEach((s) => {
+        const isPresent = attendance[s.id] ?? studentsMap[s.id]?.present ?? false;
+        if (isPresent) {
+          const prev = studentsMap[s.id];
+          const inTime = prev?.inTime || nowTime;
+          const inTs = prev?.inTimestamp;
+          const outTime = prev?.outTime || nowTime;
+          const outTs = prev?.outTimestamp || nowMs;
+          const stayDuration = prev?.stayDuration || calculateStayDuration(inTime, outTime, inTs, outTs);
+          studentsMap[s.id] = {
+            ...prev,
+            present: true,
+            name: s.name,
+            rollNo: s.rollNo,
+            status: prev?.status === "late" ? "late" : "present",
+            inTime,
+            inTimestamp: inTs || nowMs,
+            outTime,
+            outTimestamp: outTs,
+            stayDuration,
+            scanType: "out",
+          };
+          if (!prev?.outTime) outTargets.push(s);
+        }
+      });
+
+      if (outTargets.length === 0) {
+        toast.info("सभी उपस्थित छात्रों का OUT पहले से दर्ज है।");
+        return;
+      }
+
+      const record: AttendanceRecord = {
+        date: selectedDate,
+        schoolId,
+        classId,
+        sessionId: students[0]?.sessionId || existing?.sessionId || "",
+        markedBy: teacherId,
+        students: studentsMap,
+        createdAt: existing?.createdAt || now.toISOString(),
+      };
+      await saveAttendance(record);
+      setExistingRecord(record);
+
+      if (selectedDate === todayStr()) {
+        void dispatchAttendanceBatchAlerts({
+          schoolId,
+          classId,
+          className,
+          date: selectedDate,
+          sourceLabel: "क्लास रजिस्टर (All OUT)",
+          items: outTargets.map((s) => ({
+            studentId: s.id,
+            studentName: s.name,
+            rollNo: s.rollNo,
+            classId,
+            className,
+            status: "out" as const,
+            timeText: studentsMap[s.id]?.outTime || nowTime,
+            stayDuration: studentsMap[s.id]?.stayDuration,
+          })),
+        });
+      }
+
+      toast.success(`🏃 ${outTargets.length} छात्रों का OUT (प्रस्थान) दर्ज कर दिया गया!`);
+    } catch (err: any) {
+      toast.error(err?.message || "Bulk OUT करने में त्रुटि।");
+    } finally {
+      setBulkOutLoading(false);
+    }
+  };
+
+  const presentCount = Object.values(attendance).filter(Boolean).length;
+  const absentCount = students.length - presentCount;
+
+  // Filter today's absent students
+  const absentStudents = students.filter(s => {
+    const isPresent = attendance[s.id] ?? existingRecord?.students?.[s.id]?.present;
+    return isPresent === false;
+  });
+
+  // Split into Day 1 Absent vs Day 2+ Consecutive Absent
+  const { day1Absentees, day2PlusAbsentees } = (() => {
+    const day1: SchoolStudent[] = [];
+    const day2Plus: SchoolStudent[] = [];
+
+    absentStudents.forEach(st => {
+      const wasAbsentYesterday = yesterdayRecord?.students?.[st.id]?.present === false;
+      if (wasAbsentYesterday) {
+        day2Plus.push(st);
+      } else {
+        day1.push(st);
+      }
+    });
+
+    return { day1Absentees: day1, day2PlusAbsentees: day2Plus };
+  })();
+
+  // 1-Click Broadcast Absentee Notices (NSTA Messenger + Push)
+  const handleBroadcastAbsenteeNotices = async () => {
+    if (absentStudents.length === 0) {
+      toast.info("आज कोई भी छात्र अनुपस्थित नहीं है।");
+      return;
+    }
+    setBroadcastingAbsentees(true);
+    try {
+      const res = await dispatchAttendanceBatchAlerts({
+        schoolId,
+        classId,
+        className,
+        date: selectedDate,
+        sourceLabel: "क्लास अनुपस्थिति सूचना",
+        skipDedupe: true,
+        items: absentStudents.map(s => ({
+          studentId: s.id,
+          studentName: s.name,
+          rollNo: s.rollNo,
+          classId,
+          className,
+          status: "absent" as const,
+        })),
+      });
+
+      setAbsenteeBroadcastToast(`✅ ${absentStudents.length} अनुपस्थित छात्रों के अभिभावकों को NSTA Messenger (${res.messengerCount}) व Push (${res.pushDelivered}) अलर्ट भेजा गया!`);
+      setTimeout(() => setAbsenteeBroadcastToast(null), 4000);
+    } catch {
+      toast.error("Notification भेजने में समस्या आई।");
+    } finally {
+      setBroadcastingAbsentees(false);
+    }
+  };
+
+  // 1-Tap Single Absent Push + NSTA Messenger Notice
+  const handleSendSingleAbsentPush = async (student: SchoolStudent) => {
+    try {
+      const isDay2 = day2PlusAbsentees.some(d => d.id === student.id);
+      await dispatchAttendanceParentAlert({
+        schoolId,
+        classId,
+        className,
+        studentId: student.id,
+        studentName: student.name,
+        rollNo: student.rollNo,
+        status: "absent",
+        date: selectedDate,
+        sourceLabel: "क्लास अनुपस्थिति सूचना",
+        consecutiveAbsent: isDay2,
+        skipDedupe: true,
+      });
+      setAbsenteeBroadcastToast(`✅ ${student.name} के पेरेंट्स को NSTA Messenger व Push अलर्ट भेजा गया!`);
+      setTimeout(() => setAbsenteeBroadcastToast(null), 3500);
+    } catch {
+      toast.error("अलर्ट भेजने में समस्या आई।");
+    }
+  };
+
+  // WhatsApp Alert Link
+  const handleSendSingleWhatsApp = (student: SchoolStudent, isDay2: boolean) => {
+    const rawPhone = student.phone || (student as any).whatsappNo || (student as any).fatherPhone || "";
+    const cleanPhone = rawPhone.replace(/\D/g, "");
+    const msg = isDay2
+      ? `आदरणीय अभिभावक, आपका बच्चा ${student.name} (Roll #${student.rollNo || "-"}) लगातार 2 दिनों से विद्यालय में अनुपस्थित है। कृपया तुरंत विद्यालय प्रशासन से संपर्क करें। - ${className}`
+      : `आदरणीय अभिभावक, आपका बच्चा ${student.name} (Roll #${student.rollNo || "-"}) आज विद्यालय में उपस्थित नहीं हुआ है। यदि अवकाश का कारण है तो कृपया विद्यालय को अवगत कराएं। - ${className}`;
+    
+    if (cleanPhone) {
+      safeOpenExternalUrl(`https://wa.me/91${cleanPhone.slice(-10)}?text=${encodeURIComponent(msg)}`);
+    } else {
+      toast.error("इस छात्र के पेरेंट्स का फोन नंबर उपलब्ध नहीं है।");
+    }
+  };
+
+  // Call status & notes logging
+  const updateCallNote = (studentId: string, note: string) => {
+    setAbsenteeCallNotes(prev => {
+      const next = { ...prev, [studentId]: { ...(prev[studentId] || {}), note, called: true } };
+      try {
+        localStorage.setItem(`nst_call_logs_${schoolId}_${classId}`, JSON.stringify(next));
+      } catch {}
+      return next;
+    });
+  };
+
+  const markStudentCalled = (studentId: string) => {
+    setAbsenteeCallNotes(prev => {
+      const next = { ...prev, [studentId]: { ...(prev[studentId] || {}), called: true } };
+      try {
+        localStorage.setItem(`nst_call_logs_${schoolId}_${classId}`, JSON.stringify(next));
+      } catch {}
+      return next;
+    });
+  };
+
+  // Monthly Report: compute per-student attendance stats
+  const studentStats = students.map(s => {
+    const days = monthlyData.filter(r => r.students[s.id] !== undefined);
+    const presentDays = days.filter(r => r.students[s.id]?.present).length;
+    return { ...s, totalDays: days.length, presentDays, absentDays: days.length - presentDays, pct: days.length > 0 ? Math.round((presentDays / days.length) * 100) : 0 };
+  });
+
+  const downloadMHTMLReport = () => {
+    const rows = studentStats.map(s =>
+      `<tr><td>${s.rollNo}</td><td>${s.name}</td><td>${s.presentDays}</td><td>${s.absentDays}</td><td>${s.totalDays}</td><td style="color:${s.pct >= 75 ? "green" : "red"}">${s.pct}%</td></tr>`
+    ).join("");
+
+    const html = `<html><head><meta charset="UTF-8"><title>Attendance Report - ${className}</title>
+<style>body{font-family:Arial,sans-serif;padding:24px}h1{color:#1e293b}table{width:100%;border-collapse:collapse;margin-top:16px}th{background:#1e293b;color:white;padding:10px;text-align:left}td{padding:8px 10px;border-bottom:1px solid #e2e8f0}tr:hover{background:#f8fafc}.summary{display:flex;gap:24px;margin:16px 0}.card{background:#f1f5f9;border-radius:8px;padding:12px 20px;text-align:center}.card h3{margin:0;font-size:24px}.card p{margin:4px 0;color:#64748b;font-size:13px}</style></head>
+<body>
+<h1>📋 Attendance Report</h1>
+<p><strong>School:</strong> ${schoolId} &nbsp;|&nbsp; <strong>Class:</strong> ${className} &nbsp;|&nbsp; <strong>Month:</strong> ${selectedMonth}</p>
+<div class="summary">
+<div class="card"><h3>${monthlyData.length}</h3><p>Total Days</p></div>
+<div class="card"><h3>${studentStats.length}</h3><p>Students</p></div>
+<div class="card" style="background:#dcfce7"><h3>${studentStats.filter(s => s.pct >= 75).length}</h3><p>≥75% Attendance</p></div>
+<div class="card" style="background:#fee2e2"><h3>${studentStats.filter(s => s.pct < 75).length}</h3><p>&lt;75% Attendance</p></div>
+</div>
+<table><thead><tr><th>Roll No</th><th>Student Name</th><th>Present</th><th>Absent</th><th>Total Days</th><th>Attendance %</th></tr></thead>
+<tbody>${rows}</tbody></table>
+<p style="margin-top:24px;color:#94a3b8;font-size:12px">Generated by IIC×NSTA Smart School System on ${new Date().toLocaleString()}</p>
+</body></html>`;
+
+    const blob = new Blob([html], { type: "multipart/related; type=\"text/html\"; boundary=\"boundary\"" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `Attendance_${className}_${selectedMonth}.mhtml`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const changeMonth = (delta: number) => {
+    const [y, m] = selectedMonth.split("-").map(Number);
+    const d = new Date(y, m - 1 + delta, 1);
+    setSelectedMonth(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`);
+  };
+
+  const handleDownloadSingleMatrixPdf = async () => {
+    setExportingPdfMode("single");
+    try {
+      const allRecords = await getAllSchoolAttendance(schoolId).catch(() => monthlyData);
+      const classMonthRecords = allRecords.filter(
+        (r) => r.classId === classId && String(r.date || "").startsWith(selectedMonth)
+      );
+      const recordsToUse = classMonthRecords.length >= monthlyData.length ? classMonthRecords : monthlyData;
+      const safeClass = (className || "Class").replace(/[^a-z0-9_-]/gi, "_");
+      const res = generateAttendanceMatrixPdf({
+        schoolName: activeSchool?.name || schoolId,
+        filename: `${safeClass}_Attendance_${selectedMonth}.pdf`,
+        sections: [
+          {
+            className,
+            month: selectedMonth,
+            students,
+            records: recordsToUse,
+          },
+        ],
+      });
+      toast.success(`A4 Landscape PDF downloaded (${res.totalPages} page${res.totalPages > 1 ? "s" : ""})`);
+    } catch (err: any) {
+      toast.error(err?.message || "PDF generate karne me error aaya.");
+    } finally {
+      setExportingPdfMode(null);
+    }
+  };
+
+  const handleDownloadAllMonthsPdf = async () => {
+    setExportingPdfMode("all_months");
+    try {
+      const allRecords = await getAllSchoolAttendance(schoolId);
+      const classRecords = allRecords.filter((r) => r.classId === classId);
+
+      // Build chronological month list: academic session start (Apr) through max(selectedMonth, currentMonth, latestRecorded) + any earlier recorded months
+      const recordedMonths = new Set<string>();
+      classRecords.forEach((r) => {
+        const m = String(r.date || "").slice(0, 7);
+        if (/^\d{4}-\d{2}$/.test(m)) recordedMonths.add(m);
+      });
+
+      const [selYr, selMn] = selectedMonth.split("-").map(Number);
+      const sessionStartYear = selMn >= 4 ? selYr : selYr - 1;
+      const curStr = currentMonthStr();
+      let maxMonth = selectedMonth > curStr ? selectedMonth : curStr;
+      recordedMonths.forEach((m) => {
+        if (m > maxMonth) maxMonth = m;
+      });
+
+      const allMonthsSet = new Set<string>(recordedMonths);
+      let cursorY = sessionStartYear;
+      let cursorM = 4;
+      for (let i = 0; i < 12; i++) {
+        const ym = `${cursorY}-${String(cursorM).padStart(2, "0")}`;
+        if (ym <= maxMonth) allMonthsSet.add(ym);
+        cursorM++;
+        if (cursorM > 12) {
+          cursorM = 1;
+          cursorY++;
+        }
+      }
+      allMonthsSet.add(selectedMonth);
+
+      const sortedMonths = Array.from(allMonthsSet).sort((a, b) => a.localeCompare(b));
+      const sections: MatrixPdfSection[] = sortedMonths.map((m) => ({
+        className,
+        month: m,
+        students,
+        records: classRecords.filter((r) => String(r.date || "").startsWith(m)),
+      }));
+
+      const safeClass = (className || "Class").replace(/[^a-z0-9_-]/gi, "_");
+      const res = generateAttendanceMatrixPdf({
+        schoolName: activeSchool?.name || schoolId,
+        filename: `${safeClass}_All_Months_Attendance.pdf`,
+        sections,
+      });
+      toast.success(`${sortedMonths.length} months combined into 1 A4 Landscape PDF (${res.totalPages} pages)!`);
+    } catch (err: any) {
+      toast.error(err?.message || "All Months PDF generate karne me error aaya.");
+    } finally {
+      setExportingPdfMode(null);
+    }
+  };
+
+  const handleDownloadAllClassesPdf = async () => {
+    setExportingPdfMode("all_classes");
+    try {
+      const [classesList, allRecords] = await Promise.all([
+        getClasses(schoolId, activeSchool?.activeSession),
+        getAllSchoolAttendance(schoolId),
+      ]);
+
+      const targetClasses =
+        classesList && classesList.length > 0
+          ? classesList
+          : [{ id: classId, name: className, section: "" } as any];
+
+      const classStudentsList = await Promise.all(
+        targetClasses.map((cls: any) =>
+          cls.id === classId && students.length > 0
+            ? Promise.resolve(students)
+            : getStudents(schoolId, cls.id, cls.name, activeSchool?.activeSession).catch(() => [])
+        )
+      );
+
+      const sections: MatrixPdfSection[] = targetClasses.map((cls: any, i: number) => {
+        const label = cls.section ? `${cls.name} (${cls.section})` : cls.name;
+        const cRecs = allRecords.filter(
+          (r) => r.classId === cls.id && String(r.date || "").startsWith(selectedMonth)
+        );
+        return {
+          className: label || "Class",
+          month: selectedMonth,
+          students: classStudentsList[i] || [],
+          records: cRecs,
+        };
+      });
+
+      const res = generateAttendanceMatrixPdf({
+        schoolName: activeSchool?.name || schoolId,
+        filename: `All_Classes_Attendance_${selectedMonth}.pdf`,
+        sections,
+      });
+      toast.success(`All ${sections.length} classes exported in 1 A4 Landscape PDF (${res.totalPages} pages)!`);
+    } catch (err: any) {
+      toast.error(err?.message || "All Classes PDF generate karne me error aaya.");
+    } finally {
+      setExportingPdfMode(null);
+    }
+  };
+
+  if (loading) return <div className="flex items-center justify-center h-48 text-slate-400">Loading students...</div>;
+
+  return (
+    <div className="min-h-screen bg-slate-50 dark:bg-slate-900 print:min-h-0 print:bg-white">
+      <style>{`
+        @media print {
+          @page { size: A4 landscape; margin: 4mm; }
+          html, body {
+            width: 100% !important;
+            overflow: visible !important;
+            margin: 0 !important;
+            padding: 0 !important;
+            background: #ffffff !important;
+          }
+          .attendance-matrix-print-wrap {
+            overflow: visible !important;
+            border: 0 !important;
+            border-radius: 0 !important;
+            box-shadow: none !important;
+          }
+          .attendance-matrix-table {
+            width: 100% !important;
+            table-layout: fixed !important;
+            border-collapse: collapse !important;
+          }
+          .attendance-matrix-table th,
+          .attendance-matrix-table td {
+            padding: 1px !important;
+            font-size: 6.5px !important;
+            line-height: 1.15 !important;
+            min-width: 0 !important;
+            max-width: none !important;
+            width: auto !important;
+            position: static !important;
+            overflow: hidden !important;
+            text-overflow: ellipsis !important;
+            white-space: nowrap !important;
+          }
+          .attendance-matrix-table td span {
+            width: auto !important;
+            height: auto !important;
+            min-width: 0 !important;
+            padding: 0.5px 1px !important;
+            font-size: 6.5px !important;
+            line-height: 1.1 !important;
+            border-radius: 2px !important;
+          }
+          .attendance-matrix-table th:first-child,
+          .attendance-matrix-table td:first-child {
+            width: 20px !important;
+          }
+          .attendance-matrix-table th:nth-child(2),
+          .attendance-matrix-table td:nth-child(2) {
+            width: 72px !important;
+            text-align: left !important;
+            padding-left: 2px !important;
+          }
+          .attendance-matrix-table th:nth-last-child(-n+5),
+          .attendance-matrix-table td:nth-last-child(-n+5) {
+            width: 20px !important;
+          }
+        }
+      `}</style>
+      {/* Header */}
+      <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-3.5 sm:p-4 shadow-xs print:hidden">
+        <div className="flex flex-wrap items-center justify-between gap-2.5">
+          <div className="flex items-center gap-2.5 min-w-0">
+            {onBack && (
+              <button
+                type="button"
+                onClick={onBack}
+                className="w-9 h-9 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 flex items-center justify-center shrink-0 transition cursor-pointer"
+                aria-label="Back"
+              >
+                <ChevronLeft className="w-4 h-4" />
+              </button>
+            )}
+            <div className="min-w-0">
+              <h2 className="text-base sm:text-lg font-bold text-slate-900 dark:text-white tracking-tight truncate">
+                {className} Attendance
+              </h2>
+              <div className="flex items-center gap-1.5 text-xs text-slate-500 dark:text-slate-400 mt-0.5 tabular-nums">
+                <span className="font-medium">{students.length} Students</span>
+                <span className="text-slate-300 dark:text-slate-700">·</span>
+                {isOnline ? (
+                  <span className="inline-flex items-center gap-1 font-semibold text-emerald-600 dark:text-emerald-400">
+                    <Cloud className="w-3.5 h-3.5 shrink-0" />
+                    <span>Cloud Synced</span>
+                  </span>
+                ) : (
+                  <span className="inline-flex items-center gap-1 font-semibold text-amber-600 dark:text-amber-400">
+                    <WifiOff className="w-3.5 h-3.5 shrink-0" />
+                    <span>Offline Cache</span>
+                  </span>
+                )}
+              </div>
+            </div>
+          </div>
+
+          {offlineQueue.length > 0 && (
+            <button
+              type="button"
+              onClick={syncOfflineQueue}
+              disabled={isSyncingQueue}
+              className="px-3 py-1.5 rounded-xl bg-amber-50 hover:bg-amber-100 dark:bg-amber-950/50 text-amber-800 dark:text-amber-300 border border-amber-300 dark:border-amber-800/60 font-semibold text-xs flex items-center gap-1.5 transition active:scale-95 cursor-pointer whitespace-nowrap"
+              title="Sync pending offline attendance to cloud"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${isSyncingQueue ? "animate-spin" : ""}`} />
+              <span>{isSyncingQueue ? "Syncing..." : `Sync ${offlineQueue.length} Pending`}</span>
+            </button>
+          )}
+        </div>
+
+        {/* Single-Row Responsive Segmented Navigation */}
+        <div className="mt-3 grid grid-cols-4 sm:inline-flex items-center gap-1 bg-slate-100 dark:bg-slate-950 p-1 rounded-xl border border-slate-200/80 dark:border-slate-800 w-full sm:w-auto">
+          <button
+            type="button"
+            onClick={() => setViewMode("mark")}
+            className={`min-h-[36px] px-1.5 sm:px-3 py-1.5 rounded-lg text-[11px] sm:text-xs font-semibold whitespace-nowrap transition cursor-pointer text-center truncate ${
+              viewMode === "mark"
+                ? "bg-white dark:bg-slate-800 text-slate-900 dark:text-white shadow-2xs"
+                : "text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white"
+            }`}
+          >
+            <span className="sm:hidden">Mark</span>
+            <span className="hidden sm:inline">Daily Mark</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setViewMode("absentee")}
+            className={`min-h-[36px] px-1.5 sm:px-3 py-1.5 rounded-lg text-[11px] sm:text-xs font-semibold whitespace-nowrap transition cursor-pointer flex items-center justify-center gap-1 truncate ${
+              viewMode === "absentee"
+                ? "bg-rose-600 text-white shadow-2xs"
+                : "text-slate-600 dark:text-slate-400 hover:text-rose-600 dark:hover:text-rose-400"
+            }`}
+          >
+            <AlertCircle className="w-3 h-3 sm:w-3.5 sm:h-3.5 shrink-0" />
+            <span className="tabular-nums sm:hidden">Absent ({absentStudents.length})</span>
+            <span className="tabular-nums hidden sm:inline">Absentees ({absentStudents.length})</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setViewMode("report")}
+            className={`min-h-[36px] px-1.5 sm:px-3 py-1.5 rounded-lg text-[11px] sm:text-xs font-semibold whitespace-nowrap transition cursor-pointer text-center truncate ${
+              viewMode === "report"
+                ? "bg-white dark:bg-slate-800 text-slate-900 dark:text-white shadow-2xs"
+                : "text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white"
+            }`}
+          >
+            Report
+          </button>
+          <button
+            type="button"
+            onClick={() => setViewMode("matrix")}
+            className={`min-h-[36px] px-1.5 sm:px-3 py-1.5 rounded-lg text-[11px] sm:text-xs font-semibold whitespace-nowrap transition cursor-pointer text-center truncate ${
+              viewMode === "matrix"
+                ? "bg-white dark:bg-slate-800 text-slate-900 dark:text-white shadow-2xs"
+                : "text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white"
+            }`}
+          >
+            <span className="sm:hidden">31d Matrix</span>
+            <span className="hidden sm:inline">31-Day Matrix</span>
+          </button>
+        </div>
+      </div>
+
+      {offlineAlertMsg && (
+        <div className="pt-3">
+          <div className="p-3 bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800/60 text-amber-900 dark:text-amber-200 text-xs font-semibold rounded-xl flex items-center justify-between gap-2 animate-in fade-in">
+            <div className="flex items-center gap-2">
+              <CloudOff className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0" />
+              <span>{offlineAlertMsg}</span>
+            </div>
+            <button
+              type="button"
+              onClick={() => setOfflineAlertMsg(null)}
+              className="p-1 hover:bg-amber-500/15 rounded text-slate-500 cursor-pointer"
+            >
+              <XCircle className="w-4 h-4" />
+            </button>
+          </div>
+        </div>
+      )}
+
+      {viewMode === "mark" ? (
+        <div className="pt-3.5 space-y-3.5">
+          {/* Toast Notification */}
+          {absenteeBroadcastToast && (
+            <div className="p-3 bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800/60 text-emerald-800 dark:text-emerald-200 text-xs font-semibold rounded-xl flex items-center gap-2 animate-in fade-in">
+              <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+              <span>{absenteeBroadcastToast}</span>
+            </div>
+          )}
+
+          {/* Birthday Wish Sent Toast */}
+          {birthdayNoticeToast && (
+            <div className="p-3 bg-rose-600 text-white text-xs font-semibold rounded-xl flex items-center justify-between gap-2 shadow-xs animate-in fade-in">
+              <div className="flex items-center gap-2">
+                <Sparkles className="w-4 h-4 text-amber-200 shrink-0" />
+                <span>{birthdayNoticeToast}</span>
+              </div>
+              <button type="button" onClick={() => setBirthdayNoticeToast(null)} className="p-1 hover:bg-white/20 rounded cursor-pointer">
+                <XCircle className="w-4 h-4" />
+              </button>
+            </div>
+          )}
+
+          {/* TODAY'S BIRTHDAYS & NO PUNISHMENT POLICY */}
+          {birthdayStudentsInClass.length > 0 && (
+            <div className="p-4 rounded-2xl bg-rose-50 dark:bg-rose-950/30 border border-rose-200 dark:border-rose-800/60 flex flex-col sm:flex-row sm:items-center justify-between gap-3 animate-in slide-in-from-top-2">
+              <div className="flex items-start gap-3">
+                <div className="w-10 h-10 rounded-xl bg-rose-100 dark:bg-rose-900/50 text-rose-600 dark:text-rose-300 flex items-center justify-center shrink-0">
+                  <Cake className="w-5 h-5" />
+                </div>
+                <div>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="text-[10px] font-bold uppercase tracking-wider text-rose-700 dark:text-rose-300">
+                      No Punishment Policy
+                    </span>
+                    <span className="text-slate-300 dark:text-slate-700">·</span>
+                    <span className="text-xs text-slate-600 dark:text-slate-300 font-medium">
+                      {birthdayStudentsInClass.length} Birthday Today
+                    </span>
+                  </div>
+                  <p className="text-sm font-bold text-slate-900 dark:text-white mt-0.5">
+                    Happy Birthday {birthdayStudentsInClass.map(s => s.name).join(", ")}!
+                  </p>
+                  <p className="text-xs text-slate-600 dark:text-slate-300 mt-0.5 leading-relaxed">
+                    Teachers are requested to share warm wishes and observe No Punishment Day for birthday students.
+                  </p>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => handleWishAllClassBirthdays(birthdayStudentsInClass)}
+                disabled={wishingClassBirthdays}
+                className="min-h-[38px] px-3.5 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-semibold shadow-2xs transition active:scale-95 cursor-pointer flex items-center justify-center gap-1.5 shrink-0 whitespace-nowrap"
+              >
+                {wishingClassBirthdays ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Gift className="w-3.5 h-3.5" />}
+                <span>{wishingClassBirthdays ? "Sending..." : "Send Birthday Blessing"}</span>
+              </button>
+            </div>
+          )}
+
+          {/* Unified Date & Shift Timing Bar */}
+          {(() => {
+            const liveShift = getLiveShiftStatus({ inCutoffTime, outStartTime });
+            const cleanBadgeLabel = liveShift.badgeText.replace(/^[🔴🟠🟢]\s*/, "");
+            return (
+              <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-3.5 sm:p-4 shadow-xs space-y-3">
+                <div className="flex flex-wrap items-center justify-between gap-2.5">
+                  <div className="flex items-center gap-2.5 flex-1 min-w-[200px]">
+                    <div className="w-9 h-9 rounded-xl bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 flex items-center justify-center shrink-0">
+                      <Calendar className="w-4 h-4" />
+                    </div>
+                    <input
+                      type="date"
+                      value={selectedDate}
+                      onChange={e => setSelectedDate(e.target.value)}
+                      className="flex-1 bg-transparent text-slate-900 dark:text-white text-sm font-mono font-semibold outline-none cursor-pointer"
+                    />
+                    {existingRecord && (
+                      <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-700 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/50 border border-emerald-200 dark:border-emerald-800/60 px-2 py-0.5 rounded-md whitespace-nowrap shrink-0">
+                        <CheckCircle2 className="w-3 h-3" />
+                        Saved
+                      </span>
+                    )}
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => setShowScheduleEditor((p) => !p)}
+                    className="px-3 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 text-xs font-semibold cursor-pointer shrink-0 transition inline-flex items-center gap-1.5 whitespace-nowrap"
+                  >
+                    <Clock className="w-3.5 h-3.5 text-slate-500 dark:text-slate-400" />
+                    <span>{showScheduleEditor ? "Done" : "Shift Times"}</span>
+                  </button>
+                </div>
+
+                <div className="pt-2.5 border-t border-slate-100 dark:border-slate-800 space-y-1.5">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <span
+                      className={`w-2 h-2 rounded-full shrink-0 ${
+                        liveShift.phase === "out_active"
+                          ? "bg-rose-500"
+                          : liveShift.phase === "late_in"
+                          ? "bg-amber-500"
+                          : "bg-emerald-500"
+                      }`}
+                    />
+                    <span className="text-xs font-semibold text-slate-900 dark:text-white truncate">
+                      {cleanBadgeLabel}
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-relaxed">
+                    {liveShift.helperText}
+                  </p>
+                </div>
+
+                {showScheduleEditor && (
+                  <div className="pt-2.5 border-t border-slate-100 dark:border-slate-800 flex flex-wrap items-center gap-4 text-xs">
+                    <label className="flex items-center gap-2 font-semibold text-slate-700 dark:text-slate-200">
+                      <span>IN Cutoff (Late after):</span>
+                      <input
+                        type="time"
+                        value={inCutoffTime}
+                        onChange={(e) => {
+                          const v = e.target.value;
+                          setInCutoffTime(v);
+                          if (schoolId) void saveAttendanceSchedule(schoolId, { inCutoffTime: v, outStartTime });
+                        }}
+                        className="px-2.5 py-1 rounded-lg bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white font-mono text-xs"
+                      />
+                    </label>
+                    <label className="flex items-center gap-2 font-semibold text-slate-700 dark:text-slate-200">
+                      <span>OUT Starts (Auto Exit):</span>
+                      <input
+                        type="time"
+                        value={outStartTime}
+                        onChange={(e) => {
+                          const v = e.target.value;
+                          setOutStartTime(v);
+                          if (schoolId) void saveAttendanceSchedule(schoolId, { inCutoffTime, outStartTime: v });
+                        }}
+                        className="px-2.5 py-1 rounded-lg bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white font-mono text-xs"
+                      />
+                    </label>
+                  </div>
+                )}
+              </div>
+            );
+          })()}
+
+          {/* Executive KPI Summary Grid */}
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+            <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-3.5 shadow-2xs">
+              <p className="text-[11px] font-semibold text-slate-500 dark:text-slate-400">Present Today</p>
+              <p className="text-xl sm:text-2xl font-bold text-slate-900 dark:text-white mt-1 tabular-nums">
+                {presentCount}<span className="text-sm font-medium text-slate-400">/{students.length}</span>
+              </p>
+            </div>
+            <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-3.5 shadow-2xs">
+              <p className="text-[11px] font-semibold text-slate-500 dark:text-slate-400">Punched In</p>
+              <p className="text-xl sm:text-2xl font-bold text-emerald-600 dark:text-emerald-400 mt-1 tabular-nums">
+                {students.filter(s => existingRecord?.students[s.id]?.inTime).length}
+              </p>
+            </div>
+            <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-3.5 shadow-2xs">
+              <p className="text-[11px] font-semibold text-slate-500 dark:text-slate-400">Punched Out</p>
+              <p className="text-xl sm:text-2xl font-bold text-amber-600 dark:text-amber-400 mt-1 tabular-nums">
+                {students.filter(s => existingRecord?.students[s.id]?.outTime).length}
+              </p>
+            </div>
+            <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-3.5 shadow-2xs">
+              <p className="text-[11px] font-semibold text-slate-500 dark:text-slate-400">Late Arrivals</p>
+              <p className="text-xl sm:text-2xl font-bold text-rose-600 dark:text-rose-400 mt-1 tabular-nums">
+                {students.filter(s => existingRecord?.students[s.id]?.status === "late").length}
+              </p>
+            </div>
+          </div>
+
+          {/* Bulk Quick Actions + Smart Check-In Toolbar */}
+          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-3 sm:p-3.5 space-y-2.5 shadow-xs">
+            <div className="grid grid-cols-3 gap-2">
+              <button
+                type="button"
+                onClick={() => markAll(true)}
+                className="min-h-[40px] py-2 px-3 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-semibold transition cursor-pointer active:scale-98 whitespace-nowrap"
+              >
+                All Present
+              </button>
+              <button
+                type="button"
+                onClick={() => markAll(false)}
+                className="min-h-[40px] py-2 px-3 bg-rose-50 hover:bg-rose-100 dark:bg-rose-950/40 dark:hover:bg-rose-900/60 text-rose-700 dark:text-rose-300 border border-rose-200 dark:border-rose-800/60 rounded-xl text-xs font-semibold transition cursor-pointer active:scale-98 whitespace-nowrap"
+              >
+                All Absent
+              </button>
+              <button
+                type="button"
+                onClick={handleMarkAllStudentsOut}
+                disabled={bulkOutLoading}
+                className="min-h-[40px] py-2 px-3 bg-amber-50 hover:bg-amber-100 dark:bg-amber-950/40 dark:hover:bg-amber-900/60 text-amber-700 dark:text-amber-300 border border-amber-200 dark:border-amber-800/60 rounded-xl text-xs font-semibold transition flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-60 whitespace-nowrap"
+              >
+                {bulkOutLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <LogOut className="w-3.5 h-3.5" />}
+                <span>All OUT</span>
+              </button>
+            </div>
+
+            <div className="pt-2 border-t border-slate-100 dark:border-slate-800 grid grid-cols-2 sm:grid-cols-5 gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setFaceKioskTestMode(false);
+                  setShowFaceKiosk(true);
+                }}
+                className={`min-h-[40px] py-2 px-2.5 active:scale-95 rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5 transition cursor-pointer whitespace-nowrap ${
+                  hasFaceAccess
+                    ? "bg-emerald-600 hover:bg-emerald-700 text-white shadow-2xs"
+                    : "bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 text-slate-700 dark:text-amber-300 border border-slate-200 dark:border-slate-700"
+                }`}
+                title={hasFaceAccess ? "AI Face Attendance Kiosk" : "Elite Plan — AI Face Attendance"}
+              >
+                {hasFaceAccess ? <Sparkles size={14} /> : <Lock size={13} className="text-amber-500" />}
+                <span>AI Face Kiosk</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setFaceKioskTestMode(true);
+                  setShowFaceKiosk(true);
+                }}
+                className="min-h-[40px] py-2 px-2.5 active:scale-95 rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5 transition cursor-pointer whitespace-nowrap bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-200 border border-slate-200 dark:border-slate-700"
+                title={hasFaceAccess ? "Test mode: 1st scan IN, 2nd scan OUT with push alert" : "Elite Plan — AI Face Attendance"}
+              >
+                {hasFaceAccess ? <Volume2 size={14} className="text-amber-600 dark:text-amber-400" /> : <Lock size={13} className="text-amber-500" />}
+                <span>Face Test</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowFaceStudio(true)}
+                className="min-h-[40px] py-2 px-2.5 active:scale-95 rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5 transition cursor-pointer whitespace-nowrap bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-200 border border-slate-200 dark:border-slate-700"
+                title={hasFaceAccess ? "Enroll and test student Face IDs" : "Elite Plan — Live Face ID Studio"}
+              >
+                {hasFaceAccess ? <Camera size={14} className="text-indigo-600 dark:text-indigo-400" /> : <Lock size={13} className="text-amber-500" />}
+                <span>Face ID</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowQrScanner(true)}
+                className="min-h-[40px] py-2 px-2.5 bg-indigo-50 hover:bg-indigo-100 dark:bg-indigo-950/50 dark:hover:bg-indigo-900/60 text-indigo-700 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-800/60 active:scale-95 rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5 transition cursor-pointer whitespace-nowrap"
+              >
+                <Camera size={14} />
+                <span>QR Scan</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowClassQrModal(true)}
+                className="min-h-[40px] py-2 px-2.5 col-span-2 sm:col-span-1 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 active:scale-95 text-slate-800 dark:text-slate-200 border border-slate-200 dark:border-slate-700 rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5 transition cursor-pointer whitespace-nowrap"
+              >
+                <QrCode size={14} className="text-emerald-600 dark:text-emerald-400" />
+                <span>Class QR</span>
+              </button>
+            </div>
+          </div>
+
+          {/* 1-Click Absentee Broadcast Callout */}
+          {absentStudents.length > 0 && (
+            <div className="p-3.5 rounded-xl bg-rose-50 dark:bg-rose-950/30 border border-rose-200 dark:border-rose-800/60 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+              <div className="flex items-center gap-2.5 text-xs">
+                <AlertCircle className="w-4 h-4 text-rose-600 dark:text-rose-400 shrink-0" />
+                <span className="font-semibold text-slate-900 dark:text-white">
+                  {absentStudents.length} student(s) marked absent today.
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={handleBroadcastAbsenteeNotices}
+                disabled={broadcastingAbsentees}
+                className="w-full sm:w-auto px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white rounded-lg text-xs font-semibold flex items-center justify-center gap-1.5 active:scale-95 transition cursor-pointer whitespace-nowrap"
+              >
+                {broadcastingAbsentees ? (
+                  <>
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    <span>Sending Alerts...</span>
+                  </>
+                ) : (
+                  <>
+                    <Bell className="w-3.5 h-3.5" />
+                    <span>Send Absent Alerts</span>
+                  </>
+                )}
+              </button>
+            </div>
+          )}
+
+          {/* Student Roster List */}
+          <div className="bg-white dark:bg-slate-900 rounded-2xl shadow-xs overflow-hidden border border-slate-200 dark:border-slate-800">
+            {students.length > 0 && (
+              <div className="px-4 py-2.5 bg-slate-50 dark:bg-slate-950 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between text-xs">
+                <span className="font-semibold text-slate-700 dark:text-slate-300">Student Roster</span>
+                <span className="text-slate-500 dark:text-slate-400 tabular-nums">
+                  {presentCount} Present · {absentStudents.length} Absent
+                </span>
+              </div>
+            )}
+
+            {students.map((s) => {
+              const stEntry = existingRecord?.students[s.id];
+              const inTime = stEntry?.inTime;
+              const outTime = stEntry?.outTime;
+              const duration = stEntry?.stayDuration;
+              const isLate = stEntry?.status === "late";
+              const isBirthday = isStudentBirthdayToday(s.dateOfBirth);
+              const isPresent = Boolean(attendance[s.id]);
+
+              return (
+                <div
+                  key={s.id}
+                  onClick={() => toggleStudent(s.id)}
+                  className={`flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 px-4 py-3.5 min-h-[58px] cursor-pointer transition-colors border-b border-slate-100 dark:border-slate-800 last:border-0 ${
+                    isBirthday
+                      ? "bg-rose-50/60 dark:bg-rose-950/20 hover:bg-rose-50 dark:hover:bg-rose-950/30"
+                      : isPresent
+                      ? "bg-white dark:bg-slate-900 hover:bg-slate-50 dark:hover:bg-slate-800/60"
+                      : "bg-rose-50/40 dark:bg-rose-950/15 hover:bg-rose-50/70 dark:hover:bg-rose-950/25"
+                  }`}
+                >
+                  <div className="flex items-start sm:items-center gap-3 min-w-0">
+                    <span className="text-xs font-mono font-semibold text-slate-400 w-8 text-right shrink-0 tabular-nums mt-0.5 sm:mt-0">
+                      #{s.rollNo}
+                    </span>
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="text-slate-900 dark:text-white font-semibold text-sm leading-tight">
+                          {s.name}
+                        </span>
+
+                        {isBirthday && (
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-rose-100 dark:bg-rose-950/60 text-rose-700 dark:text-rose-300 border border-rose-200 dark:border-rose-800/60 text-[10px] font-semibold">
+                            <Cake className="w-3 h-3" />
+                            <span>Birthday</span>
+                          </span>
+                        )}
+
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setSelectedStudentForModal(s);
+                            setModalInitialTab("attendance");
+                          }}
+                          className="px-2 py-0.5 rounded-md bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300 text-[11px] font-semibold transition-colors cursor-pointer"
+                          title="View ID Card, Fee Details & Attendance"
+                        >
+                          Options
+                        </button>
+                      </div>
+                      <div className="flex flex-wrap items-center gap-2 mt-1 text-[11px] font-mono tabular-nums">
+                        {inTime ? (
+                          <span className={`font-semibold ${
+                            isLate ? "text-amber-600 dark:text-amber-400" : "text-emerald-600 dark:text-emerald-400"
+                          }`}>
+                            In: {inTime}{isLate ? " (Late)" : ""}
+                          </span>
+                        ) : (
+                          <span className="text-slate-400 font-sans">No entry punch</span>
+                        )}
+
+                        {outTime ? (
+                          <>
+                            <span className="text-slate-300 dark:text-slate-700">·</span>
+                            <span className="font-semibold text-amber-600 dark:text-amber-400">
+                              Exit: {outTime}
+                            </span>
+                          </>
+                        ) : (inTime || isPresent) ? (
+                          <>
+                            <span className="text-slate-300 dark:text-slate-700">·</span>
+                            <span className="text-slate-500 dark:text-slate-400 font-sans">
+                              Exit pending ({formatTime12h(outStartTime)})
+                            </span>
+                          </>
+                        ) : null}
+
+                        {duration && (
+                          <>
+                            <span className="text-slate-300 dark:text-slate-700">·</span>
+                            <span className="font-semibold text-indigo-600 dark:text-indigo-400">
+                              {duration}
+                            </span>
+                          </>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-2 self-end sm:self-auto shrink-0">
+                    {isPresent && !outTime && (
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          void handleMarkSingleStudentOut(s);
+                        }}
+                        disabled={punchingOutId === s.id}
+                        className="px-2.5 py-1 rounded-lg bg-amber-50 hover:bg-amber-100 dark:bg-amber-950/50 text-amber-700 dark:text-amber-300 border border-amber-200 dark:border-amber-800/60 text-[11px] font-semibold flex items-center gap-1 transition active:scale-95 cursor-pointer disabled:opacity-60"
+                        title="Record OUT (Exit) for this student"
+                      >
+                        {punchingOutId === s.id ? <Loader2 className="w-3 h-3 animate-spin" /> : <LogOut className="w-3 h-3" />}
+                        <span>OUT</span>
+                      </button>
+                    )}
+
+                    {isBirthday && (
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleWishSingleStudent(s);
+                        }}
+                        disabled={wishingBirthdayId === s.id}
+                        className="px-2.5 py-1 rounded-lg bg-rose-600 hover:bg-rose-700 text-white text-[11px] font-semibold flex items-center gap-1 transition active:scale-95 cursor-pointer"
+                        title="Send Official Birthday Blessing Card to Student"
+                      >
+                        {wishingBirthdayId === s.id ? (
+                          <Loader2 className="w-3 h-3 animate-spin" />
+                        ) : (
+                          <Gift className="w-3 h-3" />
+                        )}
+                        <span>{wishingBirthdayId === s.id ? "Sending..." : "Wish"}</span>
+                      </button>
+                    )}
+
+                    {isPresent ? (
+                      <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-emerald-50 dark:bg-emerald-950/50 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800/60 text-xs font-semibold">
+                        <CheckCircle className="w-3.5 h-3.5" />
+                        <span>Present</span>
+                      </span>
+                    ) : (
+                      <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-rose-50 dark:bg-rose-950/50 text-rose-700 dark:text-rose-300 border border-rose-200 dark:border-rose-800/60 text-xs font-semibold">
+                        <XCircle className="w-3.5 h-3.5" />
+                        <span>Absent</span>
+                      </span>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+
+            {students.length === 0 && (
+              <div className="text-center py-12 px-4 text-slate-500 dark:text-slate-400">
+                <Users className="w-10 h-10 mx-auto mb-2.5 opacity-35" />
+                <p className="text-sm font-semibold text-slate-900 dark:text-white">No students in {className} yet</p>
+                <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
+                  Add students to this class from the Students module to start marking daily attendance.
+                </p>
+              </div>
+            )}
+          </div>
+
+          {students.length > 0 && (
+            <div className="space-y-2 pt-1">
+              <button
+                type="button"
+                onClick={saveRecord}
+                disabled={saving}
+                className="w-full min-h-[44px] py-3 bg-slate-900 hover:bg-slate-800 dark:bg-emerald-600 dark:hover:bg-emerald-500 text-white rounded-xl font-bold text-sm shadow-xs disabled:opacity-60 transition-colors cursor-pointer"
+              >
+                {saving ? "Saving & Sending Alerts..." : saved ? "Attendance Saved ✓" : "Save Attendance"}
+              </button>
+              {selectedDate === todayStr() && (
+                <button
+                  type="button"
+                  onClick={handleResendAttendanceAlerts}
+                  disabled={resendingAlerts || saving}
+                  className="w-full min-h-[40px] py-2.5 bg-white hover:bg-slate-50 dark:bg-slate-900 dark:hover:bg-slate-800 text-emerald-700 dark:text-emerald-400 border border-slate-200 dark:border-slate-800 rounded-xl text-xs font-semibold flex items-center justify-center gap-2 transition cursor-pointer disabled:opacity-60"
+                >
+                  {resendingAlerts ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
+                  <span>{resendingAlerts ? "Sending NSTA & Push Alerts..." : "Resend NSTA Messenger + Push Alerts to Parents"}</span>
+                </button>
+              )}
+            </div>
+          )}
+        </div>
+      ) : viewMode === "absentee" ? (
+        /* ABSENTEE ACTION CENTER (ABSENTY PAGE) */
+        <div className="pt-3.5 space-y-4 animate-in fade-in">
+          {/* Header & Date */}
+          <div className="bg-white dark:bg-slate-900 rounded-2xl p-4 border border-slate-200 dark:border-slate-800 shadow-xs flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+            <div className="flex items-center gap-3">
+              <span className="p-2.5 rounded-xl bg-rose-50 dark:bg-rose-950/50 text-rose-600 dark:text-rose-400 border border-rose-200 dark:border-rose-800/60">
+                <ShieldAlert className="w-5 h-5" />
+              </span>
+              <div>
+                <h3 className="text-base font-bold text-slate-900 dark:text-white tracking-tight">
+                  Absentee Action Center
+                </h3>
+                <p className="text-xs text-slate-500 dark:text-slate-400">
+                  Day 1 notices and 1-tap parent outreach for consecutive absentees
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2 bg-slate-50 dark:bg-slate-950 px-3 py-1.5 rounded-xl border border-slate-200 dark:border-slate-800 w-full sm:w-auto">
+              <Calendar className="w-4 h-4 text-slate-400 shrink-0" />
+              <input
+                type="date"
+                value={selectedDate}
+                onChange={(e) => setSelectedDate(e.target.value)}
+                className="bg-transparent text-xs font-mono font-semibold text-slate-900 dark:text-white outline-hidden cursor-pointer flex-1"
+              />
+            </div>
+          </div>
+
+          {absenteeBroadcastToast && (
+            <div className="p-3 bg-emerald-50 dark:bg-emerald-950/50 border border-emerald-200 dark:border-emerald-800 text-emerald-800 dark:text-emerald-200 text-xs font-semibold rounded-xl flex items-center gap-2 animate-in fade-in">
+              <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+              <span>{absenteeBroadcastToast}</span>
+            </div>
+          )}
+
+          {/* KPI Summary Cards */}
+          <div className="grid grid-cols-3 gap-2.5">
+            <div className="p-3.5 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-2xs">
+              <p className="text-[11px] font-semibold text-slate-500 dark:text-slate-400">Total Absent</p>
+              <p className="text-2xl font-bold text-rose-600 dark:text-rose-400 tabular-nums mt-0.5">
+                {absentStudents.length}
+              </p>
+            </div>
+
+            <div className="p-3.5 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-2xs">
+              <p className="text-[11px] font-semibold text-slate-500 dark:text-slate-400">Day 1</p>
+              <p className="text-2xl font-bold text-amber-600 dark:text-amber-400 tabular-nums mt-0.5">
+                {day1Absentees.length}
+              </p>
+            </div>
+
+            <div className="p-3.5 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-2xs">
+              <p className="text-[11px] font-semibold text-slate-500 dark:text-slate-400">2+ Days Streak</p>
+              <p className="text-2xl font-bold text-rose-700 dark:text-rose-400 tabular-nums mt-0.5">
+                {day2PlusAbsentees.length}
+              </p>
+            </div>
+          </div>
+
+          {/* 1-Click Broadcast Callout */}
+          <div className="p-4 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-slate-900 dark:text-white shadow-xs flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+            <div className="flex items-start gap-3">
+              <div className="w-9 h-9 rounded-xl bg-amber-50 dark:bg-amber-500/10 border border-amber-200 dark:border-amber-500/30 flex items-center justify-center shrink-0">
+                <Bell className="w-4 h-4 text-amber-600 dark:text-amber-400" />
+              </div>
+              <div>
+                <h4 className="text-sm font-bold text-slate-900 dark:text-white">1-Click Absent Alert Broadcast</h4>
+                <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                  Send instant lock-screen &amp; messenger alerts to parents of {absentStudents.length} absent student(s).
+                </p>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={handleBroadcastAbsenteeNotices}
+              disabled={broadcastingAbsentees || absentStudents.length === 0}
+              className="w-full sm:w-auto px-4 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-semibold text-xs active:scale-95 transition cursor-pointer flex items-center justify-center gap-1.5 disabled:opacity-50 whitespace-nowrap"
+            >
+              {broadcastingAbsentees ? (
+                <>
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  <span>Sending...</span>
+                </>
+              ) : (
+                <>
+                  <Send className="w-4 h-4" />
+                  <span>Send Alert to All</span>
+                </>
+              )}
+            </button>
+          </div>
+
+          {/* SECTION 1: 2-DAY CONSECUTIVE ABSENTEES */}
+          <div className="space-y-2.5">
+            <div className="flex items-center justify-between">
+              <h4 className="text-xs font-bold text-rose-700 dark:text-rose-400 uppercase tracking-wider flex items-center gap-1.5">
+                <PhoneCall className="w-3.5 h-3.5" />
+                <span>2+ Days Consecutive Absentees</span>
+              </h4>
+              <span className="text-xs font-semibold text-slate-500 dark:text-slate-400 tabular-nums">
+                {day2PlusAbsentees.length} students
+              </span>
+            </div>
+
+            {day2PlusAbsentees.length === 0 ? (
+              <div className="p-6 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-center space-y-1">
+                <CheckCircle2 className="w-7 h-7 text-emerald-500 mx-auto" />
+                <h5 className="text-xs font-bold text-slate-900 dark:text-white">
+                  No consecutive 2-day absentees today
+                </h5>
+                <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                  All students are attending regularly or were present yesterday.
+                </p>
+              </div>
+            ) : (
+              <div className="space-y-2.5">
+                {day2PlusAbsentees.map((st) => {
+                  const phone = st.phone || (st as any).whatsappNo || (st as any).fatherPhone || "";
+                  const callInfo = absenteeCallNotes[st.id];
+                  const hasCalled = Boolean(callInfo?.called);
+
+                  return (
+                    <div
+                      key={st.id}
+                      className="p-4 rounded-2xl bg-white dark:bg-slate-900 border border-rose-200 dark:border-rose-800/70 shadow-2xs space-y-3"
+                    >
+                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-2.5 border-b border-slate-100 dark:border-slate-800">
+                        <div className="flex items-center gap-3">
+                          <span className="w-9 h-9 rounded-xl bg-rose-50 dark:bg-rose-950/60 text-rose-700 dark:text-rose-300 font-mono font-bold text-xs flex items-center justify-center shrink-0 tabular-nums">
+                            #{st.rollNo || "-"}
+                          </span>
+                          <div>
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <h5 className="font-bold text-sm text-slate-900 dark:text-white">
+                                {st.name}
+                              </h5>
+                              <span className="px-2 py-0.5 rounded-md text-[10px] font-semibold bg-rose-600 text-white">
+                                2+ Days Absent
+                              </span>
+                            </div>
+                            <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                              {className} · Parent: {st.parentName || st.fatherName || "Guardian"}
+                            </p>
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-2">
+                          {hasCalled ? (
+                            <span className="px-2.5 py-1 rounded-lg text-xs font-semibold bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800/60 flex items-center gap-1">
+                              <CheckCircle2 className="w-3.5 h-3.5" />
+                              Called
+                            </span>
+                          ) : (
+                            <span className="px-2.5 py-1 rounded-lg text-xs font-semibold bg-amber-50 dark:bg-amber-950/60 text-amber-700 dark:text-amber-300 border border-amber-200 dark:border-amber-800/60 flex items-center gap-1">
+                              <Clock className="w-3.5 h-3.5" />
+                              Call Pending
+                            </span>
+                          )}
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-2 flex-wrap">
+                        {phone ? (
+                          <a
+                            href={`tel:${phone}`}
+                            onClick={() => markStudentCalled(st.id)}
+                            className="flex-1 min-w-[160px] py-2 px-3 rounded-xl bg-rose-600 hover:bg-rose-700 active:scale-95 text-white text-xs font-semibold flex items-center justify-center gap-2 transition cursor-pointer"
+                          >
+                            <Phone className="w-3.5 h-3.5" />
+                            <span>Call ({phone})</span>
+                          </a>
+                        ) : (
+                          <span className="text-xs text-rose-600 font-semibold px-3 py-2 bg-rose-50 dark:bg-rose-950/40 rounded-xl">
+                            No phone on file
+                          </span>
+                        )}
+
+                        <button
+                          type="button"
+                          onClick={() => handleSendSingleWhatsApp(st, true)}
+                          className="py-2 px-3 rounded-xl bg-emerald-600 hover:bg-emerald-700 active:scale-95 text-white text-xs font-semibold flex items-center justify-center gap-1.5 transition cursor-pointer"
+                        >
+                          <MessageCircle className="w-3.5 h-3.5" />
+                          <span>WhatsApp</span>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => handleSendSingleAbsentPush(st)}
+                          className="py-2 px-3 rounded-xl bg-indigo-600 hover:bg-indigo-700 active:scale-95 text-white text-xs font-semibold flex items-center justify-center gap-1.5 transition cursor-pointer"
+                        >
+                          <Bell className="w-3.5 h-3.5" />
+                          <span>Push Alert</span>
+                        </button>
+                      </div>
+
+                      <div className="flex items-center gap-2 pt-1">
+                        <label className="text-[11px] font-semibold text-slate-500 shrink-0">
+                          Reason:
+                        </label>
+                        <select
+                          value={callInfo?.note || ""}
+                          onChange={(e) => updateCallNote(st.id, e.target.value)}
+                          className="flex-1 text-xs px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 text-slate-800 dark:text-white font-medium focus:outline-hidden"
+                        >
+                          <option value="">-- Select Reason --</option>
+                          <option value="बीमारी / अस्वस्थ (Sick Leave)">बीमारी / अस्वस्थ (Sick Leave)</option>
+                          <option value="पारिवारिक कार्य / इमरजेंसी (Family Emergency)">पारिवारिक कार्य / इमरजेंसी (Family Emergency)</option>
+                          <option value="बिना सूचना अनुपस्थित (Uninformed)">बिना सूचना अनुपस्थित (Uninformed)</option>
+                          <option value="गाँव या बाहर गए हैं (Out of Station)">गाँव या बाहर गए हैं (Out of Station)</option>
+                          <option value="अन्य कारण (Other Reason)">अन्य कारण (Other Reason)</option>
+                        </select>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
+          {/* SECTION 2: DAY 1 ABSENTEES */}
+          <div className="space-y-2.5 pt-2">
+            <div className="flex items-center justify-between">
+              <h4 className="text-xs font-bold text-amber-700 dark:text-amber-400 uppercase tracking-wider flex items-center gap-1.5">
+                <Bell className="w-3.5 h-3.5" />
+                <span>Day 1 Absent Notice</span>
+              </h4>
+              <span className="text-xs font-semibold text-slate-500 dark:text-slate-400 tabular-nums">
+                {day1Absentees.length} students
+              </span>
+            </div>
+
+            {day1Absentees.length === 0 ? (
+              <div className="p-5 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-center space-y-1">
+                <CheckCircle2 className="w-6 h-6 text-slate-400 mx-auto" />
+                <p className="text-xs text-slate-500 dark:text-slate-400">
+                  No Day 1 absentees for this date.
+                </p>
+              </div>
+            ) : (
+              <div className="divide-y divide-slate-100 dark:divide-slate-800 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 overflow-hidden shadow-2xs">
+                {day1Absentees.map((st) => {
+                  const phone = st.phone || (st as any).whatsappNo || (st as any).fatherPhone || "";
+                  return (
+                    <div
+                      key={st.id}
+                      className="p-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3 hover:bg-slate-50 dark:hover:bg-slate-800/50 transition"
+                    >
+                      <div className="flex items-center gap-3">
+                        <span className="text-xs font-mono font-semibold text-slate-400 w-7 text-right tabular-nums">
+                          #{st.rollNo}
+                        </span>
+                        <div>
+                          <h5 className="font-semibold text-xs text-slate-900 dark:text-white">
+                            {st.name}
+                          </h5>
+                          <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                            {phone ? `Ph: ${phone}` : "No phone registered"}
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => handleSendSingleAbsentPush(st)}
+                          className="px-3 py-1.5 rounded-lg bg-indigo-50 dark:bg-indigo-950/50 text-indigo-700 dark:text-indigo-300 hover:bg-indigo-100 border border-indigo-200 dark:border-indigo-800/60 text-xs font-semibold flex items-center gap-1 transition cursor-pointer"
+                        >
+                          <Bell className="w-3.5 h-3.5" />
+                          <span>Push</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleSendSingleWhatsApp(st, false)}
+                          className="px-3 py-1.5 rounded-lg bg-emerald-50 dark:bg-emerald-950/50 text-emerald-700 dark:text-emerald-300 hover:bg-emerald-100 border border-emerald-200 dark:border-emerald-800/60 text-xs font-semibold flex items-center gap-1 transition cursor-pointer"
+                        >
+                          <MessageCircle className="w-3.5 h-3.5" />
+                          <span>WhatsApp</span>
+                        </button>
+                        {phone && (
+                          <a
+                            href={`tel:${phone}`}
+                            className="p-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 text-slate-700 dark:text-slate-200 transition"
+                            title="Direct Call"
+                          >
+                            <Phone className="w-3.5 h-3.5" />
+                          </a>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        </div>
+      ) : viewMode === "matrix" ? (
+        /* 31-DAY MONTHLY ATTENDANCE MATRIX */
+        (() => {
+          const [yStr, mStr] = selectedMonth.split("-");
+          const yr = parseInt(yStr, 10);
+          const mn = parseInt(mStr, 10);
+          const daysInMonth = new Date(yr, mn, 0).getDate();
+          const daysArr = Array.from({ length: daysInMonth }, (_, i) => i + 1);
+          const recordedDateSet = new Set(
+            monthlyData
+              .filter((r) => String(r?.date || "").startsWith(selectedMonth))
+              .map((r) => r.date)
+          );
+          const schoolRunningDays = recordedDateSet.size;
+
+          return (
+            <div className="pt-3.5 space-y-3.5 max-w-full overflow-hidden print:overflow-visible print:p-0 print:space-y-2">
+              <div className="hidden print:block text-center border-b border-slate-300 pb-1.5 mb-1.5">
+                <h2 className="text-sm font-black text-slate-900">
+                  {activeSchool?.name ? `${activeSchool.name} — ` : ""}
+                  {className} · Monthly Attendance Matrix
+                </h2>
+                <p className="text-[11px] text-slate-600">
+                  {new Date(selectedMonth + "-01").toLocaleString("default", { month: "long", year: "numeric" })} · {students.length} Students · School Running Days: {schoolRunningDays}
+                </p>
+              </div>
+
+              {/* Month selector & A4 Landscape PDF Matrix Options */}
+              <div className="bg-white dark:bg-slate-900 rounded-2xl p-3 sm:p-4 space-y-3 shadow-xs border border-slate-200 dark:border-slate-800 print:hidden">
+                <div className="flex flex-wrap items-center justify-between gap-2.5">
+                  <div className="flex items-center gap-2">
+                    <button onClick={() => changeMonth(-1)} className="p-2 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer"><ChevronLeft className="w-4 h-4" /></button>
+                    <span className="font-bold text-slate-900 dark:text-white text-sm sm:text-base">
+                      {new Date(selectedMonth + "-01").toLocaleString("default", { month: "long", year: "numeric" })}
+                    </span>
+                    <button onClick={() => changeMonth(1)} className="p-2 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer"><ChevronRight className="w-4 h-4" /></button>
+                  </div>
+
+                  <div className="flex items-center gap-2 text-xs font-semibold text-slate-600 dark:text-slate-300 tabular-nums">
+                    <span className="px-2.5 py-1 rounded-lg bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700">
+                      Run School: <strong className="text-slate-900 dark:text-white">{schoolRunningDays} Days</strong>
+                    </span>
+                  </div>
+                </div>
+
+                {/* PDF Export Options: Single Month, All Months (1 PDF), All Classes (1 PDF) + Print */}
+                <div className="pt-2.5 border-t border-slate-100 dark:border-slate-800 grid grid-cols-2 sm:flex sm:flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={handleDownloadSingleMatrixPdf}
+                    disabled={exportingPdfMode !== null}
+                    className="min-h-[38px] px-3 py-2 bg-slate-900 hover:bg-slate-800 dark:bg-emerald-600 dark:hover:bg-emerald-500 text-white rounded-xl text-xs font-semibold shadow-2xs flex items-center justify-center gap-1.5 transition cursor-pointer disabled:opacity-60 whitespace-nowrap"
+                  >
+                    {exportingPdfMode === "single" ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Download className="w-3.5 h-3.5" />}
+                    <span>PDF Matrix (31d)</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={handleDownloadAllMonthsPdf}
+                    disabled={exportingPdfMode !== null}
+                    className="min-h-[38px] px-3 py-2 bg-indigo-50 hover:bg-indigo-100 dark:bg-indigo-950/50 dark:hover:bg-indigo-900/60 text-indigo-700 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-800/60 rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5 transition cursor-pointer disabled:opacity-60 whitespace-nowrap"
+                    title="Is class ke sabhi mahino ka attendance ek hi A4 Landscape PDF me download karein"
+                  >
+                    {exportingPdfMode === "all_months" ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <CalendarRange className="w-3.5 h-3.5" />}
+                    <span>All Months (1 PDF)</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={handleDownloadAllClassesPdf}
+                    disabled={exportingPdfMode !== null}
+                    className="min-h-[38px] px-3 py-2 bg-emerald-50 hover:bg-emerald-100 dark:bg-emerald-950/50 dark:hover:bg-emerald-900/60 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800/60 rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5 transition cursor-pointer disabled:opacity-60 whitespace-nowrap"
+                    title="School ki sabhi classes ka is mahine ka attendance ek hi A4 Landscape PDF me download karein"
+                  >
+                    {exportingPdfMode === "all_classes" ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Layers className="w-3.5 h-3.5" />}
+                    <span>All Classes (1 PDF)</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => window.print()}
+                    className="min-h-[38px] px-3 py-2 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 border border-slate-200 dark:border-slate-700 rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5 transition cursor-pointer whitespace-nowrap sm:ml-auto"
+                  >
+                    <Printer className="w-3.5 h-3.5" />
+                    <span>Print A4</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* Legend */}
+              <div className="flex flex-wrap items-center gap-3 text-xs bg-white dark:bg-slate-900 p-3 rounded-xl border border-slate-200 dark:border-slate-800 text-slate-600 dark:text-slate-300 print:hidden">
+                <span className="font-semibold text-slate-900 dark:text-white">Legend:</span>
+                <span className="flex items-center gap-1"><span className="w-5 h-5 rounded bg-emerald-500 text-white font-bold text-[10px] flex items-center justify-center">P</span> Present</span>
+                <span className="flex items-center gap-1"><span className="w-5 h-5 rounded bg-amber-500 text-white font-bold text-[10px] flex items-center justify-center">L</span> Late</span>
+                <span className="flex items-center gap-1"><span className="w-5 h-5 rounded bg-blue-500 text-white font-bold text-[10px] flex items-center justify-center">LV</span> Leave</span>
+                <span className="flex items-center gap-1"><span className="w-5 h-5 rounded bg-purple-600 text-white font-bold text-[10px] flex items-center justify-center">B</span> Bunk</span>
+                <span className="flex items-center gap-1"><span className="w-5 h-5 rounded bg-rose-500 text-white font-bold text-[10px] flex items-center justify-center">A</span> Absent</span>
+                <span className="flex items-center gap-1"><span className="w-5 h-5 rounded bg-amber-100 text-amber-800 border border-amber-300 dark:bg-amber-950/60 dark:text-amber-300 font-bold text-[9px] flex items-center justify-center">Su</span> Sunday</span>
+                <span className="flex items-center gap-1"><span className="w-5 h-5 rounded bg-slate-200 dark:bg-slate-700 text-slate-500 font-bold text-[10px] flex items-center justify-center">-</span> Holiday</span>
+                <span className="flex items-center gap-1"><span className="px-1.5 h-5 rounded bg-slate-700 text-white font-bold text-[10px] flex items-center justify-center">Run</span> School Days</span>
+                <span className="ml-auto text-[11px] text-slate-500 dark:text-slate-400">Tap any cell for In/Out timestamps</span>
+              </div>
+
+              {/* 31-Day Matrix Table */}
+              <div className="attendance-matrix-print-wrap bg-white dark:bg-slate-900 rounded-2xl shadow-xs border border-slate-200 dark:border-slate-800 overflow-x-auto">
+                <table className="attendance-matrix-table w-full text-xs border-collapse">
+                  <thead>
+                    <tr className="bg-slate-900 text-white text-[11px]">
+                      <th className="sticky left-0 z-20 bg-slate-900 px-1.5 sm:px-2.5 py-2.5 text-left min-w-[36px] sm:min-w-[48px] border-r border-slate-800">Roll</th>
+                      <th className="sticky left-[36px] sm:left-[48px] z-20 bg-slate-900 px-2 sm:px-3 py-2.5 text-left min-w-[104px] max-w-[116px] sm:min-w-[140px] sm:max-w-[180px] border-r border-slate-800">Student Name</th>
+                      {daysArr.map(d => {
+                        const dow = new Date(yr, mn - 1, d).getDay();
+                        const isSun = dow === 0;
+                        return (
+                          <th key={d} className={`px-1 py-2 text-center min-w-[26px] border-r border-slate-800 font-bold tabular-nums ${isSun ? "bg-amber-700/60 text-amber-100" : ""}`}>
+                            <div>{d}</div>
+                            <div className="text-[9px] font-normal opacity-80">{["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"][dow]}</div>
+                          </th>
+                        );
+                      })}
+                      <th className="px-1.5 py-2 text-center bg-slate-700 text-slate-100 min-w-[36px] font-bold">Run</th>
+                      <th className="px-1.5 py-2 text-center bg-emerald-900 text-emerald-100 min-w-[34px] font-bold">P</th>
+                      <th className="px-1.5 py-2 text-center bg-amber-900 text-amber-100 min-w-[34px] font-bold">L</th>
+                      <th className="px-1.5 py-2 text-center bg-rose-900 text-rose-100 min-w-[34px] font-bold">A</th>
+                      <th className="px-1.5 py-2 text-center bg-indigo-900 text-indigo-100 min-w-[44px] font-bold">%</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {students.map((st, idx) => {
+                      let pCount = 0;
+                      let lCount = 0;
+                      let aCount = 0;
+                      let recordedDays = 0;
+
+                      const cells = daysArr.map(d => {
+                        const dateStr = `${selectedMonth}-${String(d).padStart(2, "0")}`;
+                        const dow = new Date(yr, mn - 1, d).getDay();
+                        const isSun = dow === 0;
+                        const rec = monthlyData.find(r => r.date === dateStr);
+                        const entry = rec?.students?.[st.id];
+
+                        if (rec && entry !== undefined) {
+                          recordedDays++;
+                          if (entry.status === "leave") {
+                            return { day: d, date: dateStr, status: "LV", entry, isSun };
+                          } else if (entry.status === "bunk") {
+                            aCount++;
+                            return { day: d, date: dateStr, status: "B", entry, isSun };
+                          } else if (entry.present) {
+                            if (entry.status === "late") {
+                              lCount++;
+                              pCount++;
+                              return { day: d, date: dateStr, status: "L", entry, isSun };
+                            }
+                            pCount++;
+                            return { day: d, date: dateStr, status: "P", entry, isSun };
+                          } else {
+                            aCount++;
+                            return { day: d, date: dateStr, status: "A", entry, isSun };
+                          }
+                        }
+
+                        if (isSun) {
+                          return { day: d, date: dateStr, status: "SUN", entry: null, isSun: true };
+                        }
+                        return { day: d, date: dateStr, status: "NONE", entry: null, isSun: false };
+                      });
+
+                      const rowRunDays = recordedDays > 0 ? recordedDays : schoolRunningDays;
+                      const pct = recordedDays > 0 ? Math.round((pCount / recordedDays) * 100) : 0;
+
+                      return (
+                        <tr key={st.id} className={`border-b border-slate-100 dark:border-slate-800 transition-colors ${idx % 2 === 0 ? "bg-white dark:bg-slate-900" : "bg-slate-50/70 dark:bg-slate-950/40"}`}>
+                          <td className="sticky left-0 z-10 bg-inherit px-1.5 sm:px-2.5 py-2 font-mono font-semibold text-slate-500 border-r border-slate-200 dark:border-slate-800 tabular-nums">
+                            {st.rollNo}
+                          </td>
+                          <td className="sticky left-[36px] sm:left-[48px] z-10 bg-inherit px-2 sm:px-3 py-2 font-semibold text-slate-900 dark:text-white truncate max-w-[116px] sm:max-w-[180px] border-r border-slate-200 dark:border-slate-800">
+                            {st.name}
+                          </td>
+                          {cells.map(c => {
+                            let badgeStyle = "text-slate-300 dark:text-slate-600";
+                            let text = "-";
+
+                            if (c.status === "P") {
+                              badgeStyle = "bg-emerald-500 text-white font-bold cursor-pointer hover:scale-105 active:scale-95";
+                              text = "P";
+                            } else if (c.status === "L") {
+                              badgeStyle = "bg-amber-500 text-white font-bold cursor-pointer hover:scale-105 active:scale-95";
+                              text = "L";
+                            } else if (c.status === "A") {
+                              badgeStyle = "bg-rose-500 text-white font-bold cursor-pointer hover:scale-105 active:scale-95";
+                              text = "A";
+                            } else if (c.status === "LV") {
+                              badgeStyle = "bg-blue-500 text-white font-bold cursor-pointer hover:scale-105 active:scale-95";
+                              text = "LV";
+                            } else if (c.status === "B") {
+                              badgeStyle = "bg-purple-600 text-white font-bold cursor-pointer hover:scale-105 active:scale-95";
+                              text = "B";
+                            } else if (c.status === "SUN") {
+                              badgeStyle = "bg-amber-100 text-amber-800 dark:bg-amber-950/40 dark:text-amber-400 font-semibold text-[9px]";
+                              text = "Su";
+                            }
+
+                            return (
+                              <td
+                                key={c.day}
+                                onClick={() => {
+                                  if (c.entry) {
+                                    setSelectedCellInfo({
+                                      studentName: st.name,
+                                      rollNo: st.rollNo,
+                                      date: c.date,
+                                      info: c.entry,
+                                    });
+                                  }
+                                }}
+                                className={`px-0.5 py-1.5 text-center border-r border-slate-200 dark:border-slate-800 ${c.isSun ? "bg-amber-50/40 dark:bg-amber-950/20" : ""}`}
+                              >
+                                <span className={`inline-flex items-center justify-center w-5 h-5 sm:w-6 sm:h-6 rounded text-[9px] sm:text-[10px] transition-transform ${badgeStyle}`}>
+                                  {text}
+                                </span>
+                              </td>
+                            );
+                          })}
+                          <td className="px-1.5 py-1.5 text-center font-bold text-slate-700 dark:text-slate-200 bg-slate-100/70 dark:bg-slate-800/50 tabular-nums">{rowRunDays}</td>
+                          <td className="px-1.5 py-1.5 text-center font-bold text-emerald-600 bg-emerald-50/40 dark:bg-emerald-950/20 tabular-nums">{pCount}</td>
+                          <td className="px-1.5 py-1.5 text-center font-bold text-amber-600 bg-amber-50/40 dark:bg-amber-950/20 tabular-nums">{lCount}</td>
+                          <td className="px-1.5 py-1.5 text-center font-bold text-rose-600 bg-rose-50/40 dark:bg-rose-950/20 tabular-nums">{aCount}</td>
+                          <td className="px-1.5 py-1.5 text-center tabular-nums">
+                            <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${pct >= 75 ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-950/50 dark:text-emerald-300" : "bg-rose-100 text-rose-700 dark:bg-rose-950/50 dark:text-rose-300"}`}>
+                              {pct}%
+                            </span>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          );
+        })()
+      ) : viewMode === "report" ? (
+        /* REPORT VIEW */
+        <div className="pt-3.5 space-y-3.5">
+          {/* Month selector */}
+          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-3 flex items-center gap-3 shadow-xs">
+            <button onClick={() => changeMonth(-1)} className="p-2 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer"><ChevronLeft className="w-4 h-4" /></button>
+            <span className="flex-1 text-center font-bold text-sm sm:text-base text-slate-900 dark:text-white">
+              {new Date(selectedMonth + "-01").toLocaleString("default", { month: "long", year: "numeric" })}
+            </span>
+            <button onClick={() => changeMonth(1)} className="p-2 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer"><ChevronRight className="w-4 h-4" /></button>
+          </div>
+
+          <div className="grid grid-cols-2 gap-2.5">
+            <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-3.5 shadow-2xs">
+              <p className="text-[11px] font-semibold text-slate-500 dark:text-slate-400">Working Days</p>
+              <p className="text-2xl font-bold text-slate-900 dark:text-white tabular-nums mt-0.5">{monthlyData.length}</p>
+            </div>
+            <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-3.5 shadow-2xs">
+              <p className="text-[11px] font-semibold text-slate-500 dark:text-slate-400">≥75% Attendance</p>
+              <p className="text-2xl font-bold text-emerald-600 dark:text-emerald-400 tabular-nums mt-0.5">
+                {studentStats.filter(s => s.pct >= 75).length}<span className="text-sm font-medium text-slate-400">/{students.length}</span>
+              </p>
+            </div>
+          </div>
+
+          {/* Student table */}
+          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-xs overflow-hidden">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="bg-slate-50 dark:bg-slate-950 border-b border-slate-200 dark:border-slate-800 text-slate-500 dark:text-slate-400 text-xs">
+                  <th className="text-left px-3.5 py-2.5 font-semibold">Roll</th>
+                  <th className="text-left px-3.5 py-2.5 font-semibold">Name</th>
+                  <th className="text-center px-3.5 py-2.5 font-semibold">P</th>
+                  <th className="text-center px-3.5 py-2.5 font-semibold">A</th>
+                  <th className="text-center px-3.5 py-2.5 font-semibold">%</th>
+                </tr>
+              </thead>
+              <tbody>
+                {studentStats.map(s => (
+                  <tr key={s.id} className="border-t border-slate-100 dark:border-slate-800">
+                    <td className="px-3.5 py-2.5 text-slate-400 font-mono text-xs tabular-nums">{s.rollNo}</td>
+                    <td className="px-3.5 py-2.5 font-semibold text-slate-900 dark:text-white">{s.name}</td>
+                    <td className="px-3.5 py-2.5 text-center text-emerald-600 dark:text-emerald-400 font-semibold tabular-nums">{s.presentDays}</td>
+                    <td className="px-3.5 py-2.5 text-center text-rose-600 dark:text-rose-400 font-semibold tabular-nums">{s.absentDays}</td>
+                    <td className="px-3.5 py-2.5 text-center tabular-nums">
+                      <span className={`px-2 py-0.5 rounded-md text-xs font-semibold ${s.pct >= 75 ? "bg-emerald-50 text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-300" : "bg-rose-50 text-rose-700 dark:bg-rose-950/60 dark:text-rose-300"}`}>{s.pct}%</span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            {students.length === 0 && <p className="text-center py-8 text-xs text-slate-400">No students found</p>}
+          </div>
+
+          <button
+            type="button"
+            onClick={downloadMHTMLReport}
+            className="w-full min-h-[44px] py-3 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-bold text-sm flex items-center justify-center gap-2 shadow-xs transition cursor-pointer"
+          >
+            <Download className="w-4 h-4" />
+            <span>Download MHTML Report</span>
+          </button>
+        </div>
+      ) : null}
+
+      {/* Matrix Cell Details Dialog */}
+      {selectedCellInfo && (
+        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white dark:bg-slate-900 rounded-2xl max-w-sm w-full p-5 shadow-2xl border border-slate-200 dark:border-slate-800 space-y-4">
+            <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-3">
+              <div>
+                <h3 className="font-bold text-slate-900 dark:text-white text-base">
+                  {selectedCellInfo.studentName}
+                </h3>
+                <p className="text-xs text-slate-500 font-mono">Roll #{selectedCellInfo.rollNo} · {selectedCellInfo.date}</p>
+              </div>
+              <button onClick={() => setSelectedCellInfo(null)} className="p-1.5 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-400 cursor-pointer">✕</button>
+            </div>
+
+            <div className="space-y-2.5 text-xs">
+              <div className="flex justify-between items-center py-1.5 border-b border-slate-100 dark:border-slate-800">
+                <span className="text-slate-500">Status</span>
+                <span className={`font-bold px-2 py-0.5 rounded ${selectedCellInfo.info.present ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300" : "bg-rose-100 text-rose-800 dark:bg-rose-950 dark:text-rose-300"}`}>
+                  {selectedCellInfo.info.present ? (selectedCellInfo.info.status === "late" ? "PRESENT (LATE)" : "PRESENT") : "ABSENT"}
+                </span>
+              </div>
+
+              <div className="flex justify-between items-center py-1.5 border-b border-slate-100 dark:border-slate-800">
+                <span className="text-slate-500">In-Time</span>
+                <span className="font-mono font-semibold text-slate-900 dark:text-white">
+                  {selectedCellInfo.info.inTime || "—"}
+                </span>
+              </div>
+
+              <div className="flex justify-between items-center py-1.5 border-b border-slate-100 dark:border-slate-800">
+                <span className="text-slate-500">Exit-Time</span>
+                <span className="font-mono font-semibold text-slate-900 dark:text-white">
+                  {selectedCellInfo.info.outTime || "Not Punched Out"}
+                </span>
+              </div>
+
+              <div className="flex justify-between items-center py-1.5">
+                <span className="text-slate-500">Stay Duration</span>
+                <span className="font-mono font-semibold text-indigo-600 dark:text-indigo-400">
+                  {selectedCellInfo.info.stayDuration || "—"}
+                </span>
+              </div>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => setSelectedCellInfo(null)}
+              className="w-full py-2.5 bg-slate-900 hover:bg-slate-800 dark:bg-slate-800 dark:hover:bg-slate-700 text-white rounded-xl font-semibold text-xs cursor-pointer"
+            >
+              Close
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* AI Face Attendance Kiosk Modal */}
+      <FaceAttendanceKioskModal
+        isOpen={showFaceKiosk}
+        onClose={() => {
+          setShowFaceKiosk(false);
+          setFaceKioskTestMode(false);
+        }}
+        initialTestMode={faceKioskTestMode}
+        hasFaceAccess={hasFaceAccess}
+        onUpgradeToElite={onOpenPlanStore}
+        onOpenQrScanner={() => setShowQrScanner(true)}
+        schoolId={schoolId}
+        schoolName={className ? `${className} Face Attendance` : "School Campus"}
+        classId={classId}
+        className={className}
+        students={students}
+        teachers={teachersList}
+        teacherId={teacherId}
+        onAttendanceUpdated={() => {
+          getAttendance(schoolId, classId, selectedDate).then((rec) => {
+            setExistingRecord(rec);
+            if (rec?.students) {
+              const map: { [id: string]: boolean } = {};
+              Object.entries(rec.students).forEach(([id, st]) => {
+                map[id] = st.present;
+              });
+              setAttendance(map);
+            }
+          });
+        }}
+      />
+
+      {/* Universal Live Face ID Studio & Match Test Modal */}
+      {showFaceStudio && (
+        <UniversalFaceIdStudioModal
+          isOpen={showFaceStudio}
+          onClose={() => setShowFaceStudio(false)}
+          hasFaceAccess={hasFaceAccess}
+          onUpgradeToElite={onOpenPlanStore}
+          onOpenQrScanner={() => setShowQrScanner(true)}
+          schoolId={schoolId}
+          students={students}
+          teachers={teachersList}
+          classes={className ? [{ id: classId, name: className }] : []}
+          onEnrollmentUpdated={() => {
+            getStudents(schoolId, classId).then((stList) => {
+              if (stList) setStudents(stList);
+            });
+          }}
+        />
+      )}
+
+      {/* QR Code Scanner for Teacher / Admin */}
+      <QrAttendanceScannerModal
+        isOpen={showQrScanner}
+        onClose={() => setShowQrScanner(false)}
+        isTeacherMode={true}
+        targetSchoolId={schoolId}
+        targetClassId={classId}
+        targetClassName={className}
+        teacherId={teacherId}
+        onStudentMarked={(st) => {
+          setAttendance(prev => ({ ...prev, [st.id]: true }));
+          setSaved(false);
+        }}
+      />
+
+      {/* Class Attendance QR Display Modal */}
+      <ClassQrCodeModal
+        isOpen={showClassQrModal}
+        onClose={() => setShowClassQrModal(false)}
+        schoolId={schoolId}
+        schoolName={activeSchool?.name || schoolId}
+        classId={classId}
+        className={className}
+        presentCount={presentCount}
+        totalStudents={students.length}
+      />
+
+      <StudentQuickActionModal
+        isOpen={Boolean(selectedStudentForModal)}
+        onClose={() => setSelectedStudentForModal(null)}
+        student={selectedStudentForModal}
+        school={activeSchool || ({ id: schoolId, name: schoolId } as any)}
+        classes={[{ id: classId, name: className } as any]}
+        currentMonth={selectedMonth}
+        adminUid={teacherId}
+        initialTab={modalInitialTab}
+      />
+    </div>
+  );
+};

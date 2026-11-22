@@ -1,0 +1,355 @@
+{
+  "rules": {
+    ".read": false,
+    ".write": false,
+
+    "__backup__": {
+      ".read": "auth != null && auth.token.email_verified == true && (auth.token.email == 'nadimanwar794@gmail.com' || auth.token.email == 'nsdimanwar794@gmail.com' || auth.token.email == 'nadiman0636indo@gmail.com' || auth.token.email == 'nsbdhdh70@gmail.com' || auth.token.email == 'n44438403@gmail.com' || auth.token.email == 'ghduug6@gmail.com')",
+      ".write": "auth != null && auth.token.email_verified == true && (auth.token.email == 'nadimanwar794@gmail.com' || auth.token.email == 'nsdimanwar794@gmail.com' || auth.token.email == 'nadiman0636indo@gmail.com' || auth.token.email == 'nsbdhdh70@gmail.com' || auth.token.email == 'n44438403@gmail.com' || auth.token.email == 'ghduug6@gmail.com')"
+    },
+
+    "trash": {
+      ".read": "auth != null && auth.token.email_verified == true && (auth.token.email == 'nadimanwar794@gmail.com' || auth.token.email == 'nsdimanwar794@gmail.com' || auth.token.email == 'nadiman0636indo@gmail.com' || auth.token.email == 'nsbdhdh70@gmail.com' || auth.token.email == 'n44438403@gmail.com' || auth.token.email == 'ghduug6@gmail.com')",
+      ".write": "auth != null && auth.token.email_verified == true && (auth.token.email == 'nadimanwar794@gmail.com' || auth.token.email == 'nsdimanwar794@gmail.com' || auth.token.email == 'nadiman0636indo@gmail.com' || auth.token.email == 'nsbdhdh70@gmail.com' || auth.token.email == 'n44438403@gmail.com' || auth.token.email == 'ghduug6@gmail.com')"
+    },
+
+    "maintenance": {
+      ".read": true,
+      ".write": "auth != null && auth.token.email_verified == true && (auth.token.email == 'nadimanwar794@gmail.com' || auth.token.email == 'nsdimanwar794@gmail.com' || auth.token.email == 'nadiman0636indo@gmail.com' || auth.token.email == 'nsbdhdh70@gmail.com' || auth.token.email == 'n44438403@gmail.com' || auth.token.email == 'ghduug6@gmail.com')"
+    },
+
+    "system_settings": {
+      ".read": true,
+      ".write": "auth != null && auth.token.email_verified == true && (auth.token.email == 'nadimanwar794@gmail.com' || auth.token.email == 'nsdimanwar794@gmail.com' || auth.token.email == 'nadiman0636indo@gmail.com' || auth.token.email == 'nsbdhdh70@gmail.com' || auth.token.email == 'n44438403@gmail.com' || auth.token.email == 'ghduug6@gmail.com')"
+    },
+
+    "deleted_schools": {
+      ".read": true,
+      ".write": "auth != null && auth.token.email_verified == true && (auth.token.email == 'nadimanwar794@gmail.com' || auth.token.email == 'nsdimanwar794@gmail.com' || auth.token.email == 'nadiman0636indo@gmail.com' || auth.token.email == 'nsbdhdh70@gmail.com' || auth.token.email == 'n44438403@gmail.com' || auth.token.email == 'ghduug6@gmail.com')"
+    },
+
+    "admin_highlights": {
+      ".read": true,
+      ".write": "auth != null && auth.token.email_verified == true && (auth.token.email == 'nadimanwar794@gmail.com' || auth.token.email == 'nsdimanwar794@gmail.com' || auth.token.email == 'nadiman0636indo@gmail.com' || auth.token.email == 'nsbdhdh70@gmail.com' || auth.token.email == 'n44438403@gmail.com' || auth.token.email == 'ghduug6@gmail.com')"
+    },
+
+    "redeem_codes": {
+      ".read": "auth != null",
+      ".write": "auth != null && auth.token.email_verified == true && (auth.token.email == 'nadimanwar794@gmail.com' || auth.token.email == 'nsdimanwar794@gmail.com' || auth.token.email == 'nadiman0636indo@gmail.com' || auth.token.email == 'nsbdhdh70@gmail.com' || auth.token.email == 'n44438403@gmail.com' || auth.token.email == 'ghduug6@gmail.com')"
+    },
+
+    "fcm_tokens": {
+      ".read": "auth != null",
+      ".write": "auth != null",
+      ".indexOn": ["userId", "token", "lastUpdated"]
+    },
+
+    "school_webpush_subs": {
+      ".read": "auth != null",
+      ".write": "auth != null",
+      ".indexOn": ["userId", "schoolId", "createdAt"]
+    },
+
+    "notification_preferences": {
+      ".read": "auth != null",
+      ".write": "auth != null"
+    },
+
+    "user_notifications": {
+      ".read": "auth != null",
+      ".write": "auth != null"
+    },
+
+    "school_notifications": {
+      ".read": "auth != null",
+      ".write": "auth != null"
+    },
+
+    "broadcast_notifications": {
+      ".read": "auth != null",
+      ".write": "auth != null",
+      ".indexOn": ["timestamp", "schoolId"]
+    },
+
+    "active_sessions": {
+      ".read": "auth != null",
+      ".write": "auth != null",
+      ".indexOn": ["userId", "lastSeen"]
+    },
+
+    "user_sessions": {
+      ".read": "auth != null",
+      ".write": "auth != null",
+      ".indexOn": ["userId", "deviceId"]
+    },
+
+    "user_active_sessions": {
+      ".read": "auth != null",
+      ".write": "auth != null"
+    },
+
+    "login_challenges": {
+      ".read": "auth != null",
+      ".write": "auth != null",
+      ".indexOn": ["userId", "timestamp"]
+    },
+
+    "live_users": {
+      ".read": "auth != null",
+      ".write": "auth != null",
+      ".indexOn": ["timestamp", "role"]
+    },
+
+    "chat": {
+      ".read": "auth != null",
+      ".write": "auth != null"
+    },
+
+    "global_chat": {
+      ".read": "auth != null",
+      ".write": "auth != null",
+      ".indexOn": ["timestamp", "senderId"]
+    },
+
+    "support_threads": {
+      ".read": "auth != null",
+      ".write": "auth != null",
+      ".indexOn": ["userId", "lastMessageTime"]
+    },
+
+    "users": {
+      ".read": "auth != null",
+      "$userId": {
+        ".write": "auth != null",
+        ".validate": "newData.hasChildren() && (!newData.child('isSuperAdmin').exists() || newData.child('isSuperAdmin').val() == false || (auth.token.email_verified == true && (auth.token.email == 'nadimanwar794@gmail.com' || auth.token.email == 'nsdimanwar794@gmail.com' || auth.token.email == 'nadiman0636indo@gmail.com' || auth.token.email == 'nsbdhdh70@gmail.com' || auth.token.email == 'n44438403@gmail.com' || auth.token.email == 'ghduug6@gmail.com')))"
+      }
+    },
+
+    "schools_profiles": {
+      ".read": true,
+      "$schoolId": {
+        ".write": "auth != null"
+      }
+    },
+
+    "school_users": {
+      ".read": "auth != null",
+      ".write": "auth != null"
+    },
+
+    "school_user_links": {
+      ".read": "auth != null",
+      ".write": "auth != null"
+    },
+
+    "school_admins_by_email": {
+      ".read": "auth != null",
+      ".write": "auth != null"
+    },
+
+    "school_admin_attendance": {
+      ".read": "auth != null",
+      ".write": "auth != null"
+    },
+
+    "school_staff_attendance": {
+      ".read": "auth != null",
+      ".write": "auth != null"
+    },
+
+    "schools": {
+      ".read": "auth != null",
+      "$schoolId": {
+        ".indexOn": ["code", "adminEmail"],
+        ".write": "auth != null",
+
+        "classes": { ".read": true, ".write": "auth != null" },
+        "sessions": { ".read": true, ".write": "auth != null" },
+        "notices": { ".read": true, ".write": "auth != null" },
+        "holidays": { ".read": true, ".write": "auth != null" },
+        "events": { ".read": true, ".write": "auth != null" },
+        "class_seat_configs": { ".read": true, ".write": "auth != null" },
+        "bus_routes": { ".read": true, ".write": "auth != null" },
+        "certificates": { ".read": true, ".write": "auth != null" },
+        "admit_cards": { ".read": true, ".write": "auth != null" },
+
+        "admissions": {
+          "$admId": {
+            ".read": "auth != null",
+            ".write": "auth != null || !data.exists()",
+            ".validate": "newData.hasChildren(['studentName', 'phone']) && newData.child('studentName').isString() && newData.child('studentName').val().length <= 160 && newData.child('phone').isString() && newData.child('phone').val().length <= 32"
+          }
+        },
+
+        "inquiries": {
+          "$inqId": {
+            ".read": "auth != null",
+            ".write": "auth != null || !data.exists()",
+            ".validate": "newData.hasChildren(['phone']) && newData.child('phone').isString() && newData.child('phone').val().length <= 32"
+          }
+        },
+
+        "public_test_attempts": {
+          "$attemptId": {
+            ".read": "auth != null",
+            ".write": "auth != null || !data.exists()"
+          }
+        },
+
+        "bus_live_locations": {
+          "$busId": {
+            ".read": "auth != null",
+            ".write": "auth != null",
+            ".validate": "newData.child('lat').isNumber() && newData.child('lat').val() >= -90 && newData.child('lat').val() <= 90 && newData.child('lng').isNumber() && newData.child('lng').val() >= -180 && newData.child('lng').val() <= 180"
+          }
+        }
+      }
+    },
+
+    "homework_index": {
+      ".read": true,
+      ".write": "auth != null && auth.token.email_verified == true && (auth.token.email == 'nadimanwar794@gmail.com' || auth.token.email == 'nsdimanwar794@gmail.com' || auth.token.email == 'nadiman0636indo@gmail.com' || auth.token.email == 'nsbdhdh70@gmail.com' || auth.token.email == 'n44438403@gmail.com' || auth.token.email == 'ghduug6@gmail.com')"
+    },
+
+    "lucent_index": {
+      ".read": true,
+      ".write": "auth != null && auth.token.email_verified == true && (auth.token.email == 'nadimanwar794@gmail.com' || auth.token.email == 'nsdimanwar794@gmail.com' || auth.token.email == 'nadiman0636indo@gmail.com' || auth.token.email == 'nsbdhdh70@gmail.com' || auth.token.email == 'n44438403@gmail.com' || auth.token.email == 'ghduug6@gmail.com')"
+    },
+
+    "group_study_rooms": {
+      ".read": "auth != null",
+      ".write": "auth != null",
+      ".indexOn": ["createdAt", "lastActive", "hostId", "schoolId", "code"]
+    },
+
+    "live_mcq_rooms": {
+      ".read": "auth != null",
+      ".write": "auth != null"
+    },
+
+    "content_data": {
+      ".read": true,
+      ".write": "auth != null && auth.token.email_verified == true && (auth.token.email == 'nadimanwar794@gmail.com' || auth.token.email == 'nsdimanwar794@gmail.com' || auth.token.email == 'nadiman0636indo@gmail.com' || auth.token.email == 'nsbdhdh70@gmail.com' || auth.token.email == 'n44438403@gmail.com' || auth.token.email == 'ghduug6@gmail.com')"
+    },
+
+    "content_index": {
+      ".read": true,
+      ".write": "auth != null && auth.token.email_verified == true && (auth.token.email == 'nadimanwar794@gmail.com' || auth.token.email == 'nsdimanwar794@gmail.com' || auth.token.email == 'nadiman0636indo@gmail.com' || auth.token.email == 'nsbdhdh70@gmail.com' || auth.token.email == 'n44438403@gmail.com' || auth.token.email == 'ghduug6@gmail.com')"
+    },
+
+    "custom_syllabus": {
+      ".read": true,
+      ".write": "auth != null && auth.token.email_verified == true && (auth.token.email == 'nadimanwar794@gmail.com' || auth.token.email == 'nsdimanwar794@gmail.com' || auth.token.email == 'nadiman0636indo@gmail.com' || auth.token.email == 'nsbdhdh70@gmail.com' || auth.token.email == 'n44438403@gmail.com' || auth.token.email == 'ghduug6@gmail.com')"
+    },
+
+    "homework_entries": {
+      ".read": true,
+      ".write": "auth != null && auth.token.email_verified == true && (auth.token.email == 'nadimanwar794@gmail.com' || auth.token.email == 'nsdimanwar794@gmail.com' || auth.token.email == 'nadiman0636indo@gmail.com' || auth.token.email == 'nsbdhdh70@gmail.com' || auth.token.email == 'n44438403@gmail.com' || auth.token.email == 'ghduug6@gmail.com')"
+    },
+
+    "lucent_entries": {
+      ".read": true,
+      ".write": "auth != null && auth.token.email_verified == true && (auth.token.email == 'nadimanwar794@gmail.com' || auth.token.email == 'nsdimanwar794@gmail.com' || auth.token.email == 'nadiman0636indo@gmail.com' || auth.token.email == 'nsbdhdh70@gmail.com' || auth.token.email == 'n44438403@gmail.com' || auth.token.email == 'ghduug6@gmail.com')"
+    },
+
+    "mcq_lessons": {
+      ".read": true,
+      ".write": "auth != null && auth.token.email_verified == true && (auth.token.email == 'nadimanwar794@gmail.com' || auth.token.email == 'nsdimanwar794@gmail.com' || auth.token.email == 'nadiman0636indo@gmail.com' || auth.token.email == 'nsbdhdh70@gmail.com' || auth.token.email == 'n44438403@gmail.com' || auth.token.email == 'ghduug6@gmail.com')"
+    },
+
+    "mcqs": {
+      ".read": true,
+      ".write": "auth != null && auth.token.email_verified == true && (auth.token.email == 'nadimanwar794@gmail.com' || auth.token.email == 'nsdimanwar794@gmail.com' || auth.token.email == 'nadiman0636indo@gmail.com' || auth.token.email == 'nsbdhdh70@gmail.com' || auth.token.email == 'n44438403@gmail.com' || auth.token.email == 'ghduug6@gmail.com')"
+    },
+
+    "compre_notes": {
+      ".read": true,
+      ".write": "auth != null && auth.token.email_verified == true && (auth.token.email == 'nadimanwar794@gmail.com' || auth.token.email == 'nsdimanwar794@gmail.com' || auth.token.email == 'nadiman0636indo@gmail.com' || auth.token.email == 'nsbdhdh70@gmail.com' || auth.token.email == 'n44438403@gmail.com' || auth.token.email == 'ghduug6@gmail.com')"
+    },
+
+    "competition_mcqs": {
+      ".read": true,
+      ".write": "auth != null && auth.token.email_verified == true && (auth.token.email == 'nadimanwar794@gmail.com' || auth.token.email == 'nsdimanwar794@gmail.com' || auth.token.email == 'nadiman0636indo@gmail.com' || auth.token.email == 'nsbdhdh70@gmail.com' || auth.token.email == 'n44438403@gmail.com' || auth.token.email == 'ghduug6@gmail.com')"
+    },
+
+    "daily_gk": {
+      ".read": true,
+      ".write": "auth != null && auth.token.email_verified == true && (auth.token.email == 'nadimanwar794@gmail.com' || auth.token.email == 'nsdimanwar794@gmail.com' || auth.token.email == 'nadiman0636indo@gmail.com' || auth.token.email == 'nsbdhdh70@gmail.com' || auth.token.email == 'n44438403@gmail.com' || auth.token.email == 'ghduug6@gmail.com')"
+    },
+
+    "coaching_homework": {
+      ".read": "auth != null",
+      ".write": "auth != null"
+    },
+
+    "community_posts": {
+      ".read": true,
+      ".write": "auth != null"
+    },
+
+    "community_tools": {
+      ".read": true,
+      ".write": "auth != null"
+    },
+
+    "community_future_info": {
+      ".read": true,
+      ".write": "auth != null"
+    },
+
+    "practice_set_leaderboards": {
+      ".read": true,
+      ".write": "auth != null"
+    },
+
+    "suggestions": {
+      ".read": "auth != null",
+      ".write": "auth != null"
+    },
+
+    "demand_requests": {
+      ".read": "auth != null",
+      ".write": "auth != null"
+    },
+
+    "recovery_requests": {
+      ".read": "auth != null",
+      ".write": "auth != null"
+    },
+
+    "public_activity": {
+      ".read": "auth != null",
+      ".write": "auth != null"
+    },
+
+    "ai_interactions": {
+      ".read": "auth != null",
+      ".write": "auth != null"
+    },
+
+    "universal_analysis_logs": {
+      ".read": "auth != null",
+      ".write": "auth != null"
+    },
+
+    "universal_updates": {
+      ".read": true,
+      ".write": "auth != null"
+    },
+
+    "compare_analytics": {
+      ".read": "auth != null",
+      ".write": "auth != null"
+    },
+
+    "error_logs": {
+      ".read": "auth != null && auth.token.email_verified == true && (auth.token.email == 'nadimanwar794@gmail.com' || auth.token.email == 'nsdimanwar794@gmail.com' || auth.token.email == 'nadiman0636indo@gmail.com' || auth.token.email == 'nsbdhdh70@gmail.com' || auth.token.email == 'n44438403@gmail.com' || auth.token.email == 'ghduug6@gmail.com')",
+      ".write": "auth != null"
+    },
+
+    "error_resolutions": {
+      ".read": "auth != null",
+      ".write": "auth != null && auth.token.email_verified == true && (auth.token.email == 'nadimanwar794@gmail.com' || auth.token.email == 'nsdimanwar794@gmail.com' || auth.token.email == 'nadiman0636indo@gmail.com' || auth.token.email == 'nsbdhdh70@gmail.com' || auth.token.email == 'n44438403@gmail.com' || auth.token.email == 'ghduug6@gmail.com')"
+    }
+  }
+}

@@ -1,0 +1,7 @@
+{
+  "name": "Remix 22 Nov 2026",
+  "description": "Imported from GitHub",
+  "capabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

@@ -1,0 +1,2642 @@
+// IIC×NSTA Smart School Ecosystem — Core Types
+
+export type SchoolRole = 'SUPER_ADMIN' | 'SCHOOL_ADMIN' | 'SCHOOL_SUB_ADMIN' | 'TEACHER' | 'SCHOOL_STUDENT';
+
+export type SubscriptionFeature = 'reading' | 'writing' | 'pdf' | 'mcq';
+
+export type PlanDuration = '1_year' | '2_years' | 'lifetime' | 'monthly' | 'weekly' | '3months' | 'yearly';
+
+export type SubscriptionTier = 'starter_200' | 'growth_500' | 'enterprise_2000' | 'whitelabel_5000' | 'lite' | 'full';
+
+export interface SchoolSubscription {
+  reading?: boolean;
+  writing?: boolean;
+  pdf?: boolean;
+  mcq?: boolean;
+  isElite?: boolean; // Elite Plan (2× Price) — Unlocks Custom Website CMS, AI Face Attendance & Custom Curriculum
+  customCurriculumEnabled?: boolean; // Direct flag for custom school notes & curriculum power
+  expiresAt?: string; // ISO date — plan hard expiry (set on assign)
+  monthlyAmount: number;
+  paidUntil?: string; // ISO date — subscription paid up to this date
+  lastPaidDate?: string; // ISO date — when last payment was received
+  lastPaidAmount?: number; // amount received in last payment
+  paymentNotes?: string; // admin notes on payment
+  status: 'active' | 'inactive' | 'suspended';
+  tier?: SubscriptionTier;
+  maxStudents?: number; // 200, 500, 2000, or 5000+ students
+  maxTeachers?: number; // 10, 25, or unlimited
+  planDuration?: PlanDuration; // duration of last assigned plan
+  assignedAt?: string; // ISO date — when plan was last assigned by super admin
+}
+
+export const TIER_CONFIG: Record<SubscriptionTier, { name: string; maxStudents: number; maxTeachers: number; monthlyPrice: number; sessionPrice: number; eliteMonthlyPrice: number; eliteSessionPrice: number; badge: string; desc: string }> = {
+  starter_200: {
+    name: "Basic Plan (200 Students)",
+    maxStudents: 200,
+    maxTeachers: 10,
+    monthlyPrice: 999,
+    sessionPrice: 9999,
+    eliteMonthlyPrice: 1999, // 2× price for Elite AI Face Attendance, Custom Website CMS & Curriculum
+    eliteSessionPrice: 19999,
+    badge: "BASIC 200",
+    desc: "Upto 200 Students • 10 Teachers • QR Attendance, Core ERP & Default School Website"
+  },
+  growth_500: {
+    name: "Standard Plan (500 Students)",
+    maxStudents: 500,
+    maxTeachers: 25,
+    monthlyPrice: 1999,
+    sessionPrice: 19999,
+    eliteMonthlyPrice: 3999, // 2× price for Elite AI Face Attendance, Custom Website CMS & Curriculum
+    eliteSessionPrice: 39999,
+    badge: "STANDARD 500",
+    desc: "Upto 500 Students • 25 Teachers • Sub-Admins, QR ID Cards, SMS/WhatsApp & Website"
+  },
+  enterprise_2000: {
+    name: "Pro Plan (2000 Students)",
+    maxStudents: 2000,
+    maxTeachers: 9999,
+    monthlyPrice: 3999,
+    sessionPrice: 39999,
+    eliteMonthlyPrice: 7999, // 2× price for Elite AI Face Attendance, Custom Website CMS & Curriculum
+    eliteSessionPrice: 79999,
+    badge: "PRO 2000",
+    desc: "Upto 2000 Students • Unlimited Staff • Payroll HRM, Bulk Alerts & Class 1–12 Notes"
+  },
+  whitelabel_5000: {
+    name: "Enterprise White-Label (5000+ Students)",
+    maxStudents: 5000,
+    maxTeachers: 9999,
+    monthlyPrice: 19999,
+    sessionPrice: 199999,
+    eliteMonthlyPrice: 19999,
+    eliteSessionPrice: 199999,
+    badge: "WHITE-LABEL 5000+",
+    desc: "5,000+ Students • Unlimited Staff • School Play Store App, On-Site Training, Data Migration & Custom Domain"
+  },
+  lite: {
+    name: "Basic Plan (200 Students)",
+    maxStudents: 200,
+    maxTeachers: 10,
+    monthlyPrice: 999,
+    sessionPrice: 9999,
+    eliteMonthlyPrice: 1999,
+    eliteSessionPrice: 19999,
+    badge: "BASIC 200",
+    desc: "Upto 200 Students • 10 Teachers • QR Code Scan Attendance & Default School Website"
+  },
+  full: {
+    name: "Pro Plan (2000 Students)",
+    maxStudents: 2000,
+    maxTeachers: 9999,
+    monthlyPrice: 3999,
+    sessionPrice: 39999,
+    eliteMonthlyPrice: 7999,
+    eliteSessionPrice: 79999,
+    badge: "PRO 2000",
+    desc: "Upto 2000 Students • Unlimited Staff • QR Scan Attendance, Payroll HRM & Advance Accounts"
+  }
+};
+
+export const isSchoolEliteCurriculum = (school?: School | null): boolean => {
+  if (!school) return true;
+  if (
+    school.id === 'demo_school' ||
+    school.id?.startsWith('demo') ||
+    school.id?.includes('demo') ||
+    (school as any).isDemo === true ||
+    (school as any).isElite === true ||
+    (school as any).customCurriculumEnabled === true
+  ) {
+    return true;
+  }
+  const sub = school.subscription;
+  if (!sub) return false;
+  // Enterprise White-Label tier always includes full Elite capabilities
+  if (sub.tier === 'whitelabel_5000') return true;
+  // If explicitly active with isElite or customCurriculumEnabled
+  if (sub.isElite === true || sub.customCurriculumEnabled === true) return true;
+  // If tier name indicates elite
+  if (typeof sub.tier === 'string' && sub.tier.toLowerCase().includes('elite')) return true;
+  // If monthly amount reflects 2x elite pricing
+  if (sub.monthlyAmount && sub.monthlyAmount >= 1999 && sub.status === 'active') {
+    // Check if designated elite in paymentNotes or config
+    if (sub.paymentNotes?.toLowerCase()?.includes('elite')) return true;
+  }
+  return false;
+};
+
+export const isSchoolElitePlan = (school?: School | null): boolean =>
+  isSchoolEliteCurriculum(school);
+
+// Custom Website CMS (Banner, Principal/Teacher Photos, Memories Gallery) is exclusive to Elite & White-Label schools; Lite gets Default Website only
+export const hasCustomWebsiteCmsAccess = (school?: School | null): boolean =>
+  isSchoolEliteCurriculum(school);
+
+// AI Face Attendance (Face Kiosk + Live Face ID Studio) is exclusive to Elite subscription holders
+export const hasFaceAttendanceAccess = (school?: School | null): boolean => {
+  if (!school) return false;
+  return isSchoolEliteCurriculum(school);
+};
+
+// Class 1-8 Entrance Exam Hub, 500-Q/Subject Bank & 100-Set PDF Generator is exclusive to Elite & White-Label schools; Lite schools see it locked
+export const hasEntranceExamAccess = (school?: School | null): boolean => {
+  if (!school) return false;
+  return isSchoolEliteCurriculum(school);
+};
+
+// Admin ON/OFF switch for Entrance Exam feature on the public school website (default ON unless explicitly turned OFF)
+export const isEntranceExamFeatureEnabled = (school?: School | null): boolean => {
+  return school?.websiteConfig?.entranceExamEnabled !== false;
+};
+
+// QR Code Scan Attendance is included for Lite, Standard, Pro, and Elite schools
+export const hasQrAttendanceAccess = (school?: School | null): boolean => {
+  if (!school) return true;
+  if (
+    school.id === 'demo_school' ||
+    school.id?.startsWith('demo') ||
+    school.id?.includes('demo') ||
+    (school as any).isDemo === true
+  ) {
+    return true;
+  }
+  return school.subscription?.status !== 'suspended';
+};
+
+export const getSchoolMaxStudents = (school?: School | null): number => {
+  const tier = school?.subscription?.tier || 'enterprise_2000';
+  if (tier && TIER_CONFIG[tier]) return TIER_CONFIG[tier].maxStudents;
+  return school?.subscription?.maxStudents || 2000;
+};
+
+export const getSchoolMaxTeachers = (school?: School | null): number => {
+  const tier = school?.subscription?.tier || 'enterprise_2000';
+  if (tier && TIER_CONFIG[tier]) return TIER_CONFIG[tier].maxTeachers;
+  return school?.subscription?.maxTeachers || 9999;
+};
+
+export interface SchoolProfileCustomField {
+  id: string;
+  label: string;
+  value: string;
+}
+
+export type SchoolDocumentKey = "idCard" | "certificate" | "marksheet" | "feeReceipt";
+export type SchoolPrintField =
+  | "schoolName"
+  | "address"
+  | "phone"
+  | "email"
+  | "affiliation"
+  | "code"
+  | "principalName"
+  | "principalPhone"
+  | "directorName"
+  | "directorPhone"
+  | "managerName"
+  | "managerPhone"
+  | "customFields";
+export type SchoolDocumentPrintFields = Partial<Record<SchoolDocumentKey, SchoolPrintField[]>>;
+
+export const DEFAULT_SCHOOL_DOCUMENT_PRINT_FIELDS: Record<SchoolDocumentKey, SchoolPrintField[]> = {
+  idCard: ["schoolName", "affiliation", "address", "phone", "email", "code", "principalName"],
+  certificate: ["schoolName", "address", "phone", "email", "affiliation", "code", "principalName"],
+  marksheet: ["schoolName", "address", "phone", "email", "affiliation", "code", "principalName", "directorName"],
+  feeReceipt: ["schoolName", "address", "phone", "email", "affiliation", "code", "principalName"],
+};
+
+export const schoolPrintFieldEnabled = (
+  settings: SchoolDocumentPrintFields | undefined,
+  document: SchoolDocumentKey,
+  field: SchoolPrintField,
+) => (settings?.[document] ?? DEFAULT_SCHOOL_DOCUMENT_PRINT_FIELDS[document]).includes(field);
+
+export interface School {
+  id: string;
+  name: string;
+  code: string; // short code e.g. "DPS_DEL"
+  address?: string;
+  phone?: string;
+  email: string;
+  affiliation?: string;
+  adminEmail: string;
+  logoUrl?: string;
+  principalName?: string;
+  principalPhone?: string;
+  directorName?: string;
+  directorPhone?: string;
+  mobile?: string;
+  principalSignatureUrl?: string; // Digital signature image of Principal (Base64 data URL or URL)
+  directorSignatureUrl?: string; // Digital signature image of Director (Base64 data URL or URL)
+  examControllerName?: string; // Name of Exam Controller / Examination Incharge
+  examControllerSignatureUrl?: string; // Digital signature image of Exam Controller / Examiner
+  managerName?: string; // Separate Manager Name (distinct from Director)
+  managerPhone?: string; // Manager Mobile Number
+  managerSignatureUrl?: string; // Digital signature image of Manager
+  accountantName?: string; // Head Accountant / Fee Cashier Name
+  accountantSignatureUrl?: string; // Digital signature image of Accountant (default on Fee Receipts)
+  principalPhotoUrl?: string; // Portrait/cutout photo of Principal for Marksheet Backside & Website
+  subPrincipalName?: string; // Separate Sub Principal / Vice Principal Name
+  subPrincipalPhotoUrl?: string; // Portrait photo of Sub Principal
+  directorPhotoUrl?: string; // Portrait/cutout photo of Director for Marksheet Backside & Website
+  managerPhotoUrl?: string; // Portrait photo of Manager for Website
+  digitalCreatorName?: string; // Digital Creator Name for Website
+  digitalCreatorPhotoUrl?: string; // Portrait photo of Digital Creator for Website
+  erpAppUrl?: string; // Official School ERP App Download URL (Play Store / APK / Portal)
+  erpAppFeatures?: string[]; // Highlighted benefits printed alongside the School ERP App QR
+  customFields?: SchoolProfileCustomField[];
+  documentPrintFields?: SchoolDocumentPrintFields;
+  idCardFieldSettings?: Record<string, boolean>;
+  admissionFieldSettings?: AdmissionFormFieldSettings;
+  upiId?: string; // Official School UPI ID for Scan & Pay on Fee Due Slips
+  tagline?: string; // Short tagline shown on school card
+  bannerColor?: string; // Hex color for card banner
+  subscription: SchoolSubscription;
+  active: boolean;
+  createdAt: string;
+  createdBy: string; // super admin uid
+  totalStudents?: number;
+  totalTeachers?: number;
+  // Lock code — only SUPER_ADMIN and SCHOOL_ADMIN know this
+  lockCode?: string;
+  lockCodeActive?: boolean;
+  // School-level lock — set by super admin, blocks all students from logging in
+  locked?: boolean;
+  // Live GPS School Location & Geofence
+  latitude?: number;
+  longitude?: number;
+  locationRadiusMeters?: number; // e.g. 200m or 500m geofence radius
+  locationAddress?: string; // Campus landmark/address
+  geoFenceEnabled?: boolean; // Geofence verification on punch
+  locationUpdatedAt?: string;
+  feeDiscountSlabs?: FeeDiscountSlab[];
+  isDefaultPublicWebsite?: boolean;
+  websiteConfig?: SchoolWebsiteConfig;
+}
+
+export interface SchoolWebsiteHighlight {
+  title: string;
+  description: string;
+  badge?: string;
+}
+
+export interface AdmissionOfferImage {
+  id: string;
+  url: string;
+  caption?: string;
+}
+
+export interface AdmissionOfferConfig {
+  enabled?: boolean;
+  badgeText?: string;
+  title?: string;
+  subtitle?: string;
+  discountPercent?: number;
+  validTill?: string;
+  applyScope?: "all" | "admission_only";
+  termsNote?: string;
+  images?: AdmissionOfferImage[];
+}
+
+export interface SchoolWebsiteConfig {
+  admissionsOpen?: boolean;
+  admissionSessionLabel?: string;
+  websiteSessionId?: string;
+  heroBadgeText?: string;
+  heroHeadline?: string;
+  heroSubheadline?: string;
+  heroBannerUrl?: string;
+  principalMessage?: string;
+  directorMessage?: string;
+  subPrincipalName?: string;
+  subPrincipalPhotoUrl?: string;
+  directorPhotoUrl?: string;
+  managerPhotoUrl?: string;
+  websiteAccountantName?: string;
+  websiteAccountantPhotoUrl?: string;
+  digitalCreatorName?: string;
+  digitalCreatorPhotoUrl?: string;
+  aboutSchool?: string;
+  whatsappNumber?: string;
+  googleMapsUrl?: string;
+  officeHours?: string;
+  highlights?: SchoolWebsiteHighlight[];
+  hiddenTeacherIds?: string[];
+  topTickerEnabled?: boolean;
+  topTickerText?: string;
+  topTickerSpeed?: "slow" | "normal" | "fast";
+  instagramUrl?: string;
+  youtubeUrl?: string;
+  facebookUrl?: string;
+  whatsappGroupUrl?: string;
+  admissionOffer?: AdmissionOfferConfig;
+  entranceDiscountConfig?: EntranceDiscountConfig;
+  entranceExamEnabled?: boolean;
+  updatedAt?: string;
+}
+
+export interface EntranceDiscountSlab {
+  id: string;
+  minPercentage: number; // 0..100 inclusive
+  maxPercentage: number; // 0..100 inclusive
+  discountType: "fixed" | "percent";
+  discountValue: number;
+  label?: string;
+  enabled?: boolean;
+}
+
+export interface EntranceDiscountConfig {
+  enabled: boolean;
+  applyScope?: "admission_only" | "all";
+  slabs: EntranceDiscountSlab[];
+}
+
+export interface FeeDiscountSlab {
+  id: string;
+  uptoDay: number;       // 1..31 (e.g. 1 = 1 तारीख तक, 5 = 5 तारीख तक, 10 = 10 तारीख तक)
+  discountType: "percent" | "fixed";
+  discountValue: number;
+}
+
+export interface AdminAttendanceRecord {
+  schoolId: string;
+  adminId: string;
+  adminName: string;
+  date: string;
+  inTime?: string;
+  outTime?: string;
+  present: boolean;
+  stayDuration?: string;
+  locationStatus?: "inside_campus" | "outside_campus" | "gps_disabled" | "verified";
+  distanceMeters?: number;
+  latitude?: number;
+  longitude?: number;
+  notes?: string;
+  updatedAt: string;
+}
+
+export interface StaffDailyAttendanceEntry {
+  id: string;
+  name: string;
+  role: "TEACHER" | "ACCOUNTANT" | "STAFF" | "ADMIN";
+  employeeId?: string;
+  inTime?: string;
+  outTime?: string;
+  inTimestamp?: number;
+  outTimestamp?: number;
+  stayDuration?: string;
+  present: boolean;
+  status: "present" | "absent" | "late" | "half_day" | "leave";
+  isLate?: boolean;
+  scanType?: "in" | "out";
+  locationStatus?: string;
+}
+
+export interface StaffDailyAttendanceRecord {
+  schoolId: string;
+  date: string;
+  records: Record<string, StaffDailyAttendanceEntry>;
+}
+
+
+export interface SchoolSession {
+  id: string;
+  schoolId: string;
+  name: string; // e.g. "2026-27"
+  startDate: string;
+  endDate: string;
+  active: boolean;
+  isDemo?: boolean;
+  createdAt: string;
+}
+
+export type FeeSectionBucket =
+  | "admission"
+  | "monthly"
+  | "annual"
+  | "exam"
+  | "optional";
+
+export interface ClassFeeHead {
+  id: string;
+  name: string; // e.g. "Exam Fee", "ID Card & Belt", "Computer Lab"
+  amount: number;
+  enabled?: boolean; // If false, hidden & excluded from billing
+  showInAdmission?: boolean; // If true, appears in Online & Direct Admission form
+  billingSection?: FeeSectionBucket; // Which fee section this item goes to
+  targetSection?: string; // "ALL" or specific class section ("A", "B", etc.)
+  groupId?: string;
+  groupTitle?: string;
+  legacyKey?: keyof ClassAdmissionHeadToggles;
+  isUserOptional?: boolean; // e.g. Bus / Transport user toggle
+}
+
+export interface ClassFeeGroup {
+  id: string;
+  title: string; // e.g. "Annual & Development Fee", "Admission Fee", "Monthly Tuition"
+  billingSection: FeeSectionBucket; // "admission" | "monthly" | "annual" | "exam" | "optional"
+  targetSection?: string; // "ALL" or specific class section ("A", "B", etc.)
+  enabled: boolean;
+  showInAdmission?: boolean; // Group-level toggle: show heads in Online & Direct Admission form
+  items: ClassFeeHead[];
+  discountEnabled?: boolean; // Whether OFF/discount is active on this group
+  discountType?: "flat" | "percent"; // "flat" = ₹ OFF, "percent" = % OFF
+  discountValue?: number; // Discount amount in ₹ or percentage (0-100)
+  discountLabel?: string; // Optional OFF label/reason (e.g. "Early Bird", "Waiver")
+}
+
+export interface ClassAdmissionHeadToggles {
+  admissionFee: boolean;
+  registrationFee: boolean;
+  examinationFee?: boolean; // 6 Exams (P.A-1, P.A-2, HYE, P.A-3, P.A-4, Annual Exam)
+  republicDayCharge?: boolean;
+  independenceDayCharge?: boolean;
+  diaryCharge?: boolean;
+  idCardCharge?: boolean;
+  tieBeltCharge?: boolean;
+  progressFolderCharge?: boolean;
+  developmentCharge?: boolean;
+  annualCharges: boolean;
+  tuitionFee: boolean;
+  cautionMoney: boolean;
+  busFee: boolean; // Allows user to select/unselect bus transport on online form
+}
+
+export interface ClassFeeStructure {
+  admissionFee: number;
+  registrationFee?: number;
+  examinationFee?: number; // 6 Exams (P.A-1, P.A-2, HYE, P.A-3, P.A-4, Annual Exam)
+  republicDayCharge?: number;
+  independenceDayCharge?: number;
+  diaryCharge?: number;
+  idCardCharge?: number;
+  tieBeltCharge?: number;
+  progressFolderCharge?: number;
+  developmentCharge?: number;
+  tuitionFee: number;
+  cautionMoney: number;
+  annualCharges: number;
+  developmentFee?: number;
+  busFee: number;
+  enabledHeads?: Partial<ClassAdmissionHeadToggles>;
+  customHeads?: ClassFeeHead[];
+  feeGroups?: ClassFeeGroup[];
+  examOriginalFee?: number;
+  examDiscountPct?: number;
+  chartVersion?: string;
+}
+
+export type SeniorStream = 'Science' | 'Commerce' | 'Arts';
+
+export interface SchoolClass {
+  id: string;
+  schoolId: string;
+  sessionId: string;
+  name: string; // e.g. "Class 6" or "Class 11"
+  section?: string; // e.g. "A" or "B"
+  stream?: SeniorStream | string; // Stream for Class 11 & 12 (Science, Commerce, Arts)
+  classTeacherId?: string;
+  defaultFee?: number;
+  feeStructure?: ClassFeeStructure;
+  createdAt: string;
+}
+
+export interface SchoolSubject {
+  id: string;
+  schoolId: string;
+  sessionId: string;
+  classId: string;
+  name: string; // e.g. "Physics", "Accountancy"
+  stream?: SeniorStream | string; // Stream for Senior Secondary subjects
+  teacherId?: string;
+  createdAt: string;
+}
+
+export interface LessonMCQ {
+  id: string;
+  questionNumber?: string | number;
+  question: string;
+  statements?: string[];
+  options: string[];
+  correctIndex: number;
+  explanation?: string;
+}
+
+export interface SchoolLesson {
+  id: string;
+  schoolId: string;
+  sessionId: string;
+  classId: string;
+  subjectId: string;
+  title: string;
+  order: number;
+  readingContent?: string; // HTML/rich text for reading mode
+  writingContent?: string; // Board-style content
+  pdfUrl?: string;
+  mcqs?: LessonMCQ[];
+  impNotes?: string; // Important points
+  features: {
+    readingEnabled: boolean;
+    writingEnabled: boolean;
+    pdfEnabled: boolean;
+    mcqEnabled: boolean;
+  };
+  createdAt: string;
+  createdBy: string;
+}
+
+export type TeacherRolePreset = "class_teacher" | "subject_teacher" | "coordinator" | "custom";
+
+export type TeacherAccessScope = "assigned_class" | "assigned_subjects" | "full_school";
+
+export interface TeacherPermissions {
+  canMarkAttendance: boolean;
+  canEnterMarks: boolean;
+  canEnterAllSubjectsMarks?: boolean;
+  canApproveLeaves: boolean;
+  canEditStudentProfile: boolean;
+  canAddAdmission: boolean;
+  canViewAllStudents: boolean;
+  canManageHomeworkAndDiary: boolean;
+  canManageNotesAndVideos: boolean;
+  canBuildQuestionPapers: boolean;
+  canMessageParents: boolean;
+  canManageAbsentee: boolean;
+  canManageLibrary: boolean;
+  canSchedulePtm: boolean;
+}
+
+export interface SchoolTeacher {
+  id: string; // Firebase Auth UID
+  schoolId: string;
+  name: string;
+  email?: string;
+  phone?: string; // Optional internal phone for administrative use only (never displayed to students)
+  subjects: string[]; // subject names or IDs
+  classes: string[]; // class IDs
+  assignedClassId?: string; // Primary Class Teacher class ID
+  assignedClassName?: string; // Primary Class Teacher class name
+  rolePreset?: TeacherRolePreset;
+  accessScope?: TeacherAccessScope;
+  permissions?: TeacherPermissions;
+  employeeId?: string;
+  joinDate: string;
+  active: boolean;
+  createdAt: string;
+  photoUrl?: string; // Teacher portrait picture
+  designation?: string; // e.g. "Senior Science Faculty", "TGT Mathematics", "Head of English"
+  qualification?: string; // e.g. "M.Sc. (Physics), B.Ed", "B.Tech, CTET"
+  experience?: string; // e.g. "8+ Years"
+  bio?: string; // Short bio / inspiring message for students
+  address?: string; // Residential address for Appointment Letter
+  signatureUrl?: string; // Teacher's own digital signature image URL (PNG/CDN)
+  appointmentRefNo?: string; // Appointment letter Ref No e.g. LMPS/APP/2027/001
+  appointmentStatus?: "not_issued" | "issued" | "signed"; // Appointment letter issuance status
+  appointmentIssuedAt?: string;
+  monthlySalary?: number; // Base or total monthly salary in INR
+  salary?: number;
+  salaryStructure?: TeacherSalaryStructure;
+  hasReferralIncentive?: boolean; // Admin-granted permission: only teachers with true can see and earn 10% referral incentives
+}
+
+export interface TeacherSalaryStructure {
+  monthlyBaseSalary: number; // मूल मासिक वेतन (Base Monthly Pay)
+  allowanceHra?: number; // मकान किराया भत्ता (HRA)
+  allowanceTravel?: number; // यात्रा / वाहन भत्ता (Conveyance Allowance)
+  allowanceSpecial?: number; // विशेष प्रोत्साहन भत्ता (Special Allowance)
+  deductionPf?: number; // प्रोविडेंट फंड व ईएसआई कटौती (PF / ESI)
+  deductionOther?: number; // अन्य मासिक कटौती (Other Deductions)
+  netMonthlySalary: number; // कुल शुद्ध मासिक भुगतान (Net Monthly Salary)
+  paymentMode?: "Bank Transfer" | "Cash" | "Cheque" | "UPI";
+  updatedAt?: string;
+}
+
+export interface SchoolStudent {
+  id: string; // Firebase Auth UID
+  schoolId: string;
+  sessionId: string;
+  classId: string;
+  className?: string;
+  section?: string;
+  name: string;
+  email?: string;
+  phone?: string;
+  whatsappNo?: string;
+  rollNo: string;
+  admissionNo?: string;
+  gender?: 'male' | 'female' | 'other';
+  category?: string; // General, OBC, SC, ST, EWS
+  apaarId?: string; // UDISE+ APAAR / PEN No.
+  fatherName?: string;
+  fatherOccupation?: string;
+  fatherPhone?: string; // Father's Calling Mobile
+  fatherWhatsapp?: string; // Father's WhatsApp Number
+  motherName?: string;
+  motherOccupation?: string;
+  motherPhone?: string; // Mother's Calling Mobile
+  motherWhatsapp?: string; // Mother's WhatsApp Number
+  aadhaarNo?: string; // 12-digit student UIDAI Aadhaar Number
+  fatherAadhaar?: string; // 12-digit Father's Aadhaar
+  motherAadhaar?: string; // 12-digit Mother's Aadhaar
+  dateOfBirth?: string;
+  bloodGroup?: string;
+  address?: string;
+  city?: string;
+  pincode?: string;
+  previousSchool?: string;
+  previousMarks?: string;
+  submittedDocs?: string[];
+  admissionReceiptNo?: string;
+  monthlyFee: number;
+  baseMonthlyFee?: number;
+  joinDate: string;
+  active: boolean;
+  createdAt: string;
+  photoUrl?: string; // Cloud CDN URL of student photo
+  iicUid?: string; // linked IIC account UID
+  usesBus?: boolean; // whether student avails school bus / transport
+  busRoute?: string; // bus route or stop name
+  busStop?: string; // boarding / drop stop
+  busFee?: number; // custom bus fee if set individually
+  homeLat?: number; // saved student home GPS latitude (for free bus proximity)
+  homeLng?: number; // saved student home GPS longitude (for free bus proximity)
+  homeAddress?: string; // short landmark / home pin note
+  religion?: string;
+  nationality?: string;
+  annualIncome?: string;
+  emergencyContact?: string;
+  emergencyPhone?: string;
+  emergencyRelation?: string;
+  emergencyWhatsapp?: string; // Emergency WhatsApp Number
+  identificationMark?: string;
+  medicalHistory?: string;
+  admissionType?: 'NEW' | 'READMISSION';
+  // Teacher Referral & 10% Commission Tracking
+  referredByTeacherId?: string;
+  referredByTeacherName?: string;
+  referralCommissionPct?: number; // Default 10
+  referralCommissionScope?: 'admission_only' | 'all_fees';
+  referralCommissionDuration?: '1_year' | '2_years' | 'lifetime';
+  // Same-Family / Sibling Detection & Discount Tracking
+  familyGroupId?: string;
+  isSiblingMarked?: boolean;
+  siblingStudentIds?: string[];
+  siblingDiscountPct?: number;
+  siblingDiscountAmount?: number; // Monthly concession amount if applied to monthly fee
+  admissionSiblingDiscount?: number; // One-time admission fee concession/discount for sibling
+  isFreeEducation?: boolean; // 100% Free / नि:शुल्क शिक्षा (Zero Tuition Fee)
+  concessionType?: 'NONE' | 'SIBLING_DISCOUNT' | 'FREE_EDUCATION' | 'STAFF_CHILD' | 'MERIT_SCHOLARSHIP' | 'CUSTOM';
+  concessionReason?: string; // e.g. "भाई-बहन 100% नि:शुल्क शिक्षा", "भाई-बहन 50% छूट"
+  stream?: SeniorStream | string; // Senior Secondary stream: Science, Commerce, Arts
+  fatherQualification?: string;
+  motherQualification?: string;
+  isOnlyChild?: boolean;
+  motherTongue?: string;
+  correspondenceAddress?: string;
+  isSameAddress?: boolean;
+  previousBoard?: string;
+  previousTcNo?: string;
+  previousTcDate?: string;
+  transportModeIfNo?: 'Walking' | 'Guardian';
+  transportDistanceKm?: number | string;
+  childSensitivity?: boolean;
+  childSensitivityRemarks?: string;
+  // Admission Dues & 1-Month Advance Fee Tracking
+  admissionTotalAmount?: number; // Total admission fees payable
+  admissionPaidAmount?: number; // Total admission fee amount paid at admission
+  admissionDueBalance?: number; // Remaining unpaid admission amount (बकाया एडमिशन शुल्क)
+  admissionBalanceHistory?: {
+    date: string;
+    paidAmount: number;
+    remainingDue: number;
+    receiptNo?: string;
+    paymentMode?: string;
+  }[];
+  advanceMonthlyFeePaid?: boolean; // Whether 1-month advance fee was paid at admission
+  advanceMonthlyFeeDue?: number; // Unpaid 1-month advance fee amount (1 माह एडवांस फीस बकाया)
+  advanceMonthlyFeeMonth?: string; // e.g. "April" or first active month
+  // Session Re-Admission & Back-Session Unpaid Due Carryover
+  previousStudentId?: string;
+  previousSessionId?: string;
+  previousSessionName?: string;
+  previousClassName?: string;
+  previousSessionDue?: number; // Remaining unpaid back-session / re-admission due attached to future fee slips until paid
+  previousSessionDueInitial?: number;
+  previousSessionDueWaived?: number;
+  previousSessionDueWaivedNote?: string;
+  reAdmissionFee?: number;
+  reAdmissionDate?: string;
+  reAdmissionReceiptNo?: string;
+  reAdmissionPaidAmount?: number;
+  siblingDetails?: Array<{ slNo: number; name: string; relation: string; className: string; rollNo?: string }>;
+  bankAccountName?: string;
+  bankName?: string;
+  bankAccountNumber?: string;
+  bankIfsc?: string;
+  ageOnAprilFirst?: { years: number; months: number; days: number };
+  busNumber?: string;
+  driverName?: string;
+  driverPhone?: string;
+  conductorName?: string;
+  conductorPhone?: string;
+  teacherRemark?: string;
+  homeworkStatus?: string;
+  awardsAchievements?: string;
+  tcIssued?: boolean;
+  tcNumber?: string;
+  tcDate?: string;
+}
+
+// ── CANONICAL CLASS & STREAM CONFIGURATION ──────────────────────────────────
+export const CLASS_PRESETS = [
+  "Nursery",
+  "LKG",
+  "UKG",
+  "Class 1",
+  "Class 2",
+  "Class 3",
+  "Class 4",
+  "Class 5",
+  "Class 6",
+  "Class 7",
+  "Class 8",
+  "Class 9",
+  "Class 10",
+  "Class 11",
+  "Class 12"
+] as const;
+
+export const SENIOR_STREAMS: { id: SeniorStream; label: string; icon: string; desc: string }[] = [
+  { id: 'Science', label: 'Science (विज्ञान)', icon: '🔬', desc: 'Physics, Chemistry, Maths, Biology, Computer Science, PE' },
+  { id: 'Commerce', label: 'Commerce (वाणिज्य)', icon: '📊', desc: 'Accountancy, Business Studies, Economics, Applied Maths, IP' },
+  { id: 'Arts', label: 'Arts / Humanities (कला)', icon: '🎨', desc: 'History, Political Science, Geography, Economics, Hindi, Sociology' },
+];
+
+export const isSeniorClass = (className: string = ""): boolean => {
+  const clean = (className || "").trim().toLowerCase();
+  return (
+    clean === "11" ||
+    clean === "12" ||
+    clean.includes("class 11") ||
+    clean.includes("class 12") ||
+    clean.includes("11th") ||
+    clean.includes("12th") ||
+    /\b(11|12|xi|xii)\b/i.test(clean)
+  );
+};
+
+export const isBoardClass = (className: string = ""): boolean => {
+  const clean = (className || "").trim().toLowerCase();
+  const is10 = clean === "10" || clean === "x" || clean.includes("class 10") || clean.includes("class x") || clean.includes("10th") || clean.includes("grade 10") || clean.includes("std 10") || clean.includes("tenth");
+  const is12 = clean === "12" || clean === "xii" || clean.includes("class 12") || clean.includes("class xii") || clean.includes("12th") || clean.includes("grade 12") || clean.includes("std 12") || clean.includes("twelfth");
+  return is10 || is12;
+};
+
+export const getClassSortRank = (className: string = "", stream?: string): number => {
+  const clean = (className || "").trim().toLowerCase();
+  const compact = clean.replace(/[\s.()\-_/]+/g, "");
+
+  // Play / Pre-Nursery
+  if (clean.includes("play") || clean.includes("pre-nur") || clean.includes("prenursery")) return 1;
+  // Nursery (handles Nursery, Nursary, Nur., Nur)
+  if (clean.includes("nursery") || clean.includes("nursary") || compact === "nur" || compact.startsWith("nursery")) return 2;
+  // LKG / KG-1
+  if (clean.includes("lkg") || compact.startsWith("lkg") || clean.includes("kg-1") || clean.includes("kg 1") || clean.includes("jr")) return 3;
+  // UKG / KG-2 / Prep
+  if (clean.includes("ukg") || compact.startsWith("ukg") || clean.includes("kg-2") || clean.includes("kg 2") || clean.includes("prep") || clean.includes("sr")) return 4;
+
+  // Exact number match for 1 to 12
+  const numMatch = clean.match(/\b([1-9]|1[0-2])\b/);
+  if (numMatch) {
+    const n = parseInt(numMatch[1], 10);
+    let rank = n * 10;
+    if (n === 11 || n === 12) {
+      const st = (stream || clean).toLowerCase();
+      if (st.includes("sci")) rank += 1;
+      else if (st.includes("com")) rank += 2;
+      else if (st.includes("art") || st.includes("hum")) rank += 3;
+    }
+    return rank;
+  }
+
+  // Roman numeral match (Class I .. Class XII)
+  const stripped = clean.replace(/\b(class|std|grade)\b/g, " ").replace(/[^a-z\s]/g, " ").trim();
+  const firstWord = stripped.split(/\s+/)[0] || "";
+  const romanMap: Record<string, number> = {
+    i: 1, ii: 2, iii: 3, iv: 4, v: 5, vi: 6,
+    vii: 7, viii: 8, ix: 9, x: 10, xi: 11, xii: 12,
+  };
+  if (romanMap[firstWord]) {
+    const n = romanMap[firstWord];
+    let rank = n * 10;
+    if (n === 11 || n === 12) {
+      const st = (stream || clean).toLowerCase();
+      if (st.includes("sci")) rank += 1;
+      else if (st.includes("com")) rank += 2;
+      else if (st.includes("art") || st.includes("hum")) rank += 3;
+    }
+    return rank;
+  }
+
+  // Fallback digits extraction
+  const digits = clean.replace(/\D+/g, "");
+  if (digits) {
+    const n = parseInt(digits, 10);
+    if (n >= 1 && n <= 12) {
+      let rank = n * 10;
+      if (n === 11 || n === 12) {
+        const st = (stream || clean).toLowerCase();
+        if (st.includes("sci")) rank += 1;
+        else if (st.includes("com")) rank += 2;
+        else if (st.includes("art") || st.includes("hum")) rank += 3;
+      }
+      return rank;
+    }
+  }
+
+  return 999;
+};
+
+export const sortSchoolClasses = <T extends { name: string; section?: string; stream?: string }>(classes: T[]): T[] => {
+  if (!Array.isArray(classes)) return [];
+  return [...classes].sort((a, b) => {
+    const rankA = getClassSortRank(a.name, a.stream);
+    const rankB = getClassSortRank(b.name, b.stream);
+    if (rankA !== rankB) return rankA - rankB;
+    const secA = (a.section || "").trim();
+    const secB = (b.section || "").trim();
+    if (secA !== secB) return secA.localeCompare(secB);
+    return (a.name || "").localeCompare(b.name || "");
+  });
+};
+
+// ── PRE-CONFIGURED STREAM-WISE & GRADE-WISE SUBJECTS ────────────────────────
+export const DEFAULT_CLASS_SUBJECTS: Record<string, string[]> = {
+  "Nursery": ["English Rhymes", "Hindi Balgeet", "Pre-Math Numbers", "Drawing & Coloring", "General Awareness"],
+  "LKG": ["English Phonics & Writing", "Hindi Akshar Gyan", "Mathematics Basics", "EVS & Nature", "Art & Craft"],
+  "UKG": ["English Words & Sentences", "Hindi Shabad Rachna", "Mathematics Add/Sub", "Environmental Awareness", "Creative Arts"],
+  "Class 1": ["English Marigold", "Hindi Rimjhim", "Mathematics Math-Magic", "EVS Our Environment", "Computer Studies", "General Knowledge"],
+  "Class 2": ["English Marigold", "Hindi Rimjhim", "Mathematics Math-Magic", "EVS Our World", "Computer Studies", "General Knowledge"],
+  "Class 3": ["English Marigold", "Hindi Rimjhim", "Mathematics Math-Magic", "EVS Looking Around", "General Science", "Computer Coding", "General Knowledge"],
+  "Class 4": ["English Marigold", "Hindi Rimjhim", "Mathematics Math-Magic", "EVS Looking Around", "General Science", "Computer & AI", "General Knowledge"],
+  "Class 5": ["English Marigold", "Hindi Rimjhim", "Mathematics Math-Magic", "EVS Looking Around", "General Science", "Computer & AI", "General Knowledge"],
+  "Class 6": ["English Honeysuckle", "Hindi Vasant", "Mathematics NCERT", "Science (PCB)", "Social Science", "Sanskrit", "Computer Science"],
+  "Class 7": ["English Honeycomb", "Hindi Vasant", "Mathematics NCERT", "Science (PCB)", "Social Science", "Sanskrit", "Computer Science"],
+  "Class 8": ["English Honeydew", "Hindi Bharat Ki Khoj", "Mathematics NCERT", "Science (PCB)", "Social Science", "Sanskrit", "Computer & Coding"],
+  "Class 9": ["English Beehive & Moments", "Hindi Kshitij & Kritika", "Mathematics NCERT", "Science (Physics, Chemistry, Biology)", "Social Science", "Information Technology 402"],
+  "Class 10": ["English First Flight & Footprints", "Hindi Kshitij & Kritika", "Mathematics NCERT Standard", "Science (Physics, Chem, Bio)", "Social Science Board", "Information Technology 402"],
+  // Stream-wise subjects for 11 & 12
+  "Class 11_Science": ["Physics", "Chemistry", "Mathematics", "Biology", "English Core", "Computer Science", "Physical Education"],
+  "Class 11_Commerce": ["Accountancy", "Business Studies", "Economics", "English Core", "Applied Mathematics", "Informatics Practices"],
+  "Class 11_Arts": ["History", "Political Science", "Geography", "Economics", "English Core", "Hindi Elective", "Sociology"],
+  "Class 12_Science": ["Physics", "Chemistry", "Mathematics", "Biology", "English Core", "Computer Science", "Physical Education"],
+  "Class 12_Commerce": ["Accountancy", "Business Studies", "Economics", "English Core", "Applied Mathematics", "Informatics Practices"],
+  "Class 12_Arts": ["History", "Political Science", "Geography", "Economics", "English Core", "Hindi Elective", "Sociology"],
+};
+
+export const getDefaultSubjectsForClass = (className: string, stream?: string): string[] => {
+  const clean = (className || "").trim();
+  const st = (stream || "").trim().toLowerCase();
+
+  if (isSeniorClass(clean)) {
+    const is12 = clean.includes("12") || clean.includes("xii");
+    const prefix = is12 ? "Class 12" : "Class 11";
+    if (st.includes("sci") || clean.toLowerCase().includes("sci")) {
+      return DEFAULT_CLASS_SUBJECTS[`${prefix}_Science`];
+    }
+    if (st.includes("com") || clean.toLowerCase().includes("com")) {
+      return DEFAULT_CLASS_SUBJECTS[`${prefix}_Commerce`];
+    }
+    if (st.includes("art") || st.includes("hum") || clean.toLowerCase().includes("art")) {
+      return DEFAULT_CLASS_SUBJECTS[`${prefix}_Arts`];
+    }
+    // Default to Science stream if unspecified
+    return DEFAULT_CLASS_SUBJECTS[`${prefix}_Science`];
+  }
+
+  // Exact lookup
+  if (DEFAULT_CLASS_SUBJECTS[clean]) return DEFAULT_CLASS_SUBJECTS[clean];
+
+  // Case-insensitive lookup
+  for (const [k, v] of Object.entries(DEFAULT_CLASS_SUBJECTS)) {
+    if (clean.toLowerCase() === k.toLowerCase()) return v;
+  }
+
+  // Fallback
+  return ["English", "Hindi", "Mathematics", "Science", "Social Science", "Computer / IT"];
+};
+
+export const BLOOD_GROUPS = ["A+", "A-", "B+", "B-", "O+", "O-", "AB+", "AB-"] as const;
+export type BloodGroup = typeof BLOOD_GROUPS[number];
+
+export const ADMISSION_CATEGORIES = ["General", "OBC", "SC", "ST", "EWS"] as const;
+
+export const ADMISSION_DOCUMENT_OPTIONS = [
+  "Birth Certificate (जन्म प्रमाण पत्र)",
+  "Student Aadhaar Card (छात्र आधार)",
+  "Parent Aadhaar Card (अभिभावक आधार)",
+  "Transfer Certificate / SLC (टी.सी.)",
+  "Previous Marksheet (पिछला अंकपत्र)",
+  "Passport Photos (पासपोर्ट फोटो)",
+  "Caste / Income Cert. (जाति/आय प्रमाण)",
+] as const;
+
+// ATTENDANCE
+export interface AttendanceRecord {
+  date: string; // "YYYY-MM-DD"
+  schoolId: string;
+  classId: string;
+  sessionId: string;
+  markedBy: string; // teacher UID
+  students: {
+    [studentId: string]: {
+      present: boolean;
+      name: string;
+      rollNo: string;
+      note?: string;
+      inTime?: string; // e.g. "08:15:30 AM"
+      outTime?: string; // e.g. "02:30:15 PM"
+      inTimestamp?: number; // Epoch ms for reliable multi-day duration & gap math
+      outTimestamp?: number; // Epoch ms
+      stayDuration?: string; // e.g. "6h 15m"
+      status?: "present" | "late" | "half_day" | "absent" | "leave" | "bunk";
+      scanType?: "in" | "out";
+       /** Timestamp retained by some legacy attendance entries. */
+       createdAt?: string;
+    };
+  };
+  createdAt: string;
+}
+
+// MARKS
+export interface ExamEntry {
+  id: string;
+  schoolId: string;
+  sessionId: string;
+  classId: string;
+  subjectId: string;
+  subjectName: string;
+  examName: string; // e.g. "Unit Test 1", "Half Yearly"
+  examDate: string;
+  maxMarks: number;
+  markedBy: string;
+  studentMarks: {
+    [studentId: string]: {
+      marks: number;
+      absent?: boolean;
+      studentName: string;
+      rollNo: string;
+    };
+  };
+  createdAt: string;
+}
+
+// FEE
+export interface MonthlyFee {
+  schoolId: string;
+  sessionId: string;
+  studentId: string;
+  studentName: string;
+  rollNo: string;
+  classId: string;
+  className?: string;
+  month: string; // "YYYY-MM"
+  amount: number;
+  paymentMode?: string;
+  monthlyAmount?: number;
+  arrearsAmount?: number;
+  arrearsMonths?: string[];
+  paid: boolean;
+  status?: string;
+  paidDate?: string;
+  paidBy?: string; // admin UID
+  collectedBy?: string; // Display label e.g. "Accountant (Sunil)" or "Manager (R. Singh)"
+  collectedByRole?: "accountant" | "manager";
+  collectedByName?: string;
+  collectorSignatureUrl?: string;
+  receiptNo?: string;
+  razorpayOrderId?: string;
+  razorpayPaymentId?: string;
+  verifiedViaWebhook?: boolean;
+  cancelled?: boolean;
+  updatedAt?: string;
+  note?: string;
+  paidAmount?: number;
+  lastReceiptPaidAmount?: number;
+  lastPaidAmount?: number;
+  lastPaidDate?: string;
+  lastDueAmount?: number;
+  lastDueDate?: string;
+  balanceDue?: number;
+  concession?: number;
+  earlyDiscount?: number;
+  isEarlyBirdEligible?: boolean;
+  feeType?: 'monthly' | 'admission';
+  receiptCategory?: 'monthly' | 'admission';
+  includeAdmissionFee?: boolean;
+  includeCautionMoney?: boolean;
+  includeAnnualCharges?: boolean;
+  includeBusFee?: boolean;
+  busFeeAmount?: number;
+  busRoute?: string;
+  admissionBreakdown?: {
+    admissionFee: number;
+    registrationFee: number;
+    developmentFee: number;
+    idKitFee: number;
+    examFund: number;
+    otherCharges?: number;
+  };
+  payModeInfo?: {
+    payMode: string;
+    date: string;
+    bank: string;
+    number: string;
+    onlineAmount?: number;
+    offlineAmount?: number;
+  };
+  items?: {
+    id: string;
+    slNo: number;
+    description: string;
+    due: number;
+    con: number;
+    paid: number;
+  }[];
+  siblingDiscountAmount?: number;
+  referredByTeacherId?: string;
+  referredByTeacherName?: string;
+  paymentPlan?: 'registration_only' | 'half_payment' | 'full_payment';
+  paymentPlanLabel?: string;
+  includeAdvanceTuition?: boolean;
+  deferredTuitionAmount?: number;
+}
+
+// HOMEWORK
+export interface SchoolHomework {
+  id: string;
+  schoolId: string;
+  classId: string;
+  subjectId: string;
+  subjectName: string;
+  title: string;
+  description: string;
+  dueDate: string;
+  assignedBy: string; // teacher UID
+  createdAt: string;
+}
+
+// LESSON COMPLETION (per teacher class session)
+export interface LessonCompletion {
+  id: string;
+  schoolId: string;
+  classId: string;
+  lessonId: string;
+  lessonTitle: string;
+  teacherId: string;
+  completedAt: string;
+  note?: string;
+}
+
+// MCQ RESULT (school context)
+export interface SchoolMCQResult {
+  id: string;
+  schoolId: string;
+  classId: string;
+  studentId: string;
+  studentName: string;
+  lessonId: string;
+  lessonTitle: string;
+  subjectId: string;
+  score: number;
+  total: number;
+  percentage: number;
+  date: string;
+}
+
+// ANALYTICS
+export interface SchoolAnalytics {
+  totalStudents: number;
+  totalTeachers: number;
+  totalClasses: number;
+  averageAttendance: number; // percentage
+  feePending: number; // amount
+  feeCollected: number;
+}
+
+// SUPER ADMIN DASHBOARD
+export interface SuperAdminStats {
+  totalSchools: number;
+  activeSchools: number;
+  inactiveSchools: number;
+  totalStudents: number;
+  totalTeachers: number;
+  monthlyRevenue: number;
+  pendingRevenue: number;
+}
+
+// School User Profile (stored in users/{uid} for school roles)
+export interface SchoolUserProfile {
+  uid: string;
+  schoolId: string;
+  role: SchoolRole;
+  name: string;
+  email: string;
+  // For teachers
+  teacherRef?: string;
+  // For students
+  studentRef?: string;
+  classId?: string;
+  sessionId?: string;
+}
+
+// ── ADVANCED 9-MODULE TYPES ──────────────────────────────────────────────────
+
+export interface SchoolNotice {
+  id: string;
+  schoolId: string;
+  title: string;
+  content: string;
+  type: 'notice' | 'circular' | 'holiday' | 'event';
+  audience: 'all' | 'students' | 'teachers';
+  date: string;
+  createdAt: string;
+  createdBy: string;
+  attachmentUrl?: string;
+  pinned?: boolean;
+}
+
+export interface SchoolHoliday {
+  id: string;
+  schoolId: string;
+  title: string;
+  startDate: string; // YYYY-MM-DD
+  endDate: string; // YYYY-MM-DD
+  days: number;
+  type: 'festival' | 'national' | 'vacation' | 'emergency';
+  description?: string;
+  createdAt: string;
+  createdBy: string;
+}
+
+export type SchoolEventType =
+  | 'MEETING'        // मीटिंग (Staff Meeting / PTA)
+  | 'EXAM'           // परीक्षा (Unit Test / Term Exam)
+  | 'RESULT_DAY'     // रिजल्ट डे (Result Declaration Day / PTM)
+  | 'OFFICIAL_WORK'  // स्कूल कार्य (Inspection / Audit / Administrative Work)
+  | 'CELEBRATION'    // वार्षिकोत्सव / खेलकूद / फंक्शन
+  | 'HOLIDAY'        // अवकाश (Holiday)
+  | 'OTHER';         // अन्य महत्वपूर्ण कार्य
+
+export interface SchoolEvent {
+  id: string;
+  schoolId: string;
+  title: string;
+  type: SchoolEventType;
+  date: string; // YYYY-MM-DD
+  time?: string; // e.g. "09:30 AM"
+  venue?: string; // e.g. "Principal Office / Assembly Hall"
+  description?: string;
+  targetAudience: 'ALL_TEACHERS' | 'ALL_STUDENTS' | 'WHOLE_SCHOOL';
+  createdBy?: string;
+  createdAt: string;
+  autoMorningAlert?: boolean;
+  notifiedTeachers?: boolean;
+  notifiedAt?: string;
+}
+
+export interface SchoolCertificate {
+  id: string;
+  schoolId: string;
+  studentId: string;
+  studentName: string;
+  rollNo: string;
+  className: string;
+  fatherName?: string;
+  motherName?: string;
+  dob?: string;
+  certificateType: 'tc' | 'character' | 'bonafide' | 'merit';
+  issueDate: string;
+  dispatchNo: string;
+  reason?: string;
+  remarks?: string;
+  conduct?: string;
+}
+
+export interface ExamTimetableItem {
+  subject: string;
+  date: string;
+  time: string;
+  room?: string;
+}
+
+export interface SchoolAdmitCardConfig {
+  id: string;
+  schoolId: string;
+  sessionId: string;
+  classId: string;
+  examName: string;
+  centerName: string;
+  examStartDate: string;
+  examEndDate: string;
+  timetable: ExamTimetableItem[];
+  instructions: string[];
+  createdAt: string;
+}
+
+export interface StaffEmployee {
+  id: string;
+  schoolId: string;
+  name: string;
+  email: string;
+  phone: string;
+  designation: string; // e.g. "Senior PGT Teacher", "Lab Assistant", "Accountant"
+  department: string;
+  employeeId?: string;
+  lateEntriesCount?: number;
+  joinDate: string;
+  monthlySalary: number;
+  salaryStructure?: TeacherSalaryStructure;
+  active: boolean;
+  photoUrl?: string;
+  address?: string;
+  createdAt: string;
+}
+
+export interface AccountantPermissions {
+  canCollectFee: boolean;
+  canAdmitStudents: boolean;
+  canGrantDiscount: boolean;
+  maxDiscountLimitPct?: number;
+  canRecordExpenses: boolean;
+  canViewDayBook: boolean;
+  canSendFeeAlerts: boolean;
+  canManageBusFee: boolean;
+  canPrintIdCards: boolean;
+  canManageAbsentee?: boolean;
+  canCancelReceipts?: boolean;
+  canEditFeeStructure?: boolean;
+}
+
+export interface StudentAcknowledgedLeave {
+  id: string;
+  studentId: string;
+  schoolId: string;
+  studentName?: string;
+  rollNo?: string;
+  className?: string;
+  classId?: string;
+  parentName?: string;
+  parentPhone?: string;
+  reason: string;
+  customNotes?: string;
+  leaveStartDate: string;
+  expectedReturnDate: string;
+  recordedBy: string;
+  recordedRole: "ADMIN" | "ACCOUNTANT" | "TEACHER";
+  recordedAt: string;
+  status: "active" | "returned" | "overdue";
+}
+
+export interface StudentAbsenteeCallLog {
+  id: string;
+  studentId: string;
+  schoolId: string;
+  studentName?: string;
+  date: string;
+  callerName: string;
+  callerRole: "ADMIN" | "ACCOUNTANT" | "TEACHER";
+  callTimestamp: string;
+  parentRemarks?: string;
+  status: "connected" | "not_reachable" | "call_back" | "leave_granted";
+}
+
+export interface SchoolAccountant {
+  id: string;
+  schoolId: string;
+  name: string;
+  email?: string;
+  phone: string;
+  employeeId?: string;
+  designation?: string;
+  joinDate: string;
+  active: boolean;
+  photoUrl?: string;
+  signatureUrl?: string;
+  appointmentRefNo?: string;
+  appointmentStatus?: "not_issued" | "issued" | "signed";
+  appointmentIssuedAt?: string;
+  permissions: AccountantPermissions;
+  monthlySalary?: number;
+  salaryStructure?: TeacherSalaryStructure;
+  teacherRef?: string;
+  createdAt: string;
+}
+
+export interface SchoolExpenseVoucher {
+  id: string;
+  schoolId: string;
+  voucherNo: string;
+  date: string;
+  category: "Stationery" | "Electricity / Utilities" | "Maintenance & Repair" | "Vehicle Fuel & Bus" | "Events & Functions" | "Staff Welfare / Refreshment" | "Other";
+  amount: number;
+  paidTo: string;
+  paymentMode: "Cash" | "UPI" | "Bank Transfer" | "Cheque";
+  recordedBy: string;
+  description: string;
+  createdAt: string;
+}
+
+export interface StaffLeave {
+  id: string;
+  schoolId: string;
+  staffId: string;
+  staffName: string;
+  designation: string;
+  leaveType: 'casual' | 'sick' | 'earned' | 'unpaid';
+  fromDate: string;
+  toDate: string;
+  days: number;
+  reason: string;
+  status: 'pending' | 'approved' | 'rejected';
+  appliedAt: string;
+  reviewedAt?: string;
+  approvedBy?: string;
+  remarks?: string;
+}
+
+export type ReferralCommissionScope = 'admission_only' | 'all_fees';
+export type ReferralCommissionDuration = '1_year' | '2_years' | 'lifetime';
+
+export interface SchoolReferralSettings {
+  schoolId: string;
+  enabled?: boolean;
+  defaultCommissionPct: number; // Default 10%
+  commissionScope: ReferralCommissionScope; // 'admission_only' or 'all_fees'
+  commissionDuration?: ReferralCommissionDuration; // '1_year' | '2_years' | 'lifetime' (Admin controlled)
+  excludeTransportFee?: boolean;
+  siblingDiscountEnabled?: boolean;
+  defaultSiblingDiscountPct: number; // Default 10%
+  updatedAt: string;
+}
+
+export interface TeacherReferralPayout {
+  id: string;
+  schoolId: string;
+  teacherId: string;
+  teacherName: string;
+  amount: number;
+  paidDate: string; // YYYY-MM-DD or ISO
+  paymentMode: string; // Cash, UPI, Bank Transfer, Added to Salary
+  referenceNo?: string;
+  remarks?: string;
+  createdAt: string;
+}
+
+// ── ONLINE ADMISSIONS & REGISTRATION ──
+export interface AdmissionApplication {
+  id: string;
+  applicationNo: string; // e.g. "ADM-2026-1042"
+  schoolId: string;
+  sessionId: string;
+  classId: string;
+  className: string;
+  studentName: string;
+  gender: 'male' | 'female' | 'other';
+  dateOfBirth: string;
+  bloodGroup?: string;
+  category?: string; // General, OBC, SC, ST
+  previousSchool?: string;
+  previousMarks?: string;
+  photoUrl?: string;
+  apaarId?: string;
+  fatherName: string;
+  fatherOccupation?: string;
+  fatherPhone?: string; // Father's Calling Mobile
+  fatherWhatsapp?: string; // Father's WhatsApp Number
+  motherName: string;
+  motherOccupation?: string;
+  motherPhone?: string; // Mother's Calling Mobile
+  motherWhatsapp?: string; // Mother's WhatsApp Number
+  phone: string;
+  whatsappNo?: string;
+  email?: string;
+  aadhaarNo?: string; // 12-digit student Aadhaar number
+  fatherAadhaar?: string; // 12-digit Father's Aadhaar
+  motherAadhaar?: string; // 12-digit Mother's Aadhaar
+  address: string;
+  city?: string;
+  pincode?: string;
+  usesBus?: boolean;
+  busRoute?: string;
+  busStop?: string;
+  busFee?: number;
+  submittedDocs?: string[];
+  religion?: string;
+  nationality?: string;
+  annualIncome?: string;
+  emergencyContact?: string;
+  emergencyPhone?: string;
+  emergencyRelation?: string;
+  emergencyWhatsapp?: string; // Emergency WhatsApp Number
+  identificationMark?: string;
+  medicalHistory?: string;
+  admissionType?: 'NEW' | 'READMISSION';
+  targetSessionId?: string;
+  targetSessionName?: string;
+  includeBackDueInAdm?: boolean;
+  previousStudentId?: string;
+  previousSessionId?: string;
+  previousSessionName?: string;
+  previousClassName?: string;
+  previousSessionDue?: number;
+  fatherQualification?: string;
+  motherQualification?: string;
+  isOnlyChild?: boolean;
+  siblingDetails?: Array<{ slNo: number; name: string; relation: string; className: string }>;
+  transportModeIfNo?: 'Walking' | 'Guardian';
+  transportDistanceKm?: string | number;
+  childSensitivity?: boolean;
+  childSensitivityRemarks?: string;
+  ageOnAprilFirst?: { years: number; months: number; days: number };
+  uploadedDocuments?: Record<string, string>;
+  enrolledStudentId?: string;
+  monthlyFee?: number;
+  admissionFeeDetails?: {
+    admissionFee: number;
+    registrationFee: number;
+    developmentFee: number;
+    idKitFee: number;
+    examFund: number;
+    concession?: number;
+    totalPayable: number;
+    paidAmount: number;
+    balanceDue: number;
+    paymentMode: string;
+    receiptNo?: string;
+    paidDate?: string;
+    paymentPlan?: 'registration_only' | 'half_payment' | 'full_payment';
+    paymentPlanLabel?: string;
+    includeAdvanceTuition?: boolean;
+    deferredTuitionAmount?: number;
+    items?: {
+      id: string;
+      slNo: number;
+      description: string;
+      due: number;
+      con: number;
+      paid: number;
+    }[];
+  };
+  status: 'pending' | 'approved' | 'rejected';
+  appliedAt: string;
+  reviewedAt?: string;
+  reviewedBy?: string;
+  remarks?: string;
+  rejectionReason?: string;
+  resubmittedAt?: string;
+  resubmitCount?: number;
+  assignedRollNo?: string;
+  assignedSection?: string;
+  paymentScreenshotUrl?: string;
+  transactionRef?: string;
+  paymentMode?: string;
+  paymentSubmittedAt?: string;
+  razorpayOrderId?: string;
+  razorpayPaymentId?: string;
+  referredByTeacherId?: string;
+  referredByTeacherName?: string;
+  familyGroupId?: string;
+  isSiblingMarked?: boolean;
+  siblingDiscountAmount?: number;
+  entranceTestScorePct?: number;
+  entranceTestTier?: 'MERIT' | 'QUALIFIED' | 'FOUNDATION_SUPPORT' | 'COUNSELING';
+  entranceTestTag?: string;
+  entranceTestSetId?: string;
+  entranceRecommendedClass?: string;
+  entranceDiscountAmount?: number;
+  entranceDiscountLabel?: string;
+  entranceDiscountCancelled?: boolean;
+  stream?: SeniorStream | string; // Senior Secondary stream: Science, Commerce, Arts
+  motherTongue?: string;
+  correspondenceAddress?: string;
+  isSameAddress?: boolean;
+  previousBoard?: string;
+  previousTcNo?: string;
+  previousTcDate?: string;
+  bankAccountName?: string;
+  bankName?: string;
+  bankAccountNumber?: string;
+  bankIfsc?: string;
+  parentDeclarationAccepted?: boolean;
+  paymentPlan?: 'registration_only' | 'half_payment' | 'full_payment';
+  paymentPlanLabel?: string;
+  includeAdvanceTuition?: boolean;
+  term1PayableAmount?: number;
+  term2BalanceAmount?: number;
+  deferredTuitionAmount?: number;
+}
+
+export interface AdmissionFormFieldSettings {
+  // Student Profile
+  showAgeOnAprilFirst: boolean;
+  showSingleChild: boolean;
+  showIdentificationMark: boolean;
+  showApaarId: boolean;
+  showMotherTongue: boolean;
+  showBloodGroup: boolean;
+  showCategoryCaste: boolean;
+  showReligionNationality: boolean;
+  showStudentAadhaar: boolean;
+  showMedicalHistory: boolean;
+
+  // Parents Profile
+  showFatherQualification: boolean;
+  showFatherOccupation: boolean;
+  showFatherAadhaar: boolean;
+  showFatherPhone: boolean;
+  showFatherWhatsapp: boolean;
+  showMotherQualification: boolean;
+  showMotherOccupation: boolean;
+  showMotherAadhaar: boolean;
+  showMotherPhone: boolean;
+  showMotherWhatsapp: boolean;
+  showAnnualIncome: boolean;
+  showEmergencyContact: boolean;
+  showEmergencyWhatsapp: boolean;
+
+  // Addresses
+  showCorrespondenceAddress: boolean;
+
+  // Previous School & TC
+  showPreviousSchool: boolean;
+  showPreviousTcDetails: boolean;
+
+  // Transport & Child Sensitivity
+  showTransportModeIfNo: boolean;
+  showTransportDistance: boolean;
+  showChildSensitivity: boolean;
+
+  // Sibling Profile
+  showSiblingTable: boolean;
+  showTeacherReferral: boolean;
+
+  // Bank Account (DBT / Scholarship)
+  showBankDetails: boolean;
+
+  // Documents & Payments
+  showRequiredDocuments: boolean;
+  showPaymentScreenshot: boolean;
+  showParentDeclaration: boolean;
+}
+
+export const DEFAULT_ADMISSION_FIELD_SETTINGS: AdmissionFormFieldSettings = {
+  showAgeOnAprilFirst: true,
+  showSingleChild: true,
+  showIdentificationMark: true,
+  showApaarId: true,
+  showMotherTongue: true,
+  showBloodGroup: true,
+  showCategoryCaste: true,
+  showReligionNationality: true,
+  showStudentAadhaar: true,
+  showMedicalHistory: true,
+
+  showFatherQualification: true,
+  showFatherOccupation: true,
+  showFatherAadhaar: true,
+  showFatherPhone: true,
+  showFatherWhatsapp: true,
+  showMotherQualification: true,
+  showMotherOccupation: true,
+  showMotherAadhaar: true,
+  showMotherPhone: true,
+  showMotherWhatsapp: true,
+  showAnnualIncome: true,
+  showEmergencyContact: true,
+  showEmergencyWhatsapp: true,
+
+  showCorrespondenceAddress: true,
+
+  showPreviousSchool: true,
+  showPreviousTcDetails: true,
+
+  showTransportModeIfNo: true,
+  showTransportDistance: true,
+  showChildSensitivity: true,
+
+  showSiblingTable: true,
+  showTeacherReferral: true,
+
+  showBankDetails: true,
+
+  showRequiredDocuments: true,
+  showPaymentScreenshot: true,
+  showParentDeclaration: true,
+};
+
+// ── SCHOOL PUBLIC WEBSITE & PORTAL ──
+export interface SchoolSliderSlide {
+  id: string;
+  title: string;
+  subtitle: string;
+  imageUrl?: string;
+  buttonText?: string;
+  buttonLink?: string;
+}
+
+export interface SchoolGalleryItem {
+  id: string;
+  schoolId: string;
+  title: string;
+  category:
+    | 'campus'
+    | 'sports'
+    | 'cultural'
+    | 'academic'
+    | 'lab'
+    | 'ANNUAL'
+    | 'SPORTS'
+    | 'EXPO'
+    | 'CAMPUS'
+    | 'TOUR'
+    | 'SCHOOL';
+  imageUrl: string;
+  videoUrl?: string;
+  mediaType?: 'IMAGE' | 'VIDEO';
+  description?: string;
+  date?: string;
+  createdAt?: string;
+}
+
+export interface SchoolEventItem {
+  id: string;
+  schoolId: string;
+  title: string;
+  eventType: 'exam' | 'sports' | 'holiday' | 'cultural' | 'meeting';
+  startDate: string;
+  endDate?: string;
+  time?: string;
+  location?: string;
+  description?: string;
+}
+
+export interface SchoolPublicInquiry {
+  id: string;
+  schoolId: string;
+  name: string;
+  phone: string;
+  email?: string;
+  studentName?: string;
+  studentClass?: string;
+  message: string;
+  createdAt: string;
+  status: 'new' | 'contacted' | 'visit_scheduled' | 'applied' | 'admitted' | 'lost' | 'resolved';
+  inquiryType?: 'admission' | 'campus_visit' | 'general';
+  source?: 'website' | 'walkin' | 'phone' | 'whatsapp' | 'nsta_messenger' | 'referral';
+  followUpDate?: string;
+  visitDate?: string;
+  visitTime?: string;
+  counsellorName?: string;
+  remarks?: string;
+  lostReason?: string;
+  updatedAt?: string;
+}
+
+// ── 1. TIMETABLE & PERIOD ROUTINE ──
+export interface TimetablePeriod {
+  id: string;
+  periodNumber: number; // 1 to 8
+  startTime: string; // e.g. "08:30"
+  endTime: string; // e.g. "09:15"
+  subjectId?: string;
+  subjectName: string;
+  teacherId?: string;
+  teacherName: string;
+  room?: string;
+  isBreak?: boolean;
+  youtubeUrl?: string;
+  youtubeVideoId?: string;
+  topic?: string;
+}
+
+export interface ClassWeeklyTimetable {
+  id: string;
+  schoolId: string;
+  classId: string;
+  className: string;
+  section?: string;
+  sessionId: string;
+  schedule: Record<string, TimetablePeriod[]>; // key: "Monday", "Tuesday", etc.
+  updatedAt: string;
+}
+
+// ── DAILY CLASSROOM VIDEO LECTURE ARCHIVE ──
+export interface DailyClassLecture {
+  id: string;
+  schoolId: string;
+  sessionId: string;
+  classId: string;
+  className: string;
+  date: string; // YYYY-MM-DD
+  month: string; // YYYY-MM
+  periodNumber: number;
+  periodTime?: string;
+  subjectName: string;
+  topic: string;
+  teacherName: string;
+  teacherId?: string;
+  youtubeUrl: string;
+  youtubeVideoId: string;
+  isLive?: boolean; // True when stream is currently LIVE
+  isUniversal?: boolean; // True when available to entire school / general
+  isEventVideo?: boolean; // True when auto-archived from 24h Messenger Event Status
+  sourceStatusId?: string; // Reference to original 24h status ID
+  directVideoUrl?: string; // Uploaded MP4/WebM URL when non-YouTube event video
+  streamStartedAt?: string;
+  endedAt?: string;
+  notes?: string;
+  addedAt: string;
+  addedBy: "TEACHER" | "ADMIN";
+}
+
+// ── 2. DAILY HOMEWORK & ASSIGNMENTS ──
+export interface DailyHomework {
+  id: string;
+  schoolId: string;
+  classId: string;
+  className: string;
+  section?: string;
+  subjectId?: string;
+  subjectName: string;
+  teacherId: string;
+  teacherName: string;
+  title: string;
+  description: string;
+  assignedDate: string; // YYYY-MM-DD
+  dueDate: string; // YYYY-MM-DD
+  attachmentUrl?: string;
+  status: 'active' | 'archived';
+  createdAt: string;
+}
+
+export interface HomeworkSubmission {
+  id: string;
+  homeworkId: string;
+  schoolId: string;
+  studentId: string;
+  studentName: string;
+  rollNo?: string;
+  submittedAt: string;
+  text?: string;
+  fileUrl?: string;
+  status: 'submitted' | 'reviewed';
+  remarks?: string;
+}
+
+// ── 3. LIBRARY MANAGEMENT ──
+export interface LibraryBook {
+  id: string;
+  schoolId: string;
+  accessionNo: string; // e.g. "LIB-1001"
+  isbn?: string;
+  title: string;
+  author: string;
+  publisher?: string;
+  category: string;
+  shelfLocation?: string;
+  totalCopies: number;
+  availableCopies: number;
+  addedAt: string;
+}
+
+export interface BookIssueRecord {
+  id: string;
+  schoolId: string;
+  bookId: string;
+  bookTitle: string;
+  accessionNo: string;
+  borrowerType: 'student' | 'teacher';
+  borrowerId: string;
+  borrowerName: string;
+  borrowerClass?: string;
+  borrowerRoll?: string;
+  borrowerPhone?: string;
+  issueDate: string; // YYYY-MM-DD
+  dueDate: string; // YYYY-MM-DD
+  returnDate?: string;
+  status: 'issued' | 'returned' | 'overdue' | 'lost';
+  fineAmount?: number;
+  finePaid?: boolean;
+  remarks?: string;
+}
+
+// ── 4. PARENT-TEACHER QUERY / HELPDESK ──
+export interface QueryReply {
+  id: string;
+  senderId: string;
+  senderName: string;
+  senderRole: 'PARENT' | 'STUDENT' | 'TEACHER' | 'ADMIN';
+  message: string;
+  timestamp: string;
+}
+
+export interface ParentTeacherQuery {
+  id: string;
+  schoolId: string;
+  studentId: string;
+  studentName: string;
+  rollNo?: string;
+  className: string;
+  category: 'academic' | 'fee' | 'transport' | 'leave' | 'general';
+  subject: string;
+  message: string;
+  status: 'open' | 'in_progress' | 'resolved';
+  replies: QueryReply[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+// ── 5. SCHOOL STORE & INVENTORY ──
+export interface StoreInventoryItem {
+  id: string;
+  schoolId: string;
+  itemCode: string;
+  name: string;
+  category: 'uniform' | 'books' | 'accessories' | 'stationery' | 'sports' | 'other';
+  sizeOrVariant?: string;
+  purchasePrice: number;
+  salePrice: number;
+  stockQuantity: number;
+  lowStockAlert: number;
+  unit: string;
+  imageUrl?: string;
+  updatedAt: string;
+}
+
+export interface StoreSaleRecord {
+  id: string;
+  schoolId: string;
+  receiptNo: string;
+  studentId?: string;
+  studentName: string;
+  className?: string;
+  rollNo?: string;
+  items: {
+    itemId: string;
+    itemName: string;
+    quantity: number;
+    unitPrice: number;
+    subtotal: number;
+  }[];
+  totalAmount: number;
+  paymentMode: 'cash' | 'online_upi' | 'card' | 'nsta_online';
+  date: string;
+  soldBy: string;
+  razorpayOrderId?: string;
+  razorpayPaymentId?: string;
+  verifiedViaWebhook?: boolean;
+  reservationId?: string;
+  updatedAt?: string;
+}
+
+export interface StoreReservationBooking {
+  id: string; // e.g. "ORD-24H-8921"
+  schoolId: string;
+  studentId: string;
+  studentName: string;
+  className?: string;
+  rollNo?: string;
+  phone?: string;
+  items: {
+    itemId: string;
+    itemName: string;
+    category?: string;
+    sizeOrVariant?: string;
+    quantity: number;
+    unitPrice: number;
+    subtotal: number;
+  }[];
+  totalAmount: number;
+  bookedAt: string; // ISO string
+  expiresAt: string; // ISO string (+24 hours)
+  status: 'reserved' | 'collected' | 'expired' | 'cancelled';
+  collectedAt?: string;
+  collectedBy?: string;
+  paymentMode?: 'cash' | 'online_upi' | 'nsta_online';
+  razorpayOrderId?: string;
+  razorpayPaymentId?: string;
+  verifiedViaWebhook?: boolean;
+  paidAt?: string;
+  receiptNo?: string;
+  notes?: string;
+}
+
+export interface BusLiveLocation {
+  busId: string;
+  busNumber: string;
+  route: string;
+  driverName: string;
+  driverPhone: string;
+  latitude: number;
+  longitude: number;
+  speed: number; // km/h
+  heading?: number;
+  accuracy?: number;
+  tripStatus: 'idle' | 'started' | 'ended';
+  tripType: 'morning_pickup' | 'afternoon_drop' | 'special';
+  lastUpdated: string;
+  currentStop?: string;
+  totalStops?: number;
+  completedStops?: string[];
+}
+
+// ── 6. NSTA MESSENGER SUITE (WhatsApp-Style 3-Screen Architecture) ──
+export type NstaThreadType = "CLASS_GROUP" | "SCHOOL_DESK" | "TEACHER_CHAT";
+
+export interface NstaFeeSlipData {
+  type: "A6_DEMAND_SLIP" | "FEE_RECEIPT";
+  studentName?: string;
+  className?: string;
+  rollNo?: string;
+  admissionNo?: string;
+  feeItems?: any[];
+  month?: string;
+  monthLabel?: string;
+  amount?: number;
+  balanceDue?: number;
+  monthlyAmount?: number;
+  oldArrears?: number;
+  earlyDiscount?: number;
+  netPayableWithDiscount?: number;
+  discountLabel?: string;
+  discountSlabs?: FeeDiscountSlab[];
+  discountValidUntil?: string;
+  isEligibleForEarlyDiscount?: boolean;
+  receiptNo?: string;
+  dueDate?: string;
+  pdfUrl?: string;
+  payLink?: string;
+  particulars?: { head: string; amount: number }[];
+}
+
+export interface NstaWelcomeData {
+  studentId: string;
+  studentName: string;
+  admissionNo: string;
+  rollNo?: string;
+  classId?: string;
+  className?: string;
+  schoolName: string;
+  schoolLogo?: string;
+  fatherName?: string;
+  mobile?: string;
+  session?: string;
+  verificationBadge?: string;
+  issuedAt: string;
+}
+
+export interface NstaBirthdayData {
+  studentId: string;
+  studentName: string;
+  admissionNo?: string;
+  rollNo?: string;
+  classId?: string;
+  className?: string;
+  schoolName: string;
+  schoolLogo?: string;
+  dateOfBirth: string;
+  age?: number;
+  wishedYear: number;
+  blessingQuote?: string;
+  issuedAt: string;
+}
+
+export interface NstaMessage {
+  id: string;
+  schoolId: string;
+  threadType: NstaThreadType;
+  classId?: string;       // For CLASS_GROUP
+  className?: string;     // Human-readable class name for resilient matching
+  studentId?: string;     // For SCHOOL_DESK & TEACHER_CHAT
+  studentName?: string;
+  teacherId?: string;     // For TEACHER_CHAT
+  teacherName?: string;
+  senderId: string;
+  senderName: string;
+  senderRole: "ADMIN" | "TEACHER" | "STUDENT";
+  senderPhoto?: string;   // ID Card / DP photo URL of the sender
+  text: string;
+  attachmentUrl?: string;
+  attachmentType?: "IMAGE" | "VIDEO" | "PDF" | "NOTICE" | "AUDIO" | "DOCUMENT" | "ZIP" | "FILE" | "CONTACT" | "LOCATION" | "WELCOME" | "BIRTHDAY";
+  welcomeData?: NstaWelcomeData;
+  birthdayData?: NstaBirthdayData;
+  fileName?: string;
+  fileSize?: number;
+  audioDuration?: number;
+  contactData?: {
+    name: string;
+    phone?: string;
+    role?: string;
+    designation?: string;
+    avatarUrl?: string;
+  };
+  locationData?: {
+    name?: string;
+    address?: string;
+    latitude: number;
+    longitude: number;
+  };
+  feeSlip?: NstaFeeSlipData;
+  createdAt: string;      // ISO string
+  status?: "sent" | "delivered" | "read";
+  deletedFor?: string[];  // User IDs for whom this message is deleted (Delete for me)
+  deletedForEveryone?: boolean;
+  deletedForEveryoneAt?: string;
+  replyTo?: {
+    id: string;
+    senderName: string;
+    text: string;
+    attachmentType?: "IMAGE" | "VIDEO" | "PDF" | "NOTICE" | "AUDIO" | "DOCUMENT" | "ZIP" | "FILE" | "CONTACT" | "LOCATION";
+  };
+  reactions?: Record<string, string[]>; // e.g. { "❤️": ["uid1"], "👍": ["uid2"] }
+  deliveredTo?: Array<{
+    userId: string;
+    userName: string;
+    deliveredAt: string;
+    role?: string;
+  }>;
+  readBy?: Array<{
+    userId: string;
+    userName: string;
+    readAt: string;
+    role?: string;
+  }>;
+  isForwarded?: boolean;
+}
+
+export interface NstaStatusViewer {
+  viewerId: string;
+  viewerName: string;
+  viewerRole: "ADMIN" | "TEACHER" | "STUDENT";
+  classId?: string;
+  className?: string;
+  rollNo?: string;
+  photoUrl?: string;
+  viewedAt: string; // ISO timestamp
+}
+
+export interface NstaSchoolStatus {
+  id: string;
+  schoolId: string;
+  mediaType: "IMAGE" | "VIDEO" | "TEXT" | "YOUTUBE_EVENT";
+  mediaUrl?: string;
+  youtubeVideoId?: string;
+  caption?: string;
+  title?: string;
+  bgColor?: string;
+  isEventVideo?: boolean;
+  archivedToLibrary?: boolean;
+  archivedLectureId?: string;
+  archivedAt?: string;
+  authorId: string;
+  authorName: string;
+  authorRole: "ADMIN" | "TEACHER";
+  authorPhoto?: string;
+  createdAt: string; // ISO timestamp
+  expiresAt: string; // createdAt + 24h ISO timestamp
+  viewers?: Record<string, NstaStatusViewer>;
+}
+
+// ── Multi-Branch / Franchise Management ────────────────────────────────────
+export interface SchoolBranch {
+  id: string;
+  schoolId: string;
+  name: string;
+  code: string; // e.g. "MAIN", "CITY", "RURAL"
+  address: string;
+  city: string;
+  phone: string;
+  principalName: string;
+  isMainBranch?: boolean;
+  totalStudents?: number;
+  totalTeachers?: number;
+  monthlyRevenue?: number;
+}
+
+// ── Hostel & Mess Management ───────────────────────────────────────────────
+export interface HostelBuilding {
+  id: string;
+  schoolId: string;
+  name: string;
+  type: "BOYS" | "GIRLS" | "COED";
+  wardenName: string;
+  wardenPhone: string;
+  totalRooms: number;
+  floors: number;
+}
+
+export interface HostelRoom {
+  id: string;
+  schoolId: string;
+  buildingId: string;
+  roomNumber: string;
+  floor: number;
+  capacity: number;
+  monthlyRent: number;
+}
+
+export interface HostelBedAllocation {
+  id: string;
+  schoolId: string;
+  buildingId: string;
+  buildingName: string;
+  roomId: string;
+  roomNumber: string;
+  bedNumber: string;
+  studentId: string;
+  studentName: string;
+  className: string;
+  allocatedAt: string;
+  monthlyFee: number;
+  guardianPhone: string;
+  status: "OCCUPIED" | "VACANT";
+}
+
+export interface MessMenuDay {
+  day: "Monday" | "Tuesday" | "Wednesday" | "Thursday" | "Friday" | "Saturday" | "Sunday";
+  breakfast: string;
+  lunch: string;
+  eveningSnacks: string;
+  dinner: string;
+  specialDiet?: string;
+}
+
+export interface HostelAttendanceRecord {
+  id: string;
+  schoolId: string;
+  date: string; // YYYY-MM-DD
+  studentId: string;
+  studentName: string;
+  roomNumber: string;
+  status: "PRESENT" | "NIGHT_OUT" | "LEAVE" | "ABSENT";
+  mealsTaken: {
+    breakfast: boolean;
+    lunch: boolean;
+    dinner: boolean;
+  };
+  remarks?: string;
+}
+
+// ── Syllabus Pacing & Teacher Progress Tracker ──────────────────────────────
+export interface SyllabusChapter {
+  chapterNo: number;
+  title: string;
+  targetMonth: string; // e.g. "April", "May", "November"
+  status: "COMPLETED" | "IN_PROGRESS" | "PENDING";
+  completedDate?: string;
+}
+
+export interface SubjectSyllabusPacing {
+  id: string;
+  schoolId: string;
+  classId: string;
+  className: string;
+  subject: string;
+  teacherName: string;
+  totalChapters: number;
+  chapters: SyllabusChapter[];
+  targetCompletionDate: string;
+  pacingStatus: "ON_TRACK" | "LAGGING" | "CRITICAL_DELAY" | "COMPLETED";
+  backlogChaptersCount: number;
+  updatedAt: string;
+}
+
+// ── Bus Fleet Fuel & Mileage Logbook & Fitness Expiry ───────────────────────
+export interface VehicleFuelLog {
+  id: string;
+  schoolId: string;
+  vehicleNumber: string; // e.g. "DL 01 AB 1234 (Bus #1)"
+  date: string;
+  fuelType: "DIESEL" | "CNG" | "PETROL";
+  quantityUnits: number; // liters or kg
+  ratePerUnit: number;
+  totalAmount: number;
+  odometerStartKm: number;
+  odometerEndKm: number;
+  totalKmDriven: number;
+  mileageKmPerUnit: number;
+  driverName: string;
+  pumpName?: string;
+  receiptNumber?: string;
+}
+
+export interface VehicleFitnessRecord {
+  id: string;
+  schoolId: string;
+  vehicleNumber: string;
+  model: string;
+  driverName: string;
+  driverPhone: string;
+  fitnessExpiryDate: string; // YYYY-MM-DD
+  insuranceExpiryDate: string;
+  pollutionPucExpiryDate: string;
+  roadTaxExpiryDate: string;
+  permitExpiryDate?: string;
+}
+
+// ── Visitor & Main Gate Security Desk ───────────────────────────────────────
+export interface SecurityVisitorPass {
+  id: string;
+  passNumber: string; // e.g. "VP-2026-042"
+  schoolId: string;
+  visitorName: string;
+  visitorPhone: string;
+  visitorPhotoUrl?: string;
+  visitorType: "PARENT" | "VENDOR" | "OFFICIAL" | "GUEST" | "ALUMNI";
+  purpose: string;
+  personToMeet: string;
+  studentName?: string;
+  studentClass?: string;
+  inTime: string;
+  outTime?: string;
+  idProofType?: string;
+  status: "CHECKED_IN" | "CHECKED_OUT";
+  guardName: string;
+}
+
+export interface StudentEarlyGatePass {
+  id: string;
+  passNumber: string; // e.g. "EGP-2026-108"
+  schoolId: string;
+  studentId: string;
+  studentName: string;
+  className: string;
+  rollNo?: string;
+  parentName: string;
+  parentPhone: string;
+  reason: string;
+  approvedBy: string; // e.g. "Principal / Class Teacher"
+  approvalStatus: "APPROVED" | "PENDING" | "REJECTED";
+  requestTime: string;
+  exitTime?: string;
+  gateSecurityConfirmed: boolean;
+}
+
+// ── Transport Drivers & Routes Master ──────────────────────────────────────
+export interface SchoolBusDriver {
+  id: string;
+  schoolId: string;
+  name: string;
+  phone: string;
+  licenseNo: string;
+  licenseExpiry: string;
+  aadhaarLast4?: string;
+  conductorName?: string;
+  conductorPhone?: string;
+  photoUrl?: string;
+  assignedBusId?: string;
+  assignedBusNumber?: string;
+  status: "ACTIVE" | "ON_LEAVE" | "INACTIVE";
+  updatedAt: string;
+}
+
+export interface BusRouteStop {
+  id: string;
+  stopName: string;
+  pickupTime: string;
+  dropTime: string;
+  distanceKm?: number;
+  monthlyFeeOverride?: number;
+  lat?: number;
+  lng?: number;
+}
+
+export interface SchoolBusRoute {
+  id: string;
+  schoolId: string;
+  routeName: string;
+  routeCode?: string;
+  routeColor?: string;
+  busId?: string;
+  busNumber: string;
+  driverId?: string;
+  driverName: string;
+  driverPhone: string;
+  conductorName?: string;
+  conductorPhone?: string;
+  monthlyFee: number;
+  stops: BusRouteStop[];
+  active: boolean;
+  updatedAt: string;
+}
+
+// ── Admission Seat Capacity Config ──────────────────────────────────────────
+export interface ClassSeatConfig {
+  id: string;
+  schoolId: string;
+  classId: string;
+  className: string;
+  totalSeats: number;
+  reservedSeats?: number;
+  updatedAt: string;
+}
+
+// ── Student Growth, Diary, Skills, Portfolio, Health & Child Safety ─────────
+export interface StudentDailyActivity {
+  id: string;
+  schoolId: string;
+  studentId: string;
+  classId: string;
+  date: string;
+  topicsTaught: string;
+  homeworkNote: string;
+  behaviorNote: string;
+  moodTag?: "excellent" | "active" | "needs_attention";
+  teacherName: string;
+  createdAt: string;
+}
+
+export interface StudentSkillRatings {
+  reading: number;
+  writing: number;
+  communication: number;
+  creativity: number;
+  teamwork: number;
+  discipline: number;
+}
+
+export interface StudentWeeklyReport {
+  id: string;
+  schoolId: string;
+  studentId: string;
+  weekLabel: string;
+  summary: string;
+  strengths: string;
+  focusAreas: string;
+  skills: StudentSkillRatings;
+  teacherName: string;
+  createdAt: string;
+}
+
+export interface StudentPortfolioItem {
+  id: string;
+  schoolId: string;
+  studentId: string;
+  title: string;
+  category: "academic" | "sports" | "art" | "certificate" | "project" | "badge";
+  date: string;
+  description: string;
+  awardedBy?: string;
+  attachmentUrl?: string;
+}
+
+export interface StudentHealthRecord {
+  id: string;
+  schoolId: string;
+  studentId: string;
+  bloodGroup?: string;
+  heightCm?: number;
+  weightKg?: number;
+  allergies?: string;
+  chronicConditions?: string;
+  visionCheck?: string;
+  dentalCheck?: string;
+  emergencyContactName?: string;
+  emergencyContactPhone?: string;
+  doctorName?: string;
+  lastCheckupDate?: string;
+  vaccinations: Array<{
+    id: string;
+    name: string;
+    date: string;
+    status: "DONE" | "DUE";
+  }>;
+  updatedAt: string;
+}
+
+export interface AuthorizedPickupPerson {
+  id: string;
+  schoolId: string;
+  studentId: string;
+  name: string;
+  relation: string;
+  phone: string;
+  aadhaarLast4: string;
+  photoUrl?: string;
+  pickupCode: string;
+  verifiedByAdmin?: boolean;
+  active: boolean;
+  createdAt: string;
+}
+
+export interface SchoolEmergencyAlert {
+  id: string;
+  schoolId: string;
+  title: string;
+  message: string;
+  severity: "CRITICAL" | "WARNING" | "INFO";
+  category: "CLOSURE" | "TRANSPORT_DELAY" | "WEATHER" | "SAFETY_DRILL" | "MEDICAL";
+  createdAt: string;
+  createdBy: string;
+  active: boolean;
+  expiresAt?: string;
+}
+
+// ── Nursery–Class 10 Exam Paper Builder, Question Bank & Admission Funnel ────
+export type EntranceClassNumber = -2 | -1 | 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10;
+
+export const ALL_ENTRANCE_CLASSES: EntranceClassNumber[] = [
+  -2, -1, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10,
+];
+
+export function formatEntranceClassLabel(
+  classLevel: EntranceClassNumber | number,
+  verbose = false
+): string {
+  const n = Number(classLevel);
+  if (n === -2) return "Nursery";
+  if (n === -1) return verbose ? "LKG (KG-1)" : "LKG";
+  if (n === 0) return verbose ? "UKG (KG-2)" : "UKG";
+  return `Class ${n}`;
+}
+
+export type ExamCategoryType =
+  | "ENTRANCE"
+  | "PA1"
+  | "PA2"
+  | "PA3"
+  | "PA4"
+  | "HALF_YEARLY"
+  | "FINAL_YEAR"
+  | "GENERAL";
+
+export type EntranceTestSubject =
+  | "English"
+  | "Mathematics"
+  | "Hindi"
+  | "Science"
+  | "EVS / GK"
+  | "Social Science"
+  | "Reasoning & GK";
+
+export type EntranceTestQuestionFormat =
+  | "MCQ"
+  | "FILL_BLANK"
+  | "ODD_ONE_OUT"
+  | "TRUE_FALSE"
+  | "SERIES_PUZZLE"
+  | "MINI_PASSAGE"
+  | "SHORT_ANSWER"
+  | "LONG_ANSWER";
+
+export type EntranceQuestionKind = "OBJECTIVE" | "SUBJECTIVE";
+
+export interface EntranceTestQuestion {
+  id: string;
+  classLevel: EntranceClassNumber;
+  subject: EntranceTestSubject;
+  questionKind?: EntranceQuestionKind; // defaults to "OBJECTIVE"
+  examCategory?: ExamCategoryType; // Entrance, PA-1..4, Half Yearly, Final Year
+  format: EntranceTestQuestionFormat;
+  question: string;
+  passage?: string;
+  options: [string, string, string, string];
+  correctIndex: 0 | 1 | 2 | 3;
+  explanation: string;
+  modelAnswer?: string; // Ideal descriptive answer / marking points for subjective questions
+  orQuestion?: string; // CBSE Internal Choice ("OR" / अथवा) alternative question text
+  orModelAnswer?: string; // Model answer for the "OR" alternative question
+  orPassage?: string; // Optional passage for the "OR" alternative question
+  marks?: number; // Default: 1 for objective, 2 or 3 or 5 for subjective
+  topicTag?: string;
+  isCustom?: boolean;
+  isTempSessionOnly?: boolean; // Temporary JSON/file upload for printing only (not saved in app)
+  createdAt?: string;
+}
+
+export interface EntranceTestPaperSet {
+  schoolId: string;
+  classLevel: EntranceClassNumber;
+  classLabel: string;
+  setNumber: number; // 1..1000
+  setId: string; // e.g. "Set-01" .. "Set-1000"
+  durationMinutes: number;
+  totalQuestions: number;
+  maxMarks: number;
+  questions: EntranceTestQuestion[];
+  subjectBreakdown: Array<{ subject: EntranceTestSubject; count: number }>;
+}
+
+export interface EntranceTestAttempt {
+  id: string;
+  schoolId: string;
+  studentName: string;
+  phone: string;
+  deviceId: string;
+  classLevel: EntranceClassNumber;
+  classLabel: string;
+  setNumber: number;
+  setId: string;
+  attemptNumber: number; // 1..5
+  score: number;
+  totalQuestions: number;
+  correctCount: number;
+  wrongCount: number;
+  skippedCount: number;
+  percentage: number;
+  timeTakenSeconds: number;
+  durationSeconds: number;
+  autoSubmitted: boolean;
+  answers: Record<string, number>; // questionId -> chosen option index (0..3)
+  questionIds: string[];
+  createdAt: string;
+}
+
+export interface EntranceTestPrefillPayload {
+  schoolId: string;
+  studentName: string;
+  phone: string;
+  classLevel: EntranceClassNumber;
+  classLabel: string;
+  attemptsUsed: number;
+  bestScorePct?: number;
+  lastSetId?: string;
+  evaluationTier?: 'MERIT' | 'QUALIFIED' | 'FOUNDATION_SUPPORT' | 'COUNSELING';
+  evaluationTag?: string;
+  recommendedClassLevel?: number;
+  recommendedClassLabel?: string;
+  entranceDiscountAmount?: number;
+  entranceDiscountLabel?: string;
+  createdAt: string;
+}
+
+export type CbseBoardRulesMode = "auto" | "hi" | "en" | "bilingual" | "none";
+export type PaperPrintOrientation = "portrait" | "landscape_booklet";
+
+export interface SavedPaperVersionSnapshot {
+  version: number;
+  savedAt: string;
+  note?: string;
+  paperTitle: string;
+  sessionLabel: string;
+  examCategory: ExamCategoryType;
+  classLevel: EntranceClassNumber;
+  subjectLabel: string;
+  fullMarks: number;
+  durationMinutes: number;
+  paperCode?: string;
+  examDate?: string;
+  generalInstructions?: string[];
+  cbseRulesMode?: CbseBoardRulesMode;
+  customBoardRulesHi?: string[];
+  customBoardRulesEn?: string[];
+  printOrientation?: PaperPrintOrientation;
+  fontSizePx?: number;
+  twoColObjective?: boolean;
+  twoColSubjective?: boolean;
+  showStudentStrip?: boolean;
+  paperTheme?: string;
+  manualPageOverrides?: Record<string, number>;
+  objectiveQuestions: EntranceTestQuestion[];
+  subjectiveQuestions: EntranceTestQuestion[];
+}
+
+export interface SavedSchoolQuestionPaper {
+  id: string;
+  paperIdCode?: string; // e.g., "LMPS-10-SCI-001"
+  schoolId: string;
+  sessionLabel: string; // e.g., "2026-27", "2025-26"
+  examCategory: ExamCategoryType;
+  paperTitle: string;
+  classLevel: EntranceClassNumber;
+  subjectLabel: string;
+  fullMarks: number;
+  durationMinutes: number;
+  paperCode?: string;
+  examDate?: string;
+  generalInstructions?: string[];
+  cbseRulesMode?: CbseBoardRulesMode;
+  customBoardRulesHi?: string[];
+  customBoardRulesEn?: string[];
+  printOrientation?: PaperPrintOrientation;
+  fontSizePx?: number;
+  twoColObjective?: boolean;
+  twoColSubjective?: boolean;
+  showStudentStrip?: boolean;
+  paperTheme?: string;
+  manualPageOverrides?: Record<string, number>;
+  objectiveQuestions: EntranceTestQuestion[];
+  subjectiveQuestions: EntranceTestQuestion[];
+  isPublished: boolean; // Published => visible in Student Dashboard -> Digital Question Library
+  showAnswerKeyToStudents?: boolean;
+  version?: number; // 1, 2, 3...
+  versionHistory?: SavedPaperVersionSnapshot[];
+  createdBy?: string;
+  createdAt: string;
+  updatedAt: string;
+  publishedAt?: string;
+}
+
+
