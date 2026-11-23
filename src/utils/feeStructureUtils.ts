@@ -65,8 +65,36 @@ export interface FeeGroupTemplate {
   label: string;
   title: string;
   billingSection: FeeSectionBucket;
-  items: { name: string; amount: number; isUserOptional?: boolean }[];
+  items: {
+    name: string;
+    amount: number;
+    isUserOptional?: boolean;
+    legacyKey?: keyof ClassAdmissionHeadToggles;
+  }[];
 }
+
+export const inferLegacyKeyFromFeeHeadName = (
+  name?: string | null,
+  explicitLegacyKey?: keyof ClassAdmissionHeadToggles
+): keyof ClassAdmissionHeadToggles | undefined => {
+  if (explicitLegacyKey) return explicitLegacyKey;
+  const raw = String(name || "").trim().toLowerCase();
+  if (!raw) return undefined;
+  if (/smart\s*qr|qr\s*id|i-?card|id\s*card|आई-?कार्ड|पहचान\s*पत्र/i.test(raw)) return "idCardCharge";
+  if (/school\s*diary|diary|डायरी/i.test(raw)) return "diaryCharge";
+  if (/tie\s*[&+]?\s*belt|belt\s*[&+]?\s*tie|टाई|बेल्ट/i.test(raw)) return "tieBeltCharge";
+  if (/progress\s*folder|report\s*card.*folder|badge.*folder|प्रोग्रेस\s*फोल्डर/i.test(raw)) {
+    return "progressFolderCharge";
+  }
+  if (/development\s*(charge|fee)|विकास\s*शुल्क/i.test(raw)) return "developmentCharge";
+  if (/examination\s*(fee|charge)|exam\s*(fee|charge)|परीक्षा\s*शुल्क/i.test(raw)) return "examinationFee";
+  if (/registration.*(fee|charge)|पंजीकरण\s*शुल्क|फॉर्म\s*शुल्क/i.test(raw)) return "registrationFee";
+  if (/admission\s*(fee|charge)|प्रवेश\s*शुल्क|नामांकन\s*शुल्क/i.test(raw)) return "admissionFee";
+  if (/annual\s*(charges?|fee)|वार्षिक\s*शुल्क/i.test(raw)) return "annualCharges";
+  if (/caution\s*(money|fee|deposit)|कॉशन/i.test(raw)) return "cautionMoney";
+  if (/tuition\s*(fee|charge)|शिक्षण\s*शुल्क/i.test(raw)) return "tuitionFee";
+  return undefined;
+};
 
 export const FEE_GROUP_TEMPLATES: FeeGroupTemplate[] = [
   {
@@ -75,7 +103,7 @@ export const FEE_GROUP_TEMPLATES: FeeGroupTemplate[] = [
     title: "Annual & Maintenance Fee (वार्षिक शुल्क)",
     billingSection: "annual",
     items: [
-      { name: "Annual Function & Cultural Charge", amount: 500 },
+      { name: "Annual Function & Cultural Charge", amount: 500, legacyKey: "annualCharges" },
       { name: "Annual Maintenance & Library Fee", amount: 500 },
     ],
   },
@@ -85,7 +113,7 @@ export const FEE_GROUP_TEMPLATES: FeeGroupTemplate[] = [
     title: "Development & Infrastructure Fee (विकास शुल्क)",
     billingSection: "annual",
     items: [
-      { name: "School Development Charge", amount: 600 },
+      { name: "School Development Charge", amount: 600, legacyKey: "developmentCharge" },
       { name: "Smart Class & Digital Board Fee", amount: 400 },
     ],
   },
@@ -95,7 +123,7 @@ export const FEE_GROUP_TEMPLATES: FeeGroupTemplate[] = [
     title: "Examination & Assessment Fee (परीक्षा शुल्क)",
     billingSection: "exam",
     items: [
-      { name: "Periodic & Half Yearly Exam Fee", amount: 300 },
+      { name: "Periodic & Half Yearly Exam Fee", amount: 300, legacyKey: "examinationFee" },
       { name: "Annual Final Exam & Report Card", amount: 400 },
     ],
   },
@@ -115,10 +143,10 @@ export const FEE_GROUP_TEMPLATES: FeeGroupTemplate[] = [
     title: "Student Kit, ID Card, Diary & Folder (किट व डायरी)",
     billingSection: "admission",
     items: [
-      { name: "Smart ID Card", amount: 100 },
-      { name: "School Diary & Syllabus", amount: 100 },
-      { name: "Tie & Belt Set", amount: 150 },
-      { name: "Report Card, Badge & Folder", amount: 150 },
+      { name: "Smart ID Card", amount: 100, legacyKey: "idCardCharge" },
+      { name: "School Diary & Syllabus", amount: 100, legacyKey: "diaryCharge" },
+      { name: "Tie & Belt Set", amount: 150, legacyKey: "tieBeltCharge" },
+      { name: "Report Card, Badge & Folder", amount: 150, legacyKey: "progressFolderCharge" },
     ],
   },
   {
@@ -126,7 +154,14 @@ export const FEE_GROUP_TEMPLATES: FeeGroupTemplate[] = [
     label: "+ Transport / Bus",
     title: "Transport / Bus Facility (वाहन शुल्क)",
     billingSection: "optional",
-    items: [{ name: "Monthly School Bus Fee (User Opt)", amount: 600, isUserOptional: true }],
+    items: [
+      {
+        name: "Monthly School Bus Fee (User Opt)",
+        amount: 600,
+        isUserOptional: true,
+        legacyKey: "busFee",
+      },
+    ],
   },
 ];
 
@@ -478,16 +513,32 @@ export const syncStructureFromFeeGroups = (
   });
 
   const findLegacy = (key: keyof ClassAdmissionHeadToggles) => {
+    let found = false;
+    let enabledSum = 0;
+    let fallbackDisabledAmount = 0;
+    let anyEnabled = false;
+
     for (const g of cleanGroups) {
       for (const it of g.items) {
-        if (it.legacyKey === key) {
-          return {
-            found: true,
-            amount: it.amount,
-            enabled: g.enabled && it.enabled !== false,
-          };
+        const inferred = inferLegacyKeyFromFeeHeadName(it.name, it.legacyKey);
+        if (inferred === key) {
+          found = true;
+          const isItemEnabled = g.enabled && it.enabled !== false;
+          if (isItemEnabled) {
+            anyEnabled = true;
+            enabledSum += Math.max(0, Number(it.amount || 0));
+          } else if (fallbackDisabledAmount === 0) {
+            fallbackDisabledAmount = Math.max(0, Number(it.amount || 0));
+          }
         }
       }
+    }
+    if (found) {
+      return {
+        found: true,
+        amount: anyEnabled ? enabledSum : fallbackDisabledAmount,
+        enabled: anyEnabled,
+      };
     }
     return { found: false, amount: 0, enabled: false };
   };

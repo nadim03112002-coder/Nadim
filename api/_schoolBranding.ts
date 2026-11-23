@@ -1,3 +1,6 @@
+import { extractTelegramParamsFromUrl, fetchTelegramFileBuffer } from "./_telegramProxy";
+import { fetchAllSchoolsFromSupabase, upsertSchoolInSupabase } from "./_supabaseServer";
+
 const RTDB_BASE_URL =
   process.env.FIREBASE_DATABASE_URL ||
   "https://nst2512-6a2e4-default-rtdb.asia-southeast1.firebasedatabase.app";
@@ -58,7 +61,6 @@ const DEFAULT_FALLBACK_SCHOOL: PublicSchoolMeta = {
   tagline: "Bright Future... Together",
   phone: "9525400122,9835763641",
   email: "n@gmail.com",
-  logoUrl: "https://api.telegram.org/file/bot8932524192:AAGVxYSuKPZX6sOQFkXz0U7ESVQ2NcHmJZw/documents/file_72.png",
   bannerColor: "#1e3a8a",
   active: true,
   isDefaultPublicWebsite: true,
@@ -66,7 +68,6 @@ const DEFAULT_FALLBACK_SCHOOL: PublicSchoolMeta = {
     heroHeadline: "LIFE MAKER PUBLIC SCHOOL",
     heroSubheadline:
       "Official Digital Campus of LIFE MAKER PUBLIC SCHOOL, Dharaka Market Affour, Nagra, Saran — Online Admission 2027-28, Fee Passbook, Attendance & Smart Learning.",
-    heroBannerUrl: "https://api.telegram.org/file/bot8932524192:AAGVxYSuKPZX6sOQFkXz0U7ESVQ2NcHmJZw/documents/file_73.png",
     aboutSchool:
       "LIFE MAKER PUBLIC SCHOOL, situated at Dharaka Market Affour, Nagra, Saran (Ummid Educational & Welfare Trust), delivers disciplined, technology-enabled education from Nursery to Class X.",
     admissionSessionLabel: "2027-28",
@@ -172,21 +173,35 @@ export async function fetchAllPublicSchools(forceRefresh = false): Promise<Publi
 
   const merged = new Map<string, PublicSchoolMeta>();
 
-  // 1. Primary fast fetch: RTDB schools_profiles (lightweight metadata mirror)
-  const rtdbProfiles = await fetchJsonWithTimeout<Record<string, any>>(
-    `${RTDB_BASE_URL}/schools_profiles.json`,
-    2500
-  );
-  if (rtdbProfiles && typeof rtdbProfiles === "object") {
-    for (const [id, raw] of Object.entries(rtdbProfiles)) {
-      const meta = sanitizeSchoolMeta(id, raw);
+  // 1. Primary: Supabase schools table (unlimited reads)
+  const sbSchools = await fetchAllSchoolsFromSupabase();
+  if (Array.isArray(sbSchools) && sbSchools.length > 0) {
+    for (const raw of sbSchools) {
+      const meta = sanitizeSchoolMeta(String(raw?.id || ""), raw);
       if (meta && meta.status !== "ARCHIVED" && meta.status !== "DELETED") {
         merged.set(meta.id, meta);
       }
     }
   }
 
-  // 2. Fallback: Firestore schools collection REST API (if RTDB mirror missing any schools)
+  // 2. Legacy fallback & one-time auto-seed from RTDB schools_profiles if Supabase schools table empty
+  if (merged.size === 0) {
+    const rtdbProfiles = await fetchJsonWithTimeout<Record<string, any>>(
+      `${RTDB_BASE_URL}/schools_profiles.json`,
+      2500
+    );
+    if (rtdbProfiles && typeof rtdbProfiles === "object") {
+      for (const [id, raw] of Object.entries(rtdbProfiles)) {
+        const meta = sanitizeSchoolMeta(id, raw);
+        if (meta && meta.status !== "ARCHIVED" && meta.status !== "DELETED") {
+          merged.set(meta.id, meta);
+          void upsertSchoolInSupabase(meta.id, raw as Record<string, any>);
+        }
+      }
+    }
+  }
+
+  // 3. Fallback: Firestore schools collection REST API (if RTDB & Supabase both empty)
   if (merged.size === 0) {
     const fsData = await fetchJsonWithTimeout<{ documents?: Array<{ name: string; fields?: Record<string, any> }> }>(
       `https://firestore.googleapis.com/v1/projects/${FIREBASE_PROJECT_ID}/databases/(default)/documents/schools?pageSize=50`,
@@ -204,6 +219,7 @@ export async function fetchAllPublicSchools(forceRefresh = false): Promise<Publi
         const meta = sanitizeSchoolMeta(docId, fieldsObj);
         if (meta && meta.status !== "ARCHIVED" && meta.status !== "DELETED") {
           merged.set(meta.id, meta);
+          void upsertSchoolInSupabase(meta.id, fieldsObj);
         }
       }
     }
@@ -346,7 +362,9 @@ export async function resolveSchoolBranding(opts: {
     : "";
 
   const needsServerProxy = (url: string) =>
-    url.startsWith("data:") || url.includes("api.telegram.org/file/bot");
+    url.startsWith("data:") ||
+    url.includes("api.telegram.org/file/bot") ||
+    url.startsWith("/api/telegram/file");
 
   const ogImageUrl = hasCustomBanner
     ? needsServerProxy(resolved.websiteConfig!.heroBannerUrl!)
@@ -390,20 +408,34 @@ export async function resolveSchoolBranding(opts: {
   const canonicalUrl = `${origin}${cleanPath}${querySuffix}`;
   const manifestHref = `/api/manifest${querySuffix}`;
 
+  const isRootDefaultApp = !matchedByQuery;
+  const displayBrandName = isRootDefaultApp ? "SCHOOL+" : schoolName;
+  const displayShortName = isRootDefaultApp ? "SCHOOL+" : shortName;
+  const displayTitle =
+    isRootDefaultApp && !lowerPath.startsWith("/admission") && !lowerPath.startsWith("/verify") && !lowerPath.startsWith("/login")
+      ? "SCHOOL+ – Official School Portal & ERP"
+      : isRootDefaultApp && lowerPath.startsWith("/admission")
+      ? `Online Admission ${resolved.websiteConfig?.admissionSessionLabel || "2027-28"} | SCHOOL+`
+      : isRootDefaultApp && lowerPath.startsWith("/verify")
+      ? "Document Verification | SCHOOL+"
+      : isRootDefaultApp && lowerPath.startsWith("/login")
+      ? "Portal Login | SCHOOL+"
+      : title;
+
   return {
     school: resolved,
     matchedByQuery,
     queryKey: schoolKey,
-    title,
+    title: displayTitle,
     description,
-    shortName,
-    siteName: schoolName,
+    shortName: displayShortName,
+    siteName: displayBrandName,
     themeColor,
     backgroundColor: "#121212",
     canonicalUrl,
     ogImageUrl,
     splashLogoUrl,
-    splashTitle: schoolName,
+    splashTitle: displayBrandName,
     splashSubtitle,
     manifestHref,
     icon192Url,
@@ -429,8 +461,8 @@ export function buildSchoolWebManifest(branding: ResolvedSchoolBranding) {
   }
   return {
     id: startUrl,
-    name: branding.school.name || "Life Maker Public School",
-    short_name: branding.shortName || "LMPS",
+    name: branding.matchedByQuery ? (branding.school.name || "SCHOOL+") : "SCHOOL+",
+    short_name: branding.matchedByQuery ? (branding.shortName || "SCHOOL+") : "SCHOOL+",
     description: branding.description,
     theme_color: branding.themeColor || "#121212",
     background_color: branding.backgroundColor || "#121212",
@@ -643,6 +675,26 @@ export async function resolveSchoolAssetPayload(opts: {
         contentType: match[1],
         buffer: Buffer.from(match[2], "base64"),
       };
+    }
+  }
+
+  if (candidateUrl && candidateUrl.startsWith("/api/telegram/file")) {
+    try {
+      const parsed = extractTelegramParamsFromUrl(candidateUrl);
+      if (parsed && (parsed.fileId || parsed.path)) {
+        const fetched = await fetchTelegramFileBuffer({
+          fileId: parsed.fileId,
+          filePath: parsed.path,
+          fileName: parsed.name,
+          token: parsed.token,
+          timeoutMs: 4500,
+        });
+        if (fetched && fetched.contentType.startsWith("image/") && !fetched.contentType.includes("svg") && fetched.buffer.length > 64) {
+          return { contentType: fetched.contentType, buffer: fetched.buffer };
+        }
+      }
+    } catch {
+      // Fall through to local fallback
     }
   }
 

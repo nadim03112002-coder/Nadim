@@ -13,12 +13,32 @@ import {
   verifySchoolRazorpayCheckout,
   handleSchoolRazorpayWebhook,
 } from "./api/_razorpay";
+import { Readable } from "stream";
 import {
   resolveSchoolBranding,
   buildSchoolWebManifest,
   injectSchoolBrandingIntoHtml,
   resolveSchoolAssetPayload,
 } from "./api/_schoolBranding";
+import {
+  resolveTelegramBotToken,
+  resolveTelegramFilePath,
+  invalidateTelegramFilePathCache,
+  isSafeTelegramFilePath,
+  detectMimeType,
+} from "./api/_telegramProxy";
+import {
+  deleteFcmTokenFromSupabase,
+  deleteWebpushSubFromSupabase,
+  fetchFcmTokensFromSupabase,
+  fetchWebpushDuesFromSupabase,
+  fetchWebpushSubsFromSupabase,
+  getWebpushSubFromSupabase,
+  supabaseServerKeepalive,
+  upsertFcmTokenInSupabase,
+  upsertWebpushDueInSupabase,
+  upsertWebpushSubInSupabase,
+} from "./api/_supabaseServer";
 
 // Prevent transient socket resets (e.g. pre-warmer closing connections early)
 // or background async errors from terminating the dev/prod server process.
@@ -194,10 +214,17 @@ async function getCachedFcmTokens(): Promise<Record<string, any> | null> {
     return cachedFcmTokens;
   }
   if (!activeFcmTokensPromise) {
-    activeFcmTokensPromise = rtdbGet<Record<string, any>>("fcm_tokens")
-      .then((res) => {
-        if (res && typeof res === "object") {
-          cachedFcmTokens = res;
+    activeFcmTokensPromise = Promise.all([
+      fetchFcmTokensFromSupabase(),
+      rtdbGet<Record<string, any>>("fcm_tokens"),
+    ])
+      .then(([sbRes, rtdbRes]) => {
+        const merged = {
+          ...(rtdbRes && typeof rtdbRes === "object" ? rtdbRes : {}),
+          ...(sbRes && typeof sbRes === "object" ? sbRes : {}),
+        };
+        if (Object.keys(merged).length > 0) {
+          cachedFcmTokens = merged;
           lastFcmTokensFetchMs = Date.now();
         }
         return cachedFcmTokens;
@@ -230,7 +257,10 @@ async function dispatchFcmToUsers(
   const excludedToken = exclude?.senderFcmToken ? String(exclude.senderFcmToken).trim() : "";
   const excludedDeviceId = exclude?.senderDeviceId ? String(exclude.senderDeviceId).trim() : "";
 
-  const tokenToKeysMap = new Map<string, string[]>();
+  const tokenTargets = new Map<
+    string,
+    { keys: string[]; platform: string; studentId?: string; schoolId?: string }
+  >();
   for (const [key, entry] of Object.entries(allTokens)) {
     if (!entry?.token) continue;
     if (filter?.schoolId && entry.schoolId && entry.schoolId !== filter.schoolId) continue;
@@ -264,15 +294,93 @@ async function dispatchFcmToUsers(
       explicitIdMatch;
 
     if (isMatch) {
-      const keys = tokenToKeysMap.get(entry.token) || [];
-      keys.push(key);
-      tokenToKeysMap.set(entry.token, keys);
+      const existingTarget = tokenTargets.get(entry.token);
+      if (existingTarget) {
+        existingTarget.keys.push(key);
+        if (entry.platform === "android_native") {
+          existingTarget.platform = "android_native";
+        }
+        if (!existingTarget.studentId && entryStudentId) existingTarget.studentId = entryStudentId;
+        if (!existingTarget.schoolId && entry.schoolId) existingTarget.schoolId = String(entry.schoolId);
+      } else {
+        tokenTargets.set(entry.token, {
+          keys: [key],
+          platform: String(entry.platform || "pwa"),
+          studentId: entryStudentId || undefined,
+          schoolId: entry.schoolId ? String(entry.schoolId) : undefined,
+        });
+      }
     }
   }
 
   let sent = 0;
   await Promise.allSettled(
-    Array.from(tokenToKeysMap.entries()).map(async ([fcmToken, keys]) => {
+    Array.from(tokenTargets.entries()).map(async ([fcmToken, target]) => {
+      const keys = target.keys;
+      const isNativeAndroid = target.platform === "android_native";
+      const dataPayload = {
+        id: String(payload.id || ""),
+        title: payload.title,
+        body: payload.body,
+        type: String(payload.type || "DEFAULT"),
+        url: String(payload.url || "/"),
+        icon: String(payload.icon || "/icons/icon-192.png?v=3"),
+        senderId: String(payload.senderId || ""),
+        senderDeviceId: String(payload.senderDeviceId || ""),
+        studentId: String(target.studentId || ""),
+        schoolId: String(filter?.schoolId || target.schoolId || ""),
+        voiceSpeak: "1",
+        urgent: "1",
+      };
+
+      const fcmMessage = isNativeAndroid
+        ? {
+            token: fcmToken,
+            data: dataPayload,
+            android: {
+              priority: "HIGH",
+            },
+          }
+        : {
+            token: fcmToken,
+            notification: {
+              title: payload.title,
+              body: payload.body,
+            },
+            data: dataPayload,
+            android: {
+              priority: "HIGH",
+              notification: {
+                channel_id: "default",
+                notification_priority: "PRIORITY_MAX",
+                default_sound: true,
+                default_vibrate_timings: true,
+                visibility: "PUBLIC",
+              },
+            },
+            webpush: {
+              headers: {
+                Urgency: "high",
+                TTL: "604800",
+              },
+              notification: {
+                title: payload.title,
+                body: payload.body,
+                icon: payload.icon || "/icons/icon-192.png?v=3",
+                badge: "/icons/badge-monochrome.png?v=4",
+                requireInteraction: true,
+                silent: false,
+                vibrate: [500, 200, 500, 200, 500],
+                renotify: true,
+                tag: `nsta-alert-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+                timestamp: Date.now(),
+              },
+              fcm_options: {
+                link: payload.url || "/",
+              },
+            },
+          };
+
       try {
         const res = await fetch(
           `https://fcm.googleapis.com/v1/projects/${FIREBASE_PROJECT_ID}/messages:send`,
@@ -282,56 +390,7 @@ async function dispatchFcmToUsers(
               Authorization: `Bearer ${accessToken}`,
               "Content-Type": "application/json",
             },
-            body: JSON.stringify({
-              message: {
-                token: fcmToken,
-                notification: {
-                  title: payload.title,
-                  body: payload.body,
-                },
-                data: {
-                  title: payload.title,
-                  body: payload.body,
-                  type: String(payload.type || "DEFAULT"),
-                  url: String(payload.url || "/"),
-                  icon: String(payload.icon || "/icons/icon-192.png?v=3"),
-                  senderId: String(payload.senderId || ""),
-                  senderDeviceId: String(payload.senderDeviceId || ""),
-                  urgent: "1",
-                },
-                android: {
-                  priority: "HIGH",
-                  notification: {
-                    channel_id: "default",
-                    notification_priority: "PRIORITY_MAX",
-                    default_sound: true,
-                    default_vibrate_timings: true,
-                    visibility: "PUBLIC",
-                  },
-                },
-                webpush: {
-                  headers: {
-                    Urgency: "high",
-                    TTL: "604800",
-                  },
-                  notification: {
-                    title: payload.title,
-                    body: payload.body,
-                    icon: payload.icon || "/icons/icon-192.png?v=3",
-                    badge: "/icons/badge-monochrome.png?v=4",
-                    requireInteraction: true,
-                    silent: false,
-                    vibrate: [500, 200, 500, 200, 500],
-                    renotify: true,
-                    tag: `nsta-alert-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-                    timestamp: Date.now(),
-                  },
-                  fcm_options: {
-                    link: payload.url || "/",
-                  },
-                },
-              },
-            }),
+            body: JSON.stringify({ message: fcmMessage }),
           }
         );
         if (res.ok) {
@@ -352,12 +411,12 @@ async function dispatchFcmToUsers(
             errText.includes("NotRegistered");
 
           if (isDeadToken) {
-            // Automatically prune dead/unregistered/expired tokens from RTDB so subsequent dispatches succeed cleanly
+            // Automatically prune dead/unregistered/expired tokens from Supabase & RTDB
             console.info("[Server FCM] Auto-pruning invalid/unregistered token for keys:", keys);
             await Promise.allSettled(
-              keys.map((k) => {
+              keys.flatMap((k) => {
                 if (cachedFcmTokens) delete cachedFcmTokens[k];
-                return rtdbDelete(`fcm_tokens/${k}`);
+                return [rtdbDelete(`fcm_tokens/${k}`), deleteFcmTokenFromSupabase(k)];
               })
             );
           } else {
@@ -423,19 +482,49 @@ function hashEndpoint(endpoint: string): string {
 }
 
 async function rtdbGet<T = any>(rtdbPath: string): Promise<T | null> {
+  if (rtdbPath === "school_webpush_subs") {
+    const sbSubs = await fetchWebpushSubsFromSupabase();
+    if (sbSubs && Object.keys(sbSubs).length > 0) return sbSubs as T;
+  } else if (rtdbPath.startsWith("school_webpush_subs/")) {
+    const subId = rtdbPath.slice("school_webpush_subs/".length);
+    const sbSub = await getWebpushSubFromSupabase(subId);
+    if (sbSub) return sbSub as T;
+  } else if (rtdbPath === "school_webpush_dues") {
+    const sbDues = await fetchWebpushDuesFromSupabase();
+    if (sbDues && Object.keys(sbDues).length > 0) return sbDues as T;
+  }
   try {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 3500);
     const res = await fetch(`${RTDB_BASE_URL}/${rtdbPath}.json`, { signal: controller.signal });
     clearTimeout(timer);
     if (!res.ok) return null;
-    return (await res.json()) as T;
+    const val = (await res.json()) as T;
+    if (val && typeof val === "object") {
+      if (rtdbPath === "school_webpush_subs") {
+        Object.entries(val as Record<string, any>).forEach(([k, rec]) => {
+          if (rec?.subscription?.endpoint) void upsertWebpushSubInSupabase({ ...rec, id: k });
+        });
+      } else if (rtdbPath === "school_webpush_dues") {
+        Object.entries(val as Record<string, any>).forEach(([k, due]) => {
+          if (due?.studentId) void upsertWebpushDueInSupabase(k, due);
+        });
+      }
+    }
+    return val;
   } catch {
     return null;
   }
 }
 
 async function rtdbPut(rtdbPath: string, payload: unknown): Promise<void> {
+  if (rtdbPath.startsWith("school_webpush_subs/") && payload && typeof payload === "object") {
+    const subId = rtdbPath.slice("school_webpush_subs/".length);
+    await upsertWebpushSubInSupabase({ ...(payload as Record<string, any>), id: subId }).catch(() => {});
+  } else if (rtdbPath.startsWith("school_webpush_dues/") && payload && typeof payload === "object") {
+    const dKey = rtdbPath.slice("school_webpush_dues/".length);
+    await upsertWebpushDueInSupabase(dKey, payload).catch(() => {});
+  }
   try {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 3500);
@@ -452,6 +541,10 @@ async function rtdbPut(rtdbPath: string, payload: unknown): Promise<void> {
 }
 
 async function rtdbDelete(rtdbPath: string): Promise<void> {
+  if (rtdbPath.startsWith("school_webpush_subs/")) {
+    const subId = rtdbPath.slice("school_webpush_subs/".length);
+    await deleteWebpushSubFromSupabase(subId).catch(() => {});
+  }
   try {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 3500);
@@ -757,6 +850,60 @@ async function startServer() {
   );
 
   // 1. Public VAPID key for browser PushManager.subscribe()
+  app.get("/api/supabase-keepalive", async (_req, res) => {
+    const ping = await supabaseServerKeepalive();
+    res.status(200).json({ ok: ping.ok, status: ping.status, service: "supabase-keepalive" });
+  });
+
+  app.post("/api/fcm/register-token", async (req, res) => {
+    const { userId, token, platform = "pwa", studentId, schoolId, classId, className, role, deviceId } = req.body || {};
+    if (!userId || !token) {
+      res.status(400).json({ error: "userId and token are required" });
+      return;
+    }
+    const safeId = String(userId).replace(/[.#$[\]/]/g, "_");
+    const tokenKey = platform === "android_native" ? `${safeId}__android` : safeId;
+    if (cachedFcmTokens) {
+      cachedFcmTokens[tokenKey] = {
+        token: String(token),
+        userId: String(userId),
+        platform: String(platform),
+        ...(studentId ? { studentId: String(studentId) } : {}),
+        ...(schoolId ? { schoolId: String(schoolId) } : {}),
+        ...(classId ? { classId: String(classId) } : {}),
+        ...(className ? { className: String(className) } : {}),
+        ...(deviceId ? { deviceId: String(deviceId) } : {}),
+        updatedAt: new Date().toISOString(),
+      };
+    }
+    await Promise.allSettled([
+      upsertFcmTokenInSupabase({
+        tokenKey,
+        userId: String(userId),
+        studentId: studentId ? String(studentId) : "",
+        schoolId: schoolId ? String(schoolId) : "",
+        classId: classId ? String(classId) : "",
+        className: className ? String(className) : "",
+        role: role ? String(role) : "",
+        platform: String(platform),
+        token: String(token),
+        deviceId: deviceId ? String(deviceId) : "",
+      }),
+      rtdbPut(`fcm_tokens/${tokenKey}`, {
+        token: String(token),
+        userId: String(userId),
+        platform: String(platform),
+        ...(studentId ? { studentId: String(studentId) } : {}),
+        ...(schoolId ? { schoolId: String(schoolId) } : {}),
+        ...(classId ? { classId: String(classId) } : {}),
+        ...(className ? { className: String(className) } : {}),
+        ...(deviceId ? { deviceId: String(deviceId) } : {}),
+        updatedAt: new Date().toISOString(),
+      }),
+    ]);
+    res.json({ ok: true, tokenKey });
+  });
+
   app.get("/api/school-push/vapid-public-key", (_req, res) => {
     res.json({ publicKey: activeVapidKeys.publicKey });
   });
@@ -1444,6 +1591,16 @@ async function startServer() {
           relation: ["delegate_permission/common.handle_all_urls"],
           target: {
             namespace: "android_app",
+            package_name: "app.lifemaker.school",
+            sha256_cert_fingerprints: [
+              "6A:E1:82:0D:45:BB:8F:02:B9:D6:E4:6A:70:8E:20:83:2F:9D:7A:0C:88:2E:36:77:96:80:97:D7:35:84:2A:1D"
+            ]
+          }
+        },
+        {
+          relation: ["delegate_permission/common.handle_all_urls"],
+          target: {
+            namespace: "android_app",
             package_name: "app.vercel.sms2027.twa",
             sha256_cert_fingerprints: [
               "6A:E1:82:0D:45:BB:8F:02:B9:D6:E4:6A:70:8E:20:83:2F:9D:7A:0C:88:2E:36:77:96:80:97:D7:35:84:2A:1D"
@@ -1456,8 +1613,7 @@ async function startServer() {
 
   // Telegram helper proxy routes (parity with serverless api/push-router.ts)
   app.get("/api/telegram/health", async (_req, res) => {
-    const token = (process.env.TELEGRAM_BOT_TOKEN || process.env.VITE_TELEGRAM_BOT_TOKEN || "").trim();
-    if (!token) return res.status(200).json({ ok: false, error: "TELEGRAM_BOT_TOKEN not configured" });
+    const token = resolveTelegramBotToken();
     try {
       const r = await fetch(`https://api.telegram.org/bot${token}/getMe`);
       const data = (await r.json().catch(() => ({ ok: false }))) as any;
@@ -1468,9 +1624,8 @@ async function startServer() {
   });
 
   app.post("/api/telegram/sendMessage", async (req, res) => {
-    const token = (process.env.TELEGRAM_BOT_TOKEN || process.env.VITE_TELEGRAM_BOT_TOKEN || "").trim();
-    const defaultChatId = (process.env.TELEGRAM_CHAT_CHANNEL_ID || process.env.VITE_TELEGRAM_CHAT_CHANNEL_ID || "").trim();
-    if (!token) return res.status(400).json({ ok: false, error: "TELEGRAM_BOT_TOKEN not configured" });
+    const token = resolveTelegramBotToken();
+    const defaultChatId = (process.env.TELEGRAM_CHAT_CHANNEL_ID || process.env.VITE_TELEGRAM_CHAT_CHANNEL_ID || "-1004290996442").trim();
     try {
       const { text, chat_id, reply_to_message_id, parse_mode = "HTML" } = req.body || {};
       const r = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
@@ -1490,45 +1645,110 @@ async function startServer() {
     }
   });
 
-  const telegramFilePathCache = new Map<string, { filePath: string; expiresAt: number }>();
+  app.options("/api/telegram/file", (_req, res) => {
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS");
+    res.setHeader("Access-Control-Allow-Headers", "Range, Content-Type");
+    return res.status(204).end();
+  });
 
   app.get("/api/telegram/file", async (req, res) => {
     const fileId = String(req.query?.fileId || req.query?.file_id || "").trim();
     const rawFilePath = String(req.query?.path || "").trim();
-    const token = String(req.query?.token || process.env.TELEGRAM_BOT_TOKEN || process.env.VITE_TELEGRAM_BOT_TOKEN || "").trim();
-    if (!token) return res.status(400).json({ error: "TELEGRAM_BOT_TOKEN not configured" });
+    const fileName = String(req.query?.name || "").trim();
+    const token = resolveTelegramBotToken(req.query?.token ? String(req.query.token) : undefined);
+
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("Access-Control-Expose-Headers", "Content-Range, Content-Length, Accept-Ranges, Content-Type");
 
     let resolvedPath = rawFilePath;
     if (fileId) {
-      if (!/^[A-Za-z0-9_-]{10,200}$/.test(fileId)) {
-        return res.status(400).json({ error: "Invalid fileId format" });
+      const resolved = await resolveTelegramFilePath(fileId, token);
+      if ("error" in resolved) {
+        return res.status(resolved.status).json({ error: resolved.error });
       }
-      const cached = telegramFilePathCache.get(fileId);
-      if (cached && cached.expiresAt > Date.now()) {
-        resolvedPath = cached.filePath;
-      } else {
-        try {
-          const tgRes = await fetch(`https://api.telegram.org/bot${token}/getFile?file_id=${encodeURIComponent(fileId)}`);
-          const tgJson = (await tgRes.json().catch(() => null)) as any;
-          if (!tgRes.ok || !tgJson?.ok || !tgJson?.result?.file_path) {
-            return res.status(404).json({ error: tgJson?.description || "Telegram file not found" });
-          }
-          resolvedPath = String(tgJson.result.file_path);
-          telegramFilePathCache.set(fileId, {
-            filePath: resolvedPath,
-            expiresAt: Date.now() + 30 * 60 * 1000,
-          });
-        } catch (err: any) {
-          return res.status(502).json({ error: err?.message || "Failed to resolve Telegram fileId" });
-        }
-      }
+      resolvedPath = resolved.filePath;
     }
 
-    if (!resolvedPath || resolvedPath.includes("..") || resolvedPath.startsWith("/")) {
+    if (!isSafeTelegramFilePath(resolvedPath)) {
       return res.status(400).json({ error: "Missing or invalid file path" });
     }
-    res.setHeader("Cache-Control", "public, max-age=1800");
-    return res.redirect(302, `https://api.telegram.org/file/bot${token}/${resolvedPath}`);
+
+    const fetchFromTelegram = async (targetPath: string) => {
+      const headers: Record<string, string> = {};
+      if (req.headers.range) {
+        headers["Range"] = String(req.headers.range);
+      }
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 30000);
+      try {
+        const tgRes = await fetch(`https://api.telegram.org/file/bot${token}/${targetPath}`, {
+          headers,
+          signal: controller.signal,
+        });
+        clearTimeout(timer);
+        return tgRes;
+      } catch (err) {
+        clearTimeout(timer);
+        throw err;
+      }
+    };
+
+    try {
+      let tgRes = await fetchFromTelegram(resolvedPath);
+
+      // Self-healing: if cached Telegram file_path expired/rotated, refresh getFile once
+      if (!tgRes.ok && fileId) {
+        invalidateTelegramFilePathCache(fileId, token);
+        const refreshed = await resolveTelegramFilePath(fileId, token, true);
+        if (!("error" in refreshed)) {
+          resolvedPath = refreshed.filePath;
+          tgRes = await fetchFromTelegram(resolvedPath);
+        }
+      }
+
+      if (!tgRes.ok && tgRes.status !== 206) {
+        return res.status(tgRes.status || 404).json({ error: "Telegram file unavailable" });
+      }
+
+      const contentType = detectMimeType({
+        fileName,
+        filePath: resolvedPath,
+        headerContentType: tgRes.headers.get("content-type"),
+      });
+
+      res.status(tgRes.status);
+      res.setHeader("Content-Type", contentType);
+      res.setHeader("Accept-Ranges", tgRes.headers.get("accept-ranges") || "bytes");
+      const contentLen = tgRes.headers.get("content-length");
+      if (contentLen) res.setHeader("Content-Length", contentLen);
+      const contentRange = tgRes.headers.get("content-range");
+      if (contentRange) res.setHeader("Content-Range", contentRange);
+      if (fileName) {
+        const safeName = fileName.replace(/["\r\n]/g, "");
+        res.setHeader("Content-Disposition", `inline; filename="${safeName}"`);
+      }
+      res.setHeader(
+        "Cache-Control",
+        fileId
+          ? "public, max-age=86400, stale-while-revalidate=604800"
+          : "public, max-age=300"
+      );
+
+      if (tgRes.body) {
+        const nodeStream = Readable.fromWeb(tgRes.body as any);
+        nodeStream.on("error", () => {
+          if (!res.headersSent) res.status(502).end();
+          else res.end();
+        });
+        return nodeStream.pipe(res);
+      }
+
+      const buf = Buffer.from(await tgRes.arrayBuffer());
+      return res.send(buf);
+    } catch (err: any) {
+      return res.status(502).json({ error: err?.message || "Failed to stream Telegram media" });
+    }
   });
 
   // ── PER-SCHOOL RAZORPAY ONLINE FEE & AUTO-WEBHOOK ENDPOINTS ──────────────
@@ -1662,18 +1882,26 @@ async function startServer() {
         ".vite",
       ]);
       const excludedFiles = new Set([
-        ".env",
-        ".env.local",
-        ".env.production",
         ".vapid-keys.json",
         ".push-subscriptions.json",
       ]);
+      const isSensitiveOrArchive = (name: string) =>
+        (name.startsWith(".env") && name !== ".env.example") ||
+        excludedFiles.has(name) ||
+        name.endsWith(".log") ||
+        name.endsWith(".zip") ||
+        name.endsWith(".pem") ||
+        name.endsWith(".key");
+
+      const rootBoundary = ROOT_DIR.endsWith(path.sep) ? ROOT_DIR : `${ROOT_DIR}${path.sep}`;
 
       const walkDir = (dir: string, relBase = "") => {
         const entries = fs.readdirSync(dir, { withFileTypes: true });
         for (const entry of entries) {
+          if (entry.isSymbolicLink()) continue;
           const relPath = relBase ? `${relBase}/${entry.name}` : entry.name;
-          const fullPath = path.join(dir, entry.name);
+          const fullPath = path.resolve(dir, entry.name);
+          if (!fullPath.startsWith(rootBoundary)) continue;
 
           if (entry.isDirectory()) {
             if (excludedDirs.has(entry.name)) continue;
@@ -1682,7 +1910,7 @@ async function startServer() {
             if (!includeWasm && relPath === "public/onnx-wasm") continue;
             walkDir(fullPath, relPath);
           } else if (entry.isFile()) {
-            if (excludedFiles.has(entry.name) || entry.name.endsWith(".log")) continue;
+            if (isSensitiveOrArchive(entry.name)) continue;
             zip.file(relPath, fs.readFileSync(fullPath));
           }
         }
@@ -1693,8 +1921,8 @@ async function startServer() {
       const dateTag = new Date().toISOString().slice(0, 10);
       const zipName =
         includeModels && includeWasm
-          ? `nsta-app-full-${dateTag}.zip`
-          : `nsta-app-source-${dateTag}.zip`;
+          ? `school-plus-full-${dateTag}.zip`
+          : `school-plus-source-${dateTag}.zip`;
 
       res.setHeader("Content-Type", "application/zip");
       res.setHeader(

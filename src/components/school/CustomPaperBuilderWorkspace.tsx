@@ -2217,7 +2217,7 @@ export const CustomPaperBuilderWorkspace: React.FC<Props> = ({
                   type="text"
                   value={schoolContactOverride}
                   onChange={(e) => setSchoolContactOverride(e.target.value)}
-                  placeholder="Ph: 9525400122, 9835763641 | Web: sms2027.vercel.app"
+                  placeholder="Ph: 9525400122, 9835763641 | Web: lmps27.vercel.app"
                   className="w-full px-2.5 py-1.5 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-xs"
                 />
               </div>

@@ -16,8 +16,13 @@ import { PwaInstallPrompt } from './components/PwaInstallPrompt';
 import { NotificationPrompt } from './components/NotificationPrompt';
 import { NotificationPermissionGate } from './components/NotificationPermissionGate';
 import { GlobalNotificationPopup } from './components/GlobalNotificationPopup';
-import { subscribeToUserNotifications, listenToForegroundMessages } from './components/NotificationManager';
-import { auth, logoutUser, getFreshUserData, getUserData, ensureFirebaseAuthSession } from './firebase';
+import {
+  subscribeToUserNotifications,
+  listenToForegroundMessages,
+  syncNativeAndroidIdentity,
+  registerNativeAndroidBridgeToken
+} from './components/NotificationManager';
+import { auth, logoutUser, getFreshUserData, getUserData, getUserByEmail, getUserByLinkedGoogleUid, saveUserToLive, ensureFirebaseAuthSession } from './firebase';
 import { onAuthStateChanged } from 'firebase/auth';
 import { AppLoadingScreen } from './components/AppLoadingScreen';
 import {
@@ -35,6 +40,7 @@ import { getDemoSchoolDataset, isDemoDataEnabled } from './components/school/dem
 import { buildDefaultClassesFrom2027Chart } from './utils/schoolFeeChart2027';
 import type { School as SchoolEntity, SchoolClass, SchoolSession } from './school-types';
 import { resolveWebsiteAdmissionSessionLabel } from './utils/safeBrowserActions';
+import { getSavedSchoolLogo } from './components/school/feeReceiptUtils';
 
 // Resilient dynamic import helper that retries transient network or dev-server warm-up blips
 function lazyWithRetry<T extends React.ComponentType<any>>(
@@ -326,13 +332,22 @@ const getInitialSettings = () => {
     const raw = localStorage.getItem('nst_system_settings');
     if (raw) {
       const parsed = JSON.parse(raw);
-      if (parsed) return parsed;
+      if (parsed) {
+        const legacyNames = ['School ERP', 'LIFE MAKER', 'Life Maker', 'LIFE MAKER PUBLIC SCHOOL', 'Life Maker Public School'];
+        if (!parsed.appName || legacyNames.includes(String(parsed.appName).trim())) {
+          parsed.appName = 'SCHOOL+';
+        }
+        if (!parsed.appShortName || ['ERP', 'LMPS'].includes(String(parsed.appShortName).trim())) {
+          parsed.appShortName = 'SCHOOL+';
+        }
+        return parsed;
+      }
     }
   } catch (e) {}
 
   return {
-    appName: 'School ERP',
-    appShortName: 'ERP',
+    appName: 'SCHOOL+',
+    appShortName: 'SCHOOL+',
     appVersion: '2.0',
     contactNumber: '9876543210',
     contactEmail: 'support@nsta.app',
@@ -387,6 +402,9 @@ export function App() {
     try {
       const path = normalizeRoutePath(window.location.pathname);
       if (path === '/login') return false;
+      const sp = new URLSearchParams(window.location.search);
+      const isPortalLink = sp.get('schoolPortal') === '1' || Boolean(sp.get('schoolTab'));
+      if (isPortalLink && getInitialUser()) return false;
       return true;
     } catch {
       return true;
@@ -653,25 +671,30 @@ export function App() {
     };
   }, [activePublicSchool?.id, activePublicSchool?.name]);
 
-  // Keep browser document title, manifest link, and PWA meta synced with active school
+  // Keep browser document title, manifest link, and PWA meta synced with SCHOOL+ / active school
   useEffect(() => {
     if (!activePublicSchool?.name || typeof document === 'undefined') return;
     const schoolName = activePublicSchool.name.trim();
-    const shortName =
-      (activePublicSchool.code || '').trim().slice(0, 12) ||
-      schoolName.slice(0, 12);
-    const schoolDesc =
-      activePublicSchool.websiteConfig?.heroSubheadline ||
-      activePublicSchool.websiteConfig?.aboutSchool ||
-      activePublicSchool.tagline ||
-      `Official Digital Campus of ${schoolName} — Online Admission, Fee Passbook, Attendance & Results.`;
+    const isDefaultAppHome = activePublicSchool.id === DEFAULT_SCHOOL_ID && !urlSchoolParam;
+    const brandTitleName = isDefaultAppHome ? 'SCHOOL+' : schoolName;
+    const shortName = isDefaultAppHome
+      ? 'SCHOOL+'
+      : (activePublicSchool.code || '').trim().slice(0, 12) || schoolName.slice(0, 12);
+    const schoolDesc = isDefaultAppHome
+      ? 'SCHOOL+ Official Digital Campus — Online Admission, Fee Passbook, Live Attendance, Exam Results & Smart Learning.'
+      : activePublicSchool.websiteConfig?.heroSubheadline ||
+        activePublicSchool.websiteConfig?.aboutSchool ||
+        activePublicSchool.tagline ||
+        `Official Digital Campus of ${schoolName} — Online Admission, Fee Passbook, Attendance & Results.`;
 
     const pageTitle =
       routePath === '/admission'
-        ? `Online Admission | ${schoolName}`
+        ? `Online Admission | ${brandTitleName}`
         : routePath === '/verify'
-        ? `Document Verification | ${schoolName}`
-        : `${schoolName} – Official School Portal & ERP`;
+        ? `Document Verification | ${brandTitleName}`
+        : isDefaultAppHome
+        ? `SCHOOL+ – Official School Portal & ERP`
+        : `${schoolName} · SCHOOL+`;
 
     document.title = pageTitle;
 
@@ -682,6 +705,7 @@ export function App() {
     setMeta('meta[name="description"]', schoolDesc);
     setMeta('meta[property="og:title"]', pageTitle);
     setMeta('meta[property="og:description"]', schoolDesc);
+    setMeta('meta[property="og:site_name"]', brandTitleName);
     setMeta('meta[name="twitter:title"]', pageTitle);
     setMeta('meta[name="twitter:description"]', schoolDesc);
     setMeta('meta[name="apple-mobile-web-app-title"]', shortName);
@@ -699,6 +723,8 @@ export function App() {
     }
   }, [activePublicSchool, routePath, urlSchoolParam]);
 
+  const [bootSplashMode, setBootSplashMode] = useState<'boot' | 'to_app' | 'to_website'>('boot');
+  const [bootSplashKey, setBootSplashKey] = useState<number>(1);
   const [showBootSplash, setShowBootSplash] = useState<boolean>(() => {
     try {
       const path = normalizeRoutePath(window.location.pathname);
@@ -715,11 +741,17 @@ export function App() {
         path === '/verify'
       );
       const isStandaloneDriver = p.get('driverConsole') === '1' || p.get('driver') === '1';
-      return path === '/login' && !getInitialUser() && !isPublicVerify && !isStandaloneDriver;
+      return !isPublicVerify && !isStandaloneDriver;
     } catch {
       return false;
     }
   });
+
+  const triggerSplash = (mode: 'boot' | 'to_app' | 'to_website') => {
+    setBootSplashMode(mode);
+    setBootSplashKey((k) => k + 1);
+    setShowBootSplash(true);
+  };
 
   useEffect(() => {
     const onQuotaExceeded = () => setGmpQuotaExceeded(true);
@@ -922,6 +954,12 @@ export function App() {
       );
       delete document.documentElement.dataset.nstErpTheme;
     } catch (e) {}
+    try {
+      const bridge = (window as any).LifeMakerAndroid;
+      if (bridge && typeof bridge.syncIdentity === 'function') {
+        bridge.syncIdentity(JSON.stringify({ userId: '', schoolId: '', studentIds: [] }));
+      }
+    } catch {}
     setUser(null);
     setShowBootSplash(false);
     setShowPublicWebsite(true);
@@ -1000,6 +1038,9 @@ export function App() {
       if (firebaseUser && !firebaseUser.isAnonymous) {
         // If explicitly logged out recently, don't auto re-login unless actively on /login
         const isLoginRoute = normalizeRoutePath(window.location.pathname) === '/login';
+        const sp = new URLSearchParams(window.location.search);
+        const isPortalDeepLink = sp.get('schoolPortal') === '1' || Boolean(sp.get('schoolTab'));
+        const shouldOpenPortal = isLoginRoute || isPortalDeepLink;
         if (localStorage.getItem('nst_logged_out') === 'true' && !isLoginRoute) {
           return;
         }
@@ -1010,11 +1051,13 @@ export function App() {
           try { parsedCached = JSON.parse(cachedRaw); } catch {}
         }
 
-        // Query Firestore for fresh user data including role & isAdmin flags
+        // Query Supabase / Firestore for fresh user data including role & isAdmin flags
         let fresh: any = null;
         try {
           fresh = await getFreshUserData(firebaseUser.uid);
           if (!fresh) fresh = await getUserData(firebaseUser.uid);
+          if (!fresh) fresh = await getUserByLinkedGoogleUid(firebaseUser.uid);
+          if (!fresh && firebaseUser.email) fresh = await getUserByEmail(firebaseUser.email);
         } catch (e) {
           console.warn('[App] Error getting fresh user data on auth change:', e);
         }
@@ -1031,15 +1074,17 @@ export function App() {
           parsedCached?.isAdmin === true;
 
         if (isSuperAdm || isFbAdmin) {
+          const resolvedAdminId = fresh?.id || fresh?.uid || firebaseUser.uid;
           const adminUser = {
             ...(parsedCached || {}),
             ...(fresh || {}),
-            id: firebaseUser.uid,
-            uid: firebaseUser.uid,
+            id: resolvedAdminId,
+            uid: resolvedAdminId,
+            linkedGoogleUid: fresh?.linkedGoogleUid || firebaseUser.uid,
             displayId: isSuperAdm ? 'SUPERADMIN' : 'ADMIN',
             name: fresh?.name || parsedCached?.name || firebaseUser.displayName || (isSuperAdm ? 'Nadim Anwar (Super Admin)' : 'Admin User'),
-            email: firebaseUser.email || cleanEmail,
-            photoURL: firebaseUser.photoURL || fresh?.photoURL || '',
+            email: fresh?.email || firebaseUser.email || cleanEmail,
+            photoURL: fresh?.photoURL || firebaseUser.photoURL || '',
             role: isSuperAdm ? 'SUPERADMIN' : 'ADMIN',
             schoolId: '',
             isGuest: false,
@@ -1051,26 +1096,31 @@ export function App() {
             subscriptionTier: 'PRO',
             provider: isSuperAdm ? 'superadmin_login' : 'firebase_admin_login'
           };
-          handleLogin(adminUser, { keepWebsiteOpen: !isLoginRoute });
+          if (!fresh) {
+            saveUserToLive(adminUser, { immediate: true }).catch(() => {});
+          }
+          handleLogin(adminUser, { keepWebsiteOpen: !shouldOpenPortal });
           return;
         }
 
-        if (parsedCached && (parsedCached.uid === firebaseUser.uid || parsedCached.id === firebaseUser.uid)) {
+        if (parsedCached && (parsedCached.uid === firebaseUser.uid || parsedCached.id === firebaseUser.uid || parsedCached.linkedGoogleUid === firebaseUser.uid)) {
           if (isSchoolAdminEmail(parsedCached.email)) {
             parsedCached.role = 'SCHOOL_ADMIN';
           }
-          handleLogin(parsedCached, { keepWebsiteOpen: !isLoginRoute });
+          handleLogin(parsedCached, { keepWebsiteOpen: !shouldOpenPortal });
         } else {
           const isSuperAdm = isSuperAdminEmail(cleanEmail);
           const isSchoolAdm = !isSuperAdm && isSchoolAdminEmail(cleanEmail);
+          const resolvedId = fresh?.id || fresh?.uid || firebaseUser.uid;
           const resolvedUser = {
             ...(fresh || {}),
-            id: firebaseUser.uid,
-            uid: firebaseUser.uid,
-            displayId: isSuperAdm ? 'SUPERADMIN' : isSchoolAdm ? 'ADMIN-LMPS' : (fresh?.displayId || `NSTA-${firebaseUser.uid.slice(-6).toUpperCase()}`),
+            id: resolvedId,
+            uid: resolvedId,
+            linkedGoogleUid: fresh?.linkedGoogleUid || firebaseUser.uid,
+            displayId: isSuperAdm ? 'SUPERADMIN' : isSchoolAdm ? 'ADMIN-LMPS' : (fresh?.displayId || `NSTA-${resolvedId.slice(-6).toUpperCase()}`),
             name: fresh?.name || firebaseUser.displayName || (isSuperAdm ? 'Super Admin' : isSchoolAdm ? 'SHAHID KHAN SIR (Principal & School Admin)' : 'Student'),
-            email: firebaseUser.email || '',
-            photoURL: firebaseUser.photoURL || '',
+            email: fresh?.email || firebaseUser.email || '',
+            photoURL: fresh?.photoURL || firebaseUser.photoURL || '',
             role: isSuperAdm ? 'SUPERADMIN' : isSchoolAdm ? 'SCHOOL_ADMIN' : (fresh?.role || 'STUDENT'),
             schoolId: isSuperAdm ? '' : (isSchoolAdm ? DEFAULT_SCHOOL_ID : (fresh?.schoolId === 'dps_gurgaon_sector45' ? DEFAULT_SCHOOL_ID : (fresh?.schoolId || ''))),
             isGuest: false,
@@ -1085,7 +1135,10 @@ export function App() {
             subscriptionTier: isSuperAdm ? 'PRO' : isSchoolAdm ? 'PRO' : (fresh?.subscriptionTier || 'FREE'),
             studyMode: fresh?.studyMode || 'CREDIT'
           };
-          handleLogin(resolvedUser, { keepWebsiteOpen: !isLoginRoute });
+          if (!fresh || !fresh.linkedGoogleUid) {
+            saveUserToLive(resolvedUser, { immediate: true }).catch(() => {});
+          }
+          handleLogin(resolvedUser, { keepWebsiteOpen: !shouldOpenPortal });
         }
       }
     });
@@ -1128,11 +1181,60 @@ export function App() {
           schoolId: activeSchoolId || undefined,
         }
       );
+      void syncNativeAndroidIdentity(uid);
+    }
+
+    (window as any).__onLifeMakerNativeFcmToken = (token: string) => {
+      void registerNativeAndroidBridgeToken(token, uid || undefined);
+    };
+
+    // Handle tap-to-speak when parent taps a lock-screen notification (both cold start & warm window)
+    try {
+      const sp = new URLSearchParams(window.location.search);
+      const speakTitle = (sp.get('speakTitle') || '').trim();
+      const speakBody = (sp.get('speakBody') || '').trim();
+      const speakId = (sp.get('speakId') || '').trim();
+      if (speakTitle || speakBody) {
+        if (user && (sp.get('schoolPortal') === '1' || sp.get('schoolTab'))) {
+          setShowPublicWebsite(false);
+        }
+        sp.delete('speakTitle');
+        sp.delete('speakBody');
+        sp.delete('speakId');
+        const cleanedSearch = sp.toString();
+        const cleanedUrl = `${window.location.pathname}${cleanedSearch ? `?${cleanedSearch}` : ''}${window.location.hash}`;
+        window.history.replaceState(window.history.state, '', cleanedUrl);
+
+        import('./utils/voiceNotifyEngine').then(({ speakNotification }) => {
+          const dedupeKey = speakId || `launch_${speakTitle}_${speakBody}`;
+          const spoke = speakNotification(speakTitle || 'स्कूल सूचना', speakBody, { dedupeKey });
+          if (!spoke) {
+            const onFirstGesture = () => {
+              speakNotification(speakTitle || 'स्कूल सूचना', speakBody, { dedupeKey: `${dedupeKey}_tap` });
+            };
+            window.addEventListener('click', onFirstGesture, { once: true, passive: true });
+            window.addEventListener('touchstart', onFirstGesture, { once: true, passive: true });
+          }
+        }).catch(() => {});
+      }
+    } catch {}
+
+    const onSwNavigate = (event: MessageEvent) => {
+      const data = event?.data;
+      if (data?.type === 'SCHOOL_PUSH_NAVIGATE' && user) {
+        setShowPublicWebsite(false);
+      }
+    };
+    if (typeof navigator !== 'undefined' && 'serviceWorker' in navigator) {
+      navigator.serviceWorker.addEventListener('message', onSwNavigate);
     }
 
     return () => {
       if (typeof unsubForeground === 'function') unsubForeground();
       if (typeof unsubUserNotifs === 'function') unsubUserNotifs();
+      if (typeof navigator !== 'undefined' && 'serviceWorker' in navigator) {
+        navigator.serviceWorker.removeEventListener('message', onSwNavigate);
+      }
     };
   }, [user?.uid, user?.id, schoolIdentityRev]);
 
@@ -1291,31 +1393,87 @@ export function App() {
     );
   }
 
-  const renderBootSplash = () =>
-    showBootSplash && !isPublicDocVerify && !driverConsoleParams ? (
+  const renderBootSplash = () => {
+    if (!showBootSplash || isPublicDocVerify || driverConsoleParams) return null;
+    const userSchool =
+      user?.schoolId
+        ? visiblePublicSchools.find(
+            (s) => s.id === user.schoolId || (user.schoolCode && s.code === user.schoolCode)
+          ) || activePublicSchool
+        : activePublicSchool;
+    const resolvedSplashLogo =
+      getSavedSchoolLogo(userSchool?.logoUrl, userSchool?.id) ||
+      userSchool?.logoUrl ||
+      '/icons/icon-512.png?v=3';
+
+    return (
       <AppLoadingScreen
+        key={bootSplashKey}
+        transitionMode={bootSplashMode}
         onComplete={() => setShowBootSplash(false)}
         userId={user?.uid || user?.id}
         userRole={user?.role}
+        schoolId={userSchool?.id}
+        schoolName={userSchool?.name || user?.schoolName}
+        schoolLogoUrl={resolvedSplashLogo}
+        schoolTagline={userSchool?.tagline || userSchool?.websiteConfig?.heroSubheadline}
+        schoolCode={userSchool?.code || user?.schoolCode}
+        schoolAddress={userSchool?.address}
         loadingScreenSlotAssignments={user?.loadingScreenSlotAssignments}
         loadingScreenSlotUnlocks={user?.loadingScreenSlotUnlocks}
         loadingScreenUnlocks={user?.loadingScreenUnlocks}
         loadingScreenVideoUrl={settings?.loadingScreenVideoUrl}
       />
-    ) : null;
+    );
+  };
+
+  const renderSchoolLoader = (subtitle: string, lightBg = false) => {
+    const fallbackLogo =
+      getSavedSchoolLogo(activePublicSchool?.logoUrl, activePublicSchool?.id) ||
+      activePublicSchool?.logoUrl ||
+      '/icons/icon-512.png?v=3';
+    const fallbackName = activePublicSchool?.name || 'SCHOOL+';
+    return (
+      <div
+        className={`flex-1 flex flex-col items-center justify-center p-8 text-center min-h-[65vh] ${
+          lightBg ? 'bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-white' : 'bg-slate-950 text-white'
+        }`}
+      >
+        <div className="w-20 h-20 rounded-2xl p-1.5 bg-white/95 border border-amber-400/40 shadow-[0_0_24px_rgba(245,158,11,0.28)] flex items-center justify-center mb-4">
+          <img
+            src={fallbackLogo}
+            alt={fallbackName}
+            onError={(e) => {
+              const img = e.currentTarget;
+              if (!img.dataset.fallbackApplied) {
+                img.dataset.fallbackApplied = '1';
+                img.src = '/icons/icon-512.png?v=3';
+              }
+            }}
+            className="w-full h-full object-contain rounded-xl"
+          />
+        </div>
+        <h3 className="text-base font-black tracking-wide uppercase mb-1">{fallbackName}</h3>
+        <div className="flex items-center gap-2 text-xs font-semibold opacity-75">
+          <Loader2 className="w-4 h-4 animate-spin text-amber-400" />
+          <span>{subtitle}</span>
+        </div>
+      </div>
+    );
+  };
 
   const handleVisitWebsiteFromPortal = (targetSchoolId?: string) => {
     if (targetSchoolId) {
       handleSelectPublicSchool(targetSchoolId);
     }
-    setShowBootSplash(false);
+    triggerSplash('to_website');
     setShowPublicWebsite(true);
     navigateToPath('/');
   };
 
   const handleOpenAccountSection = () => {
     setShowPublicWebsite(false);
-    setShowBootSplash(true);
+    triggerSplash('to_app');
     navigateToPath('/login');
   };
 
@@ -1331,6 +1489,7 @@ export function App() {
       sessions: publicAdmSessions,
     });
     return (
+      <>
       <div className="min-h-screen min-h-[100dvh] bg-slate-100 dark:bg-slate-950 text-slate-900 dark:text-slate-100 flex flex-col">
         <PublicWebsiteTopBar
           school={activePublicSchool}
@@ -1343,13 +1502,8 @@ export function App() {
           onSelectSchool={handleSelectPublicSchool}
           onOpenAccount={handleOpenAccountSection}
           onSwitchToPortal={() => {
-            const isErpRole = Boolean(
-              user && (isSchoolAdminRole(user) || isAdminUser(user) || ['TEACHER', 'ACCOUNTANT'].includes((user.role || '').toString().toUpperCase()))
-            );
             setShowPublicWebsite(false);
-            if (!isErpRole) {
-              setShowBootSplash(true);
-            }
+            triggerSplash('to_app');
             navigateToPath('/');
           }}
           onOpenAdmission={() => {
@@ -1359,14 +1513,7 @@ export function App() {
           }}
         />
         <div className="flex-1">
-          <Suspense
-            fallback={
-              <div className="min-h-[60vh] flex flex-col items-center justify-center p-8 text-center">
-                <Loader2 className="w-8 h-8 animate-spin text-indigo-500 mb-3" />
-                <p className="text-sm font-bold text-slate-700 dark:text-white">Loading Online Admission {nextYearNum}...</p>
-              </div>
-            }
-          >
+          <Suspense fallback={renderSchoolLoader(`Loading Online Admission ${nextYearNum}...`, true)}>
             <OnlineAdmissionManager
               key={activePublicSchool?.id || 'public-adm'}
               school={activePublicSchool}
@@ -1382,6 +1529,8 @@ export function App() {
           </Suspense>
         </div>
       </div>
+      {renderBootSplash()}
+      </>
     );
   };
 
@@ -1407,23 +1556,13 @@ export function App() {
                 </span>
               </div>
             )}
-            <Suspense
-              fallback={
-                <div className="flex-1 flex flex-col items-center justify-center p-8 text-center min-h-[60vh]">
-                  <div className="w-12 h-12 rounded-2xl bg-indigo-600/10 border border-indigo-500/20 flex items-center justify-center mb-4">
-                    <Loader2 className={`w-6 h-6 animate-spin ${isDarkMode ? 'text-indigo-400' : 'text-indigo-600'}`} />
-                  </div>
-                  <h3 className={`text-base font-bold mb-1 ${isDarkMode ? 'text-white' : 'text-slate-900'}`}>Loading Account Portal...</h3>
-                  <p className={`text-xs ${isDarkMode ? 'text-slate-400' : 'text-slate-500'}`}>Please wait a moment</p>
-                </div>
-              }
-            >
+            <Suspense fallback={renderSchoolLoader('Loading School Account Portal...', !isDarkMode)}>
               <Auth
                 onLogin={handleLogin}
                 appSettings={settings}
                 logActivity={logActivity}
                 onBackToWebsite={() => {
-                  setShowBootSplash(false);
+                  triggerSplash('to_website');
                   setShowPublicWebsite(true);
                   navigateToPath('/');
                 }}
@@ -1442,15 +1581,9 @@ export function App() {
     }
 
     return (
+      <>
       <div className="min-h-screen min-h-[100dvh] w-full flex flex-col bg-[#F8F9FB]">
-        <Suspense
-          fallback={
-            <div className="flex-1 flex flex-col items-center justify-center p-8 text-center min-h-[70vh] bg-slate-950 text-white">
-              <Loader2 className="w-8 h-8 animate-spin text-emerald-400 mb-3" />
-              <p className="text-sm font-bold">Loading School Website...</p>
-            </div>
-          }
-        >
+        <Suspense fallback={renderSchoolLoader('Loading School Campus Website...')}>
           <PublicSchoolWebsite
             school={activePublicSchool}
             schools={visiblePublicSchools}
@@ -1481,6 +1614,8 @@ export function App() {
           schoolLogoUrl={activePublicSchool?.logoUrl}
         />
       </div>
+      {renderBootSplash()}
+      </>
     );
   }
 
@@ -1494,15 +1629,9 @@ export function App() {
         ? 'Switch to ERP Portal'
         : 'Switch to Student Portal';
     return (
+      <>
       <div className="min-h-screen min-h-[100dvh] w-full flex flex-col bg-[#F8F9FB]">
-        <Suspense
-          fallback={
-            <div className="flex-1 flex flex-col items-center justify-center p-8 text-center min-h-[70vh] bg-slate-950 text-white">
-              <Loader2 className="w-8 h-8 animate-spin text-emerald-400 mb-3" />
-              <p className="text-sm font-bold">Loading School Website...</p>
-            </div>
-          }
-        >
+        <Suspense fallback={renderSchoolLoader('Loading School Campus Website...')}>
           <PublicSchoolWebsite
             school={activePublicSchool}
             schools={visiblePublicSchools}
@@ -1513,9 +1642,6 @@ export function App() {
             isAuthenticated={true}
             portalButtonLabel={portalLabel}
             onSwitchToPortal={() => {
-              const isErpRole = Boolean(
-                isSchoolAdminRole(user) || isAdminUser(user) || ['TEACHER', 'ACCOUNTANT'].includes((user.role || '').toString().toUpperCase())
-              );
               if (isSchoolPortalUser(user)) {
                 setView('SCHOOL_ERP');
                 try {
@@ -1523,9 +1649,7 @@ export function App() {
                 } catch {}
               }
               setShowPublicWebsite(false);
-              if (!isErpRole) {
-                setShowBootSplash(true);
-              }
+              triggerSplash('to_app');
               navigateToPath('/');
             }}
             onOpenAdmission={() => {
@@ -1549,6 +1673,8 @@ export function App() {
           schoolLogoUrl={activePublicSchool?.logoUrl}
         />
       </div>
+      {renderBootSplash()}
+      </>
     );
   }
 
@@ -1573,17 +1699,7 @@ export function App() {
       )}
       {/* ── MAIN DASHBOARD VIEWPORT WITH SUSPENSE ───────────────────────── */}
       <div className="flex-1 flex flex-col">
-        <Suspense
-          fallback={
-            <div className="flex-1 flex flex-col items-center justify-center p-8 text-center min-h-[60vh]">
-              <div className="w-12 h-12 rounded-2xl bg-indigo-600/10 border border-indigo-500/20 flex items-center justify-center mb-4">
-                <Loader2 className="w-6 h-6 animate-spin text-indigo-400" />
-              </div>
-              <h3 className="text-base font-bold text-white mb-1">Loading {view === 'DRIVER' ? 'Driver GPS' : 'School ERP'}...</h3>
-              <p className="text-xs text-slate-400">Please wait a moment</p>
-            </div>
-          }
-        >
+        <Suspense fallback={renderSchoolLoader(`Loading ${view === 'DRIVER' ? 'Driver GPS' : 'School ERP'}...`)}>
           {view === 'DRIVER' ? (
             <DriverTripConsole
               school={{

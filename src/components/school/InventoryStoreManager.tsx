@@ -5,11 +5,12 @@ import {
   ShoppingBag, Plus, Search, Tag, AlertTriangle, Printer, Trash2,
   Edit3, CheckCircle2, Check, IndianRupee, QrCode, Filter, ChevronLeft,
   Package, Receipt, ArrowRight, Sparkles, RefreshCw, Clock,
-  Camera, Upload, ImageIcon, X
+  Camera, Upload, ImageIcon, X, UserCheck, BookOpen, GraduationCap
 } from "lucide-react";
 import type {
   School, SchoolStudent, SchoolClass,
-  StoreInventoryItem, StoreSaleRecord, StoreReservationBooking
+  StoreInventoryItem, StoreSaleRecord, StoreReservationBooking,
+  MonthlyFee, PostAdmissionPurchaseRecord, SettledFeeHeadRecord, WaivedFeeHeadRecord
 } from "../../school-types";
 import { speakNotification } from "../../utils/voiceNotifyEngine";
 import {
@@ -20,7 +21,25 @@ import {
 } from "../../utils/schoolCloudSync";
 import { computePaymentBreakdown, formatStorePaymentModeLabel } from "../../utils/paymentBreakdown";
 import { printElementInIframe } from "./AdmissionFormPrintModal";
-import { shouldUseDemoForSchool } from "../../school-firebase";
+import {
+  shouldUseDemoForSchool,
+  updateStudent,
+  saveFee,
+  getLocalFees,
+  getSchoolFeeHistory,
+  getLocalStudents,
+  setLocalStudents,
+} from "../../school-firebase";
+import {
+  getStudentStorePendingBreakdown,
+  canonicalizeFeeHeadKey,
+  getConfiguredHeadAmountForClass,
+  type StorePendingFeeHead,
+} from "../../utils/feeTermScheduler";
+import {
+  normalizeClassNameForChart,
+  resolveEffectiveClassForAdmission,
+} from "../../utils/schoolFeeChart2027";
 
 interface Props {
   school: School;
@@ -28,6 +47,20 @@ interface Props {
   classes?: SchoolClass[];
   isAdmin?: boolean;
   onBack?: () => void;
+  onStudentUpdated?: (updated: SchoolStudent) => void;
+}
+
+interface BillCartLine {
+  lineId: string;
+  itemId: string;
+  itemName: string;
+  quantity: number;
+  unitPrice: number;
+  discountAmount: number;
+  categoryType: "store_item" | "kit_item" | "fee_head" | "exam_term";
+  headKey?: string;
+  campaignId?: string;
+  targetMonth?: string;
 }
 
 const STORE_CATEGORIES = [
@@ -44,7 +77,8 @@ export const InventoryStoreManager: React.FC<Props> = ({
   students = [],
   classes = [],
   isAdmin = true,
-  onBack
+  onBack,
+  onStudentUpdated
 }) => {
   const invStorageKey = useMemo(() => `nst_school_store_items_${school?.id || "default"}`, [school?.id]);
   const salesStorageKey = useMemo(() => `nst_school_store_sales_${school?.id || "default"}`, [school?.id]);
@@ -156,6 +190,32 @@ export const InventoryStoreManager: React.FC<Props> = ({
     return [];
   });
 
+  // Local synced fee history & student overrides so Store immediately knows Paid vs Pending heads
+  const [feeHistory, setFeeHistory] = useState<MonthlyFee[]>(() => {
+    try {
+      return getLocalFees(school?.id || "");
+    } catch {
+      return [];
+    }
+  });
+  const [studentOverrides, setStudentOverrides] = useState<Record<string, SchoolStudent>>({});
+  const effectiveStudents = useMemo(() => {
+    const mergedMap = new Map<string, SchoolStudent>();
+    students.forEach((s) => s?.id && mergedMap.set(s.id, s));
+    try {
+      getLocalStudents(school?.id || "").forEach((ls) => {
+        if (ls?.id) {
+          const prev = mergedMap.get(ls.id);
+          mergedMap.set(ls.id, prev ? { ...prev, ...ls } : ls);
+        }
+      });
+    } catch {}
+    Object.values(studentOverrides).forEach((ov) => {
+      if (ov?.id) mergedMap.set(ov.id, ov);
+    });
+    return Array.from(mergedMap.values());
+  }, [students, studentOverrides, school?.id]);
+
   // Clock ticker for countdown
   const [currentEpoch, setCurrentEpoch] = useState(Date.now());
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
@@ -180,6 +240,9 @@ export const InventoryStoreManager: React.FC<Props> = ({
     loadMergedStoreReservations<StoreReservationBooking>(sid, resStorageKey).then((data) => {
       if (active && data.length > 0) setReservations(data);
     });
+    getSchoolFeeHistory(sid).then((fees) => {
+      if (active && Array.isArray(fees) && fees.length > 0) setFeeHistory(fees);
+    }).catch(() => {});
     return () => { active = false; };
   }, [school?.id, invStorageKey, salesStorageKey, resStorageKey]);
 
@@ -338,14 +401,19 @@ export const InventoryStoreManager: React.FC<Props> = ({
     reader.readAsDataURL(file);
   };
 
-  // Quick Sale / Billing Modal
+  // Quick Sale / Unified Student Store & Fee Checkout Modal
   const [showBillModal, setShowBillModal] = useState(false);
   const [billStudentId, setBillStudentId] = useState("");
-  const [billItems, setBillItems] = useState<{ itemId: string; quantity: number }[]>([]);
+  const [billStudentSearch, setBillStudentSearch] = useState("");
+  const [billStudentFilter, setBillStudentFilter] = useState<"all" | "reg_only">("all");
+  const [billCatalogSearch, setBillCatalogSearch] = useState("");
+  const [billLines, setBillLines] = useState<BillCartLine[]>([]);
   const [billPaymentMode, setBillPaymentMode] = useState<"cash" | "online_upi" | "card">("cash");
+  const [billSaving, setBillSaving] = useState(false);
 
-  // Printable Receipt State
+  // Printable Receipt State & Slip Filter Mode (combined vs fee_only vs store_only vs single_item)
   const [printableReceipt, setPrintableReceipt] = useState<StoreSaleRecord | null>(null);
+  const [receiptPrintScope, setReceiptPrintScope] = useState<"combined" | "fee_only" | "store_only" | string>("combined");
 
   // Statistics
   const totalStockValue = useMemo(() => {
@@ -420,82 +488,438 @@ export const InventoryStoreManager: React.FC<Props> = ({
     toast.success("Item inventory se hata diya gaya.");
   };
 
-  // Add line to bill
+  // Student Search Results inside Store Checkout
+  const selectedBillStudent = useMemo(
+    () => effectiveStudents.find((s) => s.id === billStudentId) || null,
+    [effectiveStudents, billStudentId]
+  );
+
+  const selectedBillStudentClass = useMemo(() => {
+    if (!selectedBillStudent) return null;
+    const stdClassNorm = normalizeClassNameForChart(selectedBillStudent.className);
+    const rawCls =
+      classes.find((c) => c.id === selectedBillStudent.classId) ||
+      classes.find(
+        (c) =>
+          selectedBillStudent.className &&
+          c.name.trim().toLowerCase() === selectedBillStudent.className.trim().toLowerCase()
+      ) ||
+      (stdClassNorm
+        ? classes.find((c) => normalizeClassNameForChart(c.name) === stdClassNorm)
+        : undefined) ||
+      null;
+    if (rawCls) {
+      return resolveEffectiveClassForAdmission(rawCls, school);
+    }
+    if (selectedBillStudent.className) {
+      return resolveEffectiveClassForAdmission(
+        {
+          id: selectedBillStudent.classId || "fallback_class",
+          schoolId: school?.id || "",
+          sessionId: selectedBillStudent.sessionId || "",
+          name: selectedBillStudent.className,
+          defaultFee: Number(selectedBillStudent.monthlyFee || 0),
+          sortOrder: 0,
+          active: true,
+          createdAt: "",
+        } as SchoolClass,
+        school
+      );
+    }
+    return null;
+  }, [selectedBillStudent, classes, school]);
+
+  const studentPendingBreakdown = useMemo(() => {
+    if (!selectedBillStudent) return null;
+    return getStudentStorePendingBreakdown({
+      student: selectedBillStudent,
+      classObj: selectedBillStudentClass,
+      school,
+      feeHistory,
+    });
+  }, [selectedBillStudent, selectedBillStudentClass, school, feeHistory]);
+
+  const filteredBillStudents = useMemo(() => {
+    const q = billStudentSearch.trim().toLowerCase();
+    return effectiveStudents
+      .filter((s) => {
+        if (billStudentFilter === "reg_only") {
+          const isRegPending =
+            s.admissionPaymentPlan === "registration_only" ||
+            s.admissionPaymentPlan === "half_payment" ||
+            Number(s.admissionDueBalance || 0) > 0;
+          if (!isRegPending) return false;
+        }
+        if (!q) return true;
+        return (
+          (s.name || "").toLowerCase().includes(q) ||
+          (s.admissionNo || "").toLowerCase().includes(q) ||
+          (s.rollNo || "").toLowerCase().includes(q) ||
+          (s.phone || "").toLowerCase().includes(q) ||
+          (s.fatherName || "").toLowerCase().includes(q)
+        );
+      })
+      .slice(0, 25);
+  }, [effectiveStudents, billStudentSearch, billStudentFilter]);
+
+  const filteredBillCatalogItems = useMemo(() => {
+    const q = billCatalogSearch.trim().toLowerCase();
+    return items.filter((i) => {
+      if (i.stockQuantity <= 0) return false;
+      if (!q) return true;
+      return (
+        i.name.toLowerCase().includes(q) ||
+        i.itemCode.toLowerCase().includes(q) ||
+        (i.sizeOrVariant && i.sizeOrVariant.toLowerCase().includes(q))
+      );
+    });
+  }, [items, billCatalogSearch]);
+
+  // Add physical store item line to bill
   const handleAddBillLine = (itemId: string) => {
-    setBillItems(prev => {
-      const exist = prev.find(p => p.itemId === itemId);
+    const itm = items.find((i) => i.id === itemId);
+    if (!itm) return;
+    setBillLines((prev) => {
+      const exist = prev.find((p) => p.categoryType === "store_item" && p.itemId === itemId);
       if (exist) {
-        return prev.map(p => p.itemId === itemId ? { ...p, quantity: p.quantity + 1 } : p);
+        return prev.map((p) =>
+          p.lineId === exist.lineId ? { ...p, quantity: p.quantity + 1 } : p
+        );
       }
-      return [...prev, { itemId, quantity: 1 }];
+      return [
+        ...prev,
+        {
+          lineId: `store_${itemId}_${Date.now()}`,
+          itemId: itm.id,
+          itemName: `${itm.name}${itm.sizeOrVariant ? ` (${itm.sizeOrVariant})` : ""}`,
+          quantity: 1,
+          unitPrice: Number(itm.salePrice) || 0,
+          discountAmount: 0,
+          categoryType: "store_item",
+        },
+      ];
     });
   };
 
-  // Calculate bill total
-  const billTotalAmount = useMemo(() => {
-    return billItems.reduce((sum, line) => {
-      const itm = items.find(i => i.id === line.itemId);
-      return sum + (itm ? itm.salePrice * line.quantity : 0);
-    }, 0);
-  }, [billItems, items]);
-
-  // Complete Sale & Print Bill
-  const handleCompleteSale = () => {
-    if (billItems.length === 0) {
-      toast.error("Kripya kam se kam ek item select karein.");
+  // Add Student Fee / Kit / Exam Term head to bill (no duplicate head/campaign!)
+  const handleAddFeeHeadToBill = (head: StorePendingFeeHead) => {
+    if (head.isSettled || head.remainingAmount <= 0) {
+      toast.info(`${head.label} pehle se Paid / Waived hai.`);
       return;
     }
-
-    const selectedStd = students.find(s => s.id === billStudentId);
-    const cls = selectedStd ? classes.find(c => c.id === selectedStd.classId) : null;
-
-    const receiptNo = `STR-${new Date().getFullYear()}-${Math.floor(1000 + Math.random() * 9000)}`;
-
-    const saleRecord: StoreSaleRecord = {
-      id: `sale-${Date.now()}`,
-      schoolId: school.id,
-      receiptNo,
-      studentId: selectedStd?.id,
-      studentName: selectedStd?.name || "Counter Customer",
-      className: cls?.name,
-      rollNo: selectedStd?.rollNo,
-      items: billItems.map(line => {
-        const itm = items.find(i => i.id === line.itemId)!;
-        return {
-          itemId: itm.id,
-          itemName: `${itm.name} ${itm.sizeOrVariant ? `(${itm.sizeOrVariant})` : ""}`,
-          quantity: line.quantity,
-          unitPrice: itm.salePrice,
-          subtotal: itm.salePrice * line.quantity
-        };
-      }),
-      totalAmount: billTotalAmount,
-      paymentMode: billPaymentMode,
-      date: new Date().toISOString().split("T")[0],
-      soldBy: "Store Manager"
-    };
-
-    // Deduct stock from inventory
-    const nextItems = items.map(item => {
-      const soldLine = billItems.find(b => b.itemId === item.id);
-      if (soldLine) {
-        return {
-          ...item,
-          stockQuantity: Math.max(0, item.stockQuantity - soldLine.quantity)
-        };
-      }
-      return item;
+    setBillLines((prev) => {
+      const already = prev.find(
+        (p) =>
+          (head.campaignId && p.campaignId === head.campaignId) ||
+          (!head.campaignId && p.headKey === head.headKey && p.categoryType !== "store_item")
+      );
+      if (already) return prev;
+      return [
+        ...prev,
+        {
+          lineId: head.id,
+          itemId: head.id,
+          itemName: head.label,
+          quantity: 1,
+          unitPrice: head.remainingAmount,
+          discountAmount: 0,
+          categoryType: head.categoryType,
+          headKey: head.headKey,
+          campaignId: head.campaignId,
+          targetMonth: head.targetMonth,
+        },
+      ];
     });
-    const nextSales = [saleRecord, ...sales];
-    setItems(nextItems);
-    setSales(nextSales);
-    syncSchoolSubcollection(school?.id, "store_items", nextItems);
-    syncSchoolSubcollection(school?.id, "store_sales", nextSales);
-    setShowBillModal(false);
-    setBillItems([]);
-    setBillStudentId("");
-    setPrintableReceipt(saleRecord);
-    toast.success(`Sale completed! Receipt #${saleRecord.receiptNo}`);
+  };
+
+  const handleAddAllPendingKitToBill = () => {
+    if (!studentPendingBreakdown) return;
+    const pendingKit = studentPendingBreakdown.kitItems.filter((k) => !k.isSettled && k.remainingAmount > 0);
+    if (pendingKit.length === 0) {
+      toast.info("Sabhi Kit items (Diary, Smart ID Card, Tie-Belt) pehle se settled hain.");
+      return;
+    }
+    pendingKit.forEach((k) => handleAddFeeHeadToBill(k));
+    toast.success(`${pendingKit.length} pending kit item(s) bill me add ho gaye.`);
+  };
+
+  // Calculate bill totals
+  const billSummary = useMemo(() => {
+    let grossTotal = 0;
+    let discountTotal = 0;
+    let netTotal = 0;
+    billLines.forEach((line) => {
+      const lineGross = Math.max(0, Number(line.unitPrice || 0) * Math.max(1, Number(line.quantity || 1)));
+      const lineDisc = Math.min(lineGross, Math.max(0, Number(line.discountAmount || 0)));
+      grossTotal += lineGross;
+      discountTotal += lineDisc;
+      netTotal += Math.max(0, lineGross - lineDisc);
+    });
+    return { grossTotal, discountTotal, netTotal };
+  }, [billLines]);
+
+  // Complete Sale + Sync Fee Ledger + Update Student Live Form Data
+  const handleCompleteSale = async () => {
+    if (billLines.length === 0) {
+      toast.error("Kripya kam se kam ek item ya fee mad select karein.");
+      return;
+    }
+    setBillSaving(true);
+    try {
+      const todayStr = new Date().toISOString().split("T")[0];
+      const nowIso = new Date().toISOString();
+      const currentMonthStr = todayStr.slice(0, 7);
+      const selectedStd = selectedBillStudent;
+      const cls = selectedBillStudentClass;
+      const receiptNo = `STR-${new Date().getFullYear()}-${Math.floor(1000 + Math.random() * 9000)}`;
+
+      const feeLinkedLines = billLines.filter(
+        (l) => l.categoryType === "fee_head" || l.categoryType === "exam_term" || l.categoryType === "kit_item"
+      );
+      const linkedFeeReceiptNo =
+        selectedStd && feeLinkedLines.length > 0
+          ? `STRF-${new Date().getFullYear()}-${Math.floor(1000 + Math.random() * 9000)}`
+          : undefined;
+
+      const saleItems = billLines.map((line) => {
+        const lineGross = Math.max(0, Number(line.unitPrice || 0) * Math.max(1, Number(line.quantity || 1)));
+        const lineDisc = Math.min(lineGross, Math.max(0, Number(line.discountAmount || 0)));
+        const linePaid = Math.max(0, lineGross - lineDisc);
+        return {
+          itemId: line.itemId,
+          itemName: line.itemName,
+          quantity: line.quantity,
+          unitPrice: line.unitPrice,
+          subtotal: linePaid,
+          ...(line.headKey ? { headKey: line.headKey } : {}),
+          ...(line.campaignId ? { campaignId: line.campaignId } : {}),
+          categoryType: line.categoryType,
+          ...(lineDisc > 0 ? { discountAmount: lineDisc } : {}),
+          paidAmount: linePaid,
+        };
+      });
+
+      const saleRecord: StoreSaleRecord = {
+        id: `sale-${Date.now()}`,
+        schoolId: school.id,
+        receiptNo,
+        studentId: selectedStd?.id,
+        studentName: selectedStd?.name || "Counter Customer",
+        className: cls?.name,
+        rollNo: selectedStd?.rollNo,
+        items: saleItems,
+        grossAmount: billSummary.grossTotal,
+        discountAmount: billSummary.discountTotal,
+        totalAmount: billSummary.netTotal,
+        ...(linkedFeeReceiptNo ? { linkedFeeReceiptNo } : {}),
+        paymentMode: billPaymentMode,
+        date: todayStr,
+        soldBy: isAdmin ? "School Admin / Store" : "Store Manager",
+      };
+
+      // 1. Deduct stock from physical store inventory
+      const nextItems = items.map((item) => {
+        const soldQty = billLines
+          .filter((b) => b.categoryType === "store_item" && b.itemId === item.id)
+          .reduce((s, b) => s + Number(b.quantity || 0), 0);
+        if (soldQty > 0) {
+          return {
+            ...item,
+            stockQuantity: Math.max(0, item.stockQuantity - soldQty),
+          };
+        }
+        return item;
+      });
+      const nextSales = [saleRecord, ...sales];
+      setItems(nextItems);
+      setSales(nextSales);
+      syncSchoolSubcollection(school?.id, "store_items", nextItems);
+      syncSchoolSubcollection(school?.id, "store_sales", nextSales);
+
+      // 2. Sync linked MonthlyFee record for any Fee/Kit/Exam heads collected so Monthly Fee Manager never double-charges
+      if (selectedStd && feeLinkedLines.length > 0 && linkedFeeReceiptNo) {
+        const feeGross = feeLinkedLines.reduce((s, l) => s + Number(l.unitPrice || 0) * l.quantity, 0);
+        const feeDisc = feeLinkedLines.reduce((s, l) => s + Math.min(Number(l.unitPrice || 0) * l.quantity, Number(l.discountAmount || 0)), 0);
+        const feePaid = Math.max(0, feeGross - feeDisc);
+
+        const appliedTermFees = feeLinkedLines
+          .filter((l) => l.categoryType === "exam_term" && l.campaignId)
+          .map((l) => ({
+            campaignId: l.campaignId!,
+            headKey: l.headKey || "exam",
+            title: l.itemName,
+            amount: Number(l.unitPrice || 0),
+            source: "term_campaign" as const,
+          }));
+
+        const feeRec: MonthlyFee = {
+          schoolId: school.id,
+          sessionId: selectedStd.sessionId || "2026-27",
+          studentId: selectedStd.id,
+          studentName: selectedStd.name,
+          rollNo: selectedStd.rollNo,
+          classId: selectedStd.classId,
+          month: currentMonthStr,
+          amount: feePaid,
+          monthlyAmount: Number(selectedStd.monthlyFee || 0),
+          paid: true,
+          paidDate: nowIso,
+          collectedByName: saleRecord.soldBy,
+          receiptNo: linkedFeeReceiptNo,
+          paidAmount: feePaid,
+          balanceDue: 0,
+          concession: feeDisc,
+          feeType: "store_fee_sync",
+          receiptCategory: "store_fee_sync",
+          note: `School Store Receipt #${receiptNo}`,
+          appliedTermFees: appliedTermFees.length > 0 ? appliedTermFees : undefined,
+          payModeInfo: {
+            payMode: billPaymentMode === "online_upi" ? "Online / UPI" : billPaymentMode === "card" ? "Card" : "Cash",
+            date: todayStr,
+            bank: "School Store Counter",
+            number: receiptNo,
+          },
+          items: feeLinkedLines.map((l, idx) => {
+            const dVal = Number(l.unitPrice || 0) * l.quantity;
+            const cVal = Math.min(dVal, Number(l.discountAmount || 0));
+            return {
+              id: l.itemId,
+              slNo: idx + 1,
+              description: l.itemName,
+              due: dVal,
+              con: cVal,
+              paid: Math.max(0, dVal - cVal),
+              headKey: l.headKey || canonicalizeFeeHeadKey(l.itemName),
+            };
+          }),
+        };
+
+        const savedFee = await saveFee(feeRec).catch(() => feeRec);
+        setFeeHistory((prev) => [savedFee, ...prev]);
+      }
+
+      // 3. Update Student Record (settledFeeHeads, waivedFeeHeads, paidCampaignIds, advanceMonthlyFeePaid, admissionDueBalance, postAdmissionPurchases)
+      if (selectedStd) {
+        const nextSettled: Record<string, SettledFeeHeadRecord> = {
+          ...(selectedStd.settledFeeHeads || {}),
+        };
+        const nextWaived: Record<string, WaivedFeeHeadRecord> = {
+          ...(selectedStd.waivedFeeHeads || {}),
+        };
+        const nextPaidCampaignIds = new Set<string>(selectedStd.paidCampaignIds || []);
+        let nextAdvanceTuitionPaid = Boolean(selectedStd.advanceMonthlyFeePaid);
+        let nextAdvanceTuitionDue = selectedStd.advanceMonthlyFeeDue;
+        let nextAdmDueBalance = Math.max(0, Number(selectedStd.admissionDueBalance || 0));
+
+        feeLinkedLines.forEach((l) => {
+          const hk = l.headKey || canonicalizeFeeHeadKey(l.itemName);
+          const dVal = Number(l.unitPrice || 0) * l.quantity;
+          const cVal = Math.min(dVal, Number(l.discountAmount || 0));
+          const pVal = Math.max(0, dVal - cVal);
+          const prevRec = nextSettled[hk];
+          const cap = prevRec?.targetCap ?? (getConfiguredHeadAmountForClass(cls, hk) || dVal);
+          const totalPaid = (prevRec?.totalPaid || 0) + pVal;
+          const totalWaived = (prevRec?.waivedAmount || 0) + cVal;
+          const isFull = Boolean(prevRec?.fullPaid) || totalPaid + totalWaived >= cap || dVal > 0;
+
+          nextSettled[hk] = {
+            fullPaid: isFull,
+            totalPaid,
+            ...(totalWaived > 0 ? { waivedAmount: totalWaived } : {}),
+            targetCap: cap,
+            source: "school_store",
+            updatedAt: nowIso,
+          };
+
+          if (cVal > 0) {
+            nextWaived[hk] = {
+              waivedAmount: totalWaived,
+              fullWaived: cVal >= dVal,
+              label: l.itemName,
+              reason: cVal >= dVal ? "Waived at School Store" : "Discount at School Store",
+              date: todayStr,
+              by: saleRecord.soldBy,
+            };
+          }
+
+          if (l.campaignId) {
+            nextPaidCampaignIds.add(l.campaignId);
+          }
+
+          if (hk === "tuition_first_month" && isFull) {
+            nextAdvanceTuitionPaid = true;
+            nextAdvanceTuitionDue = 0;
+          }
+
+          if (hk !== "tuition_first_month" && nextAdmDueBalance > 0) {
+            nextAdmDueBalance = Math.max(0, nextAdmDueBalance - dVal);
+          }
+        });
+
+        const purchaseEntry: PostAdmissionPurchaseRecord = {
+          id: `pur_${Date.now()}`,
+          date: todayStr,
+          receiptNo,
+          source: "store",
+          items: billLines.map((l) => {
+            const g = Number(l.unitPrice || 0) * l.quantity;
+            const d = Math.min(g, Number(l.discountAmount || 0));
+            return {
+              name: l.itemName,
+              ...(l.headKey ? { headKey: l.headKey } : {}),
+              ...(l.campaignId ? { campaignId: l.campaignId } : {}),
+              categoryType: l.categoryType,
+              quantity: l.quantity,
+              grossAmount: g,
+              discountAmount: d,
+              paidAmount: Math.max(0, g - d),
+            };
+          }),
+          totalGross: billSummary.grossTotal,
+          totalDiscount: billSummary.discountTotal,
+          totalPaid: billSummary.netTotal,
+          paymentMode: formatStorePaymentModeLabel(saleRecord),
+          ...(linkedFeeReceiptNo ? { linkedFeeReceiptNo } : {}),
+          updatedAt: nowIso,
+        };
+
+        const nextPurchases = [...(selectedStd.postAdmissionPurchases || []), purchaseEntry];
+        const studentPatch: Partial<SchoolStudent> = {
+          settledFeeHeads: nextSettled,
+          ...(Object.keys(nextWaived).length > 0 ? { waivedFeeHeads: nextWaived } : {}),
+          ...(nextPaidCampaignIds.size > 0 ? { paidCampaignIds: Array.from(nextPaidCampaignIds) } : {}),
+          advanceMonthlyFeePaid: nextAdvanceTuitionPaid,
+          ...(nextAdvanceTuitionDue !== undefined ? { advanceMonthlyFeeDue: nextAdvanceTuitionDue } : {}),
+          admissionDueBalance: nextAdmDueBalance,
+          postAdmissionPurchases: nextPurchases,
+        };
+
+        await updateStudent(school.id, selectedStd.id, studentPatch).catch((err) => {
+          console.warn("[InventoryStoreManager] Student update note:", err);
+        });
+
+        const updatedStd: SchoolStudent = { ...selectedStd, ...studentPatch };
+        setStudentOverrides((prev) => ({ ...prev, [updatedStd.id]: updatedStd }));
+        try {
+          const curLocals = getLocalStudents(school.id);
+          setLocalStudents(school.id, [updatedStd, ...curLocals.filter((s) => s.id !== updatedStd.id)]);
+          window.dispatchEvent(
+            new CustomEvent("nsta:student-updated", { detail: { schoolId: school.id, student: updatedStd } })
+          );
+        } catch {}
+        onStudentUpdated?.(updatedStd);
+      }
+
+      setShowBillModal(false);
+      setBillLines([]);
+      setBillStudentId("");
+      setBillStudentSearch("");
+      setReceiptPrintScope("combined");
+      setPrintableReceipt(saleRecord);
+      toast.success(`Sale & Student Ledger synced! Receipt #${saleRecord.receiptNo}`);
+    } finally {
+      setBillSaving(false);
+    }
   };
 
   return (
@@ -536,7 +960,7 @@ export const InventoryStoreManager: React.FC<Props> = ({
               className="px-4 py-2.5 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white text-xs font-black flex items-center gap-2 shadow-md transition active:scale-95 cursor-pointer"
             >
               <Receipt className="w-4 h-4" />
-              <span>+ New Sale / Quick Bill</span>
+              <span>+ Student Reg / Fee &amp; Store Bill</span>
             </button>
             {isAdmin && (
               <button
@@ -954,7 +1378,10 @@ export const InventoryStoreManager: React.FC<Props> = ({
                         <td className="p-3 text-right">
                           <button
                             type="button"
-                            onClick={() => setPrintableReceipt(sale)}
+                            onClick={() => {
+                              setReceiptPrintScope("combined");
+                              setPrintableReceipt(sale);
+                            }}
                             className="p-1.5 rounded-lg bg-blue-50 text-blue-600 dark:bg-blue-900/30 dark:text-blue-300 hover:bg-blue-100 cursor-pointer"
                           >
                             <Printer className="w-3.5 h-3.5" />
@@ -1146,111 +1573,548 @@ export const InventoryStoreManager: React.FC<Props> = ({
         </div>
       )}
 
-      {/* ── BILLING & SALE MODAL ── */}
+      {/* ── UNIFIED STORE + STUDENT REG / KIT / FEE / EXAM CHECKOUT MODAL ── */}
       {showBillModal && (
-        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white dark:bg-slate-800 rounded-3xl max-w-lg w-full p-6 shadow-2xl border border-slate-200 dark:border-slate-700 space-y-4 animate-in fade-in zoom-in-95">
-            <div className="flex items-center justify-between pb-3 border-b border-slate-100 dark:border-slate-700">
-              <h3 className="font-black text-lg text-slate-900 dark:text-white flex items-center gap-2">
-                <Receipt className="w-5 h-5 text-emerald-600" />
-                <span>Store Billing & Invoice (बिक्री रसीद)</span>
-              </h3>
+        <div className="fixed inset-0 z-50 bg-black/65 backdrop-blur-xs flex items-center justify-center p-2 sm:p-4">
+          <div className="bg-white dark:bg-slate-800 rounded-3xl max-w-3xl w-full max-h-[92vh] flex flex-col shadow-2xl border border-slate-200 dark:border-slate-700 overflow-hidden animate-in fade-in zoom-in-95">
+            <div className="shrink-0 px-5 py-4 flex items-center justify-between border-b border-slate-100 dark:border-slate-700 bg-gradient-to-r from-emerald-50 via-teal-50 to-amber-50 dark:from-slate-900 dark:to-slate-800">
+              <div>
+                <h3 className="font-black text-base sm:text-lg text-slate-900 dark:text-white flex items-center gap-2">
+                  <Receipt className="w-5 h-5 text-emerald-600" />
+                  <span>School Store, Kit &amp; Fee Checkout (स्टोर व फीस बिलिंग)</span>
+                </h3>
+                <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                  छात्र खोजें — Books/Dress, Smart ID Card, School Diary, Tie-Belt, Development Fee, 1st Month Tuition और Exam Terms एक साथ या अलग बिल करें
+                </p>
+              </div>
               <button
                 type="button"
                 onClick={() => setShowBillModal(false)}
-                className="text-slate-400 hover:text-slate-600 text-sm p-1 cursor-pointer"
+                className="p-2 rounded-xl bg-white dark:bg-slate-700 text-slate-500 hover:text-slate-800 dark:text-slate-200 cursor-pointer border border-slate-200 dark:border-slate-600"
               >
-                ✕
+                <X className="w-4 h-4" />
               </button>
             </div>
 
-            {/* Select student */}
-            <div>
-              <label className="text-xs font-bold text-slate-600 dark:text-slate-300 block mb-1">
-                Select Student / Customer
-              </label>
-              <select
-                value={billStudentId}
-                onChange={e => setBillStudentId(e.target.value)}
-                className="w-full px-3 py-2.5 border rounded-xl dark:border-slate-600 dark:bg-slate-700 text-xs font-bold"
-              >
-                <option value="">Counter Customer / Walk-in</option>
-                {students.map(s => (
-                  <option key={s.id} value={s.id}>
-                    {s.name} (Roll #{s.rollNo || "—"})
-                  </option>
-                ))}
-              </select>
-            </div>
+            <div className="flex-1 overflow-y-auto p-4 sm:p-5 space-y-4">
+              {/* 1. Search & Select Student (Admitted / Registration-Only / Walk-in) */}
+              <div className="p-3.5 rounded-2xl bg-slate-50 dark:bg-slate-900/60 border border-slate-200 dark:border-slate-700 space-y-2.5">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <label className="text-xs font-black text-slate-700 dark:text-slate-200 flex items-center gap-1.5">
+                    <UserCheck className="w-4 h-4 text-blue-600" />
+                    <span>1. Search Student / Registration (नाम, रोल या Adm No से खोजें)</span>
+                  </label>
+                  <div className="flex items-center gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => setBillStudentFilter("all")}
+                      className={`px-2.5 py-1 rounded-lg text-[10px] font-black cursor-pointer border ${
+                        billStudentFilter === "all"
+                          ? "bg-blue-600 text-white border-blue-600"
+                          : "bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300 border-slate-200 dark:border-slate-700"
+                      }`}
+                    >
+                      All ({effectiveStudents.length})
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setBillStudentFilter("reg_only")}
+                      className={`px-2.5 py-1 rounded-lg text-[10px] font-black cursor-pointer border ${
+                        billStudentFilter === "reg_only"
+                          ? "bg-amber-600 text-white border-amber-600"
+                          : "bg-white dark:bg-slate-800 text-amber-700 dark:text-amber-300 border-amber-200 dark:border-amber-800"
+                      }`}
+                    >
+                      Reg-Only / Due Only
+                    </button>
+                    {selectedBillStudent && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setBillStudentId("");
+                          setBillLines((prev) => prev.filter((l) => l.categoryType === "store_item"));
+                        }}
+                        className="px-2 py-1 rounded-lg bg-slate-200 dark:bg-slate-700 text-[10px] font-bold text-slate-700 dark:text-slate-200 cursor-pointer"
+                      >
+                        Walk-in / Clear
+                      </button>
+                    )}
+                  </div>
+                </div>
 
-            {/* Select Item to add */}
-            <div>
-              <label className="text-xs font-bold text-slate-600 dark:text-slate-300 block mb-1">
-                Select Items to Sell
-              </label>
-              <div className="max-h-36 overflow-y-auto space-y-1 p-2 bg-slate-50 dark:bg-slate-750 rounded-xl border border-slate-200 dark:border-slate-700">
-                {items.filter(i => i.stockQuantity > 0).map(i => {
-                  const inBill = billItems.find(b => b.itemId === i.id);
-                  return (
-                    <div key={i.id} className="flex items-center justify-between text-xs py-1 px-2 hover:bg-white dark:hover:bg-slate-700 rounded-lg">
-                      <div>
-                        <span className="font-bold text-slate-800 dark:text-white">{i.name}</span>
-                        <span className="text-[10px] text-slate-400 ml-1.5 font-mono">₹{i.salePrice}</span>
-                      </div>
-                      <div className="flex items-center gap-1.5">
-                        {inBill && (
-                          <span className="font-black text-emerald-600 text-xs">
-                            x{inBill.quantity}
+                <div className="relative">
+                  <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                  <input
+                    type="text"
+                    value={billStudentSearch}
+                    onChange={(e) => setBillStudentSearch(e.target.value)}
+                    placeholder="Search Name, Adm No, Roll No, Father Name or Phone..."
+                    className="w-full pl-9 pr-3 py-2 rounded-xl border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-xs font-bold text-slate-900 dark:text-white"
+                  />
+                </div>
+
+                {!selectedBillStudent ? (
+                  <div className="max-h-36 overflow-y-auto grid grid-cols-1 sm:grid-cols-2 gap-1.5">
+                    {filteredBillStudents.length === 0 ? (
+                      <p className="text-[11px] text-slate-400 col-span-full py-2 text-center">
+                        कोई छात्र नहीं मिला — Walk-in Counter Customer के रूप में भी बिल बना सकते हैं।
+                      </p>
+                    ) : (
+                      filteredBillStudents.map((st) => {
+                        const isReg =
+                          st.admissionPaymentPlan === "registration_only" ||
+                          st.admissionPaymentPlan === "half_payment" ||
+                          Number(st.admissionDueBalance || 0) > 0;
+                        return (
+                          <button
+                            key={st.id}
+                            type="button"
+                            onClick={() => {
+                              setBillStudentId(st.id);
+                              setBillLines((prev) => prev.filter((l) => l.categoryType === "store_item"));
+                            }}
+                            className="p-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 hover:border-emerald-500 text-left transition cursor-pointer flex items-center justify-between gap-2"
+                          >
+                            <div className="min-w-0">
+                              <p className="text-xs font-black text-slate-900 dark:text-white truncate">
+                                {st.name}
+                              </p>
+                              <p className="text-[10px] text-slate-500 truncate">
+                                {st.className || "Class"} • Roll {st.rollNo || "—"} • {st.admissionNo || "No Adm#"}
+                              </p>
+                            </div>
+                            <span
+                              className={`px-1.5 py-0.5 rounded text-[9px] font-black shrink-0 ${
+                                isReg
+                                  ? "bg-amber-100 text-amber-800 dark:bg-amber-950/60 dark:text-amber-300"
+                                  : "bg-emerald-100 text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-300"
+                              }`}
+                            >
+                              {st.admissionPaymentPlan === "registration_only"
+                                ? "Reg Only"
+                                : Number(st.admissionDueBalance || 0) > 0
+                                ? `Due ₹${st.admissionDueBalance}`
+                                : "Admitted"}
+                            </span>
+                          </button>
+                        );
+                      })
+                    )}
+                  </div>
+                ) : (
+                  <div className="p-3 rounded-xl bg-emerald-50/70 dark:bg-emerald-950/30 border border-emerald-300 dark:border-emerald-800 flex flex-wrap items-center justify-between gap-2">
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm font-black text-emerald-950 dark:text-emerald-100">
+                          {selectedBillStudent.name}
+                        </span>
+                        <span className="px-2 py-0.5 rounded-full bg-emerald-600 text-white text-[10px] font-black">
+                          {selectedBillStudent.className || selectedBillStudentClass?.name} • Roll {selectedBillStudent.rollNo || "—"}
+                        </span>
+                        {studentPendingBreakdown?.isRegOnly && (
+                          <span className="px-2 py-0.5 rounded-full bg-amber-500 text-white text-[10px] font-black">
+                            {selectedBillStudent.admissionPaymentPlan === "registration_only" ? "Reg-Only / Pending" : "Partial / Due"}
                           </span>
                         )}
-                        <button
-                          type="button"
-                          onClick={() => handleAddBillLine(i.id)}
-                          className="px-2 py-0.5 rounded bg-amber-500 text-white font-bold text-[10px]"
-                        >
-                          + Add
-                        </button>
+                      </div>
+                      <p className="text-[11px] text-emerald-800 dark:text-emerald-300 mt-0.5">
+                        Adm No: <strong className="font-mono">{selectedBillStudent.admissionNo}</strong> • Father: {selectedBillStudent.fatherName || "—"} • 📞 {selectedBillStudent.phone || "—"}
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setBillStudentId("");
+                        setBillLines((prev) => prev.filter((l) => l.categoryType === "store_item"));
+                      }}
+                      className="px-2.5 py-1 rounded-lg bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-600 text-[11px] font-bold text-slate-700 dark:text-slate-200 cursor-pointer"
+                    >
+                      Change Student
+                    </button>
+                  </div>
+                )}
+              </div>
+
+              {/* 2. Student Pending Kit, Fee Heads & Saved Exam Terms (only when a student is selected) */}
+              {selectedBillStudent && studentPendingBreakdown && (
+                <div className="space-y-3">
+                  {/* 2A. Individual Kit Items: Smart QR ID Card, School Diary, Tie & Belt */}
+                  <div className="p-3 rounded-2xl bg-indigo-50/50 dark:bg-indigo-950/20 border border-indigo-200 dark:border-indigo-800/60 space-y-2">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <span className="text-xs font-black text-indigo-900 dark:text-indigo-200 flex items-center gap-1.5">
+                        <Package className="w-4 h-4 text-indigo-600" />
+                        <span>Smart QR ID Card, School Diary &amp; Tie-Belt Set (अलग-अलग या एक साथ)</span>
+                      </span>
+                      <button
+                        type="button"
+                        onClick={handleAddAllPendingKitToBill}
+                        className="px-2.5 py-1 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-[10px] font-black cursor-pointer"
+                      >
+                        + Add All Pending Kit
+                      </button>
+                    </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                      {studentPendingBreakdown.kitItems.map((kh) => {
+                        const inCart = billLines.some((l) => l.itemId === kh.id);
+                        return (
+                          <div
+                            key={kh.id}
+                            className={`p-2 rounded-xl border flex items-center justify-between gap-2 ${
+                              kh.isSettled
+                                ? "bg-slate-100/70 dark:bg-slate-800/40 border-slate-200 dark:border-slate-700 opacity-75"
+                                : "bg-white dark:bg-slate-800 border-indigo-200 dark:border-indigo-700"
+                            }`}
+                          >
+                            <div className="min-w-0">
+                              <p className="text-xs font-black text-slate-900 dark:text-white truncate">{kh.label}</p>
+                              <p className="text-[10px] text-slate-500">
+                                Class Rate: <strong>₹{kh.amount}</strong> •{" "}
+                                <span className={kh.isSettled ? "text-emerald-600 font-bold" : "text-amber-600 font-bold"}>
+                                  {kh.sourceLabel}
+                                </span>
+                              </p>
+                            </div>
+                            {kh.isSettled ? (
+                              <span className="px-2 py-0.5 rounded bg-emerald-100 text-emerald-700 text-[10px] font-black shrink-0">
+                                ✓ Settled
+                              </span>
+                            ) : (
+                              <button
+                                type="button"
+                                onClick={() => handleAddFeeHeadToBill(kh)}
+                                className={`px-2.5 py-1 rounded-lg text-[10px] font-black cursor-pointer shrink-0 ${
+                                  inCart
+                                    ? "bg-emerald-600 text-white"
+                                    : "bg-indigo-600 hover:bg-indigo-700 text-white"
+                                }`}
+                              >
+                                {inCart ? "✓ Added" : `+ Add ₹${kh.remainingAmount}`}
+                              </button>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  {/* 2B. Development Fee, 1st Month Tuition & Pending Examination Terms */}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div className="p-3 rounded-2xl bg-amber-50/50 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-800/60 space-y-2">
+                      <span className="text-xs font-black text-amber-900 dark:text-amber-200 flex items-center gap-1.5">
+                        <IndianRupee className="w-4 h-4 text-amber-600" />
+                        <span>Development Fee, 1st Month Tuition &amp; Adm Fee</span>
+                      </span>
+                      <div className="space-y-1.5">
+                        {studentPendingBreakdown.feeHeads.map((fh) => {
+                          const inCart = billLines.some((l) => l.itemId === fh.id);
+                          return (
+                            <div
+                              key={fh.id}
+                              className={`p-2 rounded-xl border flex items-center justify-between gap-2 ${
+                                fh.isSettled
+                                  ? "bg-slate-100/70 dark:bg-slate-800/40 border-slate-200 dark:border-slate-700 opacity-75"
+                                  : "bg-white dark:bg-slate-800 border-amber-200 dark:border-amber-700"
+                              }`}
+                            >
+                              <div className="min-w-0">
+                                <p className="text-xs font-black text-slate-900 dark:text-white truncate">{fh.label}</p>
+                                <p className="text-[10px] text-slate-500">
+                                  ₹{fh.amount} •{" "}
+                                  <span className={fh.isSettled ? "text-emerald-600 font-bold" : "text-amber-700 font-bold"}>
+                                    {fh.sourceLabel}
+                                  </span>
+                                </p>
+                              </div>
+                              {fh.isSettled ? (
+                                <span className="px-2 py-0.5 rounded bg-emerald-100 text-emerald-700 text-[10px] font-black shrink-0">
+                                  ✓ Settled
+                                </span>
+                              ) : (
+                                <button
+                                  type="button"
+                                  onClick={() => handleAddFeeHeadToBill(fh)}
+                                  className={`px-2.5 py-1 rounded-lg text-[10px] font-black cursor-pointer shrink-0 ${
+                                    inCart ? "bg-emerald-600 text-white" : "bg-amber-600 hover:bg-amber-700 text-white"
+                                  }`}
+                                >
+                                  {inCart ? "✓ Added" : `+ Add ₹${fh.remainingAmount}`}
+                                </button>
+                              )}
+                            </div>
+                          );
+                        })}
                       </div>
                     </div>
-                  );
-                })}
+
+                    <div className="p-3 rounded-2xl bg-purple-50/50 dark:bg-purple-950/20 border border-purple-200 dark:border-purple-800/60 space-y-2">
+                      <span className="text-xs font-black text-purple-900 dark:text-purple-200 flex items-center gap-1.5">
+                        <GraduationCap className="w-4 h-4 text-purple-600" />
+                        <span>Examination Fee Terms (यहाँ दें या Monthly Fee में)</span>
+                      </span>
+                      <div className="space-y-1.5">
+                        {studentPendingBreakdown.examTerms.length === 0 ? (
+                          <p className="text-[11px] text-slate-500">कोई Exam Fee Term सेट नहीं है।</p>
+                        ) : (
+                          studentPendingBreakdown.examTerms.map((et) => {
+                            const inCart = billLines.some((l) => l.itemId === et.id);
+                            return (
+                              <div
+                                key={et.id}
+                                className={`p-2 rounded-xl border flex items-center justify-between gap-2 ${
+                                  et.isSettled
+                                    ? "bg-slate-100/70 dark:bg-slate-800/40 border-slate-200 dark:border-slate-700 opacity-75"
+                                    : "bg-white dark:bg-slate-800 border-purple-200 dark:border-purple-700"
+                                }`}
+                              >
+                                <div className="min-w-0">
+                                  <p className="text-xs font-black text-slate-900 dark:text-white truncate">{et.label}</p>
+                                  <p className="text-[10px] text-slate-500">
+                                    ₹{et.amount} •{" "}
+                                    <span className={et.isSettled ? "text-emerald-600 font-bold" : "text-purple-700 font-bold"}>
+                                      {et.sourceLabel}
+                                    </span>
+                                  </p>
+                                </div>
+                                {et.isSettled ? (
+                                  <span className="px-2 py-0.5 rounded bg-emerald-100 text-emerald-700 text-[10px] font-black shrink-0">
+                                    ✓ Paid
+                                  </span>
+                                ) : (
+                                  <button
+                                    type="button"
+                                    onClick={() => handleAddFeeHeadToBill(et)}
+                                    className={`px-2.5 py-1 rounded-lg text-[10px] font-black cursor-pointer shrink-0 ${
+                                      inCart ? "bg-emerald-600 text-white" : "bg-purple-600 hover:bg-purple-700 text-white"
+                                    }`}
+                                  >
+                                    {inCart ? "✓ Added" : `+ Pay ₹${et.remainingAmount}`}
+                                  </button>
+                                )}
+                              </div>
+                            );
+                          })
+                        )}
+                      </div>
+                      <p className="text-[10px] text-purple-800/80 dark:text-purple-300/80">
+                        नोट: यदि छात्र यहाँ Exam Fee जमा कर देता है तो Monthly Fee Slip में यह Term स्वतः Skip हो जाएगा।
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* 3. School Store Catalog (Books, Uniform/Dress, Notebooks, Tie-Belt Inventory) */}
+              <div className="p-3 rounded-2xl bg-white dark:bg-slate-900/50 border border-slate-200 dark:border-slate-700 space-y-2">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <span className="text-xs font-black text-slate-700 dark:text-slate-200 flex items-center gap-1.5">
+                    <BookOpen className="w-4 h-4 text-amber-600" />
+                    <span>Books, Uniform / Dress &amp; Store Catalog Items</span>
+                  </span>
+                  <input
+                    type="text"
+                    value={billCatalogSearch}
+                    onChange={(e) => setBillCatalogSearch(e.target.value)}
+                    placeholder="Filter books, uniform, dress..."
+                    className="px-2.5 py-1 rounded-lg border border-slate-300 dark:border-slate-600 bg-slate-50 dark:bg-slate-800 text-[11px] font-semibold"
+                  />
+                </div>
+                <div className="max-h-36 overflow-y-auto space-y-1 p-1.5 bg-slate-50 dark:bg-slate-800/40 rounded-xl border border-slate-200 dark:border-slate-700">
+                  {filteredBillCatalogItems.length === 0 ? (
+                    <p className="text-[11px] text-slate-400 text-center py-2">कोई उपलब्ध स्टॉक आइटम नहीं मिला।</p>
+                  ) : (
+                    filteredBillCatalogItems.map((i) => {
+                      const inBill = billLines.find((b) => b.categoryType === "store_item" && b.itemId === i.id);
+                      return (
+                        <div key={i.id} className="flex items-center justify-between text-xs py-1 px-2 hover:bg-white dark:hover:bg-slate-700 rounded-lg">
+                          <div className="min-w-0">
+                            <span className="font-bold text-slate-800 dark:text-white">{i.name}</span>
+                            {i.sizeOrVariant && <span className="text-[10px] text-slate-500 ml-1">({i.sizeOrVariant})</span>}
+                            <span className="text-[10px] text-emerald-600 ml-1.5 font-mono font-bold">₹{i.salePrice}</span>
+                            <span className="text-[10px] text-slate-400 ml-1">[{i.stockQuantity} left]</span>
+                          </div>
+                          <div className="flex items-center gap-1.5 shrink-0">
+                            {inBill && (
+                              <span className="font-black text-emerald-600 text-xs">
+                                x{inBill.quantity}
+                              </span>
+                            )}
+                            <button
+                              type="button"
+                              onClick={() => handleAddBillLine(i.id)}
+                              className="px-2.5 py-0.5 rounded bg-amber-500 hover:bg-amber-600 text-white font-bold text-[10px] cursor-pointer"
+                            >
+                              + Add
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
               </div>
+
+              {/* 4. Active Bill Cart (with Qty, Per-Line Maaf/Discount, Final Summary) */}
+              {billLines.length > 0 && (
+                <div className="p-3.5 bg-emerald-50/70 dark:bg-emerald-950/25 rounded-2xl border border-emerald-300 dark:border-emerald-800 space-y-2.5">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-black text-emerald-900 dark:text-emerald-200">
+                      Bill Cart ({billLines.length} Items)
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setBillLines([])}
+                      className="text-[10px] font-bold text-rose-600 hover:underline cursor-pointer"
+                    >
+                      Clear All
+                    </button>
+                  </div>
+
+                  <div className="space-y-1.5">
+                    {billLines.map((line) => {
+                      const lineGross = Number(line.unitPrice || 0) * Math.max(1, line.quantity);
+                      const lineDisc = Math.min(lineGross, Math.max(0, Number(line.discountAmount || 0)));
+                      const lineNet = Math.max(0, lineGross - lineDisc);
+                      return (
+                        <div key={line.lineId} className="p-2 rounded-xl bg-white dark:bg-slate-900 border border-emerald-200/80 dark:border-emerald-800/60 flex flex-wrap items-center justify-between gap-2 text-xs">
+                          <div className="flex-1 min-w-[140px]">
+                            <p className="font-black text-slate-900 dark:text-white">{line.itemName}</p>
+                            <p className="text-[10px] text-slate-500">
+                              ₹{line.unitPrice} × {line.quantity} = ₹{lineGross}
+                              {lineDisc > 0 && <span className="text-emerald-600 font-bold ml-1.5">(-₹{lineDisc} Maaf/Disc)</span>}
+                            </p>
+                          </div>
+
+                          {line.categoryType === "store_item" && (
+                            <div className="flex items-center gap-1">
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setBillLines((prev) =>
+                                    prev.map((p) =>
+                                      p.lineId === line.lineId ? { ...p, quantity: Math.max(1, p.quantity - 1) } : p
+                                    )
+                                  )
+                                }
+                                className="w-5 h-5 rounded bg-slate-200 dark:bg-slate-700 font-black cursor-pointer"
+                              >
+                                -
+                              </button>
+                              <span className="w-5 text-center font-mono font-bold">{line.quantity}</span>
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setBillLines((prev) =>
+                                    prev.map((p) =>
+                                      p.lineId === line.lineId ? { ...p, quantity: p.quantity + 1 } : p
+                                    )
+                                  )
+                                }
+                                className="w-5 h-5 rounded bg-slate-200 dark:bg-slate-700 font-black cursor-pointer"
+                              >
+                                +
+                              </button>
+                            </div>
+                          )}
+
+                          {isAdmin && (
+                            <div className="flex items-center gap-1">
+                              <input
+                                type="number"
+                                min={0}
+                                max={lineGross}
+                                value={lineDisc || ""}
+                                placeholder="Disc ₹"
+                                title="Maaf / Discount ₹"
+                                onChange={(e) => {
+                                  const nextD = Math.min(lineGross, Math.max(0, Number(e.target.value) || 0));
+                                  setBillLines((prev) =>
+                                    prev.map((p) =>
+                                      p.lineId === line.lineId ? { ...p, discountAmount: nextD } : p
+                                    )
+                                  );
+                                }}
+                                className="w-16 px-1.5 py-1 rounded-lg border border-emerald-300 dark:border-emerald-700 text-[11px] font-mono text-right font-bold"
+                              />
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  const nextD = lineDisc >= lineGross ? 0 : lineGross;
+                                  setBillLines((prev) =>
+                                    prev.map((p) =>
+                                      p.lineId === line.lineId ? { ...p, discountAmount: nextD } : p
+                                    )
+                                  );
+                                }}
+                                className={`px-2 py-1 rounded-lg text-[10px] font-black border cursor-pointer ${
+                                  lineDisc >= lineGross
+                                    ? "bg-emerald-600 text-white border-emerald-600"
+                                    : "bg-emerald-50 text-emerald-700 border-emerald-300"
+                                }`}
+                              >
+                                {lineDisc >= lineGross ? "✓ Maaf" : "Maaf"}
+                              </button>
+                            </div>
+                          )}
+
+                          <span className="font-mono font-black text-emerald-700 dark:text-emerald-300 w-16 text-right">
+                            ₹{lineNet}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => setBillLines((prev) => prev.filter((p) => p.lineId !== line.lineId))}
+                            className="p-1 text-rose-500 hover:bg-rose-50 rounded-lg cursor-pointer"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-emerald-200/80 text-xs">
+                    <div className="flex flex-wrap items-center gap-3">
+                      <span className="font-bold text-slate-600 dark:text-slate-300">Payment:</span>
+                      <label className="flex items-center gap-1 cursor-pointer">
+                        <input type="radio" checked={billPaymentMode === "cash"} onChange={() => setBillPaymentMode("cash")} />
+                        <span>Cash</span>
+                      </label>
+                      <label className="flex items-center gap-1 cursor-pointer">
+                        <input type="radio" checked={billPaymentMode === "online_upi"} onChange={() => setBillPaymentMode("online_upi")} />
+                        <span>Online QR / UPI</span>
+                      </label>
+                      <label className="flex items-center gap-1 cursor-pointer">
+                        <input type="radio" checked={billPaymentMode === "card"} onChange={() => setBillPaymentMode("card")} />
+                        <span>Card</span>
+                      </label>
+                    </div>
+                    <div className="text-right">
+                      {billSummary.discountTotal > 0 && (
+                        <span className="text-[11px] font-bold text-emerald-700 dark:text-emerald-300 mr-3">
+                          Gross ₹{billSummary.grossTotal} • Maaf/Disc -₹{billSummary.discountTotal}
+                        </span>
+                      )}
+                      <span className="font-black text-base text-emerald-700 dark:text-emerald-300">
+                        Payable: ₹{billSummary.netTotal.toLocaleString("en-IN")}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
 
-            {/* Cart Summary */}
-            {billItems.length > 0 && (
-              <div className="p-3 bg-emerald-50/50 dark:bg-emerald-950/20 rounded-2xl border border-emerald-200 dark:border-emerald-800 space-y-1.5">
-                <div className="flex items-center justify-between font-black text-xs text-emerald-900 dark:text-emerald-200">
-                  <span>Total Amount Due:</span>
-                  <span className="text-base text-emerald-600">₹{billTotalAmount}</span>
-                </div>
-                <div className="flex items-center gap-3 pt-2 border-t border-emerald-200/60 text-xs">
-                  <span className="font-bold text-slate-600 dark:text-slate-300">Payment:</span>
-                  <label className="flex items-center gap-1 cursor-pointer">
-                    <input type="radio" checked={billPaymentMode === "cash"} onChange={() => setBillPaymentMode("cash")} />
-                    <span>Cash</span>
-                  </label>
-                  <label className="flex items-center gap-1 cursor-pointer">
-                    <input type="radio" checked={billPaymentMode === "online_upi"} onChange={() => setBillPaymentMode("online_upi")} />
-                    <span>Online QR Code</span>
-                  </label>
-                </div>
-              </div>
-            )}
-
-            <div className="flex gap-2 pt-2">
+            <div className="shrink-0 p-4 border-t border-slate-100 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 flex gap-2">
               <button
                 type="button"
                 onClick={handleCompleteSale}
-                disabled={billItems.length === 0}
+                disabled={billLines.length === 0 || billSaving}
                 className="flex-1 py-3 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-black text-xs shadow-md transition active:scale-95 disabled:opacity-50 cursor-pointer"
               >
-                Complete Sale & Print Receipt
+                {billSaving ? "Saving & Syncing Admission Form..." : "Complete Sale, Update Admission Form & Print Receipt"}
               </button>
               <button
                 type="button"
                 onClick={() => setShowBillModal(false)}
-                className="px-4 py-3 rounded-xl bg-slate-100 dark:bg-slate-700 text-xs font-bold"
+                className="px-4 py-3 rounded-xl bg-slate-200 dark:bg-slate-700 text-xs font-bold cursor-pointer"
               >
                 Cancel
               </button>
@@ -1259,81 +2123,169 @@ export const InventoryStoreManager: React.FC<Props> = ({
         </div>
       )}
 
-      {/* ── PRINTABLE STORE RECEIPT MODAL ── */}
-      {printableReceipt && (
-        <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-xs flex items-center justify-center p-4">
-          <div ref={receiptRef} className="bg-white text-slate-900 rounded-3xl max-w-sm w-full p-6 shadow-2xl border space-y-4 font-mono">
-            <div className="text-center border-b pb-3">
-              <h3 className="font-black text-lg uppercase">{school?.name || "School Store"}</h3>
-              <p className="text-[10px] text-slate-500">{school?.address}</p>
-              <p className="text-xs font-bold mt-1">OFFICIAL STORE RECEIPT</p>
-              <p className="text-[10px] text-slate-400">Invoice: #{printableReceipt.receiptNo}</p>
-            </div>
+      {/* ── PRINTABLE STORE / FEE RECEIPT MODAL (Combined OR Alag-Alag Slips!) ── */}
+      {printableReceipt && (() => {
+        const feeTypes = new Set(["fee_head", "exam_term", "kit_item"]);
+        const scopedItems = printableReceipt.items.filter((it, idx) => {
+          if (receiptPrintScope === "combined") return true;
+          if (receiptPrintScope === "fee_only") return feeTypes.has(it.categoryType || "");
+          if (receiptPrintScope === "store_only") return !feeTypes.has(it.categoryType || "");
+          return `${it.itemId}_${idx}` === receiptPrintScope;
+        });
+        const displayItems = scopedItems.length > 0 ? scopedItems : printableReceipt.items;
+        const displayDiscount = displayItems.reduce((s, it) => s + Number(it.discountAmount || 0), 0);
+        const displayPaid = displayItems.reduce((s, it) => s + Number(it.paidAmount ?? it.subtotal ?? 0), 0);
+        const hasFeeAndStoreMix =
+          printableReceipt.items.some((i) => feeTypes.has(i.categoryType || "")) &&
+          printableReceipt.items.some((i) => !feeTypes.has(i.categoryType || ""));
 
-            <div className="text-xs space-y-1">
-              <div className="flex justify-between">
-                <span>Date:</span>
-                <span>{printableReceipt.date}</span>
+        return (
+          <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4 overflow-y-auto">
+            <div className="bg-white text-slate-900 rounded-3xl max-w-md w-full p-5 sm:p-6 shadow-2xl border space-y-3">
+              {/* Slip Filter Bar (No-Print) */}
+              <div className="no-print flex flex-wrap items-center gap-1.5 pb-2 border-b border-slate-200">
+                <button
+                  type="button"
+                  onClick={() => setReceiptPrintScope("combined")}
+                  className={`px-2 py-1 rounded-lg text-[10px] font-black cursor-pointer ${
+                    receiptPrintScope === "combined" ? "bg-slate-900 text-white" : "bg-slate-100 text-slate-700"
+                  }`}
+                >
+                  All-in-One Bill
+                </button>
+                {hasFeeAndStoreMix && (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => setReceiptPrintScope("fee_only")}
+                      className={`px-2 py-1 rounded-lg text-[10px] font-black cursor-pointer ${
+                        receiptPrintScope === "fee_only" ? "bg-purple-700 text-white" : "bg-purple-50 text-purple-800"
+                      }`}
+                    >
+                      Fee &amp; Kit Slip Only
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setReceiptPrintScope("store_only")}
+                      className={`px-2 py-1 rounded-lg text-[10px] font-black cursor-pointer ${
+                        receiptPrintScope === "store_only" ? "bg-amber-600 text-white" : "bg-amber-50 text-amber-800"
+                      }`}
+                    >
+                      Books / Dress Slip
+                    </button>
+                  </>
+                )}
+                {printableReceipt.items.length > 1 && printableReceipt.items.map((it, idx) => (
+                  <button
+                    key={`${it.itemId}_${idx}`}
+                    type="button"
+                    onClick={() => setReceiptPrintScope(`${it.itemId}_${idx}`)}
+                    className={`px-2 py-1 rounded-lg text-[10px] font-bold cursor-pointer truncate max-w-[140px] ${
+                      receiptPrintScope === `${it.itemId}_${idx}` ? "bg-emerald-700 text-white" : "bg-emerald-50 text-emerald-800"
+                    }`}
+                  >
+                    Alag: {it.itemName}
+                  </button>
+                ))}
               </div>
-              <div className="flex justify-between">
-                <span>Customer:</span>
-                <span>{printableReceipt.studentName}</span>
+
+              <div ref={receiptRef} className="space-y-3 font-mono">
+                <div className="text-center border-b pb-3">
+                  <h3 className="font-black text-lg uppercase">{school?.name || "School Store"}</h3>
+                  <p className="text-[10px] text-slate-500">{school?.address}</p>
+                  <p className="text-xs font-bold mt-1">
+                    {receiptPrintScope === "fee_only"
+                      ? "FEE / EXAM / KIT RECEIPT"
+                      : receiptPrintScope === "store_only"
+                      ? "STORE BOOKS & UNIFORM RECEIPT"
+                      : "OFFICIAL STORE & FEE RECEIPT"}
+                  </p>
+                  <p className="text-[10px] text-slate-400">
+                    Invoice: #{printableReceipt.receiptNo}
+                    {printableReceipt.linkedFeeReceiptNo ? ` • Fee Ref: ${printableReceipt.linkedFeeReceiptNo}` : ""}
+                  </p>
+                </div>
+
+                <div className="text-xs space-y-1">
+                  <div className="flex justify-between">
+                    <span>Date:</span>
+                    <span>{printableReceipt.date}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span>Student / Customer:</span>
+                    <span className="font-bold">{printableReceipt.studentName}</span>
+                  </div>
+                  {printableReceipt.className && (
+                    <div className="flex justify-between">
+                      <span>Class / Roll:</span>
+                      <span>{printableReceipt.className} {printableReceipt.rollNo ? `(Roll ${printableReceipt.rollNo})` : ""}</span>
+                    </div>
+                  )}
+                </div>
+
+                <div className="border-t border-b py-2 text-xs space-y-1.5">
+                  {displayItems.map((it, idx) => (
+                    <div key={idx} className="flex justify-between items-start gap-2">
+                      <div>
+                        <span className="font-bold">{it.itemName} {it.quantity > 1 ? `(x${it.quantity})` : ""}</span>
+                        {Number(it.discountAmount || 0) > 0 && (
+                          <span className="block text-[10px] text-emerald-700 font-bold">
+                            Maaf/Disc: -₹{it.discountAmount}
+                          </span>
+                        )}
+                      </div>
+                      <span className="font-bold">₹{it.paidAmount ?? it.subtotal}</span>
+                    </div>
+                  ))}
+                </div>
+
+                {displayDiscount > 0 && (
+                  <div className="flex justify-between text-xs text-emerald-700 font-bold">
+                    <span>Total Discount / Maaf:</span>
+                    <span>-₹{displayDiscount}</span>
+                  </div>
+                )}
+
+                <div className="flex justify-between font-black text-sm">
+                  <span>TOTAL PAID:</span>
+                  <span>₹{displayPaid}</span>
+                </div>
+
+                <div className="text-center text-[10px] text-slate-400 pt-2 border-t">
+                  <p>Mode: {formatStorePaymentModeLabel(printableReceipt)}</p>
+                  <p className="mt-1">Synced with Student Admission Form &amp; Fee Ledger ✓</p>
+                </div>
               </div>
-              {printableReceipt.className && (
-                <div className="flex justify-between">
-                  <span>Class:</span>
-                  <span>{printableReceipt.className}</span>
-                </div>
-              )}
-            </div>
 
-            <div className="border-t border-b py-2 text-xs space-y-1">
-              {printableReceipt.items.map((it, idx) => (
-                <div key={idx} className="flex justify-between">
-                  <span>{it.itemName} (x{it.quantity})</span>
-                  <span>₹{it.subtotal}</span>
-                </div>
-              ))}
-            </div>
-
-            <div className="flex justify-between font-black text-sm">
-              <span>TOTAL PAID:</span>
-              <span>₹{printableReceipt.totalAmount}</span>
-            </div>
-
-            <div className="text-center text-[10px] text-slate-400 pt-2 border-t">
-              <p>Mode: {formatStorePaymentModeLabel(printableReceipt)}</p>
-              <p className="mt-1">Thank you! Items once sold cannot be returned.</p>
-            </div>
-
-            <div className="flex gap-2 pt-2 no-print print:hidden">
-              <button
-                type="button"
-                onClick={() => {
-                  if (receiptRef.current) {
-                    printElementInIframe(
-                      receiptRef.current,
-                      `Store Receipt #${printableReceipt.receiptNo}`,
-                      `.no-print { display: none !important; }`
-                    );
-                  }
-                }}
-                className="flex-1 py-2.5 rounded-xl bg-slate-900 text-white text-xs font-bold flex items-center justify-center gap-1.5 cursor-pointer"
-              >
-                <Printer className="w-4 h-4" />
-                <span>Print Bill</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => setPrintableReceipt(null)}
-                className="px-4 py-2.5 rounded-xl bg-slate-200 text-slate-800 text-xs font-bold cursor-pointer"
-              >
-                Close
-              </button>
+              <div className="flex gap-2 pt-2 no-print print:hidden">
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (receiptRef.current) {
+                      printElementInIframe(
+                        receiptRef.current,
+                        `Store Receipt #${printableReceipt.receiptNo}`,
+                        `.no-print { display: none !important; }`
+                      );
+                    }
+                  }}
+                  className="flex-1 py-2.5 rounded-xl bg-slate-900 text-white text-xs font-bold flex items-center justify-center gap-1.5 cursor-pointer"
+                >
+                  <Printer className="w-4 h-4" />
+                  <span>Print Slip</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setPrintableReceipt(null)}
+                  className="px-4 py-2.5 rounded-xl bg-slate-200 text-slate-800 text-xs font-bold cursor-pointer"
+                >
+                  Close
+                </button>
+              </div>
             </div>
           </div>
-        </div>
-      )}
+        );
+      })()}
     </div>
   );
 };

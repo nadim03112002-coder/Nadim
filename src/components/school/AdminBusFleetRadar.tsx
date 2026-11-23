@@ -10,6 +10,7 @@ import { shouldUseDemoForSchool, updateStudent } from "../../school-firebase";
 import { safeOpenExternalUrl } from "../../utils/safeBrowserActions";
 import { rtdb } from "../../firebase";
 import { ref as dbRef, onValue, set as rtdbSet } from "firebase/database";
+import { sbRtdbSet, sbRtdbSubscribe } from "../../services/supabaseDbAdapter";
 import { toast } from "sonner";
 import { syncSchoolSubcollection } from "../../utils/schoolCloudSync";
 import {
@@ -324,23 +325,83 @@ const AdminBusFleetRadarInner: React.FC<Props> = ({
     };
     window.addEventListener("nst_bus_location_update", handleBusUpdate);
 
-    // 3. Firebase RTDB listeners (locations + configured fleet)
+    // 3. Supabase Realtime + Firebase RTDB listeners (locations + configured fleet)
     let unsubRtdbLoc1: any = null;
     let unsubRtdbLoc2: any = null;
     let unsubRtdbFleet: any = null;
-    if (rtdb && sid) {
-      const mergeIncomingLocations = (busArr: BusLiveLocation[]) => {
-        if (busArr.length === 0) return;
+    let unsubSbLoc: any = null;
+    let unsubSbFleet: any = null;
+
+    const mergeIncomingLocations = (busArr: BusLiveLocation[]) => {
+      if (busArr.length === 0) return;
+      setBuses((prev) => {
+        const map = new Map(prev.map((p) => [p.busId, p]));
+        busArr.forEach((b) => {
+          if (b?.busId) map.set(b.busId, { ...map.get(b.busId), ...b });
+        });
+        return Array.from(map.values());
+      });
+      setLastRefreshed(new Date());
+    };
+
+    const mergeIncomingFleet = (rawFleet: Record<string, any>) => {
+      const fleetArr = Object.values(rawFleet || {}) as any[];
+      const stopMap: Record<string, any[]> = {};
+      fleetArr.forEach((v: any) => {
+        const bid = v?.busId || v?.id;
+        if (bid && Array.isArray(v?.stopCoords) && v.stopCoords.length > 0) {
+          stopMap[bid] = v.stopCoords;
+        }
+      });
+      if (Object.keys(stopMap).length > 0) {
+        setRtdbStopCoordsByBus(stopMap);
+      }
+      if (fleetArr.length > 0) {
         setBuses((prev) => {
           const map = new Map(prev.map((p) => [p.busId, p]));
-          busArr.forEach((b) => {
-            if (b?.busId) map.set(b.busId, { ...map.get(b.busId), ...b });
+          fleetArr.forEach((v: any) => {
+            if (!v?.id) return;
+            const existing = map.get(v.id);
+            if (!existing) {
+              map.set(v.id, {
+                busId: v.id,
+                busNumber: v.vehicleNumber || "School Bus",
+                route: v.route || "Configured Route",
+                driverName: v.driverName || "—",
+                driverPhone: v.driverPhone || "",
+                latitude: 0,
+                longitude: 0,
+                speed: 0,
+                heading: 0,
+                accuracy: 0,
+                tripStatus: "idle",
+                tripType: "morning_pickup",
+                lastUpdated: new Date().toISOString(),
+                currentStop: Array.isArray(v.stops) && v.stops[0] ? v.stops[0] : "Depot",
+                totalStops: Array.isArray(v.stops) ? v.stops.length : 0,
+                completedStops: [],
+              });
+            }
           });
           return Array.from(map.values());
         });
-        setLastRefreshed(new Date());
-      };
+      }
+    };
 
+    if (sid) {
+      unsubSbLoc = sbRtdbSubscribe(`school_bus_locations/${sid}`, (val) => {
+        if (val && typeof val === "object") {
+          mergeIncomingLocations(Object.values(val) as BusLiveLocation[]);
+        }
+      });
+      unsubSbFleet = sbRtdbSubscribe(`schools/${sid}/bus_fleet`, (val) => {
+        if (val && typeof val === "object") {
+          mergeIncomingFleet(val);
+        }
+      });
+    }
+
+    if (rtdb && sid) {
       try {
         unsubRtdbLoc1 = onValue(dbRef(rtdb, `school_bus_locations/${sid}`), (snap) => {
           if (snap.exists()) {
@@ -354,48 +415,7 @@ const AdminBusFleetRadarInner: React.FC<Props> = ({
       try {
         unsubRtdbFleet = onValue(dbRef(rtdb, `schools/${sid}/bus_fleet`), (snap) => {
           if (snap.exists()) {
-            const rawFleet = snap.val() || {};
-            const fleetArr = Object.values(rawFleet) as any[];
-            const stopMap: Record<string, any[]> = {};
-            fleetArr.forEach((v: any) => {
-              const bid = v?.busId || v?.id;
-              if (bid && Array.isArray(v?.stopCoords) && v.stopCoords.length > 0) {
-                stopMap[bid] = v.stopCoords;
-              }
-            });
-            if (Object.keys(stopMap).length > 0) {
-              setRtdbStopCoordsByBus(stopMap);
-            }
-            if (fleetArr.length > 0) {
-              setBuses((prev) => {
-                const map = new Map(prev.map((p) => [p.busId, p]));
-                fleetArr.forEach((v: any) => {
-                  if (!v?.id) return;
-                  const existing = map.get(v.id);
-                  if (!existing) {
-                    map.set(v.id, {
-                      busId: v.id,
-                      busNumber: v.vehicleNumber || "School Bus",
-                      route: v.route || "Configured Route",
-                      driverName: v.driverName || "—",
-                      driverPhone: v.driverPhone || "",
-                      latitude: 0,
-                      longitude: 0,
-                      speed: 0,
-                      heading: 0,
-                      accuracy: 0,
-                      tripStatus: "idle",
-                      tripType: "morning_pickup",
-                      lastUpdated: new Date().toISOString(),
-                      currentStop: Array.isArray(v.stops) && v.stops[0] ? v.stops[0] : "Depot",
-                      totalStops: Array.isArray(v.stops) ? v.stops.length : 0,
-                      completedStops: [],
-                    });
-                  }
-                });
-                return Array.from(map.values());
-              });
-            }
+            mergeIncomingFleet(snap.val() || {});
           }
         });
       } catch {}
@@ -407,6 +427,8 @@ const AdminBusFleetRadarInner: React.FC<Props> = ({
       window.removeEventListener("nst_bus_location_update", handleBusUpdate);
       window.removeEventListener("school-transport-updated", loadLocalBuses);
       clearInterval(interval);
+      if (typeof unsubSbLoc === "function") unsubSbLoc();
+      if (typeof unsubSbFleet === "function") unsubSbFleet();
       if (typeof unsubRtdbLoc1 === "function") unsubRtdbLoc1();
       if (typeof unsubRtdbLoc2 === "function") unsubRtdbLoc2();
       if (typeof unsubRtdbFleet === "function") unsubRtdbFleet();
@@ -477,29 +499,34 @@ const AdminBusFleetRadarInner: React.FC<Props> = ({
 
     loadLocalPins();
 
+    const applyPinsVal = (val: any) => {
+      if (!val || typeof val !== "object") return;
+      const arr = Object.values(val).filter(
+        (p: any) => p?.studentId && Number.isFinite(Number(p?.homeLat)) && Number.isFinite(Number(p?.homeLng))
+      ) as StudentHomePin[];
+      if (arr.length > 0) {
+        setHomePins(
+          arr.map((p) => ({
+            ...p,
+            homeLat: Number(p.homeLat),
+            homeLng: Number(p.homeLng),
+          }))
+        );
+      }
+    };
+
+    const unsubSbPins = sid ? sbRtdbSubscribe(`schools/${sid}/student_home_pins`, applyPinsVal) : () => {};
     let unsubPins: any = null;
     if (rtdb && sid) {
       try {
         unsubPins = onValue(dbRef(rtdb, `schools/${sid}/student_home_pins`), (snap) => {
-          if (!snap.exists()) return;
-          const val = snap.val() || {};
-          const arr = Object.values(val).filter(
-            (p: any) => p?.studentId && Number.isFinite(Number(p?.homeLat)) && Number.isFinite(Number(p?.homeLng))
-          ) as StudentHomePin[];
-          if (arr.length > 0) {
-            setHomePins(
-              arr.map((p) => ({
-                ...p,
-                homeLat: Number(p.homeLat),
-                homeLng: Number(p.homeLng),
-              }))
-            );
-          }
+          if (snap.exists()) applyPinsVal(snap.val());
         });
       } catch {}
     }
 
     return () => {
+      unsubSbPins();
       if (typeof unsubPins === "function") unsubPins();
     };
   }, [school?.id, isDemo]);
@@ -525,6 +552,7 @@ const AdminBusFleetRadarInner: React.FC<Props> = ({
       const existing = JSON.parse(localStorage.getItem(k) || "{}");
       existing[stId] = pinRecord;
       localStorage.setItem(k, JSON.stringify(existing));
+      void sbRtdbSet(`schools/${sid}/student_home_pins/${stId}`, pinRecord).catch(() => {});
       if (rtdb) {
         await rtdbSet(dbRef(rtdb, `schools/${sid}/student_home_pins/${stId}`), pinRecord);
       }

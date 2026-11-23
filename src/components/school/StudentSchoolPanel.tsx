@@ -96,6 +96,7 @@ import {
   getExams,
   subscribeToExams,
   subscribeToStudent,
+  updateStudent,
   updateStudentPhoto,
   getHomework,
   getNotices,
@@ -132,6 +133,7 @@ import { SchoolWelcomeModal } from "./SchoolWelcomeModal";
 import { SchoolBirthdayModal } from "./SchoolBirthdayModal";
 import { StudentSchoolStore } from "./StudentSchoolStore";
 import { StudentQuestionBankView } from "./StudentQuestionBankView";
+import { AccountRecoveryCard } from "./AccountRecoveryCard";
 import { downloadFeeDocument, shareFeeReceiptOnWhatsApp } from "./feeDocument";
 import {
   getSchoolPushEnabledState,
@@ -5810,6 +5812,36 @@ export const StudentSchoolPanel: React.FC<Props> = ({
                   )}
                 </div>
               </div>
+
+              {/* 1B. Account Recovery Card & Edit Modal */}
+              <AccountRecoveryCard
+                uid={uid || currentStudent.id}
+                role="SCHOOL_STUDENT"
+                name={currentStudent.name}
+                displayId={currentStudent.admissionNo || currentStudent.rollNo || currentStudent.id}
+                schoolId={schoolId}
+                schoolName={school?.name}
+                initialMobile={currentStudent.phone || ""}
+                initialEmail={(currentStudent as any).email || ""}
+                initialRecoveryPassword={(currentStudent as any).recoveryPassword || ""}
+                initialSecurityQuestion={(currentStudent as any).securityQuestion || ""}
+                initialSecurityAnswer={(currentStudent as any).securityAnswer || ""}
+                theme={studentTheme}
+                extraSync={async (payload) => {
+                  if (schoolId && currentStudent?.id) {
+                    const patch: any = {
+                      recoveryMobile: payload.mobile,
+                      recoveryEmail: payload.email,
+                      recoveryPassword: payload.recoveryPassword,
+                      securityQuestion: payload.securityQuestion,
+                      securityAnswer: payload.securityAnswer,
+                    };
+                    if (payload.mobile && !currentStudent.phone) patch.phone = payload.mobile;
+                    if (payload.email) patch.email = payload.email;
+                    await updateStudent(schoolId, currentStudent.id, patch).catch(() => {});
+                  }
+                }}
+              />
 
               {/* 2. Official Documents & Fee Records (Featured ID + Symmetric 2x2 Grid) */}
               <div className={`rounded-2xl p-4 sm:p-5 border space-y-3 ${surfaceCard}`}>

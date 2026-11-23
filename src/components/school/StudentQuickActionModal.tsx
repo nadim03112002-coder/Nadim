@@ -26,6 +26,7 @@ import {
   computeSlabDiscountAmount,
 } from "../../utils/feeDiscountSlabs";
 import { buildStudentIdCardQrUrl } from "../../utils/qrVerifyUrl";
+import { normalizeWhatsappOrPhone, sanitizeIndianPhoneInput } from "../../utils/schoolReferralSiblingEngine";
 
 export type StudentQuickActionTab =
   | "profile"
@@ -1219,7 +1220,7 @@ export const StudentQuickActionModal: React.FC<Props> = ({
                     {cur.fatherWhatsapp && (
                       <p className="text-emerald-600 dark:text-emerald-400 font-bold flex items-center gap-1">
                         <span>💬 WA:</span>
-                        <a href={`https://wa.me/91${cur.fatherWhatsapp.replace(/\D/g, "")}`} target="_blank" rel="noreferrer" className="hover:underline">{cur.fatherWhatsapp}</a>
+                        <a href={`https://wa.me/91${normalizeWhatsappOrPhone(cur.fatherWhatsapp)}`} target="_blank" rel="noreferrer" className="hover:underline">{cur.fatherWhatsapp}</a>
                       </p>
                     )}
                     <p className="text-slate-500 font-mono text-[11px]">Aadhaar: {maskAadhaar(cur.fatherAadhaar)}</p>
@@ -1240,7 +1241,7 @@ export const StudentQuickActionModal: React.FC<Props> = ({
                     {cur.motherWhatsapp && (
                       <p className="text-emerald-600 dark:text-emerald-400 font-bold flex items-center gap-1">
                         <span>💬 WA:</span>
-                        <a href={`https://wa.me/91${cur.motherWhatsapp.replace(/\D/g, "")}`} target="_blank" rel="noreferrer" className="hover:underline">{cur.motherWhatsapp}</a>
+                        <a href={`https://wa.me/91${normalizeWhatsappOrPhone(cur.motherWhatsapp)}`} target="_blank" rel="noreferrer" className="hover:underline">{cur.motherWhatsapp}</a>
                       </p>
                     )}
                     <p className="text-slate-500 font-mono text-[11px]">Aadhaar: {maskAadhaar(cur.motherAadhaar)}</p>
@@ -1298,7 +1299,7 @@ export const StudentQuickActionModal: React.FC<Props> = ({
                       </a>
                       {cur.emergencyWhatsapp && (
                         <a
-                          href={`https://wa.me/91${cur.emergencyWhatsapp.replace(/\D/g, "")}`}
+                          href={`https://wa.me/91${normalizeWhatsappOrPhone(cur.emergencyWhatsapp)}`}
                           target="_blank"
                           rel="noreferrer"
                           className="inline-flex items-center gap-1 px-3 py-1 bg-emerald-700 text-white rounded-lg font-bold text-xs hover:bg-emerald-800"
@@ -2217,10 +2218,11 @@ export const StudentQuickActionModal: React.FC<Props> = ({
                   <label className="font-bold text-slate-700 dark:text-slate-300">Calling Mobile (मोबाइल)</label>
                   <input
                     type="tel"
+                    maxLength={18}
                     value={editForm.phone}
-                    onChange={e => setEditForm({ ...editForm, phone: e.target.value })}
+                    onChange={e => setEditForm({ ...editForm, phone: sanitizeIndianPhoneInput(e.target.value) })}
                     className="w-full px-3 py-2 border rounded-xl bg-white dark:bg-slate-700 dark:border-slate-600 text-slate-800 dark:text-white font-medium"
-                    placeholder="10-digit number"
+                    placeholder="10-digit number (+91 supported)"
                   />
                 </div>
 
@@ -2228,8 +2230,9 @@ export const StudentQuickActionModal: React.FC<Props> = ({
                   <label className="font-bold text-slate-700 dark:text-slate-300">WhatsApp No</label>
                   <input
                     type="tel"
+                    maxLength={18}
                     value={editForm.whatsappNo}
-                    onChange={e => setEditForm({ ...editForm, whatsappNo: e.target.value })}
+                    onChange={e => setEditForm({ ...editForm, whatsappNo: sanitizeIndianPhoneInput(e.target.value) })}
                     className="w-full px-3 py-2 border rounded-xl bg-white dark:bg-slate-700 dark:border-slate-600 text-slate-800 dark:text-white font-medium"
                     placeholder="WhatsApp number"
                   />
@@ -2281,11 +2284,11 @@ export const StudentQuickActionModal: React.FC<Props> = ({
                   <label className="font-bold text-indigo-700 dark:text-indigo-300">Father Mobile (पिता का मोबाइल)</label>
                   <input
                     type="tel"
-                    maxLength={10}
+                    maxLength={18}
                     value={editForm.fatherPhone}
-                    onChange={e => setEditForm({ ...editForm, fatherPhone: e.target.value.replace(/\D/g, "").slice(0, 10) })}
+                    onChange={e => setEditForm({ ...editForm, fatherPhone: sanitizeIndianPhoneInput(e.target.value) })}
                     className="w-full px-3 py-2 border rounded-xl bg-white dark:bg-slate-700 dark:border-slate-600 text-slate-800 dark:text-white font-medium"
-                    placeholder="10-digit mobile"
+                    placeholder="10-digit mobile (+91 supported)"
                   />
                 </div>
 
@@ -2293,9 +2296,9 @@ export const StudentQuickActionModal: React.FC<Props> = ({
                   <label className="font-bold text-emerald-700 dark:text-emerald-400">Father WhatsApp (पिता व्हाट्सएप)</label>
                   <input
                     type="tel"
-                    maxLength={10}
+                    maxLength={18}
                     value={editForm.fatherWhatsapp}
-                    onChange={e => setEditForm({ ...editForm, fatherWhatsapp: e.target.value.replace(/\D/g, "").slice(0, 10) })}
+                    onChange={e => setEditForm({ ...editForm, fatherWhatsapp: sanitizeIndianPhoneInput(e.target.value) })}
                     className="w-full px-3 py-2 border rounded-xl bg-white dark:bg-slate-700 dark:border-slate-600 text-slate-800 dark:text-white font-medium"
                     placeholder="WhatsApp number"
                   />
@@ -2305,9 +2308,9 @@ export const StudentQuickActionModal: React.FC<Props> = ({
                   <label className="font-bold text-pink-700 dark:text-pink-300">Mother Mobile (माता का मोबाइल)</label>
                   <input
                     type="tel"
-                    maxLength={10}
+                    maxLength={18}
                     value={editForm.motherPhone}
-                    onChange={e => setEditForm({ ...editForm, motherPhone: e.target.value.replace(/\D/g, "").slice(0, 10) })}
+                    onChange={e => setEditForm({ ...editForm, motherPhone: sanitizeIndianPhoneInput(e.target.value) })}
                     className="w-full px-3 py-2 border rounded-xl bg-white dark:bg-slate-700 dark:border-slate-600 text-slate-800 dark:text-white font-medium"
                     placeholder="10-digit mobile"
                   />
@@ -2317,9 +2320,9 @@ export const StudentQuickActionModal: React.FC<Props> = ({
                   <label className="font-bold text-emerald-700 dark:text-emerald-400">Mother WhatsApp (माता व्हाट्सएप)</label>
                   <input
                     type="tel"
-                    maxLength={10}
+                    maxLength={18}
                     value={editForm.motherWhatsapp}
-                    onChange={e => setEditForm({ ...editForm, motherWhatsapp: e.target.value.replace(/\D/g, "").slice(0, 10) })}
+                    onChange={e => setEditForm({ ...editForm, motherWhatsapp: sanitizeIndianPhoneInput(e.target.value) })}
                     className="w-full px-3 py-2 border rounded-xl bg-white dark:bg-slate-700 dark:border-slate-600 text-slate-800 dark:text-white font-medium"
                     placeholder="WhatsApp number"
                   />
@@ -2329,9 +2332,9 @@ export const StudentQuickActionModal: React.FC<Props> = ({
                   <label className="font-bold text-amber-700 dark:text-amber-400">Emergency Phone (आपातकालीन मोबाइल)</label>
                   <input
                     type="tel"
-                    maxLength={10}
+                    maxLength={18}
                     value={editForm.emergencyPhone}
-                    onChange={e => setEditForm({ ...editForm, emergencyPhone: e.target.value.replace(/\D/g, "").slice(0, 10) })}
+                    onChange={e => setEditForm({ ...editForm, emergencyPhone: sanitizeIndianPhoneInput(e.target.value) })}
                     className="w-full px-3 py-2 border rounded-xl bg-white dark:bg-slate-700 dark:border-slate-600 text-slate-800 dark:text-white font-medium"
                     placeholder="Emergency mobile"
                   />
@@ -2341,9 +2344,9 @@ export const StudentQuickActionModal: React.FC<Props> = ({
                   <label className="font-bold text-emerald-700 dark:text-emerald-400">Emergency WhatsApp</label>
                   <input
                     type="tel"
-                    maxLength={10}
+                    maxLength={18}
                     value={editForm.emergencyWhatsapp}
-                    onChange={e => setEditForm({ ...editForm, emergencyWhatsapp: e.target.value.replace(/\D/g, "").slice(0, 10) })}
+                    onChange={e => setEditForm({ ...editForm, emergencyWhatsapp: sanitizeIndianPhoneInput(e.target.value) })}
                     className="w-full px-3 py-2 border rounded-xl bg-white dark:bg-slate-700 dark:border-slate-600 text-slate-800 dark:text-white font-medium"
                     placeholder="Emergency WhatsApp"
                   />

@@ -13,6 +13,12 @@
       "destination": "/api/push-router?__path=render-page&__route=/$1"
     }
   ],
+  "crons": [
+    {
+      "path": "/api/supabase-keepalive",
+      "schedule": "0 4 * * *"
+    }
+  ],
   "headers": [
     {
       "source": "/onnx-wasm/(.*\\.mjs)",

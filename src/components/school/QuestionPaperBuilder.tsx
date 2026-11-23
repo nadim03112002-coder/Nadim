@@ -510,7 +510,7 @@ export const QuestionPaperBuilder: React.FC<Props> = ({ school, activeSession })
                 type="text"
                 value={schoolContact}
                 onChange={(e) => setSchoolContact(e.target.value)}
-                placeholder="Ph: 9525400122, 9835763641 | Web: sms2027.vercel.app"
+                placeholder="Ph: 9525400122, 9835763641 | Web: lmps27.vercel.app"
                 className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-white font-medium"
               />
             </div>

@@ -19,6 +19,7 @@ import { shouldUseDemoForSchool, updateStudent } from "../../school-firebase";
 import { safeOpenExternalUrl } from "../../utils/safeBrowserActions";
 import { rtdb } from "../../firebase";
 import { ref as dbRef, onValue, set as rtdbSet } from "firebase/database";
+import { sbRtdbSet, sbRtdbSubscribe } from "../../services/supabaseDbAdapter";
 import { toast } from "sonner";
 import {
   buildMergedFleetList,
@@ -173,18 +174,78 @@ export const ParentLiveBusMap: React.FC<ParentLiveBusMapProps> = ({
     let unsubLoc2: any = null;
     let unsubFleet: any = null;
 
-    if (rtdb && sid) {
-      const mergeIncoming = (arr: BusLiveLocation[]) => {
-        if (arr.length === 0) return;
+    const mergeIncoming = (arr: BusLiveLocation[]) => {
+      if (arr.length === 0) return;
+      setFleetBuses((prev) => {
+        const map = new Map(prev.map((p) => [p.busId, p]));
+        arr.forEach((b) => {
+          if (b?.busId) map.set(b.busId, { ...map.get(b.busId), ...b });
+        });
+        return Array.from(map.values());
+      });
+    };
+
+    const mergeFleetMeta = (val: Record<string, any>) => {
+      const stopMap: Record<string, any[]> = {};
+      const fleetArr = Object.values(val || {}) as any[];
+      fleetArr.forEach((v: any) => {
+        const bid = v?.busId || v?.id;
+        if (bid && Array.isArray(v?.stopCoords) && v.stopCoords.length > 0) {
+          stopMap[bid] = v.stopCoords;
+        }
+      });
+      if (Object.keys(stopMap).length > 0) {
+        setRtdbStopCoordsByBus(stopMap);
+      }
+      if (fleetArr.length > 0) {
         setFleetBuses((prev) => {
           const map = new Map(prev.map((p) => [p.busId, p]));
-          arr.forEach((b) => {
-            if (b?.busId) map.set(b.busId, { ...map.get(b.busId), ...b });
+          fleetArr.forEach((v: any) => {
+            const bid = v?.busId || v?.id;
+            if (!bid) return;
+            if (!map.has(bid)) {
+              map.set(bid, {
+                busId: bid,
+                busNumber: v.busNumber || v.vehicleNumber || "School Bus",
+                route: v.route || "School Route",
+                driverName: v.driverName || "Driver",
+                driverPhone: v.driverPhone || "",
+                latitude: Number(v.latitude || 0),
+                longitude: Number(v.longitude || 0),
+                speed: Number(v.speed || 0),
+                heading: Number(v.heading || 0),
+                accuracy: Number(v.accuracy || 0),
+                tripStatus: v.tripStatus || "idle",
+                tripType: v.tripType || "morning_pickup",
+                lastUpdated: v.lastUpdated || new Date().toISOString(),
+                currentStop: v.currentStop || "Depot",
+                totalStops: Array.isArray(v.stops) ? v.stops.length : Number(v.totalStops || 0),
+                completedStops: Array.isArray(v.completedStops) ? v.completedStops : [],
+              });
+            }
           });
           return Array.from(map.values());
         });
-      };
+      }
+    };
 
+    const unsubSbLoc = sid
+      ? sbRtdbSubscribe(`school_bus_locations/${sid}`, (val) => {
+          if (val && typeof val === "object") {
+            mergeIncoming(Object.values(val) as BusLiveLocation[]);
+          }
+        })
+      : () => {};
+
+    const unsubSbFleet = sid
+      ? sbRtdbSubscribe(`schools/${sid}/bus_fleet`, (val) => {
+          if (val && typeof val === "object") {
+            mergeFleetMeta(val);
+          }
+        })
+      : () => {};
+
+    if (rtdb && sid) {
       try {
         unsubLoc1 = onValue(dbRef(rtdb, `school_bus_locations/${sid}`), (snap) => {
           if (snap.exists()) mergeIncoming(Object.values(snap.val()) as BusLiveLocation[]);
@@ -193,49 +254,7 @@ export const ParentLiveBusMap: React.FC<ParentLiveBusMapProps> = ({
 
       try {
         unsubFleet = onValue(dbRef(rtdb, `schools/${sid}/bus_fleet`), (snap) => {
-          if (!snap.exists()) return;
-          const val = snap.val() || {};
-          const stopMap: Record<string, any[]> = {};
-          const fleetArr = Object.values(val) as any[];
-          fleetArr.forEach((v: any) => {
-            const bid = v?.busId || v?.id;
-            if (bid && Array.isArray(v?.stopCoords) && v.stopCoords.length > 0) {
-              stopMap[bid] = v.stopCoords;
-            }
-          });
-          if (Object.keys(stopMap).length > 0) {
-            setRtdbStopCoordsByBus(stopMap);
-          }
-          if (fleetArr.length > 0) {
-            setFleetBuses((prev) => {
-              const map = new Map(prev.map((p) => [p.busId, p]));
-              fleetArr.forEach((v: any) => {
-                const bid = v?.busId || v?.id;
-                if (!bid) return;
-                if (!map.has(bid)) {
-                  map.set(bid, {
-                    busId: bid,
-                    busNumber: v.busNumber || v.vehicleNumber || "School Bus",
-                    route: v.route || "School Route",
-                    driverName: v.driverName || "Driver",
-                    driverPhone: v.driverPhone || "",
-                    latitude: Number(v.latitude || 0),
-                    longitude: Number(v.longitude || 0),
-                    speed: Number(v.speed || 0),
-                    heading: Number(v.heading || 0),
-                    accuracy: Number(v.accuracy || 0),
-                    tripStatus: v.tripStatus || "idle",
-                    tripType: v.tripType || "morning_pickup",
-                    lastUpdated: v.lastUpdated || new Date().toISOString(),
-                    currentStop: v.currentStop || "Depot",
-                    totalStops: Array.isArray(v.stops) ? v.stops.length : Number(v.totalStops || 0),
-                    completedStops: Array.isArray(v.completedStops) ? v.completedStops : [],
-                  });
-                }
-              });
-              return Array.from(map.values());
-            });
-          }
+          if (snap.exists()) mergeFleetMeta(snap.val() || {});
         });
       } catch {}
     }
@@ -243,6 +262,8 @@ export const ParentLiveBusMap: React.FC<ParentLiveBusMapProps> = ({
     return () => {
       window.removeEventListener("school-transport-updated", loadLocal);
       window.removeEventListener("nst_bus_location_update", handleBusUpdate);
+      if (typeof unsubSbLoc === "function") unsubSbLoc();
+      if (typeof unsubSbFleet === "function") unsubSbFleet();
       if (typeof unsubLoc1 === "function") unsubLoc1();
       if (typeof unsubLoc2 === "function") unsubLoc2();
       if (typeof unsubFleet === "function") unsubFleet();
@@ -287,10 +308,21 @@ export const ParentLiveBusMap: React.FC<ParentLiveBusMapProps> = ({
       }
     } catch {}
 
+    const unsubSbMyPin = sbRtdbSubscribe(`schools/${sid}/student_home_pins/${stId}`, (p) => {
+      if (p && Number.isFinite(Number(p.homeLat)) && Number.isFinite(Number(p.homeLng))) {
+        setMyHomePin({
+          ...p,
+          studentId: stId,
+          homeLat: Number(p.homeLat),
+          homeLng: Number(p.homeLng),
+        });
+      }
+    });
+
     let unsubMyPin: any = null;
     if (rtdb) {
       try {
-        unsubMyPin = onValue(dbRef(rtdb, `schools/${sid}/student_home_pins/${stId}`), (snap) => {
+        const rawUnsubPin = onValue(dbRef(rtdb, `schools/${sid}/student_home_pins/${stId}`), (snap) => {
           if (!snap.exists()) return;
           const p = snap.val();
           if (p && Number.isFinite(Number(p.homeLat)) && Number.isFinite(Number(p.homeLng))) {
@@ -302,7 +334,15 @@ export const ParentLiveBusMap: React.FC<ParentLiveBusMapProps> = ({
             });
           }
         });
-      } catch {}
+        unsubMyPin = () => {
+          unsubSbMyPin();
+          if (typeof rawUnsubPin === "function") rawUnsubPin();
+        };
+      } catch {
+        unsubMyPin = unsubSbMyPin;
+      }
+    } else {
+      unsubMyPin = unsubSbMyPin;
     }
 
     if (isDemo && !myHomePin) {
@@ -439,6 +479,7 @@ export const ParentLiveBusMap: React.FC<ParentLiveBusMapProps> = ({
       const existing = JSON.parse(localStorage.getItem(k) || "{}");
       existing[stId] = pinRecord;
       localStorage.setItem(k, JSON.stringify(existing));
+      await sbRtdbSet(`schools/${sid}/student_home_pins/${stId}`, pinRecord).catch(() => {});
       if (rtdb) {
         await rtdbSet(dbRef(rtdb, `schools/${sid}/student_home_pins/${stId}`), pinRecord);
       }

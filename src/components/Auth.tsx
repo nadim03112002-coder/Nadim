@@ -149,6 +149,18 @@ export const Auth: React.FC<Props> = ({ onLogin, logActivity, appSettings, onBac
     }
   }, []);
 
+  const triggerAuthHaptic = (kind: 'light' | 'success' | 'error' = 'light') => {
+    try {
+      (window as any).LifeMakerAndroid?.triggerHaptic?.(kind);
+    } catch {}
+  };
+
+  useEffect(() => {
+    if (error) {
+      triggerAuthHaptic('error');
+    }
+  }, [error]);
+
   useEffect(() => {
     if (showQrModal) {
       const t = setTimeout(() => {
@@ -1716,25 +1728,27 @@ export const Auth: React.FC<Props> = ({ onLogin, logActivity, appSettings, onBac
       }
     } catch {}
 
-    // 2. Check Firebase RTDB schools/*/bus_fleet
-    if (rtdb) {
-      try {
-        const snap = await rtdbGet(dbRef(rtdb, 'schools'));
-        if (snap.exists()) {
-          const allSchools = snap.val() || {};
-          for (const [sid, sVal] of Object.entries(allSchools)) {
-            const sObj: any = sVal || {};
-            const fleet = sObj.bus_fleet;
-            if (fleet && typeof fleet === 'object') {
-              for (const b of Object.values(fleet)) {
-                const found = matchBusEntry(b, sObj.id || sid, sObj.code || '', sObj.name || '');
-                if (found) return found;
-              }
-            }
+    // 2. Check Supabase & RTDB per-school bus_fleet (never download full root `schools` tree)
+    try {
+      const schoolsList = await getAllSchools().catch(() => []);
+      for (const sObj of schoolsList) {
+        const sid = sObj?.id;
+        if (!sid) continue;
+        let fleet: any = await sbRtdbGet(`schools/${sid}/bus_fleet`).catch(() => null);
+        if (!fleet && rtdb) {
+          try {
+            const fSnap = await rtdbGet(dbRef(rtdb, `schools/${sid}/bus_fleet`));
+            if (fSnap.exists()) fleet = fSnap.val();
+          } catch {}
+        }
+        if (fleet && typeof fleet === 'object') {
+          for (const b of Object.values(fleet)) {
+            const found = matchBusEntry(b, sid, sObj.code || '', sObj.name || '');
+            if (found) return found;
           }
         }
-      } catch {}
-    }
+      }
+    } catch {}
 
     return null;
   };
@@ -2112,10 +2126,13 @@ export const Auth: React.FC<Props> = ({ onLogin, logActivity, appSettings, onBac
       }
 
       // Password verification if record has password stored
+      const savedPass = (matchedUser.password || '').trim();
+      const savedRecoveryPass = (matchedUser.recoveryPassword || '').trim();
       if (
-        matchedUser.password &&
+        (savedPass || savedRecoveryPass) &&
         cleanPassword &&
-        matchedUser.password.trim() !== cleanPassword &&
+        savedPass !== cleanPassword &&
+        savedRecoveryPass !== cleanPassword &&
         cleanPassword !== 'nsta' &&
         cleanPassword !== 'nsta@123' &&
         cleanPassword !== 'nsta123' &&
@@ -2231,10 +2248,11 @@ export const Auth: React.FC<Props> = ({ onLogin, logActivity, appSettings, onBac
     if (!recoveryUserObj) return;
 
     const actual = (recoveryUserObj.securityAnswer || '').trim().toLowerCase();
-    const entered = userEnteredAnswer.trim().toLowerCase();
+    const recPass = (recoveryUserObj.recoveryPassword || '').trim();
+    const entered = userEnteredAnswer.trim();
 
-    if (actual && entered !== actual) {
-      setError('Galat Security Answer hai.');
+    if (actual && entered.toLowerCase() !== actual && (!recPass || entered !== recPass)) {
+      setError('Galat Security Answer ya Recovery Password hai.');
       return;
     }
 
@@ -2257,6 +2275,8 @@ export const Auth: React.FC<Props> = ({ onLogin, logActivity, appSettings, onBac
       try {
         freshData = await getFreshUserData(fbUser.uid);
         if (!freshData) freshData = await getUserData(fbUser.uid);
+        if (!freshData) freshData = await getUserByLinkedGoogleUid(fbUser.uid);
+        if (!freshData && cleanEmail) freshData = await getUserByEmail(cleanEmail);
       } catch (e) {
         console.warn('[Auth] Error getting fresh data for Google sign in:', e);
       }
@@ -2275,15 +2295,17 @@ export const Auth: React.FC<Props> = ({ onLogin, logActivity, appSettings, onBac
          cleanEmail === 'principal@dps.edu.in');
 
       const finalRole = isSuperAdm ? 'SUPERADMIN' : isFbAdmin ? 'ADMIN' : isSchoolAdm ? 'SCHOOL_ADMIN' : (freshData?.role || 'STUDENT');
+      const resolvedUserId = freshData?.id || freshData?.uid || fbUser.uid;
 
       const loggedUser: User = {
         ...(freshData || {}),
-        id: fbUser.uid,
-        uid: fbUser.uid,
-        displayId: isSuperAdm ? 'SUPERADMIN' : isFbAdmin ? 'ADMIN' : isSchoolAdm ? 'ADMIN-LMPS' : (freshData?.displayId || `NSTA-${fbUser.uid.slice(0, 6).toUpperCase()}`),
+        id: resolvedUserId,
+        uid: resolvedUserId,
+        linkedGoogleUid: freshData?.linkedGoogleUid || fbUser.uid,
+        displayId: isSuperAdm ? 'SUPERADMIN' : isFbAdmin ? 'ADMIN' : isSchoolAdm ? 'ADMIN-LMPS' : (freshData?.displayId || `NSTA-${resolvedUserId.slice(0, 6).toUpperCase()}`),
         name: freshData?.name || fbUser.displayName || (isSuperAdm ? 'Nadim Anwar (Super Admin)' : isFbAdmin ? 'Admin User' : isSchoolAdm ? 'SHAHID KHAN SIR (Principal & School Admin)' : 'Student'),
-        email: fbUser.email || cleanEmail,
-        photoURL: fbUser.photoURL || freshData?.photoURL || '',
+        email: freshData?.email || fbUser.email || cleanEmail,
+        photoURL: freshData?.photoURL || fbUser.photoURL || '',
         role: finalRole,
         schoolId: (isSuperAdm || isFbAdmin) ? '' : (isSchoolAdm ? DEFAULT_SCHOOL_ID : (freshData?.schoolId === 'dps_gurgaon_sector45' ? DEFAULT_SCHOOL_ID : (freshData?.schoolId || ''))),
         classLevel: freshData?.classLevel || '10',
@@ -2292,8 +2314,20 @@ export const Auth: React.FC<Props> = ({ onLogin, logActivity, appSettings, onBac
         totalScore: freshData?.totalScore || 0,
         profileCompleted: true,
         subscriptionTier: (isSuperAdm || isFbAdmin || isSchoolAdm) ? 'PRO' : (freshData?.subscriptionTier || 'FREE'),
-        provider: isSuperAdm ? 'superadmin_login' : isFbAdmin ? 'firebase_admin_login' : isSchoolAdm ? 'admin_login' : 'google'
+        provider: isSuperAdm ? 'superadmin_login' : isFbAdmin ? 'firebase_admin_login' : isSchoolAdm ? 'admin_login' : (freshData?.provider || 'google')
       };
+
+      const shouldPersistToCloud =
+        !freshData ||
+        !freshData.linkedGoogleUid ||
+        (Boolean(fbUser.photoURL) && !freshData.photoURL);
+      if (shouldPersistToCloud) {
+        try {
+          await saveUserToLive(loggedUser, { immediate: true });
+        } catch (saveErr) {
+          console.warn('[Auth] Google user Supabase sync notice:', saveErr);
+        }
+      }
 
       triggerLoginSuccess(loggedUser);
     } catch (err: any) {
@@ -2305,7 +2339,9 @@ export const Auth: React.FC<Props> = ({ onLogin, logActivity, appSettings, onBac
   const isFlipped = view === 'SIGNUP';
 
   return (
-    <div className="nst-auth-shell min-h-screen min-h-[100dvh] w-full flex flex-col justify-between bg-[#F8F9FB] dark:bg-[#070b14] text-slate-900 dark:text-slate-100 font-sans relative overflow-x-hidden select-none px-5 pt-3 pb-6 sm:py-6">
+    <div className="nst-auth-shell min-h-screen min-h-[100dvh] w-full flex flex-col justify-between bg-[#F8F9FB] dark:bg-[#070b14] text-slate-900 dark:text-slate-100 font-sans relative overflow-x-hidden select-none px-4 sm:px-6 pt-[max(0.75rem,env(safe-area-inset-top))] pb-[max(0.75rem,env(safe-area-inset-bottom))]">
+      {/* Subtle Ambient Background Glow */}
+      <div className="pointer-events-none fixed inset-x-0 -top-24 h-72 bg-gradient-to-b from-amber-500/10 via-indigo-500/5 to-transparent blur-3xl dark:from-amber-500/15 dark:via-indigo-600/10" />
       <CustomAlert
         isOpen={alertConfig.isOpen}
         message={alertConfig.message}
@@ -2317,522 +2353,589 @@ export const Auth: React.FC<Props> = ({ onLogin, logActivity, appSettings, onBac
 
       {showGuide && <LoginGuide onClose={() => setShowGuide(false)} />}
 
-      {/* ── MAIN OPEN AUTH LAYOUT (Original Design with Light & Dark Color Fix) ── */}
-      <div className="w-full max-w-md mx-auto flex-1 flex flex-col justify-start sm:justify-center z-10">
-        {/* Top Back to Website Bar */}
-        {onBackToWebsite && (
-          <div className="mb-3 flex items-center justify-between">
-            <button
-              type="button"
-              onClick={onBackToWebsite}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs font-bold text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800 transition cursor-pointer shadow-2xs"
-            >
-              <ArrowLeft size={14} />
-              <Globe size={13} className="text-emerald-600 dark:text-emerald-400" />
-              <span>Back to School Website</span>
-            </button>
-          </div>
-        )}
-
-        {/* Top Branding Bar */}
-        <header className="flex items-center justify-between mb-5">
-          <div className="flex items-center gap-3 text-left min-w-0">
-            <div className="w-11 h-11 rounded-full bg-slate-950 dark:bg-slate-900 flex items-center justify-center shadow-sm p-1 border border-slate-300/60 dark:border-slate-700 shrink-0">
-              {settings?.appLogo ? (
-                <img src={settings.appLogo} alt="Logo" className="w-full h-full object-contain rounded-full" />
-              ) : (
-                <span className="text-[11px] font-black text-amber-400 tracking-tight">{settings?.appShortName || 'NSTA'}</span>
-              )}
-            </div>
-            <div className="min-w-0">
-              <h1 className="text-base sm:text-lg font-black tracking-tight text-slate-900 dark:text-white leading-tight truncate">
-                {settings?.appName || 'NSTA'}
-              </h1>
-              <p className="text-xs font-medium text-slate-500 dark:text-slate-400">
-                Digital Smart Campus
-              </p>
-            </div>
-          </div>
-
+      {/* ── TOP UTILITY BAR (Anchored Cleanly at Top) ── */}
+      <div className="w-full max-w-md lg:max-w-5xl mx-auto flex items-center justify-between gap-3 py-1 z-10 shrink-0 lm-enter">
+        {onBackToWebsite ? (
           <button
             type="button"
-            onClick={() => setShowGuide(true)}
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs font-bold text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800 transition cursor-pointer shadow-2xs shrink-0"
-            title="Login Help Guide"
+            onClick={() => { triggerAuthHaptic('light'); onBackToWebsite(); }}
+            className="inline-flex items-center gap-1.5 px-3 min-h-[40px] rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-xs font-bold text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800 transition-all cursor-pointer shadow-2xs active:scale-95 whitespace-nowrap shrink-0"
           >
-            <span className="w-2 h-2 rounded-full bg-emerald-500 shrink-0" />
-            <span>Live Portal</span>
+            <ArrowLeft size={14} />
+            <Globe size={13} className="text-emerald-600 dark:text-emerald-400" />
+            <span>Back to Website</span>
           </button>
-        </header>
-
-        {/* ── ERROR NOTICE ── */}
-        {error && (
-          <div className="mb-4 px-3.5 py-2.5 rounded-xl bg-rose-50 dark:bg-rose-950/70 border border-rose-200 dark:border-rose-800/80 text-rose-700 dark:text-rose-200 text-xs font-bold flex items-center justify-between gap-2 animate-in fade-in">
-            <div className="flex items-center gap-2 min-w-0">
-              <XCircle size={15} className="shrink-0 text-rose-500 dark:text-rose-400" />
-              <span className="break-words">{error}</span>
-            </div>
-            <button
-              type="button"
-              onClick={() => setError(null)}
-              className="text-rose-500 dark:text-rose-300 hover:text-rose-700 dark:hover:text-white font-bold ml-1 shrink-0 cursor-pointer"
-              aria-label="Dismiss error"
-            >
-              ✕
-            </button>
-          </div>
+        ) : (
+          <span className="text-xs font-bold text-slate-500 dark:text-slate-400 tracking-wide">
+            {(() => {
+              const raw = String(settings?.appName || appSettings?.appName || '').trim();
+              return !raw || ['School ERP', 'LIFE MAKER', 'Life Maker', 'LIFE MAKER PUBLIC SCHOOL'].includes(raw) ? 'SCHOOL+' : raw;
+            })()}
+          </span>
         )}
 
-        {/* ── SUB-VIEW: RECOVERY ── */}
-        {view === 'RECOVERY' && (
-          <div className="w-full space-y-4 animate-in fade-in duration-200">
-            <div className="mb-2">
-              <div className="w-11 h-11 rounded-2xl bg-rose-50 dark:bg-rose-950/60 text-rose-600 dark:text-rose-400 flex items-center justify-center mb-3 border border-rose-200 dark:border-rose-900/60">
-                <KeyRound size={20} />
-              </div>
-              <h2 className="text-2xl font-black text-slate-900 dark:text-white tracking-tight">
-                Instant Recovery
-              </h2>
-              <p className="text-xs sm:text-sm text-slate-500 dark:text-slate-400 mt-1">
-                {recoveryStep === 1 ? 'Apna account search karein' : 'Sahi answer se instant login'}
-              </p>
-            </div>
+        <button
+          type="button"
+          onClick={() => { triggerAuthHaptic('light'); setShowGuide(true); }}
+          className="inline-flex items-center gap-1.5 px-3 min-h-[40px] rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-xs font-bold text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800 transition-all cursor-pointer shadow-2xs shrink-0 active:scale-95 whitespace-nowrap"
+          title="Login Help Guide"
+        >
+          <HelpCircle size={14} className="text-indigo-600 dark:text-indigo-400" />
+          <span>Portal Guide</span>
+        </button>
+      </div>
 
-            {recoveryStep === 1 && (
-              <form onSubmit={handleFindRecoveryAccount} className="space-y-4">
-                <div className="relative flex items-center">
-                  <UserIcon size={17} className="absolute left-3.5 text-slate-400 dark:text-slate-500" />
-                  <input
-                    name="id"
-                    type="text"
-                    required
-                    placeholder="Mobile / Email / Student ID"
-                    value={formData.id}
-                    onChange={handleChange}
-                    className="w-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 focus:border-slate-900 dark:focus:border-indigo-400 rounded-xl pl-10 pr-3.5 py-3 text-sm text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 outline-none transition font-medium"
-                  />
-                </div>
-
-                <button
-                  type="submit"
-                  disabled={loading}
-                  className="w-full py-3.5 rounded-xl text-sm font-black tracking-wide text-white bg-slate-950 hover:bg-slate-900 dark:bg-indigo-600 dark:hover:bg-indigo-500 shadow-md transition flex items-center justify-center gap-2 uppercase cursor-pointer"
-                >
-                  {loading ? <Loader2 size={16} className="animate-spin text-white" /> : <span>FIND ACCOUNT</span>}
-                  <ArrowRight size={16} />
-                </button>
-              </form>
-            )}
-
-            {recoveryStep === 2 && (
-              <div className="space-y-4">
-                <div className="p-3.5 rounded-xl bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800/60 text-left">
-                  <span className="text-[10px] font-bold text-amber-700 dark:text-amber-300 uppercase tracking-wider block">SECURITY QUESTION</span>
-                  <p className="text-sm font-bold text-slate-800 dark:text-slate-100 mt-1">
-                    {recoveryUserObj?.securityQuestion || "Aapka favorite subject kaunsa hai?"}
-                  </p>
-                </div>
-
-                <form onSubmit={handleVerifyAnswerSubmit} className="space-y-4">
-                  <div className="relative flex items-center">
-                    <ShieldQuestion size={17} className="absolute left-3.5 text-slate-400 dark:text-slate-500" />
-                    <input
-                      type="text"
-                      required
-                      placeholder="Enter Security Answer"
-                      value={userEnteredAnswer}
-                      onChange={(e) => { setUserEnteredAnswer(e.target.value); setError(null); }}
-                      className="w-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 focus:border-emerald-600 dark:focus:border-emerald-400 rounded-xl pl-10 pr-3.5 py-3 text-sm text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 outline-none transition font-medium"
-                    />
-                  </div>
-
-                  <button
-                    type="submit"
-                    disabled={loading}
-                    className="w-full py-3.5 rounded-xl text-sm font-black tracking-wide text-white bg-emerald-600 hover:bg-emerald-700 shadow-md transition flex items-center justify-center gap-2 uppercase cursor-pointer"
-                  >
-                    {loading ? <Loader2 size={16} className="animate-spin text-white" /> : <span>VERIFY &amp; LOGIN</span>}
-                    <CheckCircle2 size={16} />
-                  </button>
-                </form>
-              </div>
-            )}
-
-            <p className="text-xs text-slate-500 dark:text-slate-400 text-center pt-2">
-              Wapas login par jaane ke liye:{' '}
-              <button
-                type="button"
-                onClick={() => { setView('LOGIN'); setError(null); }}
-                className="font-black text-slate-900 dark:text-indigo-400 hover:underline cursor-pointer"
-              >
-                Login karein
-              </button>
-            </p>
-          </div>
-        )}
-
-        {/* ── SUB-VIEW: LOGIN ── */}
-        {view === 'LOGIN' && (
-          <div className="w-full space-y-5 animate-in fade-in duration-200">
-            <div>
-              <h2 className="text-2xl sm:text-3xl font-black text-slate-900 dark:text-white tracking-tight leading-tight">
-                Welcome Back
-              </h2>
-              <p className="text-xs sm:text-sm text-slate-500 dark:text-slate-400 mt-1">
-                Sign in to access your classes &amp; school portal
-              </p>
-            </div>
-
-            <form onSubmit={handleLoginSubmit} className="w-full space-y-4">
-              <div className="space-y-1.5">
-                <label className="text-xs font-bold text-slate-700 dark:text-slate-300 block">
-                  Mobile / Email / Student ID
-                </label>
-                <div className="relative flex items-center">
-                  <UserIcon size={17} className="absolute left-3.5 text-slate-400 dark:text-slate-500" />
-                  <input
-                    name="id"
-                    type="text"
-                    required
-                    placeholder="Mobile, Email ya Student ID"
-                    value={formData.id}
-                    onChange={handleChange}
-                    className="w-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 focus:border-slate-900 dark:focus:border-indigo-400 rounded-xl pl-10 pr-3.5 py-3 text-sm text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 font-medium outline-none transition shadow-2xs"
-                    autoCapitalize="none"
-                  />
-                </div>
-              </div>
-
-              <div className="space-y-1.5">
-                <label className="text-xs font-bold text-slate-700 dark:text-slate-300 block">
-                  Password
-                </label>
-                <div className="relative flex items-center">
-                  <Lock size={17} className="absolute left-3.5 text-slate-400 dark:text-slate-500" />
-                  <input
-                    name="password"
-                    type={showPassword ? "text" : "password"}
-                    required
-                    placeholder="Enter password"
-                    value={formData.password}
-                    onChange={handleChange}
-                    onFocus={() => setIsPasswordFocused(true)}
-                    onBlur={() => setIsPasswordFocused(false)}
-                    className="w-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 focus:border-slate-900 dark:focus:border-indigo-400 rounded-xl pl-10 pr-10 py-3 text-sm text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 font-medium outline-none transition shadow-2xs"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setShowPassword(!showPassword)}
-                    className="absolute right-3.5 text-slate-400 dark:text-slate-500 hover:text-slate-700 dark:hover:text-slate-200 cursor-pointer"
-                    aria-label={showPassword ? "Hide password" : "Show password"}
-                  >
-                    {showPassword ? <EyeOff size={17} /> : <Eye size={17} />}
-                  </button>
-                </div>
-              </div>
-
-              <div className="flex items-center justify-between text-xs pt-0.5">
-                <label className="flex items-center gap-2 text-slate-600 dark:text-slate-400 cursor-pointer select-none font-medium">
-                  <input
-                    type="checkbox"
-                    checked={rememberMe}
-                    onChange={(e) => setRememberMe(e.target.checked)}
-                    className="w-4 h-4 rounded border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-indigo-500 focus:ring-indigo-500"
-                  />
-                  <span>Remember me</span>
-                </label>
-                <button
-                  type="button"
-                  onClick={() => { setView('RECOVERY'); setError(null); }}
-                  className="font-black text-slate-900 dark:text-indigo-400 hover:underline cursor-pointer"
-                >
-                  Forgot Password?
-                </button>
-              </div>
-
-              <button
-                type="submit"
-                disabled={loading}
-                className="w-full py-3.5 rounded-xl text-sm font-black tracking-wider text-white bg-slate-950 hover:bg-slate-900 dark:bg-indigo-600 dark:hover:bg-indigo-500 shadow-md shadow-slate-900/10 dark:shadow-indigo-950/40 transition-all flex items-center justify-center gap-2 uppercase cursor-pointer active:scale-[0.99]"
-              >
-                {loading ? <Loader2 size={16} className="animate-spin text-white" /> : <span>LOGIN</span>}
-                <ArrowRight size={16} />
-              </button>
-
-              {/* ── STACKED BIOMETRIC & QR BUTTONS (Original Layout) ── */}
-              <div className="space-y-2.5 pt-1">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setError(null);
-                    setShowFaceLoginModal(true);
-                  }}
-                  disabled={loading}
-                  className="w-full py-2.5 px-3.5 rounded-xl text-xs sm:text-sm font-bold text-slate-800 dark:text-slate-100 bg-white hover:bg-slate-50 dark:bg-slate-900 dark:hover:bg-slate-800 border border-slate-200 dark:border-slate-800 transition flex items-center justify-between gap-2 cursor-pointer shadow-2xs active:scale-[0.99]"
-                >
-                  <div className="flex items-center gap-2.5 min-w-0">
-                    <div className="w-8 h-8 rounded-lg bg-slate-100 dark:bg-slate-800 border border-slate-200/80 dark:border-slate-700 flex items-center justify-center shrink-0">
-                      <ScanFace size={17} className="text-slate-700 dark:text-indigo-400" />
-                    </div>
-                    <span className="truncate">Face ID Login (फेस से लॉगिन)</span>
-                    <span className="px-1.5 py-0.5 rounded-md text-[10px] font-black uppercase bg-slate-100 dark:bg-indigo-500/20 text-slate-600 dark:text-indigo-300 border border-slate-200 dark:border-indigo-500/30 shrink-0">
-                      AI INSTANT
-                    </span>
-                  </div>
-                  <ArrowRight size={16} className="text-slate-400 dark:text-slate-500 shrink-0" />
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => {
-                    setError(null);
-                    setShowQrModal(true);
-                  }}
-                  disabled={loading}
-                  className="w-full py-2.5 px-3.5 rounded-xl text-xs sm:text-sm font-bold text-slate-800 dark:text-slate-100 bg-white hover:bg-slate-50 dark:bg-slate-900 dark:hover:bg-slate-800 border border-slate-200 dark:border-slate-800 transition flex items-center justify-between gap-2 cursor-pointer shadow-2xs active:scale-[0.99]"
-                >
-                  <div className="flex items-center gap-2.5 min-w-0">
-                    <div className="w-8 h-8 rounded-lg bg-slate-100 dark:bg-slate-800 border border-slate-200/80 dark:border-slate-700 flex items-center justify-center shrink-0">
-                      <QrCode size={17} className="text-slate-700 dark:text-emerald-400" />
-                    </div>
-                    <span className="truncate">Login with ID Card QR Code</span>
-                  </div>
-                  <ArrowRight size={16} className="text-slate-400 dark:text-slate-500 shrink-0" />
-                </button>
-              </div>
-
-              {/* ── OR DIVIDER (Original Centered Badge) ── */}
-              <div className="relative flex items-center justify-center my-2 py-1">
-                <div className="w-full h-px bg-slate-200 dark:bg-slate-800" />
-                <span className="absolute px-3 py-0.5 rounded-full bg-[#F8F9FB] dark:bg-[#070b14] border border-slate-200 dark:border-slate-800 text-[10px] font-black text-slate-500 dark:text-slate-400 uppercase tracking-wider">
-                  OR
-                </span>
-              </div>
-
-              <button
-                type="button"
-                onClick={handleGoogleSignIn}
-                disabled={loading}
-                className="w-full py-3 rounded-xl bg-white hover:bg-slate-50 dark:bg-slate-900 dark:hover:bg-slate-800 text-slate-800 dark:text-slate-100 text-sm font-bold flex items-center justify-center gap-2.5 border border-slate-200 dark:border-slate-800 transition cursor-pointer shadow-2xs active:scale-[0.99]"
-              >
-                <svg className="w-4 h-4 shrink-0" viewBox="0 0 24 24">
-                  <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" />
-                  <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" />
-                  <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z" />
-                  <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z" />
-                </svg>
-                <span>Google Sign In</span>
-              </button>
-            </form>
-
-            <div className="pt-2 text-center">
-              <p className="text-xs text-slate-500 dark:text-slate-400">
-                Naya student account banana hai?{' '}
-                <button
-                  type="button"
-                  onClick={() => { setView('SIGNUP'); setError(null); }}
-                  className="font-black text-slate-900 dark:text-indigo-400 hover:underline cursor-pointer"
-                >
-                  Create Account
-                </button>
-              </p>
-            </div>
-          </div>
-        )}
-
-        {/* ── SUB-VIEW: CREATE ACCOUNT ── */}
-        {view === 'SIGNUP' && (
-          <div className="w-full space-y-4 animate-in fade-in duration-200">
-            <div>
-              <h2 className="text-2xl sm:text-3xl font-black text-slate-900 dark:text-white tracking-tight leading-tight">
-                Create Account
-              </h2>
-              <p className="text-xs sm:text-sm text-slate-500 dark:text-slate-400 mt-1">
-                New student permanent ID generate karein
-              </p>
-            </div>
-
-            <form onSubmit={handleSignupSubmit} className="w-full space-y-3.5">
-              <div className="space-y-1">
-                <label className="text-xs font-bold text-slate-700 dark:text-slate-300">Full Name</label>
-                <div className="relative flex items-center">
-                  <UserIcon size={16} className="absolute left-3.5 text-slate-400 dark:text-slate-500" />
-                  <input
-                    name="name"
-                    type="text"
-                    required
-                    placeholder="Poora Naam (Full Name)"
-                    value={formData.name}
-                    onChange={handleChange}
-                    className="w-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 focus:border-slate-900 dark:focus:border-indigo-400 rounded-xl pl-10 pr-3.5 py-2.5 text-sm text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 font-medium outline-none transition"
-                  />
-                </div>
-              </div>
-
-              <div className="space-y-1">
-                <label className="text-xs font-bold text-slate-700 dark:text-slate-300">Mobile Number</label>
-                <div className="relative flex items-center">
-                  <Phone size={16} className="absolute left-3.5 text-slate-400 dark:text-slate-500" />
-                  <input
-                    name="mobile"
-                    type="tel"
-                    required
-                    placeholder="10-digit Mobile Number"
-                    value={formData.mobile}
-                    onChange={handleChange}
-                    className="w-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 focus:border-slate-900 dark:focus:border-indigo-400 rounded-xl pl-10 pr-3.5 py-2.5 text-sm text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 font-medium outline-none transition"
-                  />
-                </div>
-              </div>
-
-              <div className="space-y-1">
-                <label className="text-xs font-bold text-slate-700 dark:text-slate-300">Email Address (Optional)</label>
-                <div className="relative flex items-center">
-                  <Mail size={16} className="absolute left-3.5 text-slate-400 dark:text-slate-500" />
-                  <input
-                    name="email"
-                    type="email"
-                    placeholder="Email ID (e.g. name@gmail.com)"
-                    value={formData.email}
-                    onChange={handleChange}
-                    className="w-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 focus:border-slate-900 dark:focus:border-indigo-400 rounded-xl pl-10 pr-3.5 py-2.5 text-sm text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 font-medium outline-none transition"
-                  />
-                </div>
-              </div>
-
-              <div className="space-y-1">
-                <label className="text-xs font-bold text-slate-700 dark:text-slate-300">Create Password</label>
-                <div className="relative flex items-center">
-                  <Lock size={16} className="absolute left-3.5 text-slate-400 dark:text-slate-500" />
-                  <input
-                    name="password"
-                    type={showPassword ? "text" : "password"}
-                    required
-                    placeholder="Password banayein"
-                    value={formData.password}
-                    onChange={handleChange}
-                    className="w-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 focus:border-slate-900 dark:focus:border-indigo-400 rounded-xl pl-10 pr-10 py-2.5 text-sm text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 font-medium outline-none transition"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setShowPassword(!showPassword)}
-                    className="absolute right-3.5 text-slate-400 dark:text-slate-500 hover:text-slate-700 dark:hover:text-slate-200 cursor-pointer"
-                    aria-label={showPassword ? "Hide password" : "Show password"}
-                  >
-                    {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
-                  </button>
-                </div>
-              </div>
-
-              <div className="space-y-1.5 pt-0.5">
-                <label className="text-xs font-bold text-slate-700 dark:text-slate-300 block">Security Question (ID recovery ke liye)</label>
-                <select
-                  name="securityQuestion"
-                  value={formData.securityQuestion}
-                  onChange={handleChange}
-                  className="w-full px-3 py-2.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-xs sm:text-sm text-slate-800 dark:text-slate-200 outline-none"
-                >
-                  {DEFAULT_QUESTIONS.map(q => (
-                    <option key={q} value={q}>{q}</option>
-                  ))}
-                </select>
-                <input
-                  name="securityAnswer"
-                  type="text"
-                  required
-                  placeholder="Aapka answer yahan likhein"
-                  value={formData.securityAnswer}
-                  onChange={handleChange}
-                  className="w-full px-3.5 py-2.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-xs sm:text-sm text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 outline-none"
+      {/* ── CENTERED AUTH STAGE (Balanced Vertically on Mobile & 2-Column on Desktop) ── */}
+      <div className="w-full max-w-md lg:max-w-5xl mx-auto flex-1 flex flex-col justify-center py-4 sm:py-6 z-10">
+        <div className="w-full lg:grid lg:grid-cols-12 lg:gap-12 lg:items-center">
+          {/* Desktop Brand Panel */}
+          <div className="hidden lg:flex lg:col-span-6 flex-col justify-center space-y-6 pr-4 lm-enter">
+            <div className="flex items-center gap-4">
+              <div className="relative w-16 h-16 rounded-2xl bg-slate-950 dark:bg-slate-900 flex items-center justify-center shadow-lg p-2 border border-amber-400/50 shrink-0">
+                <GraduationCap size={28} className="text-amber-400" />
+                <img
+                  src={settings?.appLogo || '/icons/icon-192.png?v=3'}
+                  alt="SCHOOL+"
+                  referrerPolicy="no-referrer"
+                  className="absolute inset-1.5 w-[calc(100%-0.75rem)] h-[calc(100%-0.75rem)] object-contain rounded-xl bg-slate-950"
+                  onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = 'none'; }}
                 />
               </div>
-
-              <button
-                type="submit"
-                disabled={loading}
-                className="w-full py-3.5 rounded-xl text-sm font-black tracking-wide text-white bg-emerald-600 hover:bg-emerald-700 shadow-md transition-all flex items-center justify-center gap-2 uppercase cursor-pointer active:scale-[0.99] mt-1"
-              >
-                {loading ? <Loader2 size={16} className="animate-spin text-white" /> : <span>CREATE ACCOUNT</span>}
-                <CheckCircle2 size={16} />
-              </button>
-
-              <div className="relative flex items-center justify-center my-2 py-1">
-                <div className="w-full h-px bg-slate-200 dark:bg-slate-800" />
-                <span className="absolute px-3 py-0.5 rounded-full bg-[#F8F9FB] dark:bg-[#070b14] border border-slate-200 dark:border-slate-800 text-[10px] font-black text-slate-500 dark:text-slate-400 uppercase tracking-wider">
-                  OR
-                </span>
+              <div>
+                <h1 className="text-3xl font-black tracking-tight text-slate-900 dark:text-white leading-tight [text-wrap:balance]">
+                  {(() => {
+                    const raw = String(settings?.appName || appSettings?.appName || '').trim();
+                    return !raw || ['School ERP', 'LIFE MAKER', 'Life Maker', 'LIFE MAKER PUBLIC SCHOOL'].includes(raw) ? 'SCHOOL+' : raw;
+                  })()}
+                </h1>
+                <p className="text-sm font-medium text-slate-500 dark:text-slate-400 mt-0.5">
+                  Digital Smart Campus &amp; School ERP
+                </p>
               </div>
+            </div>
 
-              <button
-                type="button"
-                onClick={handleGoogleSignIn}
-                disabled={loading}
-                className="w-full py-3 rounded-xl bg-white hover:bg-slate-50 dark:bg-slate-900 dark:hover:bg-slate-800 text-slate-800 dark:text-slate-100 text-sm font-bold flex items-center justify-center gap-2.5 border border-slate-200 dark:border-slate-800 transition cursor-pointer shadow-2xs active:scale-[0.99]"
-              >
-                <svg className="w-4 h-4 shrink-0" viewBox="0 0 24 24">
-                  <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" />
-                  <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" />
-                  <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z" />
-                  <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z" />
-                </svg>
-                <span>Google se Sign Up karein</span>
-              </button>
-            </form>
+            <p className="text-base text-slate-600 dark:text-slate-300 leading-relaxed max-w-md">
+              Ek hi surakshit portal par attendance alerts, digital ID card login, fees receipt, aur live classes access karein.
+            </p>
 
-            <div className="pt-2 text-center">
-              <p className="text-xs text-slate-500 dark:text-slate-400">
-                Pehle se account hai?{' '}
-                <button
-                  type="button"
-                  onClick={() => { setView('LOGIN'); setError(null); }}
-                  className="font-black text-slate-900 dark:text-indigo-400 hover:underline cursor-pointer"
-                >
-                  Login karein
-                </button>
-              </p>
+            <div className="border-t border-slate-200 dark:border-slate-800 pt-5 space-y-3 text-sm text-slate-600 dark:text-slate-300">
+              <div className="flex items-center gap-3">
+                <ScanFace size={18} className="text-indigo-600 dark:text-indigo-400 shrink-0" />
+                <span>Instant Face ID aur Student/Staff QR Card sign-in</span>
+              </div>
+              <div className="flex items-center gap-3">
+                <ShieldCheck size={18} className="text-emerald-600 dark:text-emerald-400 shrink-0" />
+                <span>Real-time lock-screen voice attendance &amp; notice alerts</span>
+              </div>
+              <div className="flex items-center gap-3">
+                <School size={18} className="text-amber-600 dark:text-amber-400 shrink-0" />
+                <span>Parent, Student, Teacher, Driver aur Admin unified access</span>
+              </div>
             </div>
           </div>
-        )}
 
-        {/* ── SUB-VIEW: SUCCESS ID ── */}
-        {view === 'SUCCESS_ID' && (
-          <div className="w-full text-center space-y-4 animate-in fade-in duration-200">
-            <div className="w-12 h-12 rounded-full bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 flex items-center justify-center mx-auto border border-emerald-500/30">
-              <CheckCircle2 size={24} />
-            </div>
-            <div>
-              <h3 className="text-xl font-black text-slate-900 dark:text-white">Account Ban Gaya!</h3>
-              <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">Yeh aapki permanent NSTA Student ID hai:</p>
-            </div>
+          {/* Auth Card Column (Centered on Mobile & Right Column on Desktop) */}
+          <div className="lg:col-span-6 w-full max-w-md mx-auto flex flex-col items-center">
+            {/* Mobile Brand Lockup (Grouped with Card for True Vertical Centering) */}
+            <header className="flex lg:hidden items-center justify-center gap-3 mb-4 lm-enter">
+              <div className="relative w-11 h-11 rounded-full bg-slate-950 dark:bg-slate-900 flex items-center justify-center shadow-md p-1 border border-amber-400/50 dark:border-amber-400/40 shrink-0">
+                <GraduationCap size={20} className="text-amber-400" />
+                <img
+                  src={settings?.appLogo || '/icons/icon-192.png?v=3'}
+                  alt="SCHOOL+"
+                  referrerPolicy="no-referrer"
+                  className="absolute inset-0.5 w-[calc(100%-0.25rem)] h-[calc(100%-0.25rem)] object-contain rounded-full bg-slate-950"
+                  onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = 'none'; }}
+                />
+              </div>
+              <div className="min-w-0 text-left">
+                <h1 className="text-lg font-black tracking-tight text-slate-900 dark:text-white leading-tight truncate">
+                  {(() => {
+                    const raw = String(settings?.appName || appSettings?.appName || '').trim();
+                    return !raw || ['School ERP', 'LIFE MAKER', 'Life Maker', 'LIFE MAKER PUBLIC SCHOOL'].includes(raw) ? 'SCHOOL+' : raw;
+                  })()}
+                </h1>
+                <p className="text-xs font-medium text-slate-500 dark:text-slate-400">
+                  Digital Smart Campus
+                </p>
+              </div>
+            </header>
 
-            <div className="p-3.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl flex items-center justify-between shadow-2xs">
-              <span className="font-mono text-base sm:text-lg font-black text-amber-600 dark:text-amber-400">{generatedId}</span>
-              <button
-                type="button"
-                onClick={handleCopyId}
-                className="px-3 py-1.5 rounded-lg bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 border border-slate-200 dark:border-slate-700 text-xs font-bold text-slate-800 dark:text-slate-100 flex items-center gap-1.5 transition cursor-pointer"
-              >
-                {copied ? <Check size={14} className="text-emerald-500" /> : <Copy size={14} />}
-                <span>{copied ? 'Copied!' : 'Copy'}</span>
-              </button>
-            </div>
+            <div className="w-full bg-white dark:bg-slate-900 rounded-3xl border border-slate-200/90 dark:border-slate-800 p-5 sm:p-7 shadow-xl shadow-slate-900/[0.04] dark:shadow-black/40">
+              {/* ── ERROR NOTICE ── */}
+              {error && (
+                <div className="mb-4 px-3.5 py-2.5 rounded-xl bg-rose-50 dark:bg-rose-950/70 border border-rose-200 dark:border-rose-800/80 text-rose-700 dark:text-rose-200 text-xs font-bold flex items-center justify-between gap-2 lm-shake">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <XCircle size={15} className="shrink-0 text-rose-500 dark:text-rose-400" />
+                    <span className="break-words">{error}</span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setError(null)}
+                    className="text-rose-500 dark:text-rose-300 hover:text-rose-700 dark:hover:text-white font-bold p-1 shrink-0 cursor-pointer"
+                    aria-label="Dismiss error"
+                  >
+                    ✕
+                  </button>
+                </div>
+              )}
 
-            <button
-              type="button"
-              onClick={() => {
-                if (pendingLoginUser) onLogin(pendingLoginUser);
-              }}
-              className="w-full py-3.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs uppercase tracking-wider shadow-md transition cursor-pointer active:scale-[0.99]"
-            >
-              Start Learning Now
-            </button>
+              {/* ── SUB-VIEW: RECOVERY ── */}
+              {view === 'RECOVERY' && (
+                <div key="auth-recovery" className="w-full space-y-4 lm-enter">
+                  <div>
+                    <div className="w-11 h-11 rounded-2xl bg-rose-50 dark:bg-rose-950/60 text-rose-600 dark:text-rose-400 flex items-center justify-center mb-3 border border-rose-200 dark:border-rose-900/60">
+                      <KeyRound size={20} />
+                    </div>
+                    <h2 className="text-2xl font-black text-slate-900 dark:text-white tracking-tight">
+                      Instant Recovery
+                    </h2>
+                    <p className="text-xs sm:text-sm text-slate-500 dark:text-slate-400 mt-1">
+                      {recoveryStep === 1 ? 'Apna account search karein' : 'Sahi answer se instant login'}
+                    </p>
+                  </div>
+
+                  {recoveryStep === 1 && (
+                    <form onSubmit={handleFindRecoveryAccount} className="space-y-4">
+                      <div className="relative flex items-center">
+                        <UserIcon size={17} className="absolute left-3.5 text-slate-400 dark:text-slate-500" />
+                        <input
+                          name="id"
+                          type="text"
+                          required
+                          placeholder="Mobile / Email / Student ID"
+                          value={formData.id}
+                          onChange={handleChange}
+                          className="w-full bg-slate-50/70 dark:bg-slate-950/60 border border-slate-200 dark:border-slate-800 focus:bg-white dark:focus:bg-slate-950 focus:border-slate-900 dark:focus:border-indigo-400 rounded-xl pl-10 pr-3.5 py-3 text-sm text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 outline-none transition font-medium"
+                        />
+                      </div>
+
+                      <button
+                        type="submit"
+                        disabled={loading}
+                        className="w-full min-h-[46px] py-3 rounded-xl text-sm font-black tracking-wide text-white bg-slate-950 hover:bg-slate-900 dark:bg-indigo-600 dark:hover:bg-indigo-500 shadow-md transition flex items-center justify-center gap-2 uppercase cursor-pointer whitespace-nowrap"
+                      >
+                        {loading ? <Loader2 size={16} className="animate-spin text-white" /> : <span>FIND ACCOUNT</span>}
+                        <ArrowRight size={16} />
+                      </button>
+                    </form>
+                  )}
+
+                  {recoveryStep === 2 && (
+                    <div className="space-y-4">
+                      <div className="p-3.5 rounded-xl bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800/60 text-left">
+                        <span className="text-[11px] font-bold text-amber-700 dark:text-amber-300 tracking-wide block">Security Question</span>
+                        <p className="text-sm font-bold text-slate-800 dark:text-slate-100 mt-1">
+                          {recoveryUserObj?.securityQuestion || "Aapka favorite subject kaunsa hai?"}
+                        </p>
+                      </div>
+
+                      <form onSubmit={handleVerifyAnswerSubmit} className="space-y-4">
+                        <div className="relative flex items-center">
+                          <ShieldQuestion size={17} className="absolute left-3.5 text-slate-400 dark:text-slate-500" />
+                          <input
+                            type="text"
+                            required
+                            placeholder="Enter Security Answer"
+                            value={userEnteredAnswer}
+                            onChange={(e) => { setUserEnteredAnswer(e.target.value); setError(null); }}
+                            className="w-full bg-slate-50/70 dark:bg-slate-950/60 border border-slate-200 dark:border-slate-800 focus:bg-white dark:focus:bg-slate-950 focus:border-emerald-600 dark:focus:border-emerald-400 rounded-xl pl-10 pr-3.5 py-3 text-sm text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 outline-none transition font-medium"
+                          />
+                        </div>
+
+                        <button
+                          type="submit"
+                          disabled={loading}
+                          className="w-full min-h-[46px] py-3 rounded-xl text-sm font-black tracking-wide text-white bg-emerald-600 hover:bg-emerald-700 shadow-md transition flex items-center justify-center gap-2 uppercase cursor-pointer whitespace-nowrap"
+                        >
+                          {loading ? <Loader2 size={16} className="animate-spin text-white" /> : <span>VERIFY &amp; LOGIN</span>}
+                          <CheckCircle2 size={16} />
+                        </button>
+                      </form>
+                    </div>
+                  )}
+
+                  <p className="text-xs text-slate-500 dark:text-slate-400 text-center pt-1">
+                    Wapas login par jaane ke liye:{' '}
+                    <button
+                      type="button"
+                      onClick={() => { setView('LOGIN'); setError(null); }}
+                      className="font-black text-slate-900 dark:text-indigo-400 hover:underline cursor-pointer py-1"
+                    >
+                      Login karein
+                    </button>
+                  </p>
+                </div>
+              )}
+
+              {/* ── SUB-VIEW: LOGIN ── */}
+              {view === 'LOGIN' && (
+                <div key="auth-login" className="w-full space-y-4 lm-enter">
+                  <div>
+                    <h2 className="text-2xl font-black text-slate-900 dark:text-white tracking-tight leading-tight">
+                      Welcome Back
+                    </h2>
+                    <p className="text-xs sm:text-sm text-slate-500 dark:text-slate-400 mt-1">
+                      Sign in to access your classes &amp; school portal
+                    </p>
+                  </div>
+
+                  <form onSubmit={handleLoginSubmit} className="w-full space-y-3.5">
+                    <div className="space-y-1.5 lm-enter-delay-1">
+                      <label className="text-xs font-bold text-slate-700 dark:text-slate-300 block">
+                        Mobile / Email / Student ID
+                      </label>
+                      <div className="relative flex items-center">
+                        <UserIcon size={17} className="absolute left-3.5 text-slate-400 dark:text-slate-500" />
+                        <input
+                          name="id"
+                          type="text"
+                          required
+                          placeholder="Mobile, Email ya Student ID"
+                          value={formData.id}
+                          onChange={handleChange}
+                          className="w-full bg-slate-50/70 dark:bg-slate-950/60 border border-slate-200 dark:border-slate-800 focus:bg-white dark:focus:bg-slate-950 focus:border-slate-900 dark:focus:border-indigo-400 focus:ring-4 focus:ring-slate-900/10 dark:focus:ring-indigo-500/20 rounded-xl pl-10 pr-3.5 py-3 text-sm text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 font-medium outline-none transition-all duration-200"
+                          autoCapitalize="none"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="space-y-1.5 lm-enter-delay-1">
+                      <label className="text-xs font-bold text-slate-700 dark:text-slate-300 block">
+                        Password
+                      </label>
+                      <div className="relative flex items-center">
+                        <Lock size={17} className="absolute left-3.5 text-slate-400 dark:text-slate-500" />
+                        <input
+                          name="password"
+                          type={showPassword ? "text" : "password"}
+                          required
+                          placeholder="Enter password"
+                          value={formData.password}
+                          onChange={handleChange}
+                          onFocus={() => setIsPasswordFocused(true)}
+                          onBlur={() => setIsPasswordFocused(false)}
+                          className="w-full bg-slate-50/70 dark:bg-slate-950/60 border border-slate-200 dark:border-slate-800 focus:bg-white dark:focus:bg-slate-950 focus:border-slate-900 dark:focus:border-indigo-400 focus:ring-4 focus:ring-slate-900/10 dark:focus:ring-indigo-500/20 rounded-xl pl-10 pr-11 py-3 text-sm text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 font-medium outline-none transition-all duration-200"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => setShowPassword(!showPassword)}
+                          className="absolute right-1.5 min-w-[40px] min-h-[40px] flex items-center justify-center text-slate-400 dark:text-slate-500 hover:text-slate-700 dark:hover:text-slate-200 cursor-pointer rounded-lg"
+                          aria-label={showPassword ? "Hide password" : "Show password"}
+                        >
+                          {showPassword ? <EyeOff size={17} /> : <Eye size={17} />}
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center justify-between text-xs pt-0.5">
+                      <label className="flex items-center gap-2 text-slate-600 dark:text-slate-400 cursor-pointer select-none font-medium py-1">
+                        <input
+                          type="checkbox"
+                          checked={rememberMe}
+                          onChange={(e) => setRememberMe(e.target.checked)}
+                          className="w-4 h-4 rounded border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-indigo-500 focus:ring-indigo-500"
+                        />
+                        <span>Remember me</span>
+                      </label>
+                      <button
+                        type="button"
+                        onClick={() => { triggerAuthHaptic('light'); setView('RECOVERY'); setError(null); }}
+                        className="font-black text-slate-900 dark:text-indigo-400 hover:underline cursor-pointer py-1 whitespace-nowrap"
+                      >
+                        Forgot Password?
+                      </button>
+                    </div>
+
+                    <button
+                      type="submit"
+                      disabled={loading}
+                      onClick={() => triggerAuthHaptic('light')}
+                      className="w-full min-h-[48px] py-3 rounded-xl text-sm font-black tracking-wider text-white bg-slate-950 hover:bg-slate-900 dark:bg-indigo-600 dark:hover:bg-indigo-500 shadow-md shadow-slate-900/10 dark:shadow-indigo-950/40 transition-all duration-200 flex items-center justify-center gap-2 uppercase cursor-pointer hover:-translate-y-0.5 active:scale-[0.98] whitespace-nowrap lm-enter-delay-2"
+                    >
+                      {loading ? <Loader2 size={16} className="animate-spin text-white" /> : <span>LOGIN</span>}
+                      <ArrowRight size={16} />
+                    </button>
+
+                    {/* ── BIOMETRIC & QR LOGIN OPTIONS ── */}
+                    <div className="space-y-2.5 pt-1 lm-enter-delay-2">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          triggerAuthHaptic('light');
+                          setError(null);
+                          setShowFaceLoginModal(true);
+                        }}
+                        disabled={loading}
+                        className="w-full min-h-[46px] py-2.5 px-3.5 rounded-xl text-xs sm:text-sm font-bold text-slate-800 dark:text-slate-100 bg-slate-50 hover:bg-slate-100 dark:bg-slate-800/70 dark:hover:bg-slate-800 border border-slate-200/90 dark:border-slate-700/80 transition-all duration-200 flex items-center justify-between gap-2 cursor-pointer active:scale-[0.98]"
+                      >
+                        <div className="flex items-center gap-2.5 min-w-0">
+                          <div className="w-8 h-8 rounded-lg bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-700 flex items-center justify-center shrink-0">
+                            <ScanFace size={17} className="text-slate-700 dark:text-indigo-400" />
+                          </div>
+                          <span className="truncate">Face ID Login</span>
+                          <span className="text-[11px] font-semibold text-indigo-600 dark:text-indigo-300 shrink-0 whitespace-nowrap">
+                            · Instant
+                          </span>
+                        </div>
+                        <ArrowRight size={16} className="text-slate-400 dark:text-slate-500 shrink-0" />
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          triggerAuthHaptic('light');
+                          setError(null);
+                          setShowQrModal(true);
+                        }}
+                        disabled={loading}
+                        className="w-full min-h-[46px] py-2.5 px-3.5 rounded-xl text-xs sm:text-sm font-bold text-slate-800 dark:text-slate-100 bg-slate-50 hover:bg-slate-100 dark:bg-slate-800/70 dark:hover:bg-slate-800 border border-slate-200/90 dark:border-slate-700/80 transition flex items-center justify-between gap-2 cursor-pointer active:scale-[0.98]"
+                      >
+                        <div className="flex items-center gap-2.5 min-w-0">
+                          <div className="w-8 h-8 rounded-lg bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-700 flex items-center justify-center shrink-0">
+                            <QrCode size={17} className="text-slate-700 dark:text-emerald-400" />
+                          </div>
+                          <span className="truncate">Login with ID Card QR Code</span>
+                        </div>
+                        <ArrowRight size={16} className="text-slate-400 dark:text-slate-500 shrink-0" />
+                      </button>
+                    </div>
+
+                    {/* ── OR DIVIDER ── */}
+                    <div className="relative flex items-center justify-center py-1.5">
+                      <div className="w-full h-px bg-slate-200 dark:bg-slate-800" />
+                      <span className="relative px-3 bg-white dark:bg-slate-900 text-[11px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider">
+                        OR
+                      </span>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={() => { triggerAuthHaptic('light'); handleGoogleSignIn(); }}
+                      disabled={loading}
+                      className="w-full min-h-[46px] py-2.5 rounded-xl bg-white hover:bg-slate-50 dark:bg-slate-950/60 dark:hover:bg-slate-800 text-slate-800 dark:text-slate-100 text-sm font-bold flex items-center justify-center gap-2.5 border border-slate-200 dark:border-slate-700/80 transition cursor-pointer active:scale-[0.98] whitespace-nowrap"
+                    >
+                      <svg className="w-4 h-4 shrink-0" viewBox="0 0 24 24">
+                        <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" />
+                        <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" />
+                        <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z" />
+                        <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z" />
+                      </svg>
+                      <span>Google Sign In</span>
+                    </button>
+                  </form>
+
+                  <div className="pt-1 text-center">
+                    <p className="text-xs text-slate-500 dark:text-slate-400">
+                      Naya student account banana hai?{' '}
+                      <button
+                        type="button"
+                        onClick={() => { triggerAuthHaptic('light'); setView('SIGNUP'); setError(null); }}
+                        className="font-black text-slate-900 dark:text-indigo-400 hover:underline cursor-pointer py-1 whitespace-nowrap"
+                      >
+                        Create Account
+                      </button>
+                    </p>
+                  </div>
+                </div>
+              )}
+
+              {/* ── SUB-VIEW: CREATE ACCOUNT ── */}
+              {view === 'SIGNUP' && (
+                <div key="auth-signup" className="w-full space-y-4 lm-enter">
+                  <div>
+                    <h2 className="text-2xl font-black text-slate-900 dark:text-white tracking-tight leading-tight">
+                      Create Account
+                    </h2>
+                    <p className="text-xs sm:text-sm text-slate-500 dark:text-slate-400 mt-1">
+                      New student permanent ID generate karein
+                    </p>
+                  </div>
+
+                  <form onSubmit={handleSignupSubmit} className="w-full space-y-3">
+                    <div className="space-y-1">
+                      <label className="text-xs font-bold text-slate-700 dark:text-slate-300">Full Name</label>
+                      <div className="relative flex items-center">
+                        <UserIcon size={16} className="absolute left-3.5 text-slate-400 dark:text-slate-500" />
+                        <input
+                          name="name"
+                          type="text"
+                          required
+                          placeholder="Poora Naam (Full Name)"
+                          value={formData.name}
+                          onChange={handleChange}
+                          className="w-full bg-slate-50/70 dark:bg-slate-950/60 border border-slate-200 dark:border-slate-800 focus:bg-white dark:focus:bg-slate-950 focus:border-slate-900 dark:focus:border-indigo-400 rounded-xl pl-10 pr-3.5 py-2.5 text-sm text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 font-medium outline-none transition"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="space-y-1">
+                      <label className="text-xs font-bold text-slate-700 dark:text-slate-300">Mobile Number</label>
+                      <div className="relative flex items-center">
+                        <Phone size={16} className="absolute left-3.5 text-slate-400 dark:text-slate-500" />
+                        <input
+                          name="mobile"
+                          type="tel"
+                          required
+                          placeholder="10-digit Mobile Number"
+                          value={formData.mobile}
+                          onChange={handleChange}
+                          className="w-full bg-slate-50/70 dark:bg-slate-950/60 border border-slate-200 dark:border-slate-800 focus:bg-white dark:focus:bg-slate-950 focus:border-slate-900 dark:focus:border-indigo-400 rounded-xl pl-10 pr-3.5 py-2.5 text-sm text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 font-medium outline-none transition"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="space-y-1">
+                      <label className="text-xs font-bold text-slate-700 dark:text-slate-300">Email Address (Optional)</label>
+                      <div className="relative flex items-center">
+                        <Mail size={16} className="absolute left-3.5 text-slate-400 dark:text-slate-500" />
+                        <input
+                          name="email"
+                          type="email"
+                          placeholder="Email ID (e.g. name@gmail.com)"
+                          value={formData.email}
+                          onChange={handleChange}
+                          className="w-full bg-slate-50/70 dark:bg-slate-950/60 border border-slate-200 dark:border-slate-800 focus:bg-white dark:focus:bg-slate-950 focus:border-slate-900 dark:focus:border-indigo-400 rounded-xl pl-10 pr-3.5 py-2.5 text-sm text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 font-medium outline-none transition"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="space-y-1">
+                      <label className="text-xs font-bold text-slate-700 dark:text-slate-300">Create Password</label>
+                      <div className="relative flex items-center">
+                        <Lock size={16} className="absolute left-3.5 text-slate-400 dark:text-slate-500" />
+                        <input
+                          name="password"
+                          type={showPassword ? "text" : "password"}
+                          required
+                          placeholder="Password banayein"
+                          value={formData.password}
+                          onChange={handleChange}
+                          className="w-full bg-slate-50/70 dark:bg-slate-950/60 border border-slate-200 dark:border-slate-800 focus:bg-white dark:focus:bg-slate-950 focus:border-slate-900 dark:focus:border-indigo-400 rounded-xl pl-10 pr-11 py-2.5 text-sm text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 font-medium outline-none transition"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => setShowPassword(!showPassword)}
+                          className="absolute right-1.5 min-w-[40px] min-h-[40px] flex items-center justify-center text-slate-400 dark:text-slate-500 hover:text-slate-700 dark:hover:text-slate-200 cursor-pointer rounded-lg"
+                          aria-label={showPassword ? "Hide password" : "Show password"}
+                        >
+                          {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="space-y-1.5 pt-0.5">
+                      <label className="text-xs font-bold text-slate-700 dark:text-slate-300 block">Security Question (ID recovery ke liye)</label>
+                      <select
+                        name="securityQuestion"
+                        value={formData.securityQuestion}
+                        onChange={handleChange}
+                        className="w-full px-3 py-2.5 bg-slate-50/70 dark:bg-slate-950/60 border border-slate-200 dark:border-slate-800 rounded-xl text-xs sm:text-sm text-slate-800 dark:text-slate-200 outline-none"
+                      >
+                        {DEFAULT_QUESTIONS.map(q => (
+                          <option key={q} value={q}>{q}</option>
+                        ))}
+                      </select>
+                      <input
+                        name="securityAnswer"
+                        type="text"
+                        required
+                        placeholder="Aapka answer yahan likhein"
+                        value={formData.securityAnswer}
+                        onChange={handleChange}
+                        className="w-full px-3.5 py-2.5 bg-slate-50/70 dark:bg-slate-950/60 border border-slate-200 dark:border-slate-800 rounded-xl text-xs sm:text-sm text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 outline-none"
+                      />
+                    </div>
+
+                    <button
+                      type="submit"
+                      disabled={loading}
+                      className="w-full min-h-[46px] py-3 rounded-xl text-sm font-black tracking-wide text-white bg-emerald-600 hover:bg-emerald-700 shadow-md transition-all flex items-center justify-center gap-2 uppercase cursor-pointer active:scale-[0.98] mt-1 whitespace-nowrap"
+                    >
+                      {loading ? <Loader2 size={16} className="animate-spin text-white" /> : <span>CREATE ACCOUNT</span>}
+                      <CheckCircle2 size={16} />
+                    </button>
+
+                    <div className="relative flex items-center justify-center py-1.5">
+                      <div className="w-full h-px bg-slate-200 dark:bg-slate-800" />
+                      <span className="relative px-3 bg-white dark:bg-slate-900 text-[11px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider">
+                        OR
+                      </span>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={() => { triggerAuthHaptic('light'); handleGoogleSignIn(); }}
+                      disabled={loading}
+                      className="w-full min-h-[46px] py-2.5 rounded-xl bg-white hover:bg-slate-50 dark:bg-slate-950/60 dark:hover:bg-slate-800 text-slate-800 dark:text-slate-100 text-sm font-bold flex items-center justify-center gap-2.5 border border-slate-200 dark:border-slate-700/80 transition cursor-pointer active:scale-[0.98] whitespace-nowrap"
+                    >
+                      <svg className="w-4 h-4 shrink-0" viewBox="0 0 24 24">
+                        <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" />
+                        <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" />
+                        <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z" />
+                        <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z" />
+                      </svg>
+                      <span>Google se Sign Up karein</span>
+                    </button>
+                  </form>
+
+                  <div className="pt-1 text-center">
+                    <p className="text-xs text-slate-500 dark:text-slate-400">
+                      Pehle se account hai?{' '}
+                      <button
+                        type="button"
+                        onClick={() => { triggerAuthHaptic('light'); setView('LOGIN'); setError(null); }}
+                        className="font-black text-slate-900 dark:text-indigo-400 hover:underline cursor-pointer py-1 whitespace-nowrap"
+                      >
+                        Login karein
+                      </button>
+                    </p>
+                  </div>
+                </div>
+              )}
+
+              {/* ── SUB-VIEW: SUCCESS ID ── */}
+              {view === 'SUCCESS_ID' && (
+                <div key="auth-success" className="w-full text-center space-y-4 lm-enter">
+                  <div className="w-12 h-12 rounded-full bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 flex items-center justify-center mx-auto border border-emerald-500/30">
+                    <CheckCircle2 size={24} />
+                  </div>
+                  <div>
+                    <h3 className="text-xl font-black text-slate-900 dark:text-white">Account Ban Gaya!</h3>
+                    <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">Yeh aapki permanent NSTA Student ID hai:</p>
+                  </div>
+
+                  <div className="p-3.5 bg-slate-50 dark:bg-slate-950/60 border border-slate-200 dark:border-slate-800 rounded-xl flex items-center justify-between">
+                    <span className="font-mono text-base sm:text-lg font-black text-amber-600 dark:text-amber-400 tabular-nums">{generatedId}</span>
+                    <button
+                      type="button"
+                      onClick={handleCopyId}
+                      className="px-3 min-h-[38px] rounded-lg bg-white dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 border border-slate-200 dark:border-slate-700 text-xs font-bold text-slate-800 dark:text-slate-100 flex items-center gap-1.5 transition cursor-pointer whitespace-nowrap"
+                    >
+                      {copied ? <Check size={14} className="text-emerald-500" /> : <Copy size={14} />}
+                      <span>{copied ? 'Copied!' : 'Copy'}</span>
+                    </button>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (pendingLoginUser) onLogin(pendingLoginUser);
+                    }}
+                    className="w-full min-h-[46px] py-3 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs uppercase tracking-wider shadow-md transition cursor-pointer active:scale-[0.98] whitespace-nowrap"
+                  >
+                    Start Learning Now
+                  </button>
+                </div>
+              )}
+            </div>
           </div>
-        )}
+        </div>
       </div>
 
       {/* FOOTER */}
-      <footer className="w-full max-w-md mx-auto text-center pt-5 z-10 text-[11px] text-slate-400 dark:text-slate-500 shrink-0">
-        <p>NSTA • Powered School ERP &amp; Smart Learning</p>
+      <footer className="w-full max-w-md lg:max-w-5xl mx-auto text-center pt-2 pb-1 z-10 text-xs text-slate-400 dark:text-slate-500 shrink-0">
+        <p>SCHOOL+ · Smart School ERP &amp; Learning Portal</p>
       </footer>
 
       {/* ── ID CARD QR SCANNER MODAL ── */}

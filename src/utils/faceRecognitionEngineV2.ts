@@ -158,40 +158,43 @@ let modelsLoadingPromise: Promise<boolean> | null = null;
 let isModelsLoaded = false;
 
 export function isFaceApiLoaded(): boolean {
-  return isModelsLoaded;
+  return (
+    isModelsLoaded &&
+    Boolean(faceapi.nets.tinyFaceDetector?.params) &&
+    Boolean(faceapi.nets.faceLandmark68TinyNet?.params || faceapi.nets.faceLandmark68Net?.params)
+  );
 }
 
 /**
- * Pre-warms and loads face detection, 68 landmarks, and ResNet-34 FaceRecognition models
- * from /models/face-api directory. Loads tiny and full landmark nets to prevent inference throws.
+ * Pre-warms and loads face detection and 68-landmark neural models
+ * from /models/face-api directory. Validates weights actually loaded before marking ready.
  */
 export async function loadFaceApiModels(): Promise<boolean> {
-  if (isModelsLoaded) return true;
+  if (isFaceApiLoaded()) return true;
   if (modelsLoadingPromise) return modelsLoadingPromise;
 
   modelsLoadingPromise = (async () => {
     try {
       const modelPath = "/models/face-api";
-      // Try loading SSD MobileNet V1 if available in models folder, otherwise tinyFaceDetector
-      let isSsdLoaded = false;
-      try {
-        await faceapi.nets.ssdMobilenetv1.loadFromUri(modelPath);
-        isSsdLoaded = true;
-        console.log("[FaceAPI V2] SSD MobileNet V1 loaded successfully!");
-      } catch {
-        // Fallback to tinyFaceDetector
-      }
-
       await Promise.all([
         faceapi.nets.tinyFaceDetector.loadFromUri(modelPath).catch(() => {}),
-        faceapi.nets.faceLandmark68Net.loadFromUri(modelPath).catch(() => {}),
         faceapi.nets.faceLandmark68TinyNet.loadFromUri(modelPath).catch(() => {}),
-        faceapi.nets.faceRecognitionNet.loadFromUri(modelPath).catch(() => {}),
+        faceapi.nets.faceLandmark68Net.loadFromUri(modelPath).catch(() => {}),
       ]);
+
+      const detectorReady = Boolean(faceapi.nets.tinyFaceDetector?.params);
+      const landmarksReady = Boolean(
+        faceapi.nets.faceLandmark68TinyNet?.params || faceapi.nets.faceLandmark68Net?.params
+      );
+
       modelsLoadingPromise = null;
-      isModelsLoaded = true;
-      console.log(`[FaceAPI V2] Neural models loaded successfully (ResNet-34 + ${isSsdLoaded ? "SSD MobileNet V1" : "TinyFace"} + Landmark68)`);
-      return true;
+      isModelsLoaded = detectorReady && landmarksReady;
+      if (isModelsLoaded) {
+        console.log("[FaceAPI V2] Neural models loaded successfully (TinyFaceDetector + Landmark68)");
+      } else {
+        console.warn("[FaceAPI V2] Face models partially unavailable, will retry on next check.");
+      }
+      return isModelsLoaded;
     } catch (err) {
       console.warn("[FaceAPI V2] Failed to load models from /models/face-api, will allow retry:", err);
       isModelsLoaded = false;
@@ -1557,15 +1560,25 @@ export function matchFaceDescriptor(
 
 // ── 5. LIGHTING & QUALITY ASSESSMENT ─────────────────────────────────────────
 
+let sharedLightingCanvas: HTMLCanvasElement | null = null;
+
+function getSharedLightingCanvas(w: number, h: number): HTMLCanvasElement {
+  if (!sharedLightingCanvas && typeof document !== "undefined") {
+    sharedLightingCanvas = document.createElement("canvas");
+  }
+  const c = sharedLightingCanvas || document.createElement("canvas");
+  if (c.width !== w) c.width = w;
+  if (c.height !== h) c.height = h;
+  return c;
+}
+
 export function assessFaceLightingAndQuality(
   source: HTMLCanvasElement | HTMLVideoElement,
   box: { x: number; y: number; width: number; height: number }
 ): FaceLightingAssessment {
-  const canvas = document.createElement("canvas");
   const w = 48;
   const h = 48;
-  canvas.width = w;
-  canvas.height = h;
+  const canvas = getSharedLightingCanvas(w, h);
   const ctx = canvas.getContext("2d", { willReadFrequently: true });
 
   if (!ctx) {
@@ -1581,7 +1594,15 @@ export function assessFaceLightingAndQuality(
     };
   }
 
-  ctx.drawImage(source, box.x, box.y, box.width, box.height, 0, 0, w, h);
+  const srcW = (source as any).videoWidth || (source as any).naturalWidth || source.width || w;
+  const srcH = (source as any).videoHeight || (source as any).naturalHeight || source.height || h;
+  const sx = Math.max(0, Math.min(srcW - 1, Math.round(box.x || 0)));
+  const sy = Math.max(0, Math.min(srcH - 1, Math.round(box.y || 0)));
+  const sw = Math.max(1, Math.min(srcW - sx, Math.round(box.width || srcW)));
+  const sh = Math.max(1, Math.min(srcH - sy, Math.round(box.height || srcH)));
+
+  ctx.clearRect(0, 0, w, h);
+  ctx.drawImage(source, sx, sy, sw, sh, 0, 0, w, h);
   const data = ctx.getImageData(0, 0, w, h).data;
 
   let totalLum = 0;
@@ -1647,7 +1668,12 @@ export async function detectFacesInFrame(
   enrolledMap: Record<string, FaceDescriptorRecord> = {},
   options?: { schoolId?: string }
 ): Promise<DetectedFaceBox[]> {
-  if (!videoElement || videoElement.videoWidth === 0 || videoElement.videoHeight === 0) {
+  if (
+    !videoElement ||
+    videoElement.readyState < 2 ||
+    videoElement.videoWidth === 0 ||
+    videoElement.videoHeight === 0
+  ) {
     return [];
   }
   const verifiedSchoolId = typeof options?.schoolId === "string" ? options.schoolId.trim() : "";
@@ -1725,12 +1751,14 @@ export async function detectFacesInFrame(
             const b = det.detection.box;
             const padX = b.width * 0.12;
             const padY = b.height * 0.12;
+            const clampedX = Math.max(0, Math.round(b.x - padX));
+            const clampedY = Math.max(0, Math.round(b.y - padY));
 
             const box = {
-              x: Math.max(0, Math.round(b.x - padX)),
-              y: Math.max(0, Math.round(b.y - padY)),
-              width: Math.min(vWidth - b.x, Math.round(b.width + padX * 2)),
-              height: Math.min(vHeight - b.y, Math.round(b.height + padY * 2)),
+              x: clampedX,
+              y: clampedY,
+              width: Math.max(1, Math.min(vWidth - clampedX, Math.round(b.width + padX * 2))),
+              height: Math.max(1, Math.min(vHeight - clampedY, Math.round(b.height + padY * 2))),
               confidence: Number(det.detection.score.toFixed(2)),
             };
 
@@ -2254,11 +2282,29 @@ export async function batchEnrollStudentsFromPhotos(
 
 // ── 8. AUDIO FEEDBACK CHIMES ─────────────────────────────────────────────────
 
+let sharedAudioCtx: AudioContext | null = null;
+
+function getSharedAudioContext(): AudioContext | null {
+  try {
+    if (typeof window === "undefined") return null;
+    const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+    if (!AudioCtx) return null;
+    if (!sharedAudioCtx || sharedAudioCtx.state === "closed") {
+      sharedAudioCtx = new AudioCtx();
+    }
+    if (sharedAudioCtx.state === "suspended") {
+      void sharedAudioCtx.resume().catch(() => {});
+    }
+    return sharedAudioCtx;
+  } catch {
+    return null;
+  }
+}
+
 export function playAttendanceSuccessChime(): void {
   try {
-    const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
-    if (!AudioCtx) return;
-    const ctx = new AudioCtx();
+    const ctx = getSharedAudioContext();
+    if (!ctx) return;
     const now = ctx.currentTime;
 
     const playTone = (freq: number, start: number, dur: number) => {
@@ -2285,9 +2331,8 @@ export function playAttendanceSuccessChime(): void {
 
 export function playCooldownTick(): void {
   try {
-    const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
-    if (!AudioCtx) return;
-    const ctx = new AudioCtx();
+    const ctx = getSharedAudioContext();
+    if (!ctx) return;
     const now = ctx.currentTime;
     const osc = ctx.createOscillator();
     const gain = ctx.createGain();

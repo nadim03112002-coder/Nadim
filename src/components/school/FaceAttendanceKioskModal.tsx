@@ -49,6 +49,8 @@ import {
   FaceLightingAssessment,
   loadFaceApiModels,
   isFaceApiLoaded,
+  initArcFaceEngine,
+  isArcFaceReady,
   upgradeLegacyDescriptors,
   revectorizeLegacyRecord,
   repairAndResyncAllFaceDescriptors,
@@ -156,10 +158,12 @@ export const FaceAttendanceKioskModal: React.FC<FaceAttendanceKioskModalProps> =
   const [hasFaceInView, setHasFaceInView] = useState<boolean>(false);
   const [detectedFaceCount, setDetectedFaceCount] = useState<number>(0);
   const [aiEngineStatus, setAiEngineStatus] = useState<"loading" | "ready" | "fallback">(() => {
-    return isFaceApiLoaded() ? "ready" : "loading";
+    return isFaceApiLoaded() && isArcFaceReady() ? "ready" : "loading";
   });
+  const [isWakeLockActive, setIsWakeLockActive] = useState<boolean>(false);
   const [liveMatchedCandidate, setLiveMatchedCandidate] = useState<any | null>(null);
   const [isFaceUnregistered, setIsFaceUnregistered] = useState<boolean>(false);
+  const [isAiWarmingUpInView, setIsAiWarmingUpInView] = useState<boolean>(false);
 
   // Eye Blink & Liveness + 1-Tap Candidate state
   const [pendingBlinkStudent, setPendingBlinkStudent] = useState<any>(null);
@@ -266,23 +270,49 @@ export const FaceAttendanceKioskModal: React.FC<FaceAttendanceKioskModalProps> =
           voices.find((v) => v.lang.includes("hi") || v.lang.includes("HI")) ||
           voices.find((v) => v.lang.includes("en-IN") || v.lang.includes("hi_IN")) ||
           voices.find((v) => v.lang.includes("en-GB") || v.lang.includes("en-US"));
-        if (preferredVoice) {
-          utterance.voice = preferredVoice;
+          if (preferredVoice) {
+            utterance.voice = preferredVoice;
+          }
+          if (window.speechSynthesis.paused) {
+            window.speechSynthesis.resume();
+          }
+          window.speechSynthesis.speak(utterance);
+        } else {
+          speakNotification(spokenText, undefined, { force: true, playTone: false });
         }
-        window.speechSynthesis.speak(utterance);
-      } else {
-        speakNotification(spokenText, undefined, { force: true, playTone: false });
+      } catch (err) {
+        console.warn("Speech synthesis error:", err);
       }
-    } catch (err) {
-      console.warn("Speech synthesis error:", err);
-    }
-  }, []);
+    }, []);
 
   const isProcessingRef = useRef<boolean>(false);
   const streamRef = useRef<MediaStream | null>(null);
+  const wakeLockRef = useRef<any>(null);
+  const cameraRestartingRef = useRef<boolean>(false);
+  const lastVideoProgressRef = useRef<{ time: number; checkedAt: number }>({ time: -1, checkedAt: 0 });
   const lastLiveDescriptorRef = useRef<number[] | null>(null);
   const isDetectingBusyRef = useRef<boolean>(false);
   const lastValidFacesRef = useRef<{ faces: any[]; timestamp: number }>({ faces: [], timestamp: 0 });
+
+  // Stable refs so the continuous requestAnimationFrame loop never tears down mid-session
+  const enrolledMapRef = useRef<Record<string, FaceDescriptorRecord>>(enrolledMap);
+  enrolledMapRef.current = enrolledMap;
+  const isFaceTestModeRef = useRef<boolean>(isFaceTestMode);
+  isFaceTestModeRef.current = isFaceTestMode;
+  const currentShiftModeRef = useRef<"in" | "out">(currentShiftMode);
+  currentShiftModeRef.current = currentShiftMode;
+  const schoolIdRef = useRef<string>(schoolId);
+  schoolIdRef.current = schoolId;
+  const schoolNameRef = useRef<string>(schoolName);
+  schoolNameRef.current = schoolName;
+  const classNameRef = useRef<string | undefined>(className);
+  classNameRef.current = className;
+  const classIdRef = useRef<string | undefined>(classId);
+  classIdRef.current = classId;
+  const onAttendanceUpdatedRef = useRef<(() => void) | undefined>(onAttendanceUpdated);
+  onAttendanceUpdatedRef.current = onAttendanceUpdated;
+  const announceFaceTestMatchRef = useRef(announceFaceTestMatch);
+  announceFaceTestMatchRef.current = announceFaceTestMatch;
 
   // Global Camera Freeze countdown ticker (3s -> 2s -> 1s -> 0)
   useEffect(() => {
@@ -351,11 +381,14 @@ export const FaceAttendanceKioskModal: React.FC<FaceAttendanceKioskModalProps> =
     }
   }, [schoolId, students, teachers]);
 
-  // Load Enrolled Descriptors from IndexedDB & Auto-Enroll Roster
-  const loadDescriptors = useCallback(async () => {
-    setLoadingDescriptors(true);
+  const bgEnrollTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const isModalActiveRef = useRef<boolean>(false);
+  isModalActiveRef.current = Boolean(isOpen && hasFaceAccess);
+
+  // Load Enrolled Descriptors from IndexedDB & Auto-Enroll Roster (safe for 100+ students, cancellable)
+  const loadDescriptors = useCallback(async (silent = false) => {
+    if (!silent) setLoadingDescriptors(true);
     try {
-      // 1. Immediately activate cached face descriptors, filtering out any deactivated/deleted roster members
       let map = await getSchoolFaceDescriptors(schoolId);
       const rosterById = new Map<string, any>();
       for (const s of students || []) {
@@ -374,12 +407,15 @@ export const FaceAttendanceKioskModal: React.FC<FaceAttendanceKioskModalProps> =
       }
       map = filteredMap;
       setEnrolledMap(map);
-      setLoadingDescriptors(false);
+      if (!silent) setLoadingDescriptors(false);
 
-      // 2. Defer background photo auto-enrollment so live camera inference has 100% priority
-      setTimeout(async () => {
+      // Defer background photo auto-enrollment so live camera inference has 100% priority
+      if (bgEnrollTimerRef.current) clearTimeout(bgEnrollTimerRef.current);
+      bgEnrollTimerRef.current = setTimeout(async () => {
+        if (!isModalActiveRef.current) return;
         try {
           upgradeLegacyDescriptors(map, (upgraded) => {
+            if (!isModalActiveRef.current) return;
             setEnrolledMap((prev) => ({ ...prev, [upgraded.studentId]: upgraded }));
           }).catch(() => {});
 
@@ -399,7 +435,9 @@ export const FaceAttendanceKioskModal: React.FC<FaceAttendanceKioskModalProps> =
             if (toEnroll.length > 0) {
               const updatedMap = { ...map };
               let anyAdded = false;
-              for (const st of toEnroll.slice(0, 30)) {
+              for (let i = 0; i < toEnroll.length; i++) {
+                if (!isModalActiveRef.current) break;
+                const st = toEnroll[i];
                 try {
                   const rec = await enrollStudentFromPhotoUrl({
                     id: st.id,
@@ -417,18 +455,21 @@ export const FaceAttendanceKioskModal: React.FC<FaceAttendanceKioskModalProps> =
                   if (rec) {
                     updatedMap[rec.studentId] = rec;
                     anyAdded = true;
+                    if ((i + 1) % 10 === 0 && isModalActiveRef.current) {
+                      setEnrolledMap({ ...updatedMap });
+                    }
                   }
-                  await new Promise((r) => setTimeout(r, 100));
+                  await new Promise((r) => setTimeout(r, 120));
                 } catch {}
               }
-              if (anyAdded) {
+              if (anyAdded && isModalActiveRef.current) {
                 setEnrolledMap(updatedMap);
                 map = updatedMap;
               }
             }
           }
 
-          if (teachers && teachers.length > 0) {
+          if (teachers && teachers.length > 0 && isModalActiveRef.current) {
             const teachersToEnroll = teachers.filter(
               (t) =>
                 t &&
@@ -442,7 +483,8 @@ export const FaceAttendanceKioskModal: React.FC<FaceAttendanceKioskModalProps> =
             if (teachersToEnroll.length > 0) {
               const updatedMap = { ...map };
               let anyAdded = false;
-              for (const t of teachersToEnroll.slice(0, 15)) {
+              for (const t of teachersToEnroll) {
+                if (!isModalActiveRef.current) break;
                 try {
                   const rec = await enrollTeacherFromPhotoUrl({
                     id: t.id,
@@ -458,10 +500,10 @@ export const FaceAttendanceKioskModal: React.FC<FaceAttendanceKioskModalProps> =
                     updatedMap[rec.studentId] = rec;
                     anyAdded = true;
                   }
-                  await new Promise((r) => setTimeout(r, 100));
+                  await new Promise((r) => setTimeout(r, 120));
                 } catch {}
               }
-              if (anyAdded) {
+              if (anyAdded && isModalActiveRef.current) {
                 setEnrolledMap(updatedMap);
               }
             }
@@ -470,29 +512,117 @@ export const FaceAttendanceKioskModal: React.FC<FaceAttendanceKioskModalProps> =
       }, 1500);
     } catch (e) {
       console.warn("Error loading face descriptors:", e);
-      setLoadingDescriptors(false);
+      if (!silent) setLoadingDescriptors(false);
     }
   }, [schoolId, students, teachers, classId, className]);
 
+  // Initial model warm-up + periodic 10-minute cloud descriptor sync for 2+ hour kiosk runs
   useEffect(() => {
-    if (isOpen && hasFaceAccess) {
-      loadDescriptors();
-      if (!isFaceApiLoaded()) {
-        loadFaceApiModels()
-          .then((ok) => setAiEngineStatus(ok ? "ready" : "fallback"))
-          .catch(() => setAiEngineStatus("fallback"));
-      } else {
-        setAiEngineStatus("ready");
+    if (!isOpen || !hasFaceAccess) return;
+    let cancelled = false;
+
+    void loadDescriptors(false);
+
+    const ensureModelsReady = async () => {
+      try {
+        const [faOk, afOk] = await Promise.all([
+          isFaceApiLoaded() ? Promise.resolve(true) : loadFaceApiModels().catch(() => false),
+          isArcFaceReady() ? Promise.resolve(true) : initArcFaceEngine().catch(() => false),
+        ]);
+        if (!cancelled) {
+          setAiEngineStatus(faOk && afOk ? "ready" : faOk ? "loading" : "fallback");
+        }
+      } catch {
+        if (!cancelled) setAiEngineStatus("fallback");
       }
-    }
+    };
+    void ensureModelsReady();
+
+    // Poll briefly while warming up so HUD reflects exact Ready state as soon as ONNX loads
+    const warmupPoll = setInterval(() => {
+      if (isFaceApiLoaded() && isArcFaceReady()) {
+        setAiEngineStatus("ready");
+        clearInterval(warmupPoll);
+      }
+    }, 800);
+
+    // Every 10 minutes, sync newly enrolled faces from other devices (uses sync_versions guard)
+    const syncInterval = setInterval(() => {
+      if (!cancelled) void loadDescriptors(true);
+    }, 10 * 60 * 1000);
+
+    return () => {
+      cancelled = true;
+      clearInterval(warmupPoll);
+      clearInterval(syncInterval);
+      if (bgEnrollTimerRef.current) {
+        clearTimeout(bgEnrollTimerRef.current);
+        bgEnrollTimerRef.current = null;
+      }
+    };
   }, [isOpen, hasFaceAccess, loadDescriptors]);
 
-  // Start Camera Stream
+  // Screen Wake Lock so phone/tablet display never sleeps during 2+ hour attendance sessions
+  useEffect(() => {
+    if (!isOpen || !hasFaceAccess) {
+      if (wakeLockRef.current) {
+        try { void wakeLockRef.current.release(); } catch {}
+        wakeLockRef.current = null;
+      }
+      setIsWakeLockActive(false);
+      return;
+    }
+
+    let cancelled = false;
+    const requestWakeLock = async () => {
+      try {
+        if (typeof navigator !== "undefined" && (navigator as any).wakeLock?.request) {
+          if (wakeLockRef.current && !wakeLockRef.current.released) return;
+          const lock = await (navigator as any).wakeLock.request("screen");
+          if (cancelled) {
+            try { void lock.release(); } catch {}
+            return;
+          }
+          wakeLockRef.current = lock;
+          setIsWakeLockActive(true);
+          lock.addEventListener?.("release", () => {
+            if (!cancelled) setIsWakeLockActive(false);
+          });
+        }
+      } catch {
+        if (!cancelled) setIsWakeLockActive(false);
+      }
+    };
+
+    void requestWakeLock();
+
+    const onVisibility = () => {
+      if (document.visibilityState === "visible" && !cancelled) {
+        void requestWakeLock();
+      }
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+
+    return () => {
+      cancelled = true;
+      document.removeEventListener("visibilitychange", onVisibility);
+      if (wakeLockRef.current) {
+        try { void wakeLockRef.current.release(); } catch {}
+        wakeLockRef.current = null;
+      }
+      setIsWakeLockActive(false);
+    };
+  }, [isOpen, hasFaceAccess]);
+
+  // Start Camera Stream with automatic recovery on track end / OS suspension
   const startCamera = useCallback(async () => {
+    if (cameraRestartingRef.current) return;
+    cameraRestartingRef.current = true;
     setCameraError(null);
     try {
       if (streamRef.current) {
         streamRef.current.getTracks().forEach((track) => track.stop());
+        streamRef.current = null;
       }
 
       const stream = await navigator.mediaDevices.getUserMedia({
@@ -505,6 +635,20 @@ export const FaceAttendanceKioskModal: React.FC<FaceAttendanceKioskModalProps> =
       });
 
       streamRef.current = stream;
+      lastVideoProgressRef.current = { time: -1, checkedAt: Date.now() };
+
+      const videoTrack = stream.getVideoTracks()[0];
+      if (videoTrack) {
+        videoTrack.addEventListener("ended", () => {
+          if (isModalActiveRef.current && !showEnrollmentModal) {
+            console.warn("[FaceKiosk] Video track ended unexpectedly, auto-restarting camera...");
+            setTimeout(() => {
+              if (isModalActiveRef.current) void startCamera();
+            }, 600);
+          }
+        });
+      }
+
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
         videoRef.current.play().catch(() => {});
@@ -516,19 +660,71 @@ export const FaceAttendanceKioskModal: React.FC<FaceAttendanceKioskModalProps> =
           ? "कैमरा परमिशन नहीं मिली (Permission Denied). कृपया ब्राउज़र के URL बार में 🔒 या 📹 आइकन पर क्लिक करके 'Allow' करें।"
           : "कैमरा शुरू नहीं हो पाया। कृपया कैमरा कनेक्शन जांचें या पुनः प्रयास करें।"
       );
+    } finally {
+      cameraRestartingRef.current = false;
     }
-  }, [facingMode]);
+  }, [facingMode, showEnrollmentModal]);
 
   useEffect(() => {
-    if (isOpen && hasFaceAccess && !showEnrollmentModal) {
-      startCamera();
-    } else {
+    if (!isOpen || !hasFaceAccess || showEnrollmentModal) {
       if (streamRef.current) {
         streamRef.current.getTracks().forEach((track) => track.stop());
         streamRef.current = null;
       }
+      return;
     }
+
+    void startCamera();
+
+    // 4-second Camera Health Watchdog: auto-recovers paused or frozen streams during multi-hour runs
+    let stallCount = 0;
+    const watchdog = setInterval(() => {
+      if (!isModalActiveRef.current || document.visibilityState === "hidden") return;
+      const stream = streamRef.current;
+      const video = videoRef.current;
+      const track = stream?.getVideoTracks()?.[0];
+
+      if (!stream || !track || track.readyState !== "live") {
+        console.warn("[FaceKiosk] Camera track inactive, auto-restarting...");
+        stallCount = 0;
+        void startCamera();
+        return;
+      }
+
+      if (video) {
+        if (video.paused) {
+          video.play().catch(() => {});
+        }
+        const curTime = video.currentTime;
+        if (curTime === lastVideoProgressRef.current.time && video.readyState >= 2) {
+          stallCount++;
+          if (stallCount >= 3) {
+            console.warn("[FaceKiosk] Video frame stalled for ~12s, restarting camera stream...");
+            stallCount = 0;
+            void startCamera();
+          }
+        } else {
+          stallCount = 0;
+          lastVideoProgressRef.current = { time: curTime, checkedAt: Date.now() };
+        }
+      }
+    }, 4000);
+
+    const handleVisibilityRecovery = () => {
+      if (document.visibilityState === "visible" && isModalActiveRef.current) {
+        const track = streamRef.current?.getVideoTracks()?.[0];
+        if (!track || track.readyState !== "live") {
+          void startCamera();
+        } else if (videoRef.current?.paused) {
+          videoRef.current.play().catch(() => {});
+        }
+      }
+    };
+    document.addEventListener("visibilitychange", handleVisibilityRecovery);
+
     return () => {
+      clearInterval(watchdog);
+      document.removeEventListener("visibilitychange", handleVisibilityRecovery);
       if (streamRef.current) {
         streamRef.current.getTracks().forEach((track) => track.stop());
         streamRef.current = null;
@@ -680,9 +876,13 @@ export const FaceAttendanceKioskModal: React.FC<FaceAttendanceKioskModalProps> =
             return;
           }
 
-          // Cooldown only updated on successful committed cloud punch!
-          scanCooldownsRef.current.set(match.studentId, now);
-          globalCooldownUntilRef.current = now + 2000;
+          // Cooldown only updated on successful committed cloud punch (use completion timestamp!)
+          const committedAt = Date.now();
+          for (const [k, ts] of scanCooldownsRef.current.entries()) {
+            if (committedAt - ts > 60000) scanCooldownsRef.current.delete(k);
+          }
+          scanCooldownsRef.current.set(match.studentId, committedAt);
+          globalCooldownUntilRef.current = committedAt + 2000;
           setGlobalFreezeCountdown(2);
 
           playAttendanceSuccessChime();
@@ -730,6 +930,7 @@ export const FaceAttendanceKioskModal: React.FC<FaceAttendanceKioskModalProps> =
           try {
             if (typeof window !== "undefined" && "speechSynthesis" in window) {
               window.speechSynthesis.cancel();
+              if (window.speechSynthesis.paused) window.speechSynthesis.resume();
               const utt = new SpeechSynthesisUtterance(teacherVoice);
               utt.lang = "hi-IN";
               utt.rate = 1.0;
@@ -739,7 +940,7 @@ export const FaceAttendanceKioskModal: React.FC<FaceAttendanceKioskModalProps> =
             }
           } catch {}
 
-          if (onAttendanceUpdated) onAttendanceUpdated();
+          if (onAttendanceUpdatedRef.current) onAttendanceUpdatedRef.current();
 
           // Dispatch Teacher Face Attendance confirmation push to Teacher & alert to Admin
           const teacherPhoto = match.photoUrl || descriptorRec?.photoUrl || undefined;
@@ -835,15 +1036,19 @@ export const FaceAttendanceKioskModal: React.FC<FaceAttendanceKioskModalProps> =
           return;
         }
 
-        // Successful punch: Now set cooldown and freeze
-        scanCooldownsRef.current.set(match.studentId, now);
-        globalCooldownUntilRef.current = now + 2000;
+        // Successful punch: Now set cooldown and freeze using completion timestamp
+        const committedAt = Date.now();
+        for (const [k, ts] of scanCooldownsRef.current.entries()) {
+          if (committedAt - ts > 60000) scanCooldownsRef.current.delete(k);
+        }
+        scanCooldownsRef.current.set(match.studentId, committedAt);
+        globalCooldownUntilRef.current = committedAt + 2000;
         setGlobalFreezeCountdown(2);
 
         playAttendanceSuccessChime();
         hapticStrong();
 
-        const action = res?.action || (kioskScanMode === "out" ? "out" : currentShiftMode);
+        const action = res?.action || (kioskScanMode === "out" ? "out" : currentShiftModeRef.current);
         const isLate = Boolean(res?.isLate);
         const status = action === "out" ? "OUT" : isLate ? "LATE" : "PRESENT";
         const stayDuration = res?.stayDuration;
@@ -880,11 +1085,14 @@ export const FaceAttendanceKioskModal: React.FC<FaceAttendanceKioskModalProps> =
         // 2. Dispatch Parent Web Push Arrival / Departure Notification
         const pushTitle = action === "out"
           ? `🏠 विद्यालय प्रस्थान (OUT): ${match.name}`
-          : `🎒 विद्यालय प्रवेश (IN): ${match.name}`;
+          : status === "LATE"
+          ? `⚠️ विद्यालय आगमन (Late): ${match.name}`
+          : `🎒 विद्यालय उपस्थिति (IN): ${match.name}`;
 
+        const rollLabel = match.rollNo ? `, रोल #${match.rollNo}` : "";
         const pushBody = action === "out"
-          ? `Aapka bachha ${match.name} (${targetClassName}, Roll #${match.rollNo || "—"}) aaj ${recordedTime} par vidyalaya se prasthan kar chuka hai. Kul samay: ${stayDuration || "—"}.`
-          : `Aapka bachha ${match.name} (${targetClassName}, Roll #${match.rollNo || "—"}) aaj ${recordedTime} par vidyalaya pahunch chuka hai. Status: ${status === "LATE" ? "Late Arrival" : "Present"}.`;
+          ? `नमस्ते! आपका बच्चा ${match.name} (${targetClassName}${rollLabel}) आज समय ${recordedTime} पर विद्यालय से प्रस्थान कर चुका है। कुल समय: ${stayDuration || "दर्ज"}।`
+          : `नमस्ते! आपका बच्चा ${match.name} (${targetClassName}${rollLabel}) आज समय ${recordedTime} पर विद्यालय सकुशल पहुँच चुका है। स्थिति: ${status === "LATE" ? "विलंब आगमन (Late)" : "समय पर उपस्थित (Present)"}।`;
 
         void sendSchoolPushNotification({
           schoolId,
@@ -923,7 +1131,7 @@ export const FaceAttendanceKioskModal: React.FC<FaceAttendanceKioskModalProps> =
             createdAt: new Date().toISOString(),
             status: "delivered"
           };
-          void saveNstaMessage(nstaChatMsg);
+          void saveNstaMessage(nstaChatMsg).catch(() => {});
           recordAttendanceAlertDispatched(
             schoolId,
             todayStr(),
@@ -937,6 +1145,7 @@ export const FaceAttendanceKioskModal: React.FC<FaceAttendanceKioskModalProps> =
           const speechVoiceText = action === "out" ? `${match.name} प्रस्थान` : `${match.name} उपस्थित`;
           if (typeof window !== "undefined" && "speechSynthesis" in window) {
             window.speechSynthesis.cancel();
+            if (window.speechSynthesis.paused) window.speechSynthesis.resume();
             const utt = new SpeechSynthesisUtterance(speechVoiceText);
             utt.lang = "hi-IN";
             utt.rate = 1.0;
@@ -952,8 +1161,8 @@ export const FaceAttendanceKioskModal: React.FC<FaceAttendanceKioskModalProps> =
           }
         } catch {}
 
-        if (onAttendanceUpdated) {
-          onAttendanceUpdated();
+        if (onAttendanceUpdatedRef.current) {
+          onAttendanceUpdatedRef.current();
         }
       } catch (err) {
         console.error("Student attendance punch error:", err);
@@ -966,8 +1175,11 @@ export const FaceAttendanceKioskModal: React.FC<FaceAttendanceKioskModalProps> =
         setTimeout(() => setCooldownToast(null), 3000);
       }
     },
-    [schoolId, classId, className, teacherId, kioskScanMode, currentShiftMode, adminInCutoffTime, onAttendanceUpdated, enrolledMap, teachers, schoolName]
+    [schoolId, classId, className, teacherId, kioskScanMode, adminInCutoffTime, adminOutStartTime, enrolledMap, teachers, students, schoolName]
   );
+
+  const handleMarkAttendanceSuccessRef = useRef(handleMarkAttendanceSuccess);
+  handleMarkAttendanceSuccessRef.current = handleMarkAttendanceSuccess;
 
   // Manual Attendance Mark (Safe: Records attendance WITHOUT touching biometric descriptors)
   const handleManualMark = (st: any) => {
@@ -986,15 +1198,18 @@ export const FaceAttendanceKioskModal: React.FC<FaceAttendanceKioskModalProps> =
     setManualSearchQuery("");
   };
 
-  // Live Camera Detection Animation Loop (Throttled for battery efficiency)
+  // Live Camera Detection Animation Loop (Stable across 2+ hour sessions; uses refs so loop never tears down)
   useEffect(() => {
     if (!isOpen || !hasFaceAccess) return;
 
     let animId: number;
     let lastScanTime = 0;
+    let isDisposed = false;
 
     const renderLoop = async (time: number) => {
-      // RULE 1: Global Camera Cooldown (Freeze scan loop for 3.5s after any successful punch)
+      if (isDisposed) return;
+
+      // Global Camera Cooldown (Freeze scan loop for 2s after any successful punch)
       if (Date.now() < globalCooldownUntilRef.current) {
         animId = requestAnimationFrame(renderLoop);
         return;
@@ -1006,7 +1221,7 @@ export const FaceAttendanceKioskModal: React.FC<FaceAttendanceKioskModalProps> =
         return;
       }
 
-      // Ultra-Fast Group Scan: 140ms inference interval (~7 FPS) for smooth single-student reticle scanning
+      // Ultra-Fast Group Scan: 140ms inference interval (~7 FPS)
       if (time - lastScanTime >= 140 && videoRef.current && canvasRef.current) {
         lastScanTime = time;
 
@@ -1014,7 +1229,7 @@ export const FaceAttendanceKioskModal: React.FC<FaceAttendanceKioskModalProps> =
         const canvas = canvasRef.current;
         const ctx = canvas.getContext("2d");
 
-        if (video.readyState >= 2 && ctx) {
+        if (video.readyState >= 2 && video.videoWidth > 0 && video.videoHeight > 0 && ctx) {
           if (canvas.width !== video.videoWidth || canvas.height !== video.videoHeight) {
             canvas.width = video.videoWidth || 640;
             canvas.height = video.videoHeight || 480;
@@ -1024,7 +1239,20 @@ export const FaceAttendanceKioskModal: React.FC<FaceAttendanceKioskModalProps> =
 
           isDetectingBusyRef.current = true;
           try {
-            const detected = await detectFacesInFrame(video, enrolledMap, { schoolId });
+            const activeEnrolledMap = enrolledMapRef.current;
+            const activeSchoolId = schoolIdRef.current;
+            const activeSchoolName = schoolNameRef.current;
+            const activeClassName = classNameRef.current;
+            const testModeActive = isFaceTestModeRef.current;
+
+            // Timeout guard (6s) ensures isDetectingBusyRef can never deadlock permanently
+            const detected = await Promise.race<DetectedFaceBox[]>([
+              detectFacesInFrame(video, activeEnrolledMap, { schoolId: activeSchoolId }),
+              new Promise<DetectedFaceBox[]>((resolve) => setTimeout(() => resolve([]), 6000)),
+            ]);
+
+            if (isDisposed) return;
+
             if (detected[0]?.descriptor && detected[0].descriptor.length === 512) {
               lastLiveDescriptorRef.current = detected[0].descriptor;
             }
@@ -1036,7 +1264,6 @@ export const FaceAttendanceKioskModal: React.FC<FaceAttendanceKioskModalProps> =
             if (detectedFaces.length > 0) {
               lastValidFacesRef.current = { faces: detectedFaces, timestamp: nowTime };
             } else if (nowTime - lastValidFacesRef.current.timestamp < 350) {
-              // Smooth out brief 1-frame detection dips so boxes never flicker or vanish ("gayab ho jate hai")
               detectedFaces = lastValidFacesRef.current.faces;
             }
 
@@ -1045,6 +1272,7 @@ export const FaceAttendanceKioskModal: React.FC<FaceAttendanceKioskModalProps> =
               setDetectedFaceCount(0);
               setLiveMatchedCandidate(null);
               setIsFaceUnregistered(false);
+              setIsAiWarmingUpInView(false);
               setPendingBlinkStudent(null);
               setLowConfidenceCandidate(null);
               setActiveCooldownInfo(null);
@@ -1113,8 +1341,8 @@ export const FaceAttendanceKioskModal: React.FC<FaceAttendanceKioskModalProps> =
                 setIsLowLightWarning(primaryFace.lighting.isLowLight || primaryFace.lighting.isTooDark);
               }
 
-              // ── 1. TEST MODE LOGIC (1st IN / 2nd OUT / 3rd IN / 4th OUT... + Live Mobile Push Every Time) ──
-              if (isFaceTestMode) {
+              // ── 1. TEST MODE LOGIC (1st IN / 2nd OUT Alternating + Live Mobile Push Every Time) ──
+              if (testModeActive) {
                 if (detectedFaces.length > 1) {
                   setTestActiveMatch(null);
                 } else if (isMatched && matchedStudent) {
@@ -1124,6 +1352,9 @@ export const FaceAttendanceKioskModal: React.FC<FaceAttendanceKioskModalProps> =
                   const elapsed = now - lastAnnounced;
 
                   if (elapsed >= cooldownMs) {
+                    for (const [k, ts] of testAnnounceCooldownRef.current.entries()) {
+                      if (now - ts > 60000) testAnnounceCooldownRef.current.delete(k);
+                    }
                     testAnnounceCooldownRef.current.set(matchedStudent.studentId, now);
                     const newCount = (testMatchCountsRef.current[matchedStudent.studentId] || 0) + 1;
                     testMatchCountsRef.current[matchedStudent.studentId] = newCount;
@@ -1141,9 +1372,9 @@ export const FaceAttendanceKioskModal: React.FC<FaceAttendanceKioskModalProps> =
                       hour12: true
                     });
 
-                    const resolvedClassId = matchedStudent.classId || classId || "";
+                    const resolvedClassId = matchedStudent.classId || classIdRef.current || "";
                     const resolvedClassName =
-                      matchedStudent.className || (matchedStudent.role === "TEACHER" ? "शिक्षक (Faculty)" : className);
+                      matchedStudent.className || (matchedStudent.role === "TEACHER" ? "शिक्षक (Faculty)" : activeClassName);
 
                     const activeRecord = {
                       studentId: matchedStudent.studentId,
@@ -1152,7 +1383,7 @@ export const FaceAttendanceKioskModal: React.FC<FaceAttendanceKioskModalProps> =
                       designation: matchedStudent.designation,
                       className: resolvedClassName,
                       rollNo: matchedStudent.rollNo,
-                      photoUrl: matchedStudent.photoUrl || enrolledMap[matchedStudent.studentId]?.photoUrl,
+                      photoUrl: matchedStudent.photoUrl || activeEnrolledMap[matchedStudent.studentId]?.photoUrl,
                       similarityPercent: matchedStudent.similarityPercent,
                       matchCount: newCount,
                       action: testAction,
@@ -1183,26 +1414,28 @@ export const FaceAttendanceKioskModal: React.FC<FaceAttendanceKioskModalProps> =
                     ].slice(0, 50));
 
                     playAttendanceSuccessChime();
-                    announceFaceTestMatch(matchedStudent.name, newCount, matchedStudent.role, testAction);
+                    announceFaceTestMatchRef.current(matchedStudent.name, newCount, matchedStudent.role, testAction);
 
-                    // Dispatch fresh Push Notification + NSTA Messenger alert on EVERY IN & OUT scan (no daily dedupe)
                     const pushTitle = testAction === "in"
                       ? `🟢 [TEST #${newCount} • IN] ${matchedStudent.name} प्रवेश`
                       : `🔴 [TEST #${newCount} • OUT] ${matchedStudent.name} प्रस्थान`;
                     const pushBody = testAction === "in"
-                      ? `[Test Mode #${newCount}] ${matchedStudent.name} (${resolvedClassName}) ka Check-IN samay ${timeFormatted} par darj hua.`
-                      : `[Test Mode #${newCount}] ${matchedStudent.name} (${resolvedClassName}) ka Check-OUT samay ${timeFormatted} par darj hua.`;
+                      ? `टेस्ट मोड: ${matchedStudent.name} (${resolvedClassName}) का प्रवेश समय ${timeFormatted} पर दर्ज हुआ।`
+                      : `टेस्ट मोड: ${matchedStudent.name} (${resolvedClassName}) का प्रस्थान समय ${timeFormatted} पर दर्ज हुआ।`;
 
+                    const testPhoto = matchedStudent.photoUrl || activeEnrolledMap[matchedStudent.studentId]?.photoUrl || undefined;
                     void sendSchoolPushNotification({
-                      schoolId,
+                      schoolId: activeSchoolId,
                       classId: resolvedClassId,
                       className: resolvedClassName,
                       studentIds: [matchedStudent.studentId],
                       ...(matchedStudent.role === "TEACHER" ? { userId: matchedStudent.studentId } : {}),
                       senderId: "school_kiosk_test",
-                      senderName: `${schoolName || "विद्यालय"} टेस्ट डेस्क`,
+                      senderName: `${activeSchoolName || "विद्यालय"} टेस्ट डेस्क`,
                       title: pushTitle,
                       body: pushBody,
+                      icon: testPhoto,
+                      senderPhoto: testPhoto,
                       type: "SCHOOL_NOTICE",
                       url: `/?schoolPortal=1&studentId=${encodeURIComponent(matchedStudent.studentId)}&schoolTab=messenger&subTab=school`,
                       urgent: true,
@@ -1216,18 +1449,18 @@ export const FaceAttendanceKioskModal: React.FC<FaceAttendanceKioskModalProps> =
 
                         void saveNstaMessage({
                           id: `msg_test_att_${now}_${newCount}_${matchedStudent.studentId}`,
-                          schoolId,
+                          schoolId: activeSchoolId,
                           threadType: "SCHOOL_DESK",
                           classId: resolvedClassId,
                           studentId: matchedStudent.studentId,
                           studentName: matchedStudent.name,
                           senderId: "school_kiosk_test",
-                          senderName: `${schoolName || "विद्यालय"} टेस्ट डेस्क`,
+                          senderName: `${activeSchoolName || "विद्यालय"} टेस्ट डेस्क`,
                           senderRole: "ADMIN",
                           text: testMsgText,
                           createdAt: new Date(now).toISOString(),
                           status: "delivered",
-                        });
+                        }).catch(() => {});
                       } catch {}
                     }
                   } else {
@@ -1237,10 +1470,13 @@ export const FaceAttendanceKioskModal: React.FC<FaceAttendanceKioskModalProps> =
                 }
               } else {
                 // ── 2. NORMAL ATTENDANCE FLOW ──
+                const isEngineWarming = Boolean(
+                  primaryFace.isAiEngineWarmingUp || (!isFaceApiLoaded() || !isArcFaceReady())
+                );
                 if (detectedFaces.length > 1) {
-                  // Guard: Multiple faces in frame. Don't mark attendance to prevent photobomb or ambiguity
                   setLiveMatchedCandidate(null);
                   setIsFaceUnregistered(false);
+                  setIsAiWarmingUpInView(false);
                   setPendingBlinkStudent(null);
                   setLowConfidenceCandidate(null);
                 } else {
@@ -1250,18 +1486,29 @@ export const FaceAttendanceKioskModal: React.FC<FaceAttendanceKioskModalProps> =
                   if (isUnderCooldown && matchedStudent) {
                     const rem = Math.max(1, Math.ceil((25000 - (Date.now() - lastScanned)) / 1000));
                     setActiveCooldownInfo({ name: matchedStudent.name, rollNo: matchedStudent.rollNo, remainingSec: rem });
+                    setIsAiWarmingUpInView(false);
+                    setIsFaceUnregistered(false);
                     setPendingBlinkStudent(null);
                     setLowConfidenceCandidate(null);
                   } else if (isMatched && matchedStudent) {
                     setActiveCooldownInfo(null);
                     setLowConfidenceCandidate(null);
                     setIsFaceUnregistered(false);
+                    setIsAiWarmingUpInView(false);
                     setLiveMatchedCandidate(matchedStudent);
                     setPendingBlinkStudent(null);
 
-                    void handleMarkAttendanceSuccess(matchedStudent);
+                    void handleMarkAttendanceSuccessRef.current(matchedStudent);
+                  } else if (isEngineWarming || !primaryFace.isArcFaceActive) {
+                    // AI still warming up OR frame blurry/side-angled before 512-D landmarks aligned: don't flash false "Unregistered"!
+                    setLiveMatchedCandidate(null);
+                    setIsAiWarmingUpInView(isEngineWarming);
+                    setIsFaceUnregistered(false);
+                    setPendingBlinkStudent(null);
+                    setLowConfidenceCandidate(null);
                   } else {
                     setLiveMatchedCandidate(null);
+                    setIsAiWarmingUpInView(false);
                     setIsFaceUnregistered(true);
                     setPendingBlinkStudent(null);
                     setLowConfidenceCandidate(null);
@@ -1334,6 +1581,9 @@ export const FaceAttendanceKioskModal: React.FC<FaceAttendanceKioskModalProps> =
                   const simPct = f.matchedStudent.similarity !== undefined ? Number((f.matchedStudent.similarity * 100).toFixed(1)) : f.matchedStudent.similarityPercent;
                   badgeTitle = `🟢 ${f.matchedStudent.name} (Sim: ${simPct}%)`;
                   badgeSub = `${f.matchedStudent.className || (f.matchedStudent.role === "TEACHER" ? "शिक्षक (Faculty)" : "छात्र")}${f.matchedStudent.rollNo ? ` • Roll #${f.matchedStudent.rollNo}` : ""}${f.pose?.yaw !== undefined ? ` • Yaw: ${f.pose.yaw.toFixed(0)}°` : ""}`;
+                } else if (f.isAiEngineWarmingUp || !f.isArcFaceActive) {
+                  badgeTitle = f.isAiEngineWarmingUp ? "⏳ AI मॉडल लोड हो रहा है..." : "🎯 चेहरा सीधा रखें (Aligning...)";
+                  badgeSub = "कृपया कैमरे की तरफ सीधा देखें";
                 } else {
                   badgeTitle = "🔴 अज्ञात चेहरा (No Match)";
                   badgeSub = "⚠️ Unregistered • डेटाबेस में नहीं मिला";
@@ -1353,12 +1603,20 @@ export const FaceAttendanceKioskModal: React.FC<FaceAttendanceKioskModalProps> =
                   ? "rgba(120, 53, 15, 0.94)"
                   : isThisFaceMatched
                   ? "rgba(6, 78, 59, 0.94)"
+                  : (f.isAiEngineWarmingUp || !f.isArcFaceActive)
+                  ? "rgba(15, 23, 42, 0.92)"
                   : "rgba(127, 29, 29, 0.94)";
                 ctx.beginPath();
                 ctx.roundRect(badgeX, badgeY, badgeW, badgeH, 10);
                 ctx.fill();
 
-                ctx.strokeStyle = isThisFaceBlockedMulti ? "#fbbf24" : isThisFaceMatched ? "#34d399" : "#f87171";
+                ctx.strokeStyle = isThisFaceBlockedMulti
+                  ? "#fbbf24"
+                  : isThisFaceMatched
+                  ? "#34d399"
+                  : (f.isAiEngineWarmingUp || !f.isArcFaceActive)
+                  ? "#38bdf8"
+                  : "#f87171";
                 ctx.lineWidth = 1.8;
                 ctx.stroke();
 
@@ -1370,7 +1628,13 @@ export const FaceAttendanceKioskModal: React.FC<FaceAttendanceKioskModalProps> =
                 ctx.fillText(badgeTitle, badgeX + badgeW / 2, badgeY + 14);
 
                 // Text: Subtitle
-                ctx.fillStyle = isThisFaceBlockedMulti ? "#fde68a" : isThisFaceMatched ? "#a7f3d0" : "#fca5a5";
+                ctx.fillStyle = isThisFaceBlockedMulti
+                  ? "#fde68a"
+                  : isThisFaceMatched
+                  ? "#a7f3d0"
+                  : (f.isAiEngineWarmingUp || !f.isArcFaceActive)
+                  ? "#bae6fd"
+                  : "#fca5a5";
                 ctx.font = "600 11px system-ui, -apple-system, sans-serif";
                 ctx.fillText(badgeSub, badgeX + badgeW / 2, badgeY + 29);
 
@@ -1385,12 +1649,20 @@ export const FaceAttendanceKioskModal: React.FC<FaceAttendanceKioskModalProps> =
         }
       }
 
-      animId = requestAnimationFrame(renderLoop);
+      if (!isDisposed) {
+        animId = requestAnimationFrame(renderLoop);
+      }
     };
 
     animId = requestAnimationFrame(renderLoop);
-    return () => cancelAnimationFrame(animId);
-  }, [isOpen, hasFaceAccess, enrolledMap, facingMode, handleMarkAttendanceSuccess, pendingBlinkStudent, isFaceTestMode, announceFaceTestMatch, className, schoolId, schoolName]);
+    return () => {
+      isDisposed = true;
+      cancelAnimationFrame(animId);
+      isDetectingBusyRef.current = false;
+      isPunchingLockRef.current = false;
+      globalCooldownUntilRef.current = 0;
+    };
+  }, [isOpen, hasFaceAccess, facingMode]);
 
   if (!isOpen) return null;
 
@@ -1528,9 +1800,11 @@ export const FaceAttendanceKioskModal: React.FC<FaceAttendanceKioskModalProps> =
               <span className={`px-1.5 py-0.5 rounded-full text-[9px] font-black uppercase tracking-wider shrink-0 border ${
                 isFaceTestMode
                   ? "bg-amber-400/20 border-amber-400/40 text-amber-300"
-                  : "bg-emerald-500/10 border-emerald-500/30 text-emerald-400"
+                  : aiEngineStatus === "ready"
+                  ? "bg-emerald-500/10 border-emerald-500/30 text-emerald-400"
+                  : "bg-cyan-500/10 border-cyan-500/30 text-cyan-300 animate-pulse"
               }`}>
-                {isFaceTestMode ? "🧪 Test" : "Live"}
+                {isFaceTestMode ? "🧪 Test" : aiEngineStatus === "ready" ? (isWakeLockActive ? "Live • 24/7" : "Live") : "AI Loading"}
               </span>
             </div>
             <p className="hidden md:block text-[11px] text-slate-400 truncate">
@@ -1764,6 +2038,7 @@ export const FaceAttendanceKioskModal: React.FC<FaceAttendanceKioskModalProps> =
         {/* Camera Video Stream (mirror naturally when using front selfie camera) */}
         <video
           ref={videoRef}
+          autoPlay
           playsInline
           muted
           className={`absolute inset-0 w-full h-full object-cover transition-transform ${
@@ -2092,6 +2367,11 @@ export const FaceAttendanceKioskModal: React.FC<FaceAttendanceKioskModalProps> =
                 <span className="text-[12px] font-bold tracking-wider text-emerald-300 bg-emerald-950/95 border border-emerald-400 px-4 py-1.5 rounded-full backdrop-blur-md flex items-center gap-2 shadow-2xl animate-pulse">
                   <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-ping" />
                   <span>🟢 {liveMatchedCandidate.name} (Sim: {liveMatchedCandidate.similarityPercent}%)</span>
+                </span>
+              ) : isAiWarmingUpInView || aiEngineStatus === "loading" ? (
+                <span className="text-[12px] font-bold tracking-wider text-cyan-200 bg-slate-900/90 border border-cyan-400/60 px-4 py-1.5 rounded-full backdrop-blur-md flex items-center gap-2 shadow-2xl">
+                  <span className="w-2.5 h-2.5 rounded-full bg-cyan-400 animate-ping" />
+                  <span>⏳ AI Face Engine लोड हो रहा है...</span>
                 </span>
               ) : isFaceUnregistered ? (
                 <span className="text-[12px] font-bold tracking-wider text-rose-200 bg-rose-950/90 border border-rose-400 px-4 py-1.5 rounded-full backdrop-blur-md flex items-center gap-2 shadow-2xl animate-pulse">

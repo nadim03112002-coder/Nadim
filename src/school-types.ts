@@ -352,6 +352,7 @@ export interface School {
   locationUpdatedAt?: string;
   feeDiscountSlabs?: FeeDiscountSlab[];
   feeTermCampaigns?: FeeTermCampaign[];
+  feeTypeSchedulePlans?: Record<string, FeeTypeSchedulePlan>;
   isDefaultPublicWebsite?: boolean;
   websiteConfig?: SchoolWebsiteConfig;
 }
@@ -359,7 +360,44 @@ export interface School {
 export interface SettledFeeHeadRecord {
   fullPaid: boolean;
   totalPaid: number;
+  waivedAmount?: number;
   targetCap?: number;
+  source?: string;
+  updatedAt?: string;
+}
+
+export interface WaivedFeeHeadRecord {
+  waivedAmount: number;
+  fullWaived: boolean;
+  label?: string;
+  reason?: string;
+  date: string;
+  by?: string;
+}
+
+export interface PostAdmissionPurchaseItem {
+  name: string;
+  headKey?: string;
+  campaignId?: string;
+  categoryType?: 'store_item' | 'fee_head' | 'exam_term' | 'kit_item';
+  quantity: number;
+  grossAmount: number;
+  discountAmount: number;
+  paidAmount: number;
+}
+
+export interface PostAdmissionPurchaseRecord {
+  id: string;
+  date: string; // YYYY-MM-DD
+  receiptNo: string;
+  source: 'store' | 'fee_desk';
+  items: PostAdmissionPurchaseItem[];
+  totalGross: number;
+  totalDiscount: number;
+  totalPaid: number;
+  paymentMode: string;
+  linkedFeeReceiptNo?: string;
+  remarks?: string;
   updatedAt?: string;
 }
 
@@ -382,6 +420,10 @@ export interface FeeTermCampaign {
   title: string;
   headKey: string;
   amount: number;
+  classAmounts?: Record<string, number>; // Per-class ₹ override ({ [classId]: amount })
+  planId?: string;
+  termIndex?: number;
+  termTotal?: number;
   targetMonth: string; // "YYYY-MM"
   classIds: string[] | "ALL";
   skipFullPaidStudents: boolean;
@@ -391,6 +433,28 @@ export interface FeeTermCampaign {
   active: boolean;
   createdAt: string;
   createdBy?: string;
+}
+
+export interface FeeTypeScheduleTerm {
+  id: string;
+  termNumber: number;
+  title: string;
+  targetMonth: string; // "YYYY-MM"
+  defaultAmount: number;
+  classAmounts: Record<string, number>; // { [classId]: perTermAmount }
+  active: boolean;
+}
+
+export interface FeeTypeSchedulePlan {
+  headKey: string;
+  headLabel: string;
+  enabled: boolean;
+  targetMode: "reg_only_or_unpaid" | "all_except_full_paid";
+  respectHeadCap: boolean;
+  termCount: number;
+  terms: FeeTypeScheduleTerm[];
+  updatedAt: string;
+  updatedBy?: string;
 }
 
 export interface AppliedTermFeeItem {
@@ -875,6 +939,9 @@ export interface SchoolStudent {
   admissionPaymentPlan?: 'registration_only' | 'half_payment' | 'full_payment';
   settledFeeHeads?: Record<string, SettledFeeHeadRecord>;
   deferredScheduledHeads?: DeferredScheduledFeeHead[];
+  waivedFeeHeads?: Record<string, WaivedFeeHeadRecord>;
+  paidCampaignIds?: string[];
+  postAdmissionPurchases?: PostAdmissionPurchaseRecord[];
 }
 
 // ── CANONICAL CLASS & STREAM CONFIGURATION ──────────────────────────────────
@@ -2022,8 +2089,16 @@ export interface StoreSaleRecord {
     quantity: number;
     unitPrice: number;
     subtotal: number;
+    headKey?: string;
+    campaignId?: string;
+    categoryType?: 'store_item' | 'fee_head' | 'exam_term' | 'kit_item';
+    discountAmount?: number;
+    paidAmount?: number;
   }[];
+  grossAmount?: number;
+  discountAmount?: number;
   totalAmount: number;
+  linkedFeeReceiptNo?: string;
   paymentMode: 'cash' | 'online_upi' | 'card' | 'nsta_online';
   date: string;
   soldBy: string;

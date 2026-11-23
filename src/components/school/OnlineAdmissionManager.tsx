@@ -150,6 +150,8 @@ import { maskSensitive2Chars } from "./feeReceiptUtils";
 import {
   detectFamilySiblings,
   mergeSchoolReferrerList,
+  normalizeWhatsappOrPhone,
+  sanitizeIndianPhoneInput,
   type ReferrerOption,
 } from "../../utils/schoolReferralSiblingEngine";
 import { AdmissionReferralAndSiblingPanel } from "./AdmissionReferralAndSiblingPanel";
@@ -3665,6 +3667,7 @@ export const OnlineAdmissionManager: React.FC<Props> = ({
           admissionDueBalance: remainingAdmDueToSave,
           admissionPaymentPlan: adminPaymentPlan,
           settledFeeHeads: directSettlement.settledFeeHeads,
+          ...(Object.keys(directSettlement.waivedFeeHeads || {}).length > 0 ? { waivedFeeHeads: directSettlement.waivedFeeHeads } : {}),
           advanceMonthlyFeePaid: Boolean(adminIncludeAdvanceTuition && remainingAdmDueToSave === 0),
           advanceMonthlyFeeDue: deferredTuitionAmt,
           advanceMonthlyFeeMonth: paidIso.slice(0, 7),
@@ -4581,6 +4584,7 @@ export const OnlineAdmissionManager: React.FC<Props> = ({
       admissionDueBalance: term2Bal,
       admissionPaymentPlan: chosenPlan,
       settledFeeHeads: rzpSettlement.settledFeeHeads,
+      ...(Object.keys(rzpSettlement.waivedFeeHeads || {}).length > 0 ? { waivedFeeHeads: rzpSettlement.waivedFeeHeads } : {}),
       advanceMonthlyFeePaid: Boolean(incTuition && term2Bal === 0),
       advanceMonthlyFeeDue: deferredTuition,
       advanceMonthlyFeeMonth: paidIso.slice(0, 7),
@@ -5309,6 +5313,7 @@ export const OnlineAdmissionManager: React.FC<Props> = ({
         admissionDueBalance: term2Bal,
         admissionPaymentPlan: chosenPlan,
         settledFeeHeads: quickSettlement.settledFeeHeads,
+        ...(Object.keys(quickSettlement.waivedFeeHeads || {}).length > 0 ? { waivedFeeHeads: quickSettlement.waivedFeeHeads } : {}),
         advanceMonthlyFeePaid: Boolean(incTuition && term2Bal === 0),
         advanceMonthlyFeeDue: deferredTuitionAmt,
         advanceMonthlyFeeMonth: paidIso.slice(0, 7),
@@ -6866,7 +6871,7 @@ export const OnlineAdmissionManager: React.FC<Props> = ({
                             </a>
                             {app.whatsappNo && (
                               <a
-                                href={`https://wa.me/91${app.whatsappNo.replace(/\D/g, "")}`}
+                                href={`https://wa.me/91${normalizeWhatsappOrPhone(app.whatsappNo)}`}
                                 target="_blank"
                                 rel="noreferrer"
                                 className="inline-flex items-center gap-1 font-black text-emerald-700 dark:text-emerald-300 hover:underline px-2 py-0.5 rounded-md bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800"
@@ -9964,17 +9969,17 @@ export const OnlineAdmissionManager: React.FC<Props> = ({
                               </label>
                               <input
                                 type="tel"
-                                maxLength={10}
+                                maxLength={18}
                                 value={form.fatherPhone}
                                 onChange={(e) => {
-                                  const val = e.target.value.replace(/\D/g, "").slice(0, 10);
+                                  const val = sanitizeIndianPhoneInput(e.target.value);
                                   setForm((prev) => ({
                                     ...prev,
                                     fatherPhone: val,
                                     phone: !prev.phone || prev.phone === prev.fatherPhone ? val : prev.phone,
                                   }));
                                 }}
-                                placeholder="10-digit Mobile Number"
+                                placeholder="10-digit Mobile (+91 supported)"
                                 className="w-full px-3 py-2 rounded-xl border border-indigo-200 dark:border-indigo-800 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-indigo-500"
                               />
                             </div>
@@ -9998,9 +10003,9 @@ export const OnlineAdmissionManager: React.FC<Props> = ({
                               </div>
                               <input
                                 type="tel"
-                                maxLength={10}
+                                maxLength={18}
                                 value={form.fatherWhatsapp}
-                                onChange={(e) => setForm({ ...form, fatherWhatsapp: e.target.value.replace(/\D/g, "").slice(0, 10) })}
+                                onChange={(e) => setForm({ ...form, fatherWhatsapp: sanitizeIndianPhoneInput(e.target.value) })}
                                 placeholder="WhatsApp Number"
                                 className="w-full px-3 py-2 rounded-xl border border-emerald-300 dark:border-emerald-800 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-emerald-500"
                               />
@@ -10085,9 +10090,9 @@ export const OnlineAdmissionManager: React.FC<Props> = ({
                               </label>
                               <input
                                 type="tel"
-                                maxLength={10}
+                                maxLength={18}
                                 value={form.motherPhone}
-                                onChange={(e) => setForm({ ...form, motherPhone: e.target.value.replace(/\D/g, "").slice(0, 10) })}
+                                onChange={(e) => setForm({ ...form, motherPhone: sanitizeIndianPhoneInput(e.target.value) })}
                                 placeholder="10-digit Mobile Number"
                                 className="w-full px-3 py-2 rounded-xl border border-pink-200 dark:border-pink-800 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-pink-500"
                               />
@@ -10112,9 +10117,9 @@ export const OnlineAdmissionManager: React.FC<Props> = ({
                               </div>
                               <input
                                 type="tel"
-                                maxLength={10}
+                                maxLength={18}
                                 value={form.motherWhatsapp}
-                                onChange={(e) => setForm({ ...form, motherWhatsapp: e.target.value.replace(/\D/g, "").slice(0, 10) })}
+                                onChange={(e) => setForm({ ...form, motherWhatsapp: sanitizeIndianPhoneInput(e.target.value) })}
                                 placeholder="WhatsApp Number"
                                 className="w-full px-3 py-2 rounded-xl border border-emerald-300 dark:border-emerald-800 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-emerald-500"
                               />
@@ -10154,10 +10159,10 @@ export const OnlineAdmissionManager: React.FC<Props> = ({
                       <input
                         type="tel"
                         required
-                        maxLength={10}
+                        maxLength={18}
                         value={form.phone}
-                        onChange={(e) => setForm({ ...form, phone: e.target.value.replace(/\D/g, "").slice(0, 10) })}
-                        placeholder="10-digit Mobile Number"
+                        onChange={(e) => setForm({ ...form, phone: sanitizeIndianPhoneInput(e.target.value) })}
+                        placeholder="10-digit Mobile (+91 supported)"
                         className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 text-sm font-semibold focus:outline-none focus:ring-2 focus:ring-indigo-500"
                       />
                     </div>
@@ -10180,9 +10185,9 @@ export const OnlineAdmissionManager: React.FC<Props> = ({
                         </div>
                         <input
                           type="tel"
-                          maxLength={10}
+                          maxLength={18}
                           value={form.whatsappNo}
-                          onChange={(e) => setForm({ ...form, whatsappNo: e.target.value.replace(/\D/g, "").slice(0, 10) })}
+                          onChange={(e) => setForm({ ...form, whatsappNo: sanitizeIndianPhoneInput(e.target.value) })}
                           placeholder="WhatsApp"
                           className="w-full px-3 py-2.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-indigo-500"
                         />
@@ -10233,9 +10238,9 @@ export const OnlineAdmissionManager: React.FC<Props> = ({
                             </label>
                             <input
                               type="tel"
-                              maxLength={10}
+                              maxLength={18}
                               value={form.emergencyPhone}
-                              onChange={(e) => setForm({ ...form, emergencyPhone: e.target.value.replace(/\D/g, "").slice(0, 10) })}
+                              onChange={(e) => setForm({ ...form, emergencyPhone: sanitizeIndianPhoneInput(e.target.value) })}
                               placeholder="10-digit Mobile"
                               className="w-full px-3 py-2 rounded-xl border border-amber-300 dark:border-amber-800 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-amber-500"
                             />
@@ -10269,9 +10274,9 @@ export const OnlineAdmissionManager: React.FC<Props> = ({
                             </div>
                             <input
                               type="tel"
-                              maxLength={10}
+                              maxLength={18}
                               value={form.emergencyWhatsapp}
-                              onChange={(e) => setForm({ ...form, emergencyWhatsapp: e.target.value.replace(/\D/g, "").slice(0, 10) })}
+                              onChange={(e) => setForm({ ...form, emergencyWhatsapp: sanitizeIndianPhoneInput(e.target.value) })}
                               placeholder="Emergency WhatsApp"
                               className="w-full px-3 py-2 rounded-xl border border-emerald-300 dark:border-emerald-800 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-emerald-500"
                             />

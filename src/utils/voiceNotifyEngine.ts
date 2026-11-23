@@ -87,6 +87,29 @@ export const pickBestVoice = (voices: SpeechSynthesisVoice[], preferredLang: str
 };
 
 let isSpeakingActive = false;
+const recentSpokenCache = new Map<string, number>();
+
+const normalizeDedupeKey = (title: string, body?: string, explicitKey?: string): string => {
+  if (explicitKey && explicitKey.trim()) return `id:${explicitKey.trim()}`;
+  const combined = `${title || ""}|${body || ""}`.replace(/\s+/g, " ").trim().toLowerCase();
+  return `txt:${combined.slice(0, 180)}`;
+};
+
+const shouldSkipDuplicateSpeech = (key: string, windowMs = 12000): boolean => {
+  if (!key) return false;
+  const now = Date.now();
+  const prev = recentSpokenCache.get(key);
+  if (prev && now - prev < windowMs) {
+    return true;
+  }
+  recentSpokenCache.set(key, now);
+  if (recentSpokenCache.size > 100) {
+    for (const [k, ts] of recentSpokenCache.entries()) {
+      if (now - ts > 60000) recentSpokenCache.delete(k);
+    }
+  }
+  return false;
+};
 
 // Pleasant two-tone chime (880Hz -> 1320Hz) alerting user before speech
 export const playNotificationTone = () => {
@@ -121,9 +144,9 @@ export const playNotificationTone = () => {
 export const speakNotification = (
   title: string,
   body?: string,
-  options?: { force?: boolean; rate?: number; playTone?: boolean }
+  options?: { force?: boolean; rate?: number; playTone?: boolean; dedupeKey?: string }
 ): boolean => {
-  if (typeof window === "undefined" || !("speechSynthesis" in window)) {
+  if (typeof window === "undefined") {
     return false;
   }
 
@@ -132,17 +155,41 @@ export const speakNotification = (
     return false;
   }
 
+  const dKey = normalizeDedupeKey(title, body, options?.dedupeKey);
+  if (shouldSkipDuplicateSpeech(dKey)) {
+    return false;
+  }
+
+  const rawContent = body ? `${title}. ${body}` : title;
+  const cleanSpeech = cleanTextForSpeech(rawContent);
+  if (!cleanSpeech) return false;
+
+  // Prefer native Android TextToSpeech when running inside the LIFE MAKER APK
+  const androidBridge = (window as any).LifeMakerAndroid;
+  if (androidBridge && typeof androidBridge.speakNativeVoice === "function") {
+    try {
+      if (options?.playTone !== false) {
+        playNotificationTone();
+      }
+      androidBridge.speakNativeVoice(cleanSpeech, dKey);
+      return true;
+    } catch {}
+  }
+
+  if (!("speechSynthesis" in window)) {
+    return false;
+  }
+
   try {
     if (options?.playTone !== false) {
       playNotificationTone();
     }
 
-    const rawContent = body ? `${title}. ${body}` : title;
-    const cleanSpeech = cleanTextForSpeech(rawContent);
-    if (!cleanSpeech) return false;
-
     // Cancel any previous speech so notifications don't overlap awkwardly
     window.speechSynthesis.cancel();
+    if (window.speechSynthesis.paused) {
+      try { window.speechSynthesis.resume(); } catch {}
+    }
 
     const utterance = new SpeechSynthesisUtterance(cleanSpeech);
     utterance.rate = options?.rate || config.rate || 1.0;
@@ -208,7 +255,7 @@ export const testVoiceNotificationSample = () => {
   return speakNotification(
     "नमस्ते!",
     "स्कूल नोटिफिकेशन आवाज़ सक्रिय है। अब सभी ज़रूरी संदेश बोलकर सुनाए जाएंगे।",
-    { force: true }
+    { force: true, dedupeKey: `test_${Date.now()}` }
   );
 };
 
@@ -217,8 +264,12 @@ if (typeof window !== "undefined") {
   // 1. Listen for foreground push/in-app notifications
   window.addEventListener("nst_foreground_notification", (event: any) => {
     const detail = event?.detail;
+    if (detail?.alreadySpoken) return;
     if (detail && (detail.title || detail.body)) {
-      speakNotification(detail.title || "नया नोटिफिकेशन", detail.body);
+      speakNotification(detail.title || "नया नोटिफिकेशन", detail.body, {
+        dedupeKey: detail.id || detail.payload?.id || detail.payload?.data?.id,
+        force: Boolean(detail.force),
+      });
     }
   });
 
@@ -226,7 +277,10 @@ if (typeof window !== "undefined") {
   window.addEventListener("nst_voice_speak_notice", (event: any) => {
     const detail = event?.detail;
     if (detail && (detail.title || detail.text)) {
-      speakNotification(detail.title || detail.text, detail.body);
+      speakNotification(detail.title || detail.text, detail.body, {
+        dedupeKey: detail.id,
+        force: Boolean(detail.force),
+      });
     }
   });
 

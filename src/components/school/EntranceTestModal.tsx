@@ -23,6 +23,7 @@ import {
   XCircle,
 } from "lucide-react";
 import { toast } from "sonner";
+import { sanitizeIndianPhoneInput } from "../../utils/schoolReferralSiblingEngine";
 import type {
   EntranceClassNumber,
   EntranceTestAttempt,
@@ -783,10 +784,10 @@ export const EntranceTestModal: React.FC<Props> = ({
                     </label>
                     <input
                       type="tel"
-                      maxLength={10}
+                      maxLength={18}
                       value={phone}
-                      onChange={(e) => setPhone(e.target.value.replace(/\D/g, "").slice(0, 10))}
-                      placeholder="10-digit mobile number"
+                      onChange={(e) => setPhone(sanitizeIndianPhoneInput(e.target.value))}
+                      placeholder="10-digit mobile number (+91 supported)"
                       className="w-full px-3 py-2.5 rounded-lg bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-700 text-sm font-mono tabular-nums focus:outline-none focus:border-sky-500"
                     />
                   </div>

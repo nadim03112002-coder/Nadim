@@ -13,6 +13,67 @@
   }
 }
 
+/* Smooth App & Auth Screen Animations */
+@keyframes lmFadeSlideUp {
+  0% {
+    opacity: 0;
+    transform: translateY(14px) scale(0.985);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes lmOrbitSpin {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+
+@keyframes lmPulseRing {
+  0%, 100% {
+    transform: scale(0.96);
+    opacity: 0.45;
+  }
+  50% {
+    transform: scale(1.06);
+    opacity: 0.85;
+  }
+}
+
+@keyframes lmShakeError {
+  0%, 100% { transform: translateX(0); }
+  20% { transform: translateX(-6px); }
+  40% { transform: translateX(6px); }
+  60% { transform: translateX(-4px); }
+  80% { transform: translateX(4px); }
+}
+
+.lm-enter {
+  animation: lmFadeSlideUp 0.42s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.lm-enter-delay-1 {
+  animation: lmFadeSlideUp 0.46s cubic-bezier(0.16, 1, 0.3, 1) 0.06s both;
+}
+
+.lm-enter-delay-2 {
+  animation: lmFadeSlideUp 0.5s cubic-bezier(0.16, 1, 0.3, 1) 0.12s both;
+}
+
+.lm-shake {
+  animation: lmShakeError 0.38s ease-in-out both;
+}
+
+.lm-orbit-spin {
+  animation: lmOrbitSpin 12s linear infinite;
+}
+
+.lm-pulse-ring {
+  animation: lmPulseRing 2.6s ease-in-out infinite;
+}
+
+
 /* Print Styles for Official School Documents & DPS Fee Receipts */
 @media print {
   html, body {

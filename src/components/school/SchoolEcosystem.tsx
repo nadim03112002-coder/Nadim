@@ -32,6 +32,7 @@ import {
 import { toast } from "sonner";
 import { getDemoSchoolDataset, isDemoDataEnabled, setDemoDataEnabled } from "./demoDataStore";
 import { syncLinkedStudentsToPushSubscription } from "../../utils/schoolPushClient";
+import { speakNotification } from "../../utils/voiceNotifyEngine";
 import { QrScannerModal } from "../QrScannerModal";
 import type { School, SchoolUserProfile } from "../../school-types";
 import {
@@ -685,6 +686,11 @@ export const SchoolEcosystem: React.FC<Props> = ({
     const handleSwMsg = (event: MessageEvent) => {
       const data = event.data;
       if (data?.type === "SCHOOL_PUSH_NAVIGATE") {
+        if (data.title || data.body) {
+          speakNotification(data.title || "स्कूल सूचना", data.body || "", {
+            dedupeKey: data.id || `tap_${data.title || ""}_${data.body || ""}`,
+          });
+        }
         if (data.studentId && data.schoolId) {
           setActiveStudentKey(`${data.schoolId}__${data.studentId}`);
         } else if (data.studentId) {
@@ -1231,6 +1237,7 @@ export const SchoolEcosystem: React.FC<Props> = ({
           <SuperAdminPanel
             adminUid={uid}
             onBack={showSuperAdminHub ? () => setShowSuperAdminHub(false) : (onOpenAdminDashboard || onBack)}
+            onLogout={onLogout}
           />
         </Suspense>
       </PanelErrorBoundary>
@@ -1375,6 +1382,7 @@ export const SchoolEcosystem: React.FC<Props> = ({
                 onBack();
               }
             }}
+            onLogout={onLogout}
           />
         </div>
       );

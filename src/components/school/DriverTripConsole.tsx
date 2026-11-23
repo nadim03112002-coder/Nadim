@@ -11,6 +11,7 @@ import { shouldUseDemoForSchool } from "../../school-firebase";
 import { speakNotification } from "../../utils/voiceNotifyEngine";
 import { rtdb } from "../../firebase";
 import { ref as dbRef, set, onValue } from "firebase/database";
+import { sbRtdbSet, sbRtdbSubscribe } from "../../services/supabaseDbAdapter";
 import { toast } from "sonner";
 import {
   getLocalRoutes,
@@ -146,40 +147,47 @@ export const DriverTripConsole: React.FC<Props> = ({
     return () => window.removeEventListener("school-transport-updated", refreshFleet);
   }, [school?.id, initialBusId, isDemo]);
 
-  // Also hydrate school's configured bus fleet from Firebase RTDB so standalone driver phones get real buses
+  // Hydrate school's configured bus fleet from Supabase Realtime & RTDB
   useEffect(() => {
     const sid = school?.id;
-    if (!rtdb || !sid) return;
+    if (!sid) return;
+    const applyFleetVal = (val: any) => {
+      if (!val || typeof val !== "object") return;
+      const arr = Object.values(val) as any[];
+      if (arr.length === 0) return;
+      const mapped: DriverBusConfig[] = arr
+        .filter((v: any) => v && v.id)
+        .map((v: any, idx: number) => ({
+          id: v.id || `bus_${idx + 1}`,
+          busNumber: v.vehicleNumber || v.busNumber || `Bus #${idx + 1}`,
+          route: v.route || v.model || "Campus Route",
+          driverName: v.driverName || "Driver",
+          driverPhone: v.driverPhone || "",
+          stops:
+            Array.isArray(v.stops) && v.stops.length > 0
+              ? v.stops
+              : ["Start Point", "Main Chowk", "School Main Gate"],
+        }));
+      if (mapped.length > 0) {
+        setFleetBuses((prev) => {
+          const byId = new Map<string, DriverBusConfig>(prev.map((b) => [b.id, b]));
+          mapped.forEach((b) => byId.set(b.id, b));
+          return Array.from(byId.values());
+        });
+      }
+    };
+
+    const unsubSb = sbRtdbSubscribe(`schools/${sid}/bus_fleet`, applyFleetVal);
     let unsub: any = null;
-    try {
-      unsub = onValue(dbRef(rtdb, `schools/${sid}/bus_fleet`), (snap) => {
-        if (!snap.exists()) return;
-        const val = snap.val() || {};
-        const arr = Object.values(val) as any[];
-        if (arr.length === 0) return;
-        const mapped: DriverBusConfig[] = arr
-          .filter((v: any) => v && v.id)
-          .map((v: any, idx: number) => ({
-            id: v.id || `bus_${idx + 1}`,
-            busNumber: v.vehicleNumber || v.busNumber || `Bus #${idx + 1}`,
-            route: v.route || v.model || "Campus Route",
-            driverName: v.driverName || "Driver",
-            driverPhone: v.driverPhone || "",
-            stops:
-              Array.isArray(v.stops) && v.stops.length > 0
-                ? v.stops
-                : ["Start Point", "Main Chowk", "School Main Gate"],
-          }));
-        if (mapped.length > 0) {
-          setFleetBuses((prev) => {
-            const byId = new Map<string, DriverBusConfig>(prev.map((b) => [b.id, b]));
-            mapped.forEach((b) => byId.set(b.id, b));
-            return Array.from(byId.values());
-          });
-        }
-      });
-    } catch {}
+    if (rtdb) {
+      try {
+        unsub = onValue(dbRef(rtdb, `schools/${sid}/bus_fleet`), (snap) => {
+          if (snap.exists()) applyFleetVal(snap.val());
+        });
+      } catch {}
+    }
     return () => {
+      unsubSb();
       if (typeof unsub === "function") unsub();
     };
   }, [school?.id]);
@@ -231,15 +239,13 @@ export const DriverTripConsole: React.FC<Props> = ({
       }
     } catch {}
 
-    if (!rtdb || !sid) return;
-    let unsub: any = null;
-    try {
-      unsub = onValue(dbRef(rtdb, `schools/${sid}/student_home_pins`), (snap) => {
-        if (!snap.exists()) return;
-        const val = snap.val() || {};
-        const arr = Object.values(val).filter(
-          (p: any) => p?.studentId && Number.isFinite(Number(p?.homeLat)) && Number.isFinite(Number(p?.homeLng))
-        ) as StudentHomePin[];
+    if (!sid) return;
+    const applyPinsVal = (val: any) => {
+      if (!val || typeof val !== "object") return;
+      const arr = Object.values(val).filter(
+        (p: any) => p?.studentId && Number.isFinite(Number(p?.homeLat)) && Number.isFinite(Number(p?.homeLng))
+      ) as StudentHomePin[];
+      if (arr.length > 0) {
         setStudentHomePins(
           arr.map((p) => ({
             ...p,
@@ -247,9 +253,20 @@ export const DriverTripConsole: React.FC<Props> = ({
             homeLng: Number(p.homeLng),
           }))
         );
-      });
-    } catch {}
+      }
+    };
+
+    const unsubSbPins = sbRtdbSubscribe(`schools/${sid}/student_home_pins`, applyPinsVal);
+    let unsub: any = null;
+    if (rtdb) {
+      try {
+        unsub = onValue(dbRef(rtdb, `schools/${sid}/student_home_pins`), (snap) => {
+          if (snap.exists()) applyPinsVal(snap.val());
+        });
+      } catch {}
+    }
     return () => {
+      unsubSbPins();
       if (typeof unsub === "function") unsub();
     };
   }, [school?.id]);
@@ -396,8 +413,8 @@ export const DriverTripConsole: React.FC<Props> = ({
       localStorage.setItem(`nst_last_active_bus_${school?.id || "default"}`, selectedBus.id);
       window.dispatchEvent(new CustomEvent("nst_bus_location_update", { detail: payload }));
 
-      // Sync to canonical RTDB node with 10s throttle (immediate on trip start/end or stop completion) — saves ~20x RTDB bandwidth
-      if (rtdb && school?.id) {
+      // Sync to Supabase Realtime & RTDB with 10s throttle (immediate on trip start/end or stop completion)
+      if (school?.id) {
         const nowMs = Date.now();
         const prevRtdb = lastRtdbWriteRef.current;
         const elapsedMs = nowMs - prevRtdb.time;
@@ -411,7 +428,10 @@ export const DriverTripConsole: React.FC<Props> = ({
 
         if (isCriticalStateChange || elapsedMs >= 10_000 || (elapsedMs >= 4_000 && movedMeters >= 120)) {
           lastRtdbWriteRef.current = { time: nowMs, lat: payload.latitude, lng: payload.longitude };
-          set(dbRef(rtdb, `school_bus_locations/${school.id}/${selectedBus.id}`), payload).catch(() => {});
+          void sbRtdbSet(`school_bus_locations/${school.id}/${selectedBus.id}`, payload).catch(() => {});
+          if (rtdb) {
+            set(dbRef(rtdb, `school_bus_locations/${school.id}/${selectedBus.id}`), payload).catch(() => {});
+          }
         }
       }
 

@@ -1,4 +1,9 @@
 import crypto from "crypto";
+import {
+  getKvDocFromSupabase,
+  patchKvDocInSupabase,
+  upsertKvDocInSupabase,
+} from "./_supabaseServer";
 
 const RTDB_BASE_URL =
   process.env.FIREBASE_DATABASE_URL ||
@@ -60,6 +65,9 @@ function cleanRtdbKey(raw: string): string {
 }
 
 async function rtdbGet<T = any>(rtdbPath: string): Promise<T | null> {
+  const sbVal = await getKvDocFromSupabase<T>(rtdbPath);
+  if (sbVal !== null) return sbVal;
+
   try {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 5000);
@@ -68,13 +76,22 @@ async function rtdbGet<T = any>(rtdbPath: string): Promise<T | null> {
     });
     clearTimeout(timer);
     if (!res.ok) return null;
-    return (await res.json()) as T;
+    const val = (await res.json()) as T;
+    if (val && typeof val === "object") {
+      void upsertKvDocInSupabase(rtdbPath, val as Record<string, any>);
+    }
+    return val;
   } catch {
     return null;
   }
 }
 
 async function rtdbPut(rtdbPath: string, payload: unknown): Promise<boolean> {
+  const sbOk =
+    payload && typeof payload === "object"
+      ? await upsertKvDocInSupabase(rtdbPath, payload as Record<string, any>)
+      : false;
+
   try {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 5000);
@@ -85,13 +102,18 @@ async function rtdbPut(rtdbPath: string, payload: unknown): Promise<boolean> {
       signal: controller.signal,
     });
     clearTimeout(timer);
-    return res.ok;
+    return sbOk || res.ok;
   } catch {
-    return false;
+    return sbOk;
   }
 }
 
 async function rtdbPatch(rtdbPath: string, payload: unknown): Promise<boolean> {
+  const sbOk =
+    payload && typeof payload === "object"
+      ? await patchKvDocInSupabase(rtdbPath, payload as Record<string, any>)
+      : false;
+
   try {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 5000);
@@ -102,9 +124,9 @@ async function rtdbPatch(rtdbPath: string, payload: unknown): Promise<boolean> {
       signal: controller.signal,
     });
     clearTimeout(timer);
-    return res.ok;
+    return sbOk || res.ok;
   } catch {
-    return false;
+    return sbOk;
   }
 }
 

@@ -5,6 +5,7 @@ import {
   verifySchoolLockCode, saveSchoolUserProfile, linkStudentAccount
 } from "../../school-firebase";
 import type { School, SchoolSession, SchoolClass, SchoolUserProfile } from "../../school-types";
+import { sanitizeIndianPhoneInput } from "../../utils/schoolReferralSiblingEngine";
 import {
   School as SchoolIcon, Lock, Unlock, ChevronRight, ChevronLeft,
   Loader2, Search, CheckCircle, ArrowLeft, BookOpen, Link2, User, Phone, Hash, ShieldCheck, AlertCircle
@@ -308,10 +309,10 @@ export const SchoolJoinScreen: React.FC<Props> = ({ uid, displayName, email, onJ
                   </label>
                   <input
                     type="tel"
-                    maxLength={10}
+                    maxLength={18}
                     placeholder="e.g. 9876543210"
                     value={mobileNumber}
-                    onChange={e => setMobileNumber(e.target.value)}
+                    onChange={e => setMobileNumber(sanitizeIndianPhoneInput(e.target.value))}
                     className="w-full px-4 py-3 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-white text-sm font-bold focus:border-indigo-500 focus:outline-none"
                   />
                 </div>

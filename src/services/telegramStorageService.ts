@@ -81,41 +81,51 @@ export function dataUrlToBlob(dataUrl: string, defaultMime = 'image/jpeg'): Blob
 }
 
 /**
+ * Builds a permanent, non-expiring URL backed by Telegram's immutable file_id.
+ */
+export function buildPermanentTelegramUrl(fileId: string, fileName?: string): string {
+  const cleanId = String(fileId || '').trim();
+  if (!cleanId) return '';
+  const nameParam = fileName ? `&name=${encodeURIComponent(fileName)}` : '';
+  return `/api/telegram/file?fileId=${encodeURIComponent(cleanId)}${nameParam}`;
+}
+
+/**
  * Resolves Telegram and media URLs for browser loading.
- * Converts local proxy URLs (/api/telegram/file?path=...) back to direct Telegram CDN links
- * so images and videos can load directly in the browser even without a backend proxy server.
- * Also handles t.me links, base64 data URLs, and standard image URLs.
+ * Preserves permanent /api/telegram/file?fileId=... URLs untouched so links never expire.
+ * Also handles data: URLs, t.me links, and legacy Telegram CDN URLs safely.
  */
 export function resolveTelegramUrl(rawUrl: string): string {
   if (!rawUrl || typeof rawUrl !== 'string') return rawUrl;
   const trimmed = rawUrl.trim();
+  if (!trimmed) return trimmed;
 
   // If already base64 data URL, return as-is
-  if (trimmed.startsWith('data:image/') || trimmed.startsWith('data:video/')) {
+  if (trimmed.startsWith('data:image/') || trimmed.startsWith('data:video/') || trimmed.startsWith('data:audio/') || trimmed.startsWith('data:application/pdf')) {
     return trimmed;
   }
 
-  // Convert /api/telegram/file?path=... back to direct Telegram bot CDN URL with full CORS support
+  // Keep /api/telegram/file URLs intact (especially permanent ?fileId=... links!)
+  // so browser requests always resolve fresh paths dynamically and stay CORS-safe.
   if (trimmed.startsWith('/api/telegram/file')) {
+    return trimmed;
+  }
+
+  // Normalize same-endpoint full URLs with ?fileId= so they work cleanly across domains
+  if (trimmed.includes('/api/telegram/file') && trimmed.includes('fileId=')) {
     try {
-      const matchPath = trimmed.match(/[?&]path=([^&]+)/);
-      const matchToken = trimmed.match(/[?&]token=([^&]+)/);
-      const token = matchToken ? decodeURIComponent(matchToken[1]) : DEFAULT_BOT_TOKEN;
-      const path = matchPath ? decodeURIComponent(matchPath[1]) : '';
-      if (path) {
-        return `https://api.telegram.org/file/bot${token}/${path}`;
-      }
+      const idx = trimmed.indexOf('/api/telegram/file');
+      return trimmed.slice(idx);
     } catch {}
   }
 
-  // If direct Telegram bot URL, keep it! Direct Telegram URLs are directly accessible by <img> and <video>
+  // Legacy direct Telegram bot URL
   if (trimmed.includes('api.telegram.org/file/bot')) {
     return trimmed;
   }
 
   // Handle Telegram public post links (e.g. https://t.me/channel_name/123)
   if (trimmed.startsWith('https://t.me/') || trimmed.startsWith('http://t.me/')) {
-    // If it's a direct message embed link or image link, return cleaned URL
     return trimmed;
   }
 
@@ -170,35 +180,37 @@ export async function uploadDirectToTelegram(
             data.result?.document ||
             (Array.isArray(data.result?.photo) ? data.result.photo.slice(-1)[0] : null) ||
             data.result?.audio ||
-            data.result?.video;
+            data.result?.video ||
+            data.result?.voice ||
+            data.result?.animation;
 
-          const fileId = doc?.file_id;
-          let filePath = '';
-          if (fileId) {
+          const fileId = String(doc?.file_id || '').trim();
+          const finalFileName = doc?.file_name || fileName;
+          const permanentUrl = fileId ? buildPermanentTelegramUrl(fileId, finalFileName) : '';
+
+          let fallbackPathUrl = '';
+          if (!permanentUrl && fileId) {
             try {
               const pathRes = await fetch(`https://api.telegram.org/bot${DEFAULT_BOT_TOKEN}/getFile?file_id=${fileId}`);
               const rawPathText = await pathRes.text();
               const pathJson = rawPathText ? JSON.parse(rawPathText) : null;
               if (pathJson?.ok && pathJson.result?.file_path) {
-                filePath = pathJson.result.file_path;
+                fallbackPathUrl = `/api/telegram/file?path=${encodeURIComponent(pathJson.result.file_path)}&name=${encodeURIComponent(finalFileName)}`;
               }
             } catch (pErr) {
               console.warn('[Direct Telegram Upload] getFile warning:', pErr);
             }
           }
 
-          const directUrl = filePath ? `https://api.telegram.org/file/bot${DEFAULT_BOT_TOKEN}/${filePath}` : '';
-          const proxyUrl = filePath ? `/api/telegram/file?path=${encodeURIComponent(filePath)}&name=${encodeURIComponent(fileName)}` : directUrl;
-          // Direct URL works globally in all browsers and web apps without relying on internal proxy server
-          const resolvedUrl = directUrl || proxyUrl;
+          const resolvedUrl = permanentUrl || fallbackPathUrl;
 
           if (opts.onProgress) opts.onProgress(100);
 
           resolve({
             url: resolvedUrl,
             directUrl: resolvedUrl,
-            fileId: fileId || '',
-            fileName: doc?.file_name || fileName,
+            fileId,
+            fileName: finalFileName,
             fileSize: doc?.file_size || blob.size,
             mimeType: doc?.mime_type || blob.type,
           });
@@ -244,27 +256,32 @@ export async function uploadDirectToTelegram(
       data.result?.document ||
       (Array.isArray(data.result?.photo) ? data.result.photo.slice(-1)[0] : null) ||
       data.result?.audio ||
-      data.result?.video;
+      data.result?.video ||
+      data.result?.voice ||
+      data.result?.animation;
 
-    const fileId = doc?.file_id;
-    let filePath = '';
-    if (fileId) {
+    const fileId = String(doc?.file_id || '').trim();
+    const finalFileName = doc?.file_name || fileName;
+    const permanentUrl = fileId ? buildPermanentTelegramUrl(fileId, finalFileName) : '';
+
+    let fallbackPathUrl = '';
+    if (!permanentUrl && fileId) {
       try {
         const pathRes = await fetch(`https://api.telegram.org/bot${DEFAULT_BOT_TOKEN}/getFile?file_id=${fileId}`);
         const pData = await pathRes.json();
         if (pData?.ok && pData.result?.file_path) {
-          filePath = pData.result.file_path;
+          fallbackPathUrl = `/api/telegram/file?path=${encodeURIComponent(pData.result.file_path)}&name=${encodeURIComponent(finalFileName)}`;
         }
       } catch {}
     }
 
-    const directUrl = filePath ? `https://api.telegram.org/file/bot${DEFAULT_BOT_TOKEN}/${filePath}` : '';
+    const resolvedUrl = permanentUrl || fallbackPathUrl;
 
     return {
-      url: directUrl,
-      directUrl,
-      fileId: fileId || '',
-      fileName: doc?.file_name || fileName,
+      url: resolvedUrl,
+      directUrl: resolvedUrl,
+      fileId,
+      fileName: finalFileName,
       fileSize: doc?.file_size || blob.size,
       mimeType: doc?.mime_type || blob.type,
     };

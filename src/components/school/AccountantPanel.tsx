@@ -50,7 +50,8 @@ import {
   Menu,
   MessageSquare,
   Send,
-  Loader2
+  Loader2,
+  CalendarClock
 } from "lucide-react";
 import { rotateToLandscape, rotateToPortrait, setDesktopMode, useDeviceOrientation } from "../../utils/displayPrefs";
 import type {
@@ -136,6 +137,7 @@ type AccountantTab =
   | "qr_pay"
   | "fee_alerts"
   | "class_rates"
+  | "term_scheduler"
   | "receipt_header"
   | "receipt_cancellation"
   | "razorpay_setup"
@@ -231,6 +233,27 @@ export const AccountantPanel: React.FC<Props> = ({
       window.removeEventListener("storage", syncTheme);
     };
   }, []);
+
+  useEffect(() => {
+    const handleStudentUpdated = (ev: Event) => {
+      const detail = (ev as CustomEvent)?.detail;
+      if (detail?.student?.id && (!detail.schoolId || detail.schoolId === schoolId)) {
+        const updated: SchoolStudent = detail.student;
+        setStudents((prev) =>
+          prev.some((s) => s.id === updated.id)
+            ? prev.map((s) => (s.id === updated.id ? updated : s))
+            : [updated, ...prev]
+        );
+        setAllStudents((prev) =>
+          prev.some((s) => s.id === updated.id)
+            ? prev.map((s) => (s.id === updated.id ? updated : s))
+            : [updated, ...prev]
+        );
+      }
+    };
+    window.addEventListener("nsta:student-updated", handleStudentUpdated);
+    return () => window.removeEventListener("nsta:student-updated", handleStudentUpdated);
+  }, [schoolId]);
 
   // Quick Expense modal
   const [showExpenseModal, setShowExpenseModal] = useState(false);
@@ -1002,17 +1025,31 @@ export const AccountantPanel: React.FC<Props> = ({
             )}
 
             {permissions.canEditFeeStructure && (
-              <button
-                onClick={() => setActiveTab("class_rates")}
-                className={`w-full flex items-center gap-3 px-3 py-2 rounded-xl text-xs transition text-left cursor-pointer ${
-                  activeTab === "class_rates"
-                    ? "bg-indigo-600 text-white font-semibold shadow-xs"
-                    : `${navInactiveCls} font-medium`
-                }`}
-              >
-                <Sparkles className={`w-4 h-4 shrink-0 ${activeTab === "class_rates" ? "text-white" : "text-blue-400"}`} />
-                <span>Class Fee Rates &amp; Structure</span>
-              </button>
+              <>
+                <button
+                  onClick={() => setActiveTab("class_rates")}
+                  className={`w-full flex items-center gap-3 px-3 py-2 rounded-xl text-xs transition text-left cursor-pointer ${
+                    activeTab === "class_rates"
+                      ? "bg-indigo-600 text-white font-semibold shadow-xs"
+                      : `${navInactiveCls} font-medium`
+                  }`}
+                >
+                  <Sparkles className={`w-4 h-4 shrink-0 ${activeTab === "class_rates" ? "text-white" : "text-blue-400"}`} />
+                  <span>Class Fee Rates &amp; Structure</span>
+                </button>
+                <button
+                  onClick={() => setActiveTab("term_scheduler")}
+                  className={`w-full flex items-center gap-3 px-3 py-2 rounded-xl text-xs transition text-left cursor-pointer ${
+                    activeTab === "term_scheduler"
+                      ? "bg-indigo-600 text-white font-semibold shadow-xs"
+                      : `${navInactiveCls} font-medium`
+                  }`}
+                >
+                  <CalendarClock className={`w-4 h-4 shrink-0 ${activeTab === "term_scheduler" ? "text-white" : "text-emerald-400"}`} />
+                  <span className="flex-1 truncate">Term / Exam Fee &amp; Month Add</span>
+                  <span className="px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-400 text-[8px] font-black uppercase">NEW</span>
+                </button>
+              </>
             )}
 
             <button
@@ -1375,18 +1412,33 @@ export const AccountantPanel: React.FC<Props> = ({
                 )}
 
                 {permissions.canEditFeeStructure && (
-                  <button
-                    onClick={() => {
-                      setActiveTab("class_rates");
-                      setIsMobileMenuOpen(false);
-                    }}
-                    className={`w-full flex items-center gap-3 px-3 py-2 rounded-xl text-xs transition text-left ${
-                      activeTab === "class_rates" ? "bg-indigo-600 text-white font-semibold" : `${mobileNavInactiveCls} font-medium`
-                    }`}
-                  >
-                    <Sparkles className={`w-4 h-4 shrink-0 ${activeTab === "class_rates" ? "text-white" : "text-blue-400"}`} />
-                    <span>Class Fee Rates &amp; Structure</span>
-                  </button>
+                  <>
+                    <button
+                      onClick={() => {
+                        setActiveTab("class_rates");
+                        setIsMobileMenuOpen(false);
+                      }}
+                      className={`w-full flex items-center gap-3 px-3 py-2 rounded-xl text-xs transition text-left ${
+                        activeTab === "class_rates" ? "bg-indigo-600 text-white font-semibold" : `${mobileNavInactiveCls} font-medium`
+                      }`}
+                    >
+                      <Sparkles className={`w-4 h-4 shrink-0 ${activeTab === "class_rates" ? "text-white" : "text-blue-400"}`} />
+                      <span>Class Fee Rates &amp; Structure</span>
+                    </button>
+                    <button
+                      onClick={() => {
+                        setActiveTab("term_scheduler");
+                        setIsMobileMenuOpen(false);
+                      }}
+                      className={`w-full flex items-center gap-3 px-3 py-2 rounded-xl text-xs transition text-left ${
+                        activeTab === "term_scheduler" ? "bg-indigo-600 text-white font-semibold" : `${mobileNavInactiveCls} font-medium`
+                      }`}
+                    >
+                      <CalendarClock className={`w-4 h-4 shrink-0 ${activeTab === "term_scheduler" ? "text-white" : "text-emerald-400"}`} />
+                      <span className="flex-1 truncate">Term / Exam Fee &amp; Month Add</span>
+                      <span className="px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-400 text-[8px] font-black uppercase">NEW</span>
+                    </button>
+                  </>
                 )}
 
                 <button
@@ -2597,8 +2649,9 @@ export const AccountantPanel: React.FC<Props> = ({
           {(activeTab === "qr_pay" ||
             activeTab === "fee_alerts" ||
             activeTab === "class_rates" ||
+            activeTab === "term_scheduler" ||
             activeTab === "receipt_header") && (
-            activeTab === "class_rates" && !permissions.canEditFeeStructure ? (
+            (activeTab === "class_rates" || activeTab === "term_scheduler") && !permissions.canEditFeeStructure ? (
               <div className="max-w-lg mx-auto my-8 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-6 text-center space-y-3">
                 <Lock className="w-8 h-8 text-amber-500 mx-auto" />
                 <h3 className="text-base font-bold text-slate-900 dark:text-white">Fee Structure Locked (Admin Only)</h3>
@@ -2632,7 +2685,9 @@ export const AccountantPanel: React.FC<Props> = ({
                         ? "fee_alert"
                         : activeTab === "class_rates"
                           ? "class_rates"
-                          : "header"
+                          : activeTab === "term_scheduler"
+                            ? "term_scheduler"
+                            : "header"
                   }
                   onBack={() => setActiveTab("fee_collection")}
                 />

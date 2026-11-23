@@ -165,7 +165,7 @@ export const TeacherRulesRegulationsView: React.FC<Props> = ({
   const acceptedCount = Object.keys(acceptances || {}).length;
   const myAcceptance = currentTeacherId ? acceptances[currentTeacherId] : undefined;
   const isLifeMaker = isLifeMakerSchool(school);
-  const schoolLogo = school?.logoUrl || (schoolId ? getSavedSchoolLogo(schoolId) : "");
+  const schoolLogo = getSavedSchoolLogo(school?.logoUrl, schoolId);
 
   const handleSaveConfig = async (nextConfig: SchoolTeacherRulesConfig) => {
     if (!schoolId) return;

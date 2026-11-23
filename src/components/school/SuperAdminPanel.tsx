@@ -15,6 +15,7 @@ import {
   type SchoolSubscription,
 } from "../../school-types";
 import { SchoolAdminPanel } from "./SchoolAdminPanel";
+import { AdminAccountsDirectory } from "./AdminAccountsDirectory";
 import { db, rtdb } from "../../firebase";
 import { ref, set } from "firebase/database";
 import { doc, setDoc } from "firebase/firestore";
@@ -22,7 +23,7 @@ import {
   School as SchoolIcon, Plus, Pause, Play,
   Users, IndianRupee, Settings, X, Zap, Tag, Lock, Eye, EyeOff, Shield, Trash2, Unlock, ArrowLeft,
   CreditCard, CheckCircle, AlertCircle, Clock, ChevronRight, FileText, StickyNote, Calendar, Crown,
-  Bell, Sliders, Smartphone, Check, Sparkles, Camera, Upload, Code2, Globe, Loader2
+  Bell, Sliders, Smartphone, Check, Sparkles, Camera, Upload, Code2, Globe, Loader2, LogOut
 } from "lucide-react";
 import { toast } from "sonner";
 import { compressImageFileToDataUrl } from "../../utils/imageCompression";
@@ -36,6 +37,7 @@ import {
 interface Props {
   adminUid: string;
   onBack?: () => void;
+  onLogout?: () => void;
 }
 
 // ── YEARLY-ONLY DECOY PRICING CONFIG ──────────────────────────────────────────
@@ -967,13 +969,24 @@ const SubscriptionHub: React.FC<{ schools: School[]; onRefresh: () => void }> = 
 };
 
 // ── MAIN COMPONENT ────────────────────────────────────────────────────────────
-export const SuperAdminPanel: React.FC<Props> = ({ adminUid, onBack }) => {
+export const SuperAdminPanel: React.FC<Props> = ({ adminUid, onBack, onLogout }) => {
+  const handlePerformLogout = () => {
+    if (onLogout) {
+      onLogout();
+      return;
+    }
+    try {
+      localStorage.removeItem("nst_current_user");
+      localStorage.removeItem("nst_app_view_mode");
+      window.location.reload();
+    } catch {}
+  };
   const [schools, setSchools]           = useState<School[]>([]);
   const [view, setView]                 = useState<"dashboard" | "new" | "manage">("dashboard");
   const [selectedSchool, setSelectedSchool] = useState<School | null>(null);
   const [directManageSchool, setDirectManageSchool] = useState<School | null>(null);
   const [saving, setSaving]             = useState(false);
-  const [dashTab, setDashTab]           = useState<"schools" | "subscriptions" | "policies" | "developer">("schools");
+  const [dashTab, setDashTab]           = useState<"schools" | "subscriptions" | "accounts" | "policies" | "developer">("schools");
 
   // Global Website Developer Config (Managed strictly by Life Maker Super Admin across ALL schools)
   const [devForm, setDevForm] = useState<GlobalWebsiteDeveloperConfig>(() => ({ ...DEFAULT_GLOBAL_DEVELOPER }));
@@ -1120,10 +1133,11 @@ export const SuperAdminPanel: React.FC<Props> = ({ adminUid, onBack }) => {
     return unsub;
   }, []);
 
-  const activeSchools   = schools.filter(s => s.active && s.subscription.status === "active");
-  const inactiveSchools = schools.filter(s => !s.active || s.subscription.status !== "active");
-  const monthlyRevenue  = activeSchools.reduce((sum, s) => sum + (s.subscription.monthlyAmount || 0), 0);
-  const comboSchools    = activeSchools.filter(s => isCombo(s.subscription));
+  const activeSchools   = schools.filter(s => s.active && s.subscription?.status === "active");
+  const inactiveSchools = schools.filter(s => !s.active || s.subscription?.status !== "active");
+  const monthlyRevenue  = activeSchools.reduce((sum, s) => sum + (s.subscription ? calcAmount(s.subscription) : 0), 0);
+  const comboSchools    = activeSchools.filter(s => s.subscription && isCombo(s.subscription));
+  const comboRevenue    = comboSchools.reduce((sum, s) => sum + (s.subscription ? calcAmount(s.subscription) : 0), 0);
 
   const [createError, setCreateError] = useState<string | null>(null);
 
@@ -1288,7 +1302,9 @@ export const SuperAdminPanel: React.FC<Props> = ({ adminUid, onBack }) => {
       <SchoolAdminPanel
         schoolId={directManageSchool.id}
         adminUid={adminUid}
+        isSuperAdmin={true}
         onBack={() => setDirectManageSchool(null)}
+        onLeaveSchool={() => setDirectManageSchool(null)}
       />
     );
   }
@@ -1581,9 +1597,22 @@ export const SuperAdminPanel: React.FC<Props> = ({ adminUid, onBack }) => {
             <span>← NSTA Master Admin Console Par Wapas Jayein</span>
           </button>
         )}
-        <p className="text-indigo-700 dark:text-blue-300 text-xs font-black uppercase tracking-wider mb-1">Super Admin</p>
-        <h1 className="text-2xl font-black text-slate-900 dark:text-white">IIC×NSTA Control Panel</h1>
-        <p className="text-slate-700 dark:text-slate-400 text-sm font-medium mt-1">Manage all schools in the ecosystem</p>
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <p className="text-indigo-700 dark:text-blue-300 text-xs font-black uppercase tracking-wider mb-1">Super Admin</p>
+            <h1 className="text-2xl font-black text-slate-900 dark:text-white">IIC×NSTA Control Panel</h1>
+            <p className="text-slate-700 dark:text-slate-400 text-sm font-medium mt-1">Manage all schools in the ecosystem</p>
+          </div>
+          <button
+            type="button"
+            onClick={handlePerformLogout}
+            className="shrink-0 inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-black shadow-md shadow-rose-600/25 active:scale-95 transition-all cursor-pointer"
+            title="Account Log Out karein"
+          >
+            <LogOut className="w-4 h-4" />
+            <span>Log Out</span>
+          </button>
+        </div>
       </div>
 
       <div className="p-4 space-y-3 max-w-2xl mx-auto">
@@ -1593,18 +1622,18 @@ export const SuperAdminPanel: React.FC<Props> = ({ adminUid, onBack }) => {
             <div>
               <div className="flex items-center gap-1.5 mb-0.5">
                 <IndianRupee className="w-4 h-4 text-green-500" />
-                <span className="text-xs text-slate-500">Monthly Revenue</span>
+                <span className="text-xs text-slate-500">Yearly Revenue</span>
               </div>
-              <p className="text-3xl font-bold text-green-600">₹{monthlyRevenue.toLocaleString()}</p>
+              <p className="text-3xl font-bold text-green-600">₹{monthlyRevenue.toLocaleString("en-IN")}</p>
               <p className="text-xs text-slate-400 mt-0.5">{activeSchools.length} active schools</p>
             </div>
             <div className="text-right">
               <div className="flex items-center gap-1 justify-end mb-1">
                 <Zap className="w-3.5 h-3.5 text-amber-500" />
-                <span className="text-xs text-amber-600 font-medium">Combo schools</span>
+                <span className="text-xs text-amber-600 font-medium">Elite / Supreme schools</span>
               </div>
               <p className="text-2xl font-bold text-amber-500">{comboSchools.length}</p>
-              <p className="text-xs text-slate-400">₹{(comboSchools.length * COMBO_PRICE).toLocaleString()}/mo</p>
+              <p className="text-xs text-slate-400">₹{comboRevenue.toLocaleString("en-IN")}/yr</p>
             </div>
           </div>
 
@@ -1626,13 +1655,17 @@ export const SuperAdminPanel: React.FC<Props> = ({ adminUid, onBack }) => {
           </div>
         </div>
 
-        {/* Combo offer info strip */}
+        {/* Elite Yearly offer info strip */}
         <div className="flex items-center gap-3 px-4 py-3 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-700 rounded-xl">
           <Tag className="w-5 h-5 text-amber-500 flex-shrink-0" />
           <div className="flex-1 text-sm">
-            <span className="font-bold text-amber-700 dark:text-amber-300">Combo Offer: </span>
-            <span className="text-amber-600 dark:text-amber-400">All 4 features @ ₹{COMBO_PRICE}/mo</span>
-            <span className="text-xs text-slate-400 ml-2">(Save ₹{COMBO_SAVING} vs individual)</span>
+            <span className="font-bold text-amber-700 dark:text-amber-300">Elite Yearly Offer: </span>
+            <span className="text-amber-600 dark:text-amber-400">
+              All features @ ₹{ELITE_YEARLY_PRICING.firstYear.toLocaleString("en-IN")}/yr
+            </span>
+            <span className="text-xs text-slate-400 ml-2">
+              (Save ₹{(ELITE_YEARLY_PRICING.mrp - ELITE_YEARLY_PRICING.firstYear).toLocaleString("en-IN")} vs MRP ₹{ELITE_YEARLY_PRICING.mrp.toLocaleString("en-IN")})
+            </span>
           </div>
         </div>
 
@@ -1660,6 +1693,14 @@ export const SuperAdminPanel: React.FC<Props> = ({ adminUid, onBack }) => {
             )}
           </button>
           <button
+            onClick={() => setDashTab("accounts")}
+            className={`flex-1 flex items-center justify-center gap-1.5 py-2 rounded-lg text-xs sm:text-sm font-bold transition-all cursor-pointer ${
+              dashTab === "accounts" ? "bg-emerald-600 text-white shadow" : "text-slate-500 dark:text-slate-400 hover:text-slate-700"
+            }`}
+          >
+            <Users className="w-4 h-4" /> Accounts
+          </button>
+          <button
             onClick={() => setDashTab("policies")}
             className={`flex-1 flex items-center justify-center gap-1.5 py-2 rounded-lg text-xs sm:text-sm font-bold transition-all relative cursor-pointer ${
               dashTab === "policies" ? "bg-amber-600 text-white shadow" : "text-slate-500 dark:text-slate-400 hover:text-slate-700"
@@ -1679,6 +1720,15 @@ export const SuperAdminPanel: React.FC<Props> = ({ adminUid, onBack }) => {
             <Code2 className="w-4 h-4" /> Developer
           </button>
         </div>
+
+        {/* All Accounts Directory Tab */}
+        {dashTab === "accounts" && (
+          <AdminAccountsDirectory
+            isSuperAdminMode={true}
+            schools={schools}
+            theme="current"
+          />
+        )}
 
         {/* Policies & Notification Bypass Tab */}
         {dashTab === "policies" && (

@@ -126,6 +126,7 @@ import {
 import campusHeroImg from "../../assets/images/school_campus_hero_1794756374517.jpg";
 import smartLabImg from "../../assets/images/smart_classroom_lab_1794756374079.jpg";
 import sportsArenaImg from "../../assets/images/school_sports_arena_1794756373791.jpg";
+import { resolveTelegramUrl } from "../../services/telegramStorageService";
 import { EntranceTestModal } from "./EntranceTestModal";
 
 interface Props {
@@ -223,6 +224,13 @@ export const PublicSchoolWebsite: React.FC<Props> = ({
   const [erpShowcaseTab, setErpShowcaseTab] = useState<"ALL" | "USP" | "PARENTS">("ALL");
   const [activeMemoryPreview, setActiveMemoryPreview] = useState<any | null>(null);
   const [isEntranceTestOpen, setIsEntranceTestOpen] = useState(false);
+  const [logoImgFailed, setLogoImgFailed] = useState(false);
+  const [heroBannerFailed, setHeroBannerFailed] = useState(false);
+  const [failedMediaMap, setFailedMediaMap] = useState<Record<string, boolean>>({});
+  const markMediaFailed = (key: string) => {
+    if (!key) return;
+    setFailedMediaMap((prev) => (prev[key] ? prev : { ...prev, [key]: true }));
+  };
 
   // Live Campus Data (auto-loads if parent only passed school object)
   const [classesList, setClassesList] = useState<SchoolClass[]>(classesProp);
@@ -1013,7 +1021,15 @@ export const PublicSchoolWebsite: React.FC<Props> = ({
 
   const bannerColor = school?.bannerColor || "#1e3a8a";
   const savedLogo = getSavedSchoolLogo(school.logoUrl, school.id);
-  const hasValidLogo = Boolean(savedLogo && !isAppLogo(savedLogo));
+  const hasValidLogo = Boolean(savedLogo && !isAppLogo(savedLogo) && !logoImgFailed);
+
+  useEffect(() => {
+    setLogoImgFailed(false);
+  }, [savedLogo, school?.id]);
+
+  useEffect(() => {
+    setHeroBannerFailed(false);
+  }, [heroBannerUrl, school?.id]);
   const cleanPhoneDigits = (websiteCfg.whatsappNumber || school.phone || "").replace(/\D/g, "");
   const primaryPhone = (school.phone || "").split(",")[0]?.trim() || "";
   const regNo = getVisibleSchoolRegNo(school);
@@ -1874,9 +1890,10 @@ export const PublicSchoolWebsite: React.FC<Props> = ({
           <div className="flex items-center gap-2.5 min-w-0 flex-1 lg:flex-initial">
             {hasValidLogo ? (
               <img
-                src={savedLogo}
+                src={resolveTelegramUrl(savedLogo)}
                 alt={school.name}
                 referrerPolicy="no-referrer"
+                onError={() => setLogoImgFailed(true)}
                 className="w-8 h-8 sm:w-9 sm:h-9 object-contain rounded-lg bg-white p-0.5 border border-slate-200 shrink-0"
               />
             ) : (
@@ -2044,11 +2061,12 @@ export const PublicSchoolWebsite: React.FC<Props> = ({
                         : "bg-white dark:bg-slate-900/60 border-slate-200 dark:border-slate-800 hover:bg-slate-50 dark:hover:bg-slate-800"
                     }`}
                   >
-                    {validLogo ? (
+                    {validLogo && !failedMediaMap[`drawer_logo_${item.id}`] ? (
                       <img
-                        src={itemLogo}
+                        src={resolveTelegramUrl(itemLogo)}
                         alt={item.name}
                         referrerPolicy="no-referrer"
+                        onError={() => markMediaFailed(`drawer_logo_${item.id}`)}
                         className="w-10 h-10 rounded-lg object-contain bg-white border border-slate-200 shrink-0"
                       />
                     ) : (
@@ -2190,9 +2208,10 @@ export const PublicSchoolWebsite: React.FC<Props> = ({
                 <div className="lg:col-span-6 flex">
                   <div className="w-full rounded-2xl overflow-hidden border border-white/20 bg-slate-950 shadow-2xl shadow-black/50 relative aspect-[16/10] lg:aspect-auto lg:min-h-[340px]">
                     <img
-                      src={heroBannerUrl}
+                      src={heroBannerFailed ? campusHeroImg : resolveTelegramUrl(heroBannerUrl)}
                       alt={`${school.name} Campus`}
                       referrerPolicy="no-referrer"
+                      onError={() => setHeroBannerFailed(true)}
                       className="w-full h-full object-cover"
                     />
                     <div className="absolute inset-0 bg-gradient-to-t from-[#040811] via-[#040811]/35 to-black/15" />
@@ -2365,10 +2384,11 @@ export const PublicSchoolWebsite: React.FC<Props> = ({
                       {offerSlides.map((slide, idx) => (
                         <div key={slide.id} className="w-full h-full shrink-0 relative bg-slate-950">
                           <img
-                            src={slide.url}
+                            src={failedMediaMap[`offer_${slide.id}`] ? campusHeroImg : resolveTelegramUrl(slide.url)}
                             alt={slide.caption || `Offer Slide ${idx + 1}`}
                             referrerPolicy="no-referrer"
                             draggable={false}
+                            onError={() => markMediaFailed(`offer_${slide.id}`)}
                             onClick={() => {
                               if (Math.abs(offerDragOffsetPx) < 6) {
                                 setActiveMemoryPreview({
@@ -3423,11 +3443,12 @@ export const PublicSchoolWebsite: React.FC<Props> = ({
             <div className="bg-[#070D19] text-white rounded-2xl p-6 sm:p-10 border border-slate-800 grid grid-cols-1 md:grid-cols-12 gap-8 items-center">
               <div className="md:col-span-3 flex flex-col items-center md:items-start gap-3.5">
                 <div className="w-28 h-28 sm:w-32 sm:h-32 rounded-2xl overflow-hidden bg-slate-900 border border-white/15 flex items-center justify-center">
-                  {allowCustomWebsite && school.principalPhotoUrl ? (
+                  {allowCustomWebsite && school.principalPhotoUrl && !failedMediaMap["principal_photo"] ? (
                     <img
-                      src={school.principalPhotoUrl}
+                      src={resolveTelegramUrl(school.principalPhotoUrl)}
                       alt={school.principalName || "Principal"}
                       referrerPolicy="no-referrer"
+                      onError={() => markMediaFailed("principal_photo")}
                       className="w-full h-full object-cover"
                     />
                   ) : (
@@ -3587,11 +3608,12 @@ export const PublicSchoolWebsite: React.FC<Props> = ({
                             : "bg-slate-100 dark:bg-slate-800 text-indigo-700 dark:text-amber-400"
                         }`}
                       >
-                        {card.photoUrl ? (
+                        {card.photoUrl && !failedMediaMap[`role_${card.id}`] ? (
                           <img
-                            src={card.photoUrl}
+                            src={resolveTelegramUrl(card.photoUrl)}
                             alt={`${card.name} - ${card.role}`}
                             referrerPolicy="no-referrer"
+                            onError={() => markMediaFailed(`role_${card.id}`)}
                             className="w-full h-full object-cover"
                           />
                         ) : (
@@ -3666,11 +3688,12 @@ export const PublicSchoolWebsite: React.FC<Props> = ({
                     className="bg-white dark:bg-[#0B1324] border border-slate-200 dark:border-slate-800 rounded-xl p-4 flex items-center gap-3.5"
                   >
                     <div className="w-12 h-12 rounded-xl bg-slate-100 dark:bg-slate-800 text-slate-800 dark:text-amber-400 font-bold flex items-center justify-center shrink-0 overflow-hidden">
-                      {allowCustomWebsite && t.photoUrl ? (
+                      {allowCustomWebsite && t.photoUrl && !failedMediaMap[`teacher_${t.id}`] ? (
                         <img
-                          src={t.photoUrl}
+                          src={resolveTelegramUrl(t.photoUrl)}
                           alt={t.name}
                           referrerPolicy="no-referrer"
+                          onError={() => markMediaFailed(`teacher_${t.id}`)}
                           className="w-full h-full object-cover"
                         />
                       ) : (
@@ -3722,9 +3745,10 @@ export const PublicSchoolWebsite: React.FC<Props> = ({
                 >
                   <div className="aspect-[4/3] bg-slate-950 relative overflow-hidden">
                     <img
-                      src={item.imageUrl}
+                      src={failedMediaMap[`gal_home_${item.id}`] ? campusHeroImg : resolveTelegramUrl(item.imageUrl || campusHeroImg)}
                       alt={item.title}
                       referrerPolicy="no-referrer"
+                      onError={() => markMediaFailed(`gal_home_${item.id}`)}
                       className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
                     />
                     <div className="absolute inset-0 bg-gradient-to-t from-black/75 via-black/15 to-transparent" />
@@ -3854,9 +3878,10 @@ export const PublicSchoolWebsite: React.FC<Props> = ({
                 >
                   <div className="aspect-[4/3] bg-slate-950">
                     <img
-                      src={spot.img}
+                      src={failedMediaMap[`spot_${spot.title}`] ? campusHeroImg : resolveTelegramUrl(spot.img)}
                       alt={spot.title}
                       referrerPolicy="no-referrer"
+                      onError={() => markMediaFailed(`spot_${spot.title}`)}
                       className="w-full h-full object-cover"
                     />
                   </div>
@@ -4126,11 +4151,12 @@ export const PublicSchoolWebsite: React.FC<Props> = ({
                     className="bg-white dark:bg-[#0B1324] border border-slate-200 dark:border-slate-800 rounded-xl p-4 flex items-start gap-3.5"
                   >
                     <div className="w-12 h-12 rounded-xl bg-slate-100 dark:bg-slate-800 text-indigo-600 dark:text-amber-400 font-bold flex items-center justify-center shrink-0 overflow-hidden">
-                      {allowCustomWebsite && t.photoUrl ? (
+                      {allowCustomWebsite && t.photoUrl && !failedMediaMap[`teacher_all_${t.id}`] ? (
                         <img
-                          src={t.photoUrl}
+                          src={resolveTelegramUrl(t.photoUrl)}
                           alt={t.name}
                           referrerPolicy="no-referrer"
+                          onError={() => markMediaFailed(`teacher_all_${t.id}`)}
                           className="w-full h-full object-cover"
                         />
                       ) : (
@@ -4205,9 +4231,10 @@ export const PublicSchoolWebsite: React.FC<Props> = ({
               >
                 <div className="aspect-[4/3] bg-slate-950 relative overflow-hidden">
                   <img
-                    src={item.imageUrl}
+                    src={failedMediaMap[`gal_tab_${item.id}`] ? campusHeroImg : resolveTelegramUrl(item.imageUrl || campusHeroImg)}
                     alt={item.title}
                     referrerPolicy="no-referrer"
+                    onError={() => markMediaFailed(`gal_tab_${item.id}`)}
                     className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
                   />
                   {item.mediaType === "VIDEO" && (
@@ -5195,17 +5222,27 @@ export const PublicSchoolWebsite: React.FC<Props> = ({
           <div className="bg-slate-900 border border-slate-800 rounded-2xl max-w-3xl w-full overflow-hidden text-white">
             <div className="relative aspect-video bg-black flex items-center justify-center">
               {activeMemoryPreview.videoUrl ? (
-                <iframe
-                  src={String(activeMemoryPreview.videoUrl).replace("watch?v=", "embed/")}
-                  title={activeMemoryPreview.title}
-                  className="w-full h-full border-0"
-                  allowFullScreen
-                />
+                /(youtube\.com|youtu\.be|vimeo\.com|drive\.google\.com)/i.test(String(activeMemoryPreview.videoUrl)) ? (
+                  <iframe
+                    src={String(activeMemoryPreview.videoUrl).replace("watch?v=", "embed/")}
+                    title={activeMemoryPreview.title}
+                    className="w-full h-full border-0"
+                    allowFullScreen
+                  />
+                ) : (
+                  <video
+                    src={resolveTelegramUrl(String(activeMemoryPreview.videoUrl))}
+                    controls
+                    playsInline
+                    className="w-full h-full object-contain"
+                  />
+                )
               ) : (
                 <img
-                  src={activeMemoryPreview.imageUrl}
+                  src={failedMediaMap[`lightbox_${activeMemoryPreview.id}`] ? campusHeroImg : resolveTelegramUrl(activeMemoryPreview.imageUrl || campusHeroImg)}
                   alt={activeMemoryPreview.title}
                   referrerPolicy="no-referrer"
+                  onError={() => markMediaFailed(`lightbox_${activeMemoryPreview.id}`)}
                   className="w-full h-full object-contain"
                 />
               )}

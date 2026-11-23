@@ -56,10 +56,10 @@ export default defineConfig(async ({ command }) => {
         filename: 'sw.ts',
         manifest: {
           id: '/',
-          name: 'Life Maker Public School',
-          short_name: 'LMPS',
+          name: 'SCHOOL+',
+          short_name: 'SCHOOL+',
           description:
-            'Official Digital Campus of Life Maker Public School — Online Admission, Fee Passbook, Live Attendance, Exam Results & Smart Learning.',
+            'SCHOOL+ Official Digital Campus — Online Admission, Fee Passbook, Live Attendance, Exam Results & Smart Learning.',
           theme_color: '#121212',
           background_color: '#121212',
           display: 'standalone',

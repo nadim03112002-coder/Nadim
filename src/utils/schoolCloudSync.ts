@@ -1,5 +1,14 @@
 import { collection, doc, getDoc, getDocs, setDoc, deleteDoc, writeBatch } from "firebase/firestore";
 import { db } from "../firebase";
+import {
+  isSupabaseSchemaReady,
+  sbBatchDeleteDocuments,
+  sbBatchSetDocuments,
+  sbDeleteDocument,
+  sbGetDocument,
+  sbQueryCollection,
+  sbSetDocument,
+} from "../services/supabaseDbAdapter";
 
 const sanitizeCloudPayload = (val: unknown): unknown => {
   if (val === null || val === undefined) return null;
@@ -62,7 +71,7 @@ export async function loadSchoolSubcollection<T extends { id: string }>(
     console.warn(`[schoolCloudSync] Failed reading local cache ${localKey}:`, err);
   }
 
-  if (!db || !schoolId || isDemoSchoolId(schoolId)) {
+  if (!schoolId || isDemoSchoolId(schoolId)) {
     return localItems;
   }
 
@@ -70,6 +79,55 @@ export async function loadSchoolSubcollection<T extends { id: string }>(
     return localItems;
   }
 
+  // 1. Primary: Supabase Unlimited Read/Write Store
+  try {
+    if (await isSupabaseSchemaReady()) {
+      const sbItems = await withCloudTimeout(
+        sbQueryCollection<T>(`schools/${schoolId}/${subcollection}`, { schoolId }),
+        4000
+      );
+      if (Array.isArray(sbItems)) {
+        markSubcollectionCacheFresh(localKey);
+        if (sbItems.length > 0) {
+          try {
+            localStorage.setItem(localKey, JSON.stringify(sbItems));
+          } catch (err) {
+            console.warn(`[schoolCloudSync] Failed caching ${localKey}:`, err);
+          }
+          return sbItems;
+        }
+        // One-time auto-seed from Firebase or local cache if Supabase subcollection is empty
+        if (db) {
+          try {
+            const snap = await withCloudTimeout(
+              getDocs(collection(db, "schools", schoolId, subcollection)),
+              3500
+            );
+            const fbItems = snap.docs.map((d) => d.data() as T);
+            if (fbItems.length > 0) {
+              try {
+                localStorage.setItem(localKey, JSON.stringify(fbItems));
+              } catch {}
+              void syncSchoolSubcollection(schoolId, subcollection, fbItems).catch(() => {});
+              return fbItems;
+            }
+          } catch {}
+        }
+        if (localItems.length > 0) {
+          await syncSchoolSubcollection(schoolId, subcollection, localItems).catch(() => {});
+        }
+        return localItems;
+      }
+    }
+  } catch (err) {
+    console.warn(`[schoolCloudSync] Supabase read fallback for ${subcollection}:`, err);
+  }
+
+  if (!db) {
+    return localItems;
+  }
+
+  // 2. Fallback: Firebase Firestore (only before Supabase schema is initialized)
   try {
     const snap = await withCloudTimeout(
       getDocs(collection(db, "schools", schoolId, subcollection)),
@@ -85,7 +143,6 @@ export async function loadSchoolSubcollection<T extends { id: string }>(
       }
       return cloudItems;
     }
-    // If cloud is empty and local has user-entered items, push local items up once
     if (localItems.length > 0) {
       await syncSchoolSubcollection(schoolId, subcollection, localItems).catch(() => {});
     }
@@ -102,21 +159,14 @@ export async function syncSchoolSubcollection<T extends { id: string }>(
   items: T[],
   deletedIds?: string[]
 ): Promise<void> {
-  if (!db || !schoolId || isDemoSchoolId(schoolId)) return;
+  if (!schoolId || isDemoSchoolId(schoolId)) return;
   try {
-    const batch = writeBatch(db);
     const nowIso = new Date().toISOString();
     const nextIds = new Set<string>();
     const idsStorageKey = `nst_synced_ids_${schoolId}_${subcollection}`;
 
     for (const item of items) {
-      const id = String(item.id);
-      nextIds.add(id);
-      batch.set(
-        doc(db, "schools", schoolId, subcollection, id),
-        sanitizeCloudPayload({ ...item, schoolId, updatedAt: nowIso }) as Record<string, unknown>,
-        { merge: true }
-      );
+      nextIds.add(String(item.id));
     }
 
     const toDelete = new Set<string>(Array.isArray(deletedIds) ? deletedIds.map(String) : []);
@@ -133,10 +183,33 @@ export async function syncSchoolSubcollection<T extends { id: string }>(
       localStorage.setItem(idsStorageKey, JSON.stringify(Array.from(nextIds)));
     } catch {}
 
+    // Primary: Write batch to Supabase (unlimited writes)
+    if (await isSupabaseSchemaReady()) {
+      const entries = items.map((item) => ({
+        path: `schools/${schoolId}/${subcollection}/${String(item.id)}`,
+        data: sanitizeCloudPayload({ ...item, schoolId, updatedAt: nowIso }) as Record<string, unknown>,
+      }));
+      const delPaths = Array.from(toDelete).map((delId) => `schools/${schoolId}/${subcollection}/${delId}`);
+      const [upOk, delOk] = await Promise.all([
+        entries.length > 0 ? withCloudTimeout(sbBatchSetDocuments(entries), 5000) : Promise.resolve(true),
+        delPaths.length > 0 ? withCloudTimeout(sbBatchDeleteDocuments(delPaths), 4000) : Promise.resolve(true),
+      ]);
+      if (upOk && delOk) return;
+    }
+
+    if (!db) return;
+    const batch = writeBatch(db);
+    for (const item of items) {
+      const id = String(item.id);
+      batch.set(
+        doc(db, "schools", schoolId, subcollection, id),
+        sanitizeCloudPayload({ ...item, schoolId, updatedAt: nowIso }) as Record<string, unknown>,
+        { merge: true }
+      );
+    }
     for (const delId of toDelete) {
       batch.delete(doc(db, "schools", schoolId, subcollection, delId));
     }
-
     await withCloudTimeout(batch.commit(), 5000);
   } catch (err) {
     console.warn(`[schoolCloudSync] Batch sync failed for ${subcollection}:`, err);
@@ -148,14 +221,25 @@ export async function saveSchoolSubdoc<T extends { id: string }>(
   subcollection: string,
   item: T
 ): Promise<void> {
-  if (!db || !schoolId || isDemoSchoolId(schoolId)) return;
+  if (!schoolId || isDemoSchoolId(schoolId)) return;
   try {
+    const payload = sanitizeCloudPayload({
+      ...item,
+      schoolId,
+      updatedAt: new Date().toISOString(),
+    }) as Record<string, unknown>;
+
+    if (await isSupabaseSchemaReady()) {
+      const ok = await withCloudTimeout(
+        sbSetDocument(`schools/${schoolId}/${subcollection}/${String(item.id)}`, payload, true),
+        4000
+      );
+      if (ok) return;
+    }
+
+    if (!db) return;
     await withCloudTimeout(
-      setDoc(
-        doc(db, "schools", schoolId, subcollection, String(item.id)),
-        sanitizeCloudPayload({ ...item, schoolId, updatedAt: new Date().toISOString() }) as Record<string, unknown>,
-        { merge: true }
-      ),
+      setDoc(doc(db, "schools", schoolId, subcollection, String(item.id)), payload, { merge: true }),
       4000
     );
   } catch (err) {
@@ -168,8 +252,17 @@ export async function deleteSchoolSubdoc(
   subcollection: string,
   docId: string
 ): Promise<void> {
-  if (!db || !schoolId || isDemoSchoolId(schoolId)) return;
+  if (!schoolId || isDemoSchoolId(schoolId)) return;
   try {
+    if (await isSupabaseSchemaReady()) {
+      const ok = await withCloudTimeout(
+        sbDeleteDocument(`schools/${schoolId}/${subcollection}/${String(docId)}`),
+        4000
+      );
+      if (ok) return;
+    }
+
+    if (!db) return;
     await withCloudTimeout(
       deleteDoc(doc(db, "schools", schoolId, subcollection, String(docId))),
       4000
@@ -198,8 +291,26 @@ export async function loadSchoolSettingBlob<T>(
     console.warn(`[schoolCloudSync] Failed reading local blob ${localKey}:`, err);
   }
 
-  if (!db || !schoolId || isDemoSchoolId(schoolId)) return localVal;
+  if (!schoolId || isDemoSchoolId(schoolId)) return localVal;
   if (!forceRefresh && hasLocal && isSubcollectionCacheFresh(localKey)) return localVal;
+
+  try {
+    if (await isSupabaseSchemaReady()) {
+      const sbData = await withCloudTimeout(
+        sbGetDocument<{ value?: T }>(`schools/${schoolId}/erp_settings/${settingKey}`),
+        3500
+      );
+      markSubcollectionCacheFresh(localKey);
+      if (sbData && sbData.value !== undefined) {
+        try {
+          localStorage.setItem(localKey, JSON.stringify(sbData.value));
+        } catch {}
+        return sbData.value;
+      }
+    }
+  } catch {}
+
+  if (!db) return localVal;
 
   try {
     const snap = await withCloudTimeout(
@@ -212,6 +323,7 @@ export async function loadSchoolSettingBlob<T>(
       try {
         localStorage.setItem(localKey, JSON.stringify(cloudVal));
       } catch {}
+      void saveSchoolSettingBlob(schoolId, settingKey, localKey, cloudVal).catch(() => {});
       return cloudVal;
     }
   } catch (err) {
@@ -231,18 +343,25 @@ export async function saveSchoolSettingBlob<T>(
   } catch (err) {
     console.warn(`[schoolCloudSync] Failed saving local blob ${localKey}:`, err);
   }
-  if (!db || !schoolId || isDemoSchoolId(schoolId)) return;
+  if (!schoolId || isDemoSchoolId(schoolId)) return;
   try {
+    const payload = sanitizeCloudPayload({
+      value,
+      schoolId,
+      updatedAt: new Date().toISOString(),
+    }) as Record<string, unknown>;
+
+    if (await isSupabaseSchemaReady()) {
+      const ok = await withCloudTimeout(
+        sbSetDocument(`schools/${schoolId}/erp_settings/${settingKey}`, payload, true),
+        4000
+      );
+      if (ok) return;
+    }
+
+    if (!db) return;
     await withCloudTimeout(
-      setDoc(
-        doc(db, "schools", schoolId, "erp_settings", settingKey),
-        sanitizeCloudPayload({
-          value,
-          schoolId,
-          updatedAt: new Date().toISOString(),
-        }) as Record<string, unknown>,
-        { merge: true }
-      ),
+      setDoc(doc(db, "schools", schoolId, "erp_settings", settingKey), payload, { merge: true }),
       4000
     );
   } catch (err) {

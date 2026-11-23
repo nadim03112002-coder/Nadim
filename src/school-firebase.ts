@@ -1,10 +1,23 @@
-// IIC×NSTA Smart School Ecosystem — Firebase CRUD Helpers
-import {
-  collection, doc, setDoc, getDoc, getDocs, updateDoc, deleteDoc,
-  query, where, orderBy, limit, onSnapshot, Timestamp, writeBatch, runTransaction
-} from "firebase/firestore";
+// IIC×NSTA Smart School Ecosystem — Supabase-First + Firebase Hybrid CRUD Helpers
+import { runTransaction } from "firebase/firestore";
 import { ref, set, get, onValue, update, remove, runTransaction as rtdbRunTransaction } from "firebase/database";
 import { db, rtdb } from "./firebase";
+import {
+  sbCol as col,
+  sbDoc as d,
+  sbBridgeGetDoc as getDoc,
+  sbBridgeGetDocs as getDocs,
+  sbBridgeSetDoc as setDoc,
+  sbBridgeUpdateDoc as updateDoc,
+  sbBridgeDeleteDoc as deleteDoc,
+  sbQuery as query,
+  sbWhere as where,
+  sbOrderBy as orderBy,
+  sbLimit as limit,
+  sbBridgeOnSnapshot as onSnapshot,
+  sbBridgeWriteBatch as writeBatch,
+} from "./services/supabaseSchoolBridge";
+import { isSupabaseSchemaReady } from "./services/supabaseDbAdapter";
 
 const withTimeout = <T>(promise: Promise<T>, ms = 3000, fallbackVal?: T): Promise<T> => {
   return Promise.race([
@@ -226,8 +239,7 @@ export const isDemoRecord = (item: any): boolean => {
   return false;
 };
 
-const col = (path: string) => collection(db, path);
-const d = (path: string) => doc(db, path);
+// Supabase-First collection & doc builders imported at top as `col` and `d`
 
 // ── SMART SYNC VERSION STAMP & IN-FLIGHT DEDUP ENGINE ─────────────────────────
 // Eliminates permanent full-collection listeners & repeat reads across tabs/reloads.
@@ -364,7 +376,7 @@ export const DEFAULT_LIFE_MAKER_SCHOOL: School = {
   email: "n@gmail.com",
   affiliation: "Ummid Educational & Welfare Trust",
   adminEmail: "n@gmail.com",
-  logoUrl: "https://api.telegram.org/file/bot8932524192:AAGVxYSuKPZX6sOQFkXz0U7ESVQ2NcHmJZw/documents/file_72.png",
+  logoUrl: "",
   principalName: "SHAHID KHAN SIR",
   principalPhone: "9525400122",
   directorName: "Ehsan hussain",
@@ -372,10 +384,10 @@ export const DEFAULT_LIFE_MAKER_SCHOOL: School = {
   managerName: "VIKASH  KUMAR",
   managerPhone: "9835763641",
   accountantName: "Nadim anwar",
-  accountantSignatureUrl: "https://api.telegram.org/file/bot8932524192:AAGVxYSuKPZX6sOQFkXz0U7ESVQ2NcHmJZw/documents/file_69.png",
+  accountantSignatureUrl: "",
   examControllerName: "Exam Controller",
-  examControllerSignatureUrl: "https://api.telegram.org/file/bot8932524192:AAGVxYSuKPZX6sOQFkXz0U7ESVQ2NcHmJZw/documents/file_70.png",
-  managerSignatureUrl: "https://api.telegram.org/file/bot8932524192:AAGVxYSuKPZX6sOQFkXz0U7ESVQ2NcHmJZw/documents/file_71.png",
+  examControllerSignatureUrl: "",
+  managerSignatureUrl: "",
   tagline: "Bright Future... Together",
   bannerColor: "#1e3a8a",
   isDefaultPublicWebsite: true,
@@ -391,7 +403,7 @@ export const DEFAULT_LIFE_MAKER_SCHOOL: School = {
     heroHeadline: "LIFE MAKER PUBLIC SCHOOL",
     heroSubheadline:
       "Bright Future... Together — Dharaka Market Affour, Nagra, Saran. Quality Education from Nursery to Class X.",
-    heroBannerUrl: "https://api.telegram.org/file/bot8932524192:AAGVxYSuKPZX6sOQFkXz0U7ESVQ2NcHmJZw/documents/file_73.png",
+    heroBannerUrl: "",
     aboutSchool:
       "LIFE MAKER PUBLIC SCHOOL (Affour, Nagra, Saran) managed under Ummid Educational & Welfare Trust provides disciplined, quality & technology-enabled schooling from Nursery to Class X.",
     principalMessage:
@@ -478,12 +490,20 @@ const normalizeDefaultSchoolBrand = (sc: School): School => {
   }
 
   // Real Life Maker record from RTDB/local: backfill ONLY blank/missing fields without overwriting user CMS edits
+  const stripDeadDefaultTgUrl = (val?: string): string => {
+    const clean = String(val || "").trim();
+    if (!clean) return "";
+    if (/api\.telegram\.org\/file\/bot8932524192:[^/]+\/documents\/file_(69|70|71|72|73)\.png$/i.test(clean)) {
+      return "";
+    }
+    return clean;
+  };
   const defCfg = DEFAULT_LIFE_MAKER_SCHOOL.websiteConfig || {};
   const existingCfg = (sc as any).websiteConfig || {};
   const mergedCfg: Record<string, any> = { ...defCfg };
   for (const [k, v] of Object.entries(existingCfg)) {
     if (v !== undefined && v !== null && String(v).trim() !== "") {
-      mergedCfg[k] = v;
+      mergedCfg[k] = k === "heroBannerUrl" ? stripDeadDefaultTgUrl(String(v)) : v;
     }
   }
 
@@ -527,7 +547,10 @@ const normalizeDefaultSchoolBrand = (sc: School): School => {
     managerPhone: sc.managerPhone || DEFAULT_LIFE_MAKER_SCHOOL.managerPhone,
     accountantName: sc.accountantName || DEFAULT_LIFE_MAKER_SCHOOL.accountantName,
     tagline: !sc.tagline || sc.tagline === "Knowledge & Excellence" ? DEFAULT_LIFE_MAKER_SCHOOL.tagline : sc.tagline,
-    logoUrl: sc.logoUrl || DEFAULT_LIFE_MAKER_SCHOOL.logoUrl,
+    logoUrl: stripDeadDefaultTgUrl(sc.logoUrl) || DEFAULT_LIFE_MAKER_SCHOOL.logoUrl,
+    accountantSignatureUrl: stripDeadDefaultTgUrl(sc.accountantSignatureUrl) || DEFAULT_LIFE_MAKER_SCHOOL.accountantSignatureUrl,
+    examControllerSignatureUrl: stripDeadDefaultTgUrl(sc.examControllerSignatureUrl) || DEFAULT_LIFE_MAKER_SCHOOL.examControllerSignatureUrl,
+    managerSignatureUrl: stripDeadDefaultTgUrl(sc.managerSignatureUrl) || DEFAULT_LIFE_MAKER_SCHOOL.managerSignatureUrl,
     bannerColor: sc.bannerColor || DEFAULT_LIFE_MAKER_SCHOOL.bannerColor,
     websiteConfig: mergedCfg as any,
   };
@@ -723,24 +746,31 @@ export const getSchool = async (schoolId: string): Promise<School | null> => {
   const local = getLocalSchools().find(s => s.id === resolvedId);
   if (local) return sanitize(local);
 
+  // 1. Primary: Supabase schools table (or auto-seed from Firestore)
+  try {
+    const sbSnap = await withTimeout(getDoc(d(`schools/${resolvedId}`)), 2500);
+    if (sbSnap.exists() && !deletedIds.has(resolvedId)) {
+      return sanitize({ ...(sbSnap.data() as School), id: resolvedId });
+    }
+  } catch {}
+
   if (rtdb) {
     try {
       const profileSnap = await withTimeout(get(ref(rtdb, `schools_profiles/${resolvedId}`)), 1800);
       const profileVal = (profileSnap as any)?.val?.();
       if (profileVal && (profileVal.id || profileVal.name) && !deletedIds.has(resolvedId)) {
-        return sanitize({ id: resolvedId, ...profileVal } as School);
+        const clean = sanitize({ id: resolvedId, ...profileVal } as School);
+        if (clean) void setDoc(d(`schools/${resolvedId}`), clean, { merge: true }).catch(() => {});
+        return clean;
       }
 
       const snap = await withTimeout(get(ref(rtdb, `schools/${resolvedId}`)), 2000);
       const val = (snap as any)?.val?.();
-      if (val && (val.id || val.name) && !deletedIds.has(resolvedId)) return sanitize({ id: resolvedId, ...val } as School);
-    } catch {}
-  }
-
-  if (db) {
-    try {
-      const snap = await withTimeout(getDoc(d(`schools/${resolvedId}`)), 2500);
-      if (snap.exists() && !deletedIds.has(resolvedId)) return sanitize({ ...(snap.data() as School), id: resolvedId });
+      if (val && (val.id || val.name) && !deletedIds.has(resolvedId)) {
+        const clean = sanitize({ id: resolvedId, ...val } as School);
+        if (clean) void setDoc(d(`schools/${resolvedId}`), clean, { merge: true }).catch(() => {});
+        return clean;
+      }
     } catch {}
   }
 
@@ -756,7 +786,7 @@ export const getAllSchools = async (forceRefresh = false): Promise<School[]> => 
   const isIgnoredDummy = (id: string) => id === "dps_gurgaon_sector45" || id === "demo_school";
   const local = getLocalSchools().filter(s => !deletedIds.has(s.id) && !isIgnoredDummy(s.id));
 
-  if (!forceRefresh && local.length > 0 && isSchoolCacheFresh(LOCAL_SCHOOLS_KEY, 15 * 60 * 1000)) {
+  if (!forceRefresh && local.length > 0 && isSchoolCacheFresh(LOCAL_SCHOOLS_KEY, 2 * 60 * 1000)) {
     return local;
   }
 
@@ -824,7 +854,7 @@ export const subscribeToSchool = (schoolId: string, cb: (s: School | null) => vo
     if (!active) return;
     deliverLocal();
     const hasLocal = getLocalSchools().some(s => s.id === schoolId);
-    if (db && (!hasLocal || !isSchoolCacheFresh(LOCAL_SCHOOLS_KEY, 15 * 60 * 1000))) {
+    if (db && (!hasLocal || !isSchoolCacheFresh(LOCAL_SCHOOLS_KEY, 2 * 60 * 1000))) {
       getDoc(d(`schools/${schoolId}`))
         .then(snap => {
           if (!active || getDeletedSchoolIds().has(schoolId)) return;
@@ -1056,9 +1086,9 @@ export const detachUserFromSchool = async (userId: string, email?: string) => {
         await update(ref(rtdb, `users/${userId}`), { schoolId: "", schoolName: null, schoolRole: null, schoolCode: null });
       } catch {}
     }
-    if (userId && db) {
+    if (userId) {
       try {
-        await updateDoc(doc(db, "users", userId), { schoolId: "", schoolName: null, schoolRole: null, schoolCode: null });
+        await updateDoc(d(`users/${userId}`), { schoolId: "", schoolName: null, schoolRole: null, schoolCode: null });
       } catch {}
     }
 
@@ -2015,6 +2045,9 @@ export const saveTeacher = async (teacher: SchoolTeacher) => {
   if (prepared.signatureUrl && typeof prepared.signatureUrl === "string" && prepared.signatureUrl.startsWith("data:image/")) {
     prepared.signatureUrl = await ensureCloudImageUrl(prepared.signatureUrl, `sig_tch_${teacher.id}`);
   }
+  if (prepared.photoUrl && typeof prepared.photoUrl === "string" && prepared.photoUrl.startsWith("data:image/")) {
+    prepared.photoUrl = await ensureCloudImageUrl(prepared.photoUrl, `photo_tch_${teacher.id}`);
+  }
   const sanitized = sanitizeForFirestore(prepared);
 
   // Immediately update local cache
@@ -2171,6 +2204,9 @@ export const updateTeacher = async (schoolId: string, teacherId: string, data: P
   const preparedData: any = { ...data };
   if (preparedData.signatureUrl && typeof preparedData.signatureUrl === "string" && preparedData.signatureUrl.startsWith("data:image/")) {
     preparedData.signatureUrl = await ensureCloudImageUrl(preparedData.signatureUrl, `sig_tch_${teacherId}`);
+  }
+  if (preparedData.photoUrl && typeof preparedData.photoUrl === "string" && preparedData.photoUrl.startsWith("data:image/")) {
+    preparedData.photoUrl = await ensureCloudImageUrl(preparedData.photoUrl, `photo_tch_${teacherId}`);
   }
   const sanitized = sanitizeForFirestore(preparedData);
   const st = typeof (data as any)?.status === "string" ? (data as any).status.toLowerCase() : "";
@@ -4048,19 +4084,37 @@ export const markStudentQrAttendance = async (params: {
     };
 
     let txOutcome: TxOutcome | null = null;
-    if (db) {
+    if (await isSupabaseSchemaReady().catch(() => false)) {
       try {
+        const [snap, studentSnap] = await withTimeout(
+          Promise.all([getDoc(docRef), getDoc(studentDocRef)]),
+          3000
+        );
+        const existing = snap.exists() ? (snap.data() as AttendanceRecord) : null;
+        const stData = studentSnap.exists() ? studentSnap.data() : null;
+        const outcome = computeQrAttendanceOutcome(existing, stData);
+        if (outcome.committed && outcome.result.record) {
+          await withTimeout(setDoc(docRef, outcome.result.record), 3000);
+        }
+        txOutcome = outcome;
+      } catch (sbErr) {
+        console.warn("[school-firebase] Supabase markStudentQrAttendance fallback:", sbErr);
+      }
+    }
+    if (!txOutcome && db) {
+      try {
+        const { doc: fsDocRef } = await import("firebase/firestore");
         txOutcome = await withTimeout(
           runTransaction(db, async (transaction) => {
             const [snap, studentSnap] = await Promise.all([
-              transaction.get(docRef),
-              transaction.get(studentDocRef),
+              transaction.get(fsDocRef(db, `schools/${params.schoolId}/attendance/${docId}`)),
+              transaction.get(fsDocRef(db, `schools/${params.schoolId}/students/${params.studentId}`)),
             ]);
             const existing = snap.exists() ? (snap.data() as AttendanceRecord) : null;
             const stData = studentSnap.exists() ? studentSnap.data() : null;
             const outcome = computeQrAttendanceOutcome(existing, stData);
             if (outcome.committed && outcome.result.record) {
-              transaction.set(docRef, outcome.result.record);
+              transaction.set(fsDocRef(db, `schools/${params.schoolId}/attendance/${docId}`), outcome.result.record);
             }
             return outcome;
           }),
@@ -4375,7 +4429,7 @@ export const getMonthlyStaffDailyAttendance = async (
     let fsOk = false;
     if (db) {
       try {
-        const colSnap = await withTimeout(getDocs(collection(db, `schools/${schoolId}/staff_attendance`)), 3000);
+        const colSnap = await withTimeout(getDocs(col(`schools/${schoolId}/staff_attendance`)), 3000);
         fsOk = true;
         if (colSnap && !colSnap.empty) {
           colSnap.forEach((docSnap) => {
@@ -7080,7 +7134,12 @@ export const promoteStudents = async (
 
 // ── UTILITY ──────────────────────────────────────────────────────────────────
 
-export const generateId = (prefix?: string) => prefix ? `${prefix}_${doc(collection(db, "_")).id}` : doc(collection(db, "_")).id;
+export const generateId = (prefix?: string) => {
+  const raw = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+    ? crypto.randomUUID().replace(/-/g, '').slice(0, 20)
+    : `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 12)}`;
+  return prefix ? `${prefix}_${raw}` : raw;
+};
 
 export const todayStr = () => {
   const d = new Date();
@@ -7483,7 +7542,11 @@ export const getSchoolGallery = async (schoolId: string): Promise<import('./scho
 };
 
 export const saveSchoolGalleryItem = async (schoolId: string, item: import('./school-types').SchoolGalleryItem): Promise<void> => {
-  const payload = sanitizeForFirestore({ ...item, schoolId });
+  const preparedItem: any = { ...item, schoolId };
+  if (preparedItem.imageUrl && typeof preparedItem.imageUrl === "string" && preparedItem.imageUrl.startsWith("data:image/")) {
+    preparedItem.imageUrl = await ensureCloudImageUrl(preparedItem.imageUrl, `gal_${schoolId}_${item.id}`);
+  }
+  const payload = sanitizeForFirestore(preparedItem);
   try {
     const cur = getSchoolCacheSync<import('./school-types').SchoolGalleryItem[]>(LOCAL_GALLERY_KEY(schoolId), []);
     const next = [payload, ...(Array.isArray(cur) ? cur : []).filter(g => g.id !== payload.id)];
@@ -10735,7 +10798,7 @@ export const saveStudentAcknowledgedLeave = async (leave: StudentAcknowledgedLea
   let fsOk = false;
   if (db) {
     try {
-      await withTimeout(setDoc(doc(db, `schools/${leave.schoolId}/student_leaves`, leave.id), clean, { merge: true }), 2500);
+      await withTimeout(setDoc(d(`schools/${leave.schoolId}/student_leaves/${leave.id}`), clean, { merge: true }), 2500);
       fsOk = true;
       touchSchoolSyncVersion(leave.schoolId, "student_leaves");
     } catch {}
@@ -10761,7 +10824,7 @@ export const getStudentAcknowledgedLeaves = async (schoolId: string): Promise<St
   return dedupInflight<StudentAcknowledgedLeave[]>(`student_leaves:${schoolId}`, async () => {
     if (db) {
       try {
-        const snap = await withTimeout(getDocs(collection(db, `schools/${schoolId}/student_leaves`)), 2500);
+        const snap = await withTimeout(getDocs(col(`schools/${schoolId}/student_leaves`)), 2500);
         const list = snap.docs.map(docSnap => docSnap.data() as StudentAcknowledgedLeave);
         setLocalStudentLeaves(schoolId, list);
         markSchoolCacheFresh(cacheKey, remoteVer);
@@ -10780,7 +10843,7 @@ export const deleteStudentAcknowledgedLeave = async (schoolId: string, leaveId: 
   let fsOk = false;
   if (db) {
     try {
-      await withTimeout(deleteDoc(doc(db, `schools/${schoolId}/student_leaves`, leaveId)), 2500);
+      await withTimeout(deleteDoc(d(`schools/${schoolId}/student_leaves/${leaveId}`)), 2500);
       fsOk = true;
       touchSchoolSyncVersion(schoolId, "student_leaves");
     } catch {}
@@ -10814,7 +10877,7 @@ export const saveAbsenteeCallLog = async (log: StudentAbsenteeCallLog): Promise<
     try { await withTimeout(set(ref(rtdb, `schools/${log.schoolId}/absentee_call_logs/${log.date}/${log.id}`), clean), 2000); } catch {}
   }
   if (db) {
-    try { await withTimeout(setDoc(doc(db, `schools/${log.schoolId}/absentee_call_logs`, log.id), clean, { merge: true }), 2500); } catch {}
+    try { await withTimeout(setDoc(d(`schools/${log.schoolId}/absentee_call_logs/${log.id}`), clean, { merge: true }), 2500); } catch {}
   }
 };
 
@@ -10904,8 +10967,8 @@ export const saveSchoolCurriculumNote = async (schoolId: string, note: any): Pro
   }
   if (db) {
     try {
-      await withTimeout(setDoc(doc(db, `schools/${schoolId}/curriculum_notes`, note.id), clean, { merge: true }), 3000);
-      await withTimeout(setDoc(doc(db, 'lucent_entries', note.id), clean, { merge: true }), 3000);
+      await withTimeout(setDoc(d(`schools/${schoolId}/curriculum_notes/${note.id}`), clean, { merge: true }), 3000);
+      await withTimeout(setDoc(d(`lucent_entries/${note.id}`), clean, { merge: true }), 3000);
       void touchSchoolSyncVersion(schoolId, "curriculum_notes");
     } catch {}
   }
@@ -10948,8 +11011,8 @@ export const deleteSchoolCurriculumNote = async (schoolId: string, noteId: strin
   }
   if (db) {
     try {
-      await withTimeout(deleteDoc(doc(db, `schools/${schoolId}/curriculum_notes`, noteId)), 2500);
-      await withTimeout(deleteDoc(doc(db, 'lucent_entries', noteId)), 2500);
+      await withTimeout(deleteDoc(d(`schools/${schoolId}/curriculum_notes/${noteId}`)), 2500);
+      await withTimeout(deleteDoc(d(`lucent_entries/${noteId}`)), 2500);
       void touchSchoolSyncVersion(schoolId, "curriculum_notes");
     } catch {}
   }
@@ -10979,7 +11042,7 @@ export const subscribeToSchoolCurriculumNotes = (
       const notes = await dedupInflight(`curriculum_notes:${schoolId}`, async () => {
         if (db) {
           try {
-            const snap = await withTimeout(getDocs(collection(db, `schools/${schoolId}/curriculum_notes`)), 2500);
+            const snap = await withTimeout(getDocs(col(`schools/${schoolId}/curriculum_notes`)), 2500);
             const list = snap.docs.map(dSnap => ({ ...dSnap.data(), id: dSnap.id }));
             if (list.length > 0 || !rtdb) {
               setLocalSchoolCurriculumNotes(schoolId, list);
@@ -11241,7 +11304,7 @@ export const saveTeacherRuleAcceptance = async (
   }
   if (db) {
     try {
-      await withTimeout(setDoc(doc(db, `schools/${schoolId}/teacher_rules_acceptances`, clean.staffId), clean, { merge: true }), 2500);
+      await withTimeout(setDoc(d(`schools/${schoolId}/teacher_rules_acceptances/${clean.staffId}`), clean, { merge: true }), 2500);
       void touchSchoolSyncVersion(schoolId, "teacher_rules_ack");
     } catch {}
   }

@@ -74,6 +74,7 @@ import type {
 import {
   detectFamilySiblings,
   mergeSchoolReferrerList,
+  sanitizeIndianPhoneInput,
   type ReferrerOption,
 } from "../../utils/schoolReferralSiblingEngine";
 import {
@@ -103,6 +104,7 @@ interface FeeLineDraft {
   included?: boolean;
   deferToMonth?: string;
   headKey?: string;
+  conAmount?: number;
 }
 
 const isLineBilledNow = (l: FeeLineDraft) => l.included !== false && !l.deferToMonth;
@@ -607,38 +609,56 @@ export const DirectAdmissionModal: React.FC<Props> = ({
       const cauEnabled = typeof toggles?.cautionMoney === "boolean" ? toggles.cautionMoney : Number(fs.cautionMoney) > 0;
       const busEnabled = typeof toggles?.busFee === "boolean" ? toggles.busFee : true;
 
+      const savedExamTitle =
+        school?.feeTypeSchedulePlans?.exam?.enabled &&
+        school.feeTypeSchedulePlans.exam.terms?.[0]?.title?.trim()
+          ? school.feeTypeSchedulePlans.exam.terms[0].title.trim()
+          : "Examination Fee (परीक्षा शुल्क)";
+
       if (admEnabled && Number(fs.admissionFee || 0) >= 0) {
-        lines.push({ id: "fs_adm", description: "Admission Fee (प्रवेश शुल्क)", due: Number(fs.admissionFee || 0) });
+        lines.push({ id: "fs_adm", headKey: "admission", description: "Admission Fee (प्रवेश शुल्क)", due: Number(fs.admissionFee || 0) });
       }
       if (regEnabled && Number(fs.registrationFee || 0) >= 0) {
-        lines.push({ id: "fs_reg", description: "Registration & Form Fee (फॉर्म शुल्क)", due: Number(fs.registrationFee || 0) });
+        lines.push({ id: "fs_reg", headKey: "registration", description: "Registration & Form Fee (फॉर्म शुल्क)", due: Number(fs.registrationFee || 0) });
       }
-      if (idEnabled || diaryEnabled || tieEnabled || folderEnabled) {
-        const kitDue =
-          (idEnabled ? Number(fs.idCardCharge ?? 100) : 0) +
-          (diaryEnabled ? Number(fs.diaryCharge ?? 100) : 0) +
-          (tieEnabled ? Number(fs.tieBeltCharge ?? 150) : 0) +
-          (folderEnabled ? Number(fs.progressFolderCharge ?? 150) : 0);
-        lines.push({
-          id: "fs_kit",
-          description: "Student Kit: Diary, I-Card, Tie-Belt & Folder (किट व डायरी)",
-          due: kitDue,
-        });
+      if (idEnabled) {
+        const idAmt = Number(fs.idCardCharge ?? 100);
+        if (idAmt > 0) {
+          lines.push({ id: "fs_idcard", headKey: "smart_id_card", description: "Smart QR ID Card (स्मार्ट आई-कार्ड)", due: idAmt });
+        }
+      }
+      if (diaryEnabled) {
+        const diaryAmt = Number(fs.diaryCharge ?? 100);
+        if (diaryAmt > 0) {
+          lines.push({ id: "fs_diary", headKey: "school_diary", description: "School Diary (स्कूल डायरी)", due: diaryAmt });
+        }
+      }
+      if (tieEnabled) {
+        const tieAmt = Number(fs.tieBeltCharge ?? 150);
+        if (tieAmt > 0) {
+          lines.push({ id: "fs_tiebelt", headKey: "tie_belt_set", description: "Tie & Belt Set (टाई व बेल्ट सेट)", due: tieAmt });
+        }
+      }
+      if (folderEnabled) {
+        const folderAmt = Number(fs.progressFolderCharge ?? 0);
+        if (folderAmt > 0) {
+          lines.push({ id: "fs_folder", headKey: "progress_folder", description: "Progress Folder (प्रोग्रेस फोल्डर)", due: folderAmt });
+        }
       }
       if (tuiEnabled && Number(fs.tuitionFee || 0) >= 0) {
-        lines.push({ id: "fs_tui", description: "1st Month Tuition Fee (मासिक शिक्षण शुल्क)", due: Number(fs.tuitionFee || 0) });
+        lines.push({ id: "fs_tui", headKey: "tuition_first_month", description: "1st Month Tuition Fee (मासिक शिक्षण शुल्क)", due: Number(fs.tuitionFee || 0) });
       }
       if (examEnabled && Number(fs.examinationFee || 0) > 0) {
-        lines.push({ id: "fs_exam", description: "Examination Fee (परीक्षा शुल्क)", due: Number(fs.examinationFee || 0) });
+        lines.push({ id: "fs_exam", headKey: "exam", description: savedExamTitle, due: Number(fs.examinationFee || 0) });
       }
       if (devEnabled && Number(fs.developmentCharge || 0) > 0) {
-        lines.push({ id: "fs_dev", description: "Development Charge (विकास शुल्क)", due: Number(fs.developmentCharge || 0) });
+        lines.push({ id: "fs_dev", headKey: "development", description: "Development Fee (विकास शुल्क)", due: Number(fs.developmentCharge || 0) });
       }
       if (annEnabled && Number(fs.annualCharges || 0) >= 0) {
-        lines.push({ id: "fs_ann", description: "Annual Charges (वार्षिक शुल्क)", due: Number(fs.annualCharges || 0) });
+        lines.push({ id: "fs_ann", headKey: "annual", description: "Annual Charges (वार्षिक शुल्क)", due: Number(fs.annualCharges || 0) });
       }
       if (cauEnabled && Number(fs.cautionMoney || 0) >= 0) {
-        lines.push({ id: "fs_cau", description: "Caution / Kit Fee (कॉशन व किट शुल्क)", due: Number(fs.cautionMoney || 0) });
+        lines.push({ id: "fs_cau", headKey: "caution", description: "Caution Money (कॉशन मनी)", due: Number(fs.cautionMoney || 0) });
       }
       if (Array.isArray(fs.customHeads)) {
         fs.customHeads.forEach((h, idx) => {
@@ -650,7 +670,7 @@ export const DirectAdmissionModal: React.FC<Props> = ({
       if (busEnabled && includeBus) {
         const bAmt = customBusAmt !== undefined ? customBusAmt : Number(fs.busFee || 0);
         if (bAmt > 0) {
-          lines.push({ id: "fs_bus", description: "Transport / Bus Fee (वाहन शुल्क)", due: bAmt });
+          lines.push({ id: "fs_bus", headKey: "bus", description: "Transport / Bus Fee (वाहन शुल्क)", due: bAmt });
         }
       }
     }
@@ -662,28 +682,40 @@ export const DirectAdmissionModal: React.FC<Props> = ({
       const regAmt = posterRow?.registrationFee ?? 300;
       const examAmt = posterRow?.examinationFee ?? 300;
       const devAmt = posterRow?.developmentCharge ?? 500;
-      const kitAmt = posterRow
-        ? posterRow.diaryCharge +
-          posterRow.idCardCharge +
-          posterRow.tieBeltCharge +
-          posterRow.progressFolderCharge
-        : 500;
+      const idAmt = posterRow?.idCardCharge ?? 100;
+      const diaryAmt = posterRow?.diaryCharge ?? 100;
+      const tieAmt = posterRow?.tieBeltCharge ?? 150;
+      const folderAmt = posterRow?.progressFolderCharge ?? 150;
+      const savedExamTitle =
+        school?.feeTypeSchedulePlans?.exam?.enabled &&
+        school.feeTypeSchedulePlans.exam.terms?.[0]?.title?.trim()
+          ? school.feeTypeSchedulePlans.exam.terms[0].title.trim()
+          : posterRow?.examDiscountPct
+          ? "Examination Fee (50% OFF on ₹600)"
+          : "Examination Fee (परीक्षा शुल्क)";
+
       if (admAmt > 0) {
-        lines.push({ id: "def_1", description: "Admission Fee (प्रवेश शुल्क)", due: admAmt });
+        lines.push({ id: "def_1", headKey: "admission", description: "Admission Fee (प्रवेश शुल्क)", due: admAmt });
       }
       lines.push(
-        { id: "def_2", description: "Registration & Form Fee (पंजीकरण शुल्क)", due: regAmt },
-        { id: "def_3", description: "Student Kit: Diary, I-Card, Tie-Belt & Folder (किट)", due: kitAmt },
-        { id: "def_4", description: "1st Month Tuition Fee (प्रथम माह शुल्क)", due: defTuition },
+        { id: "def_2", headKey: "registration", description: "Registration & Form Fee (पंजीकरण शुल्क)", due: regAmt },
+        { id: "def_idcard", headKey: "smart_id_card", description: "Smart QR ID Card (स्मार्ट आई-कार्ड)", due: idAmt },
+        { id: "def_diary", headKey: "school_diary", description: "School Diary (स्कूल डायरी)", due: diaryAmt },
+        { id: "def_tiebelt", headKey: "tie_belt_set", description: "Tie & Belt Set (टाई व बेल्ट सेट)", due: tieAmt },
+        ...(folderAmt > 0
+          ? [{ id: "def_folder", headKey: "progress_folder", description: "Progress Folder (प्रोग्रेस फोल्डर)", due: folderAmt }]
+          : []),
+        { id: "def_4", headKey: "tuition_first_month", description: "1st Month Tuition Fee (प्रथम माह शुल्क)", due: defTuition },
         {
           id: "def_5",
-          description: posterRow?.examDiscountPct ? "Examination Fee (50% OFF on ₹600)" : "Examination Fee (परीक्षा शुल्क)",
+          headKey: "exam",
+          description: savedExamTitle,
           due: examAmt,
         },
-        { id: "def_6", description: "Development Charge (विकास शुल्क)", due: devAmt }
+        { id: "def_6", headKey: "development", description: "Development Fee (विकास शुल्क)", due: devAmt }
       );
       if (includeBus && (customBusAmt || 0) > 0) {
-        lines.push({ id: "def_bus", description: "Transport / Bus Fee (वाहन शुल्क)", due: Number(customBusAmt) });
+        lines.push({ id: "def_bus", headKey: "bus", description: "Transport / Bus Fee (वाहन शुल्क)", due: Number(customBusAmt) });
       }
     }
     return lines;
@@ -864,10 +896,18 @@ export const DirectAdmissionModal: React.FC<Props> = ({
     [activeFeeLines]
   );
   const eligibleGrossExclBus = Math.max(0, grossTotal - busLineTotal);
+  const headWaiverSum = useMemo(() => {
+    if (!canGiveDiscount) return 0;
+    return activeFeeLines.reduce(
+      (sum, l) => sum + Math.min(Math.max(0, Number(l.due) || 0), Math.max(0, Number(l.conAmount) || 0)),
+      0
+    );
+  }, [canGiveDiscount, activeFeeLines]);
+
   const effectiveConcession = useMemo(() => {
     if (!canGiveDiscount) return 0;
-    return clampDiscountAmount(grossTotal, concession);
-  }, [canGiveDiscount, grossTotal, concession]);
+    return clampDiscountAmount(grossTotal, headWaiverSum + Math.max(0, concession));
+  }, [canGiveDiscount, grossTotal, headWaiverSum, concession]);
 
   const netPayable = Math.max(0, grossTotal - effectiveConcession);
   const netPayableExclBus = Math.max(0, netPayable - busLineTotal);
@@ -953,7 +993,7 @@ export const DirectAdmissionModal: React.FC<Props> = ({
     const safePct = Math.min(10, Math.max(0, pct));
     setSiblingDiscountPct(safePct);
     const admDisc = safePct > 0 ? clampDiscountAmount(grossTotal, Math.round((eligibleGrossExclBus * safePct) / 100)) : 0;
-    setConcession(admDisc);
+    setConcession(Math.max(0, admDisc - headWaiverSum));
     setPaidManuallyEdited(false);
     if (applyMonthlySiblingDiscount) {
       const mDisc = safePct > 0 ? Math.round((baseMonthlyFee * safePct) / 100) : 0;
@@ -1171,24 +1211,44 @@ export const DirectAdmissionModal: React.FC<Props> = ({
           remainingAdmDueToSave = Math.max(0, admNet - paidTowardAdm);
         }
 
-        // Pre-compute FIFO allocation across admission heads so settledFeeHeads & deferredScheduledHeads stay exact
+        // Pre-compute allocation: honor explicit per-head conAmount (Maaf/Discount) first, then remaining global concession FIFO
         const filteredLines = collectFeeNow && sEffectiveGross > 0
           ? sEffectiveFeeLines.filter((l) => l.description.trim() && Number(l.due) >= 0)
           : [];
         let remConAlloc = draft.concessionAmt;
         const nonBackCons = new Map<string, number>();
+
+        // Pass 1: apply explicit per-head waivers/discounts first
         filteredLines.forEach((l) => {
-          if (l.id !== "readm_back_due") {
-            const cVal = Math.min(Number(l.due) || 0, Math.max(0, remConAlloc));
+          const explicitCon = canGiveDiscount ? Math.max(0, Number(l.conAmount) || 0) : 0;
+          if (explicitCon > 0 && remConAlloc > 0) {
+            const cVal = Math.min(Number(l.due) || 0, explicitCon, remConAlloc);
             nonBackCons.set(l.id, cVal);
             remConAlloc = Math.max(0, remConAlloc - cVal);
           }
         });
+
+        // Pass 2: distribute remaining global/sibling concession FIFO across non-back lines then back line
         filteredLines.forEach((l) => {
-          if (l.id === "readm_back_due") {
-            const cVal = Math.min(Number(l.due) || 0, Math.max(0, remConAlloc));
-            nonBackCons.set(l.id, cVal);
-            remConAlloc = Math.max(0, remConAlloc - cVal);
+          if (l.id !== "readm_back_due" && remConAlloc > 0) {
+            const already = nonBackCons.get(l.id) || 0;
+            const room = Math.max(0, (Number(l.due) || 0) - already);
+            const cVal = Math.min(room, remConAlloc);
+            if (cVal > 0) {
+              nonBackCons.set(l.id, already + cVal);
+              remConAlloc = Math.max(0, remConAlloc - cVal);
+            }
+          }
+        });
+        filteredLines.forEach((l) => {
+          if (l.id === "readm_back_due" && remConAlloc > 0) {
+            const already = nonBackCons.get(l.id) || 0;
+            const room = Math.max(0, (Number(l.due) || 0) - already);
+            const cVal = Math.min(room, remConAlloc);
+            if (cVal > 0) {
+              nonBackCons.set(l.id, already + cVal);
+              remConAlloc = Math.max(0, remConAlloc - cVal);
+            }
           }
         });
 
@@ -1213,13 +1273,15 @@ export const DirectAdmissionModal: React.FC<Props> = ({
 
         const draftClsObj =
           effectiveTargetClasses.find((c) => c.id === draft.classId) || selectedClass;
-        const { settledFeeHeads, deferredScheduledHeads } = buildSettledHeadsFromAdmission({
+        const { settledFeeHeads, deferredScheduledHeads, waivedFeeHeads } = buildSettledHeadsFromAdmission({
           allDraftLines: draft.allFeeLines || draft.feeLines,
           paidById,
           conById: nonBackCons,
           paymentPlan: collectFeeNow ? paymentPlan : "registration_only",
           balanceDue: remainingAdmDueToSave,
           classObj: draftClsObj,
+          nowIso: new Date().toISOString(),
+          actorName,
         });
 
         const sObj: SchoolStudent = {
@@ -1294,6 +1356,7 @@ export const DirectAdmissionModal: React.FC<Props> = ({
           admissionPaymentPlan: collectFeeNow ? paymentPlan : "registration_only",
           settledFeeHeads,
           ...(deferredScheduledHeads.length > 0 ? { deferredScheduledHeads } : {}),
+          ...(Object.keys(waivedFeeHeads).length > 0 ? { waivedFeeHeads } : {}),
           advanceMonthlyFeePaid: Boolean(collectFeeNow && includeAdvanceTuition && detectedTuitionLineAmt > 0 && remainingAdmDueToSave === 0),
           advanceMonthlyFeeDue: includeAdvanceTuition && detectedTuitionLineAmt > 0 ? 0 : (detectedTuitionLineAmt || draft.monthlyFee),
           advanceMonthlyFeeMonth: (admissionDate || new Date().toISOString()).slice(0, 7),
@@ -1595,16 +1658,16 @@ export const DirectAdmissionModal: React.FC<Props> = ({
     <div className="fixed inset-0 z-[9995] flex items-center justify-center p-2 sm:p-4 bg-slate-950/75 backdrop-blur-xs animate-in fade-in duration-150">
       <div className="bg-white dark:bg-slate-900 rounded-2xl w-full max-w-3xl max-h-[94vh] flex flex-col shadow-2xl border border-slate-200 dark:border-slate-800 overflow-hidden">
         {/* Header */}
-        <div className="bg-gradient-to-r from-blue-50 via-indigo-50 to-sky-50 dark:from-slate-900 dark:via-indigo-950 dark:to-slate-900 text-slate-900 dark:text-white border-b-2 border-blue-700 dark:border-blue-500 px-5 py-4 flex items-center justify-between gap-3">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl bg-blue-100 dark:bg-blue-500/25 border-2 border-blue-700 dark:border-blue-400/40 flex items-center justify-center text-blue-700 dark:text-blue-300">
+        <div className="shrink-0 bg-gradient-to-r from-blue-50 via-indigo-50 to-sky-50 dark:from-slate-900 dark:via-indigo-950 dark:to-slate-900 text-slate-900 dark:text-white border-b-2 border-blue-700 dark:border-blue-500 px-4 sm:px-5 py-3.5 sm:py-4 flex items-center justify-between gap-3">
+          <div className="flex items-center gap-3 min-w-0">
+            <div className="w-10 h-10 rounded-xl bg-blue-100 dark:bg-blue-500/25 border-2 border-blue-700 dark:border-blue-400/40 flex items-center justify-center text-blue-700 dark:text-blue-300 shrink-0">
               <UserPlus className="w-5 h-5" />
             </div>
-            <div>
-              <h2 className="text-base sm:text-lg font-black leading-tight text-slate-900 dark:text-white">
+            <div className="min-w-0">
+              <h2 className="text-base sm:text-lg font-black leading-tight text-slate-900 dark:text-white truncate">
                 नया छात्र नामांकन (New Student Admission)
               </h2>
-              <p className="text-xs text-slate-600 dark:text-blue-200/80 font-medium">
+              <p className="text-xs text-slate-600 dark:text-blue-200/80 font-medium truncate">
                 {school.name} • {activeSession?.name || `Session ${getDynamicAcademicSessionLabel()}`}
               </p>
             </div>
@@ -1612,14 +1675,14 @@ export const DirectAdmissionModal: React.FC<Props> = ({
           <button
             type="button"
             onClick={onClose}
-            className="p-2 rounded-xl bg-white dark:bg-white/10 hover:bg-blue-100 dark:hover:bg-white/20 text-slate-700 dark:text-white border border-blue-300 dark:border-white/10 cursor-pointer"
+            className="p-2 rounded-xl bg-white dark:bg-white/10 hover:bg-blue-100 dark:hover:bg-white/20 text-slate-700 dark:text-white border border-blue-300 dark:border-white/10 cursor-pointer shrink-0"
           >
             <X className="w-4 h-4" />
           </button>
         </div>
 
         {/* 2-Mode Switcher + New/Re-Admission Toggle (Mobile-Safe Zero-Overlap Stack) */}
-        <div className="px-4 sm:px-5 py-3 bg-slate-50 dark:bg-slate-800/80 border-b border-slate-200 dark:border-slate-800 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2.5">
+        <div className="shrink-0 px-4 sm:px-5 py-3 bg-slate-50 dark:bg-slate-800/80 border-b border-slate-200 dark:border-slate-800 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2.5">
           <div className="grid grid-cols-2 gap-2 w-full sm:w-auto sm:min-w-[290px]">
             <button
               type="button"
@@ -2299,7 +2362,7 @@ export const DirectAdmissionModal: React.FC<Props> = ({
             onCustomAdmissionDiscountChange={(amt) => {
               if (!canGiveDiscount) return;
               setSiblingDiscountPct(0);
-              setConcession(clampDiscountAmount(grossTotal, amt));
+              setConcession(clampDiscountAmount(grossTotal, Math.max(0, amt - headWaiverSum)));
               setPaidManuallyEdited(false);
             }}
             onToggleMonthlySiblingDiscount={handleToggleMonthlySiblingDiscount}
@@ -2415,14 +2478,14 @@ export const DirectAdmissionModal: React.FC<Props> = ({
                     <label className="text-[11px] font-bold text-indigo-700 dark:text-indigo-300 block mb-1">📞 Father Mobile (पिता का मोबाइल)</label>
                     <input
                       type="tel"
-                      maxLength={10}
+                      maxLength={18}
                       value={fatherPhone}
                       onChange={(e) => {
-                        const val = e.target.value.replace(/\D/g, "").slice(0, 10);
+                        const val = sanitizeIndianPhoneInput(e.target.value);
                         setFatherPhone(val);
                         if (!phone || phone === fatherPhone) setPhone(val);
                       }}
-                      placeholder="10-digit Mobile"
+                      placeholder="10-digit Mobile (+91 supported)"
                       className="w-full px-3 py-2 rounded-xl border border-indigo-200 dark:border-indigo-800 bg-white dark:bg-slate-900 text-xs font-bold text-slate-800 dark:text-white"
                     />
                   </div>
@@ -2441,9 +2504,9 @@ export const DirectAdmissionModal: React.FC<Props> = ({
                     </div>
                     <input
                       type="tel"
-                      maxLength={10}
+                      maxLength={18}
                       value={fatherWhatsapp}
-                      onChange={(e) => setFatherWhatsapp(e.target.value.replace(/\D/g, "").slice(0, 10))}
+                      onChange={(e) => setFatherWhatsapp(sanitizeIndianPhoneInput(e.target.value))}
                       placeholder="WhatsApp No."
                       className="w-full px-3 py-2 rounded-xl border border-emerald-300 dark:border-emerald-700 bg-white dark:bg-slate-900 text-xs font-bold text-slate-800 dark:text-white"
                     />
@@ -2452,9 +2515,9 @@ export const DirectAdmissionModal: React.FC<Props> = ({
                     <label className="text-[11px] font-bold text-pink-700 dark:text-pink-300 block mb-1">📱 Mother Mobile (माता का मोबाइल)</label>
                     <input
                       type="tel"
-                      maxLength={10}
+                      maxLength={18}
                       value={motherPhone}
-                      onChange={(e) => setMotherPhone(e.target.value.replace(/\D/g, "").slice(0, 10))}
+                      onChange={(e) => setMotherPhone(sanitizeIndianPhoneInput(e.target.value))}
                       placeholder="10-digit Mobile"
                       className="w-full px-3 py-2 rounded-xl border border-pink-200 dark:border-pink-800 bg-white dark:bg-slate-900 text-xs font-bold text-slate-800 dark:text-white"
                     />
@@ -2474,9 +2537,9 @@ export const DirectAdmissionModal: React.FC<Props> = ({
                     </div>
                     <input
                       type="tel"
-                      maxLength={10}
+                      maxLength={18}
                       value={motherWhatsapp}
-                      onChange={(e) => setMotherWhatsapp(e.target.value.replace(/\D/g, "").slice(0, 10))}
+                      onChange={(e) => setMotherWhatsapp(sanitizeIndianPhoneInput(e.target.value))}
                       placeholder="WhatsApp No."
                       className="w-full px-3 py-2 rounded-xl border border-emerald-300 dark:border-emerald-700 bg-white dark:bg-slate-900 text-xs font-bold text-slate-800 dark:text-white"
                     />
@@ -2499,9 +2562,9 @@ export const DirectAdmissionModal: React.FC<Props> = ({
                     </div>
                     <input
                       type="tel"
-                      maxLength={10}
+                      maxLength={18}
                       value={whatsappNo}
-                      onChange={(e) => setWhatsappNo(e.target.value.replace(/\D/g, "").slice(0, 10))}
+                      onChange={(e) => setWhatsappNo(sanitizeIndianPhoneInput(e.target.value))}
                       placeholder="WhatsApp Mobile Number"
                       className="w-full px-3 py-2 rounded-xl border border-emerald-300 dark:border-emerald-700 bg-white dark:bg-slate-900 text-xs font-bold text-slate-800 dark:text-white"
                     />
@@ -2532,10 +2595,10 @@ export const DirectAdmissionModal: React.FC<Props> = ({
                     </div>
                     <input
                       type="tel"
-                      maxLength={10}
+                      maxLength={18}
                       value={phone}
-                      onChange={(e) => setPhone(e.target.value.replace(/\D/g, "").slice(0, 10))}
-                      placeholder="10-digit Calling Mobile"
+                      onChange={(e) => setPhone(sanitizeIndianPhoneInput(e.target.value))}
+                      placeholder="10-digit Calling Mobile (+91 supported)"
                       className="w-full px-3 py-2 rounded-xl border border-blue-300 dark:border-blue-700 bg-white dark:bg-slate-900 text-xs font-bold text-slate-800 dark:text-white"
                     />
                   </div>
@@ -2615,9 +2678,9 @@ export const DirectAdmissionModal: React.FC<Props> = ({
                     <label className="text-[11px] font-bold text-amber-700 dark:text-amber-300 block mb-1">Emergency Mobile</label>
                     <input
                       type="tel"
-                      maxLength={10}
+                      maxLength={18}
                       value={emergencyPhone}
-                      onChange={(e) => setEmergencyPhone(e.target.value.replace(/\D/g, "").slice(0, 10))}
+                      onChange={(e) => setEmergencyPhone(sanitizeIndianPhoneInput(e.target.value))}
                       placeholder="Emergency Phone"
                       className="w-full px-3 py-2 rounded-xl border border-amber-300 dark:border-amber-700 bg-white dark:bg-slate-900 text-xs text-slate-900 dark:text-slate-100 placeholder:text-slate-400"
                     />
@@ -2647,9 +2710,9 @@ export const DirectAdmissionModal: React.FC<Props> = ({
                     </div>
                     <input
                       type="tel"
-                      maxLength={10}
+                      maxLength={18}
                       value={emergencyWhatsapp}
-                      onChange={(e) => setEmergencyWhatsapp(e.target.value.replace(/\D/g, "").slice(0, 10))}
+                      onChange={(e) => setEmergencyWhatsapp(sanitizeIndianPhoneInput(e.target.value))}
                       placeholder="WhatsApp No."
                       className="w-full px-3 py-2 rounded-xl border border-emerald-300 dark:border-emerald-700 bg-white dark:bg-slate-900 text-xs text-slate-900 dark:text-slate-100 placeholder:text-slate-400"
                     />
@@ -2890,11 +2953,22 @@ export const DirectAdmissionModal: React.FC<Props> = ({
                     const isIncluded = line.included !== false;
                     const isDeferred = Boolean(line.deferToMonth);
                     const isBilledToday = isIncluded && !isDeferred;
+                    const resolvedHeadKey = line.headKey || canonicalizeFeeHeadKey(line.id || line.description);
+                    const isRegBase = resolvedHeadKey === "registration";
+                    const lineDueVal = Math.max(0, Number(line.due) || 0);
+                    const lineConVal = canGiveDiscount
+                      ? Math.min(lineDueVal, Math.max(0, Number(line.conAmount) || 0))
+                      : 0;
+                    const isFullWaived = isBilledToday && lineDueVal > 0 && lineConVal >= lineDueVal;
+                    const lineNetVal = Math.max(0, lineDueVal - lineConVal);
+
                     return (
                       <div
                         key={line.id}
                         className={`p-2 rounded-xl border transition ${
-                          isDeferred
+                          isFullWaived
+                            ? "bg-emerald-50/70 dark:bg-emerald-950/25 border-emerald-300 dark:border-emerald-800/70"
+                            : isDeferred
                             ? "bg-amber-50/70 dark:bg-amber-950/25 border-amber-200 dark:border-amber-800/70"
                             : isIncluded
                             ? "bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-700"
@@ -2914,6 +2988,7 @@ export const DirectAdmissionModal: React.FC<Props> = ({
                                         ...item,
                                         included: nextChecked,
                                         deferToMonth: nextChecked ? item.deferToMonth : undefined,
+                                        ...(nextChecked ? {} : { conAmount: 0 }),
                                       }
                                     : item
                                 )
@@ -2924,26 +2999,40 @@ export const DirectAdmissionModal: React.FC<Props> = ({
                             title={isIncluded ? "Is fee head ko ON/OFF karein" : "Excluded — click to enable"}
                           />
                           <span className="text-xs font-bold text-slate-400 w-4 shrink-0">{index + 1}.</span>
-                          <input
-                            type="text"
-                            value={line.description}
-                            onChange={(e) =>
-                              setFeeLines((prev) =>
-                                prev.map((item) => (item.id === line.id ? { ...item, description: e.target.value } : item))
-                              )
-                            }
-                            placeholder="Fee Head Name"
-                            className="flex-1 min-w-[140px] px-2.5 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs font-semibold text-slate-800 dark:text-white"
-                          />
-                          <div className="relative w-24 shrink-0">
+                          <div className="flex-1 min-w-[140px] flex items-center gap-1.5">
+                            <input
+                              type="text"
+                              value={line.description}
+                              onChange={(e) =>
+                                setFeeLines((prev) =>
+                                  prev.map((item) => (item.id === line.id ? { ...item, description: e.target.value } : item))
+                                )
+                              }
+                              placeholder="Fee Head Name"
+                              className="flex-1 min-w-0 px-2.5 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs font-semibold text-slate-800 dark:text-white"
+                            />
+                            {isRegBase && (
+                              <span className="px-1.5 py-0.5 rounded bg-blue-100 dark:bg-blue-950/60 text-blue-700 dark:text-blue-300 text-[9px] font-black uppercase shrink-0">
+                                Reg Base
+                              </span>
+                            )}
+                          </div>
+                          <div className="relative w-20 sm:w-24 shrink-0">
                             <span className="absolute left-2 top-1.5 text-xs text-slate-400 font-bold">₹</span>
                             <input
                               type="number"
                               value={line.due}
                               onChange={(e) => {
+                                const nextDue = Math.max(0, Number(e.target.value));
                                 setFeeLines((prev) =>
                                   prev.map((item) =>
-                                    item.id === line.id ? { ...item, due: Math.max(0, Number(e.target.value)) } : item
+                                    item.id === line.id
+                                      ? {
+                                          ...item,
+                                          due: nextDue,
+                                          conAmount: item.conAmount ? Math.min(nextDue, item.conAmount) : 0,
+                                        }
+                                      : item
                                   )
                                 );
                                 setPaidManuallyEdited(false);
@@ -2951,6 +3040,48 @@ export const DirectAdmissionModal: React.FC<Props> = ({
                               className="w-full pl-5 pr-2 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs font-black font-mono tabular-nums text-right text-slate-800 dark:text-white"
                             />
                           </div>
+                          {canGiveDiscount && isBilledToday && lineDueVal > 0 && (
+                            <div className="flex items-center gap-1 shrink-0">
+                              <input
+                                type="number"
+                                min={0}
+                                max={lineDueVal}
+                                value={lineConVal || ""}
+                                placeholder="Disc ₹"
+                                title="Is mad par Discount / Maaf (₹)"
+                                onChange={(e) => {
+                                  const nextCon = Math.min(lineDueVal, Math.max(0, Number(e.target.value) || 0));
+                                  setFeeLines((prev) =>
+                                    prev.map((item) =>
+                                      item.id === line.id ? { ...item, conAmount: nextCon } : item
+                                    )
+                                  );
+                                  setPaidManuallyEdited(false);
+                                }}
+                                className="w-16 px-1.5 py-1 rounded-lg border border-emerald-300 dark:border-emerald-700 bg-emerald-50/60 dark:bg-emerald-950/30 text-[11px] font-bold font-mono text-right text-emerald-700 dark:text-emerald-300"
+                              />
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  const nextCon = isFullWaived ? 0 : lineDueVal;
+                                  setFeeLines((prev) =>
+                                    prev.map((item) =>
+                                      item.id === line.id ? { ...item, conAmount: nextCon } : item
+                                    )
+                                  );
+                                  setPaidManuallyEdited(false);
+                                }}
+                                className={`px-2 py-1 rounded-lg text-[10px] font-black border cursor-pointer whitespace-nowrap ${
+                                  isFullWaived
+                                    ? "bg-emerald-600 text-white border-emerald-600 shadow-xs"
+                                    : "bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 border-emerald-300 dark:border-emerald-700 hover:bg-emerald-100"
+                                }`}
+                                title={isFullWaived ? "Maaf hatayein" : "Is fee ko 100% Maaf (Waive) karein — Form par Discounted dikhega"}
+                              >
+                                {isFullWaived ? "✓ Maaf" : "Maaf"}
+                              </button>
+                            </div>
+                          )}
                           <button
                             type="button"
                             onClick={() => {
@@ -2961,6 +3092,7 @@ export const DirectAdmissionModal: React.FC<Props> = ({
                                         ...item,
                                         included: true,
                                         deferToMonth: item.deferToMonth ? undefined : defaultDeferMonth,
+                                        conAmount: item.deferToMonth ? item.conAmount : 0,
                                       }
                                     : item
                                 )
@@ -2988,6 +3120,17 @@ export const DirectAdmissionModal: React.FC<Props> = ({
                             <Trash2 className="w-3.5 h-3.5" />
                           </button>
                         </div>
+
+                        {lineConVal > 0 && isBilledToday && (
+                          <div className="mt-1 pl-6 flex flex-wrap items-center justify-between gap-2 text-[10px] font-bold text-emerald-700 dark:text-emerald-300">
+                            <span>
+                              {isFullWaived
+                                ? "✓ 100% Fee Maaf (Waived) — Form व Fee Slip में Discounted दिखेगा, आगे महीने में नहीं जुड़ेगा"
+                                : `✓ Per-Head Discount: -₹${lineConVal.toLocaleString("en-IN")} (Net Payable: ₹${lineNetVal.toLocaleString("en-IN")})`}
+                            </span>
+                            <span className="font-mono">Net: ₹{lineNetVal.toLocaleString("en-IN")}</span>
+                          </div>
+                        )}
 
                         {isDeferred && (
                           <div className="mt-1.5 pl-6 flex flex-wrap items-center justify-between gap-2 text-[11px]">
@@ -3291,6 +3434,8 @@ export const DirectAdmissionModal: React.FC<Props> = ({
                         <label className="text-[10px] font-bold uppercase text-slate-500">
                           {batchQueue.length > 0 && batchDiscountMode === "one_time_total"
                             ? "Total Discount (₹)"
+                            : headWaiverSum > 0
+                            ? "Total Disc/Maaf (₹)"
                             : "Discount (₹)"}
                         </label>
                         <button
@@ -3301,7 +3446,7 @@ export const DirectAdmissionModal: React.FC<Props> = ({
                             if (batchQueue.length > 0 && batchDiscountMode === "one_time_total") {
                               setBatchTotalDiscount(fivePct);
                             } else {
-                              setConcession(fivePct);
+                              setConcession(Math.max(0, fivePct - headWaiverSum));
                             }
                             setPaidManuallyEdited(false);
                           }}
@@ -3313,13 +3458,13 @@ export const DirectAdmissionModal: React.FC<Props> = ({
                       <input
                         type="number"
                         min={0}
-                        value={batchQueue.length > 0 && batchDiscountMode === "one_time_total" ? batchTotalDiscount : concession}
+                        value={batchQueue.length > 0 && batchDiscountMode === "one_time_total" ? batchTotalDiscount : effectiveConcession}
                         onChange={(e) => {
                           const rawVal = Math.max(0, Number(e.target.value));
                           if (batchQueue.length > 0 && batchDiscountMode === "one_time_total") {
                             setBatchTotalDiscount(clampDiscountAmount(batchGrossSum, rawVal));
                           } else {
-                            setConcession(clampDiscountAmount(grossTotal, rawVal));
+                            setConcession(clampDiscountAmount(grossTotal, Math.max(0, rawVal - headWaiverSum)));
                           }
                           setPaidManuallyEdited(false);
                         }}

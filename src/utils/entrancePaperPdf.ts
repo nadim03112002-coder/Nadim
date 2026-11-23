@@ -66,7 +66,7 @@ const NON_WEBSITE_URL_PATTERN = /(mediafire\.com|\.apk\b|drive\.google\.com|drop
 function normalizeWebsiteDisplay(raw?: string, isLifeMaker = false): string {
   const val = String(raw || "").trim();
   if (!val || NON_WEBSITE_URL_PATTERN.test(val)) {
-    return isLifeMaker ? "sms2027.vercel.app" : "";
+    return isLifeMaker ? "lmps27.vercel.app" : "";
   }
   return val.replace(/^https?:\/\//i, "").replace(/\/+$/, "");
 }

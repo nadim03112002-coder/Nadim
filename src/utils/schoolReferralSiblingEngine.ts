@@ -74,13 +74,51 @@ export const normalizePersonName = (raw?: string | null): string => {
 export const normalizeWhatsappOrPhone = (raw?: string | null): string => {
   if (!raw) return "";
   const digits = String(raw).replace(/\D/g, "");
-  if (digits.length === 12 && digits.startsWith("91")) {
-    return digits.slice(2);
+  if (digits.length >= 14 && digits.startsWith("0091")) {
+    return digits.slice(4, 14);
+  }
+  if (digits.length >= 12 && digits.startsWith("91")) {
+    return digits.slice(2, 12);
   }
   if (digits.length === 11 && digits.startsWith("0")) {
-    return digits.slice(1);
+    return digits.slice(1, 11);
   }
   return digits.length >= 10 ? digits.slice(-10) : digits;
+};
+
+/**
+ * Input-safe phone sanitizer for <input type="tel"> fields.
+ * Supports typing, pasting, or browser/Android autofill with +91, +91-..., 91..., 0091..., or 0...
+ * without browsers truncating +91 numbers to 7 digits under maxLength={10}.
+ */
+export const sanitizeIndianPhoneInput = (raw?: string | null): string => {
+  if (!raw) return "";
+  const trimmed = String(raw).trim();
+  const digits = trimmed.replace(/\D/g, "");
+
+  if (trimmed.startsWith("+")) {
+    if (digits.startsWith("0091")) {
+      return digits.length >= 14 ? digits.slice(4, 14) : `+${digits}`;
+    }
+    if (digits.startsWith("91")) {
+      return digits.length >= 12 ? digits.slice(2, 12) : `+${digits}`;
+    }
+    if (!digits) return "+";
+    return `+${digits.slice(0, 15)}`;
+  }
+
+  if (digits.startsWith("0091") && digits.length >= 14) {
+    return digits.slice(4, 14);
+  }
+  if (digits.startsWith("91")) {
+    if (digits.length >= 12) return digits.slice(2, 12);
+    if (digits.length === 11) return digits; // allow finishing 12th digit when typing 91 + 10 digits
+    return digits;
+  }
+  if (digits.startsWith("0") && digits.length === 11) {
+    return digits.slice(1, 11);
+  }
+  return digits.slice(0, 10);
 };
 
 export const buildFamilyGroupId = (

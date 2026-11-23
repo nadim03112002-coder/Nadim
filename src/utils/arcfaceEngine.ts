@@ -81,6 +81,17 @@ let isInitializing = false;
 let initPromise: Promise<boolean> | null = null;
 let inferenceMutex: Promise<any> = Promise.resolve();
 let lastArcFaceError: string | null = null;
+let consecutiveInferenceErrors = 0;
+let shared112Canvas: HTMLCanvasElement | null = null;
+
+function getShared112Canvas(): HTMLCanvasElement {
+  if (!shared112Canvas && typeof document !== "undefined") {
+    shared112Canvas = document.createElement("canvas");
+    shared112Canvas.width = 112;
+    shared112Canvas.height = 112;
+  }
+  return shared112Canvas || document.createElement("canvas");
+}
 
 export function getArcFaceError(): string | null {
   return lastArcFaceError;
@@ -344,12 +355,9 @@ export function preprocessFaceTo112Tensor(
   landmarks?: any
 ): { tensor: ort.Tensor; cropCanvas: HTMLCanvasElement } | null {
   try {
-    const sW = (source as any).videoWidth || (source as any).naturalWidth || source.width || 320;
-    const sH = (source as any).videoHeight || (source as any).naturalHeight || source.height || 320;
-
-    const canvas = document.createElement("canvas");
-    canvas.width = 112;
-    canvas.height = 112;
+    const canvas = getShared112Canvas();
+    if (canvas.width !== 112) canvas.width = 112;
+    if (canvas.height !== 112) canvas.height = 112;
     const ctx = canvas.getContext("2d", { willReadFrequently: true });
     if (!ctx) return null;
 
@@ -358,6 +366,10 @@ export function preprocessFaceTo112Tensor(
       // Landmark alignment is strictly mandatory for canonical 112x112 ArcFace embedding
       return null;
     }
+
+    // Clear pooled canvas cleanly before applying affine transform
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, 112, 112);
 
     // 5-Point Umeyama Affine Transform
     const M = getSimilarityTransform(src5, INSIGHTFACE_CANONICAL_5_POINTS_112);
@@ -407,11 +419,15 @@ export async function extractArcFace512Descriptor(
   if (!preprocessed) return null;
 
   return serializeInference(async () => {
-    if (!arcfaceSession) return null;
+    if (!arcfaceSession) {
+      try { (preprocessed.tensor as any).dispose?.(); } catch {}
+      return null;
+    }
+    let results: Record<string, ort.Tensor> | null = null;
     try {
       const inputName = arcfaceSession.inputNames[0] || "input.1";
       const feeds: Record<string, ort.Tensor> = { [inputName]: preprocessed.tensor };
-      const results = await arcfaceSession.run(feeds);
+      results = await arcfaceSession.run(feeds);
       const outputName = arcfaceSession.outputNames[0] || "516";
       const outputTensor = results[outputName];
 
@@ -445,10 +461,27 @@ export async function extractArcFace512Descriptor(
         normalized[i] = Number((rawData[i] / norm).toFixed(6));
       }
 
+      consecutiveInferenceErrors = 0;
       return normalized;
     } catch (err: any) {
+      consecutiveInferenceErrors++;
       console.warn("[ArcFace] Inference note:", err?.message || err);
+      // Auto-recover ONNX session if WASM state corrupts over multi-hour kiosk runs
+      if (consecutiveInferenceErrors >= 5) {
+        console.warn("[ArcFace] Resetting ONNX session after repeated errors for clean recovery.");
+        try { (arcfaceSession as any)?.release?.(); } catch {}
+        arcfaceSession = null;
+        initPromise = null;
+        consecutiveInferenceErrors = 0;
+      }
       return null;
+    } finally {
+      try { (preprocessed.tensor as any).dispose?.(); } catch {}
+      if (results) {
+        for (const t of Object.values(results)) {
+          try { (t as any)?.dispose?.(); } catch {}
+        }
+      }
     }
   });
 }

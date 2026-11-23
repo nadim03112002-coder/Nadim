@@ -70,7 +70,7 @@ const showNstaNotification = (payload: NstaPushPayload) => {
     requireInteraction: true,
     silent: false,
     vibrate: [300, 150, 300, 150, 300],
-    data: { url, ...data },
+    data: { url, title, body, ...data },
     actions: [
       { action: 'open', title: 'Open App' },
       { action: 'dismiss', title: 'Dismiss' },
@@ -87,7 +87,7 @@ const showNstaNotification = (payload: NstaPushPayload) => {
       renotify: true,
       requireInteraction: true,
       silent: false,
-      data: { url, ...data },
+      data: { url, title, body, ...data },
     });
   });
 };
@@ -112,6 +112,19 @@ self.addEventListener('notificationclick', (event) => {
   if (event.action === 'dismiss') return;
   const notifData = event.notification.data || {};
   const targetUrl = notifData.url || '/';
+  const notifTitle = String(event.notification.title || notifData.title || '');
+  const notifBody = String(event.notification.body || notifData.body || '');
+
+  let openTargetUrl = targetUrl;
+  try {
+    if (notifTitle || notifBody) {
+      const u = new URL(targetUrl, self.location.origin);
+      if (notifTitle) u.searchParams.set('speakTitle', notifTitle.slice(0, 140));
+      if (notifBody) u.searchParams.set('speakBody', notifBody.slice(0, 260));
+      if (notifData.id) u.searchParams.set('speakId', String(notifData.id));
+      openTargetUrl = u.pathname + u.search + u.hash;
+    }
+  } catch (_) {}
 
   event.waitUntil(
     self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((windowClients) => {
@@ -121,6 +134,9 @@ self.addEventListener('notificationclick', (event) => {
             client.postMessage({
               type: 'SCHOOL_PUSH_NAVIGATE',
               url: targetUrl,
+              id: notifData.id || '',
+              title: notifTitle,
+              body: notifBody,
               studentId: notifData.studentId || '',
               schoolId: notifData.schoolId || '',
               notifType: notifData.type || notifData.notifType || '',
@@ -135,7 +151,7 @@ self.addEventListener('notificationclick', (event) => {
           return client.focus();
         }
       }
-      return self.clients.openWindow ? self.clients.openWindow(targetUrl) : undefined;
+      return self.clients.openWindow ? self.clients.openWindow(openTargetUrl) : undefined;
     }),
   );
 });

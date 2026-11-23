@@ -120,6 +120,7 @@ export const ClassFeeStructureModal: React.FC<Props> = ({
         billingSection: tpl.billingSection,
         targetSection: "ALL",
         isUserOptional: Boolean(it.isUserOptional),
+        ...(it.legacyKey ? { legacyKey: it.legacyKey } : {}),
       })),
     };
     updateGroups((prev) => [...prev, newGroup]);

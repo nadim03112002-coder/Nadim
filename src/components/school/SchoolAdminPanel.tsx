@@ -82,6 +82,8 @@ import { GroupStudyModal } from "../GroupStudyModal";
 import { TeacherRulesRegulationsView } from "./TeacherRulesRegulationsView";
 import { TeacherSignatureModal } from "./TeacherSignatureModal";
 import { AppointmentLetterModal } from "./AppointmentLetterModal";
+import { AccountRecoveryCard } from "./AccountRecoveryCard";
+import { AdminAccountsDirectory } from "./AdminAccountsDirectory";
 import {
   Users, BookOpen, Calendar, IndianRupee, Plus, Trash2, Settings,
   ChevronRight, ChevronLeft, X, Edit3, FileText, Award,
@@ -94,7 +96,7 @@ import {
   Youtube, Check, Menu, BarChart3, PieChart, Camera, Share2, Film, CheckCheck, RefreshCw, Upload, ExternalLink, Filter, Send, RotateCw, RotateCcw, Bus, Sliders,
   Sun, Moon, Palette,
   Cake, Gift,
-  Smartphone, Laptop, Monitor, Compass
+  Smartphone, Laptop, Monitor, Compass, CalendarClock
 } from "lucide-react";
 import { SchoolStore } from "./SchoolStore";
 import { SchoolPlanView } from "./SchoolPlanView";
@@ -165,7 +167,7 @@ type AdminView =
   | "community"
   | "absentee"
   | "sessions" | "classes" | "subjects" | "teachers" | "students"
-  | "content" | "class_notes_manager" | "attendance" | "fees" | "fee_class" | "fee_all" | "fee_structure" | "bus_transport" | "qr_pay" | "fee_alerts" | "receipt_header" | "discount_list" | "report_card" | "marks" | "results"
+  | "content" | "class_notes_manager" | "attendance" | "fees" | "fee_class" | "fee_all" | "fee_structure" | "term_scheduler" | "bus_transport" | "qr_pay" | "fee_alerts" | "receipt_header" | "discount_list" | "report_card" | "marks" | "results"
   | "sibling_profiles"
   | "store" | "subscription"
   | "id_cards" | "admit_cards" | "certificates" | "marksheet_hub" | "readmission" | "notices" | "holidays" | "staff_hrm" | "reports_hub"
@@ -193,7 +195,8 @@ type AdminView =
   | "entrance_test_hub"
   | "digital_paper_library"
   | "roles_permissions"
-  | "document_templates";
+  | "document_templates"
+  | "accounts_directory";
 
 
 export const SchoolAdminPanel: React.FC<Props> = ({
@@ -286,6 +289,22 @@ export const SchoolAdminPanel: React.FC<Props> = ({
       setPendingStaffLeavesCount((list || []).filter((l) => l.status === "pending").length);
     });
     return unsub;
+  }, [schoolId]);
+
+  useEffect(() => {
+    const handleStudentUpdated = (ev: Event) => {
+      const detail = (ev as CustomEvent)?.detail;
+      if (detail?.student?.id && (!detail.schoolId || detail.schoolId === schoolId)) {
+        const updated: SchoolStudent = detail.student;
+        setStudents((prev) =>
+          prev.some((s) => s.id === updated.id)
+            ? prev.map((s) => (s.id === updated.id ? updated : s))
+            : [updated, ...prev]
+        );
+      }
+    };
+    window.addEventListener("nsta:student-updated", handleStudentUpdated);
+    return () => window.removeEventListener("nsta:student-updated", handleStudentUpdated);
   }, [schoolId]);
 
   const handleOpenTeacherFaceEnrollment = (teacher: any) => {
@@ -2865,6 +2884,7 @@ export const SchoolAdminPanel: React.FC<Props> = ({
       },
       items: [
         { id: "dashboard" as AdminView, label: "Home Dashboard", icon: Home, desc: "दैनिक उपस्थिति, फीस संग्रह व कार्य डेस्क" },
+        { id: "accounts_directory" as AdminView, label: "Total Accounts (अकाउंट संख्या)", icon: Users, desc: "कुल छात्र, शिक्षक, स्टाफ व लॉगिन अकाउंट्स" },
       ]
     },
     {
@@ -2929,6 +2949,7 @@ export const SchoolAdminPanel: React.FC<Props> = ({
       items: [
         { id: "fees" as AdminView, label: "Fee Collection & Ledger (फीस लेजर)", icon: IndianRupee, desc: "मासिक शुल्क वसूली, चालान व छात्र लेजर" },
         { id: "fee_structure" as AdminView, label: "Fee Structure & Admission Heads", icon: Sparkles, desc: "कक्षा-वार मासिक, वार्षिक व Online Admission शुल्क सेट-अप" },
+        { id: "term_scheduler" as AdminView, label: "Term / Exam Fee & Month Add", icon: CalendarClock, desc: "2-Monthly / कम दाम Exam Fee, Reg-Only छात्र के महीने में फीस जोड़ें व Full-Paid छूट" },
         { id: "discount_list" as AdminView, label: "Fee Discount List (छूट सूची)", icon: Award, desc: "किसको कितना व कहाँ डिस्काउंट मिला" },
         { id: "expenses" as AdminView, label: "Expense & Daily Cashbook", icon: Receipt, desc: "दैनिक खर्च, पेटी कैश व नेट क्लोजिंग बैलेंस" },
         { id: "qr_pay" as AdminView, label: "Scan QR to Pay (फास्ट पे)", icon: QrCode, desc: "स्मार्ट आईडी कार्ड क्यूआर स्कैनर से फीस" },
@@ -3278,6 +3299,11 @@ export const SchoolAdminPanel: React.FC<Props> = ({
                                   : "text-slate-200"
                               }`}>{item.label}</p>
                             </div>
+                            {item.id === "term_scheduler" && (
+                              <span className="inline-flex items-center px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-500 dark:text-emerald-300 border border-emerald-500/30 text-[8px] font-black uppercase tracking-wider shrink-0 leading-none">
+                                NEW
+                              </span>
+                            )}
                             {isEliteItem && (
                               <span className="erp-elite-menu-badge inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[8px] font-bold uppercase tracking-wider shrink-0 leading-none">
                                 {isEliteLocked ? (
@@ -3550,6 +3576,11 @@ export const SchoolAdminPanel: React.FC<Props> = ({
                                     : "text-slate-200"
                                 }`}>{item.label}</p>
                               </div>
+                              {item.id === "term_scheduler" && (
+                                <span className="inline-flex items-center px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-500 dark:text-emerald-300 border border-emerald-500/30 text-[8px] font-black uppercase tracking-wider shrink-0 leading-none">
+                                  NEW
+                                </span>
+                              )}
                               {isEliteItem && (
                                 <span className="erp-elite-menu-badge inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[8px] font-bold uppercase tracking-wider shrink-0 leading-none">
                                   {isEliteLocked ? (
@@ -3670,7 +3701,7 @@ export const SchoolAdminPanel: React.FC<Props> = ({
               </button>
             )}
 
-            {view !== "dashboard" && (
+            {view !== "dashboard" ? (
               <button
                 type="button"
                 onClick={() => setView("dashboard")}
@@ -3683,7 +3714,21 @@ export const SchoolAdminPanel: React.FC<Props> = ({
                 <ChevronLeft className="w-3.5 h-3.5" />
                 <span className="hidden xs:inline">Home</span>
               </button>
-            )}
+            ) : isSuperAdmin && onBack ? (
+              <button
+                type="button"
+                onClick={onBack}
+                className={`inline-flex items-center gap-1 px-2.5 py-1.5 rounded-xl text-xs font-black transition cursor-pointer shrink-0 border ${
+                  isWhite
+                    ? "bg-indigo-50 hover:bg-indigo-100 text-indigo-800 border-indigo-300"
+                    : "bg-indigo-600/25 hover:bg-indigo-600/40 text-indigo-200 border-indigo-400/40"
+                }`}
+                title="Super Admin Control Panel par wapas jayein"
+              >
+                <ChevronLeft className="w-3.5 h-3.5" />
+                <span className="hidden sm:inline">Super Admin</span>
+              </button>
+            ) : null}
 
             {/* Academic Session Selector (Compact Year-Only) */}
             <button
@@ -3764,6 +3809,8 @@ export const SchoolAdminPanel: React.FC<Props> = ({
                 ? "विजिटर गेट-पास व सुरक्षा डेस्क (Visitor & Security)"
                 : view === "doc_verify"
                 ? "दस्तावेज़ ऑनलाइन सत्यापन पोर्टल (Document Verification)"
+                : view === "accounts_directory"
+                ? "Total Accounts Directory (अकाउंट संख्या)"
                 : view.replace(/_/g, " ")}
             </h1>
           </div>
@@ -4317,6 +4364,14 @@ export const SchoolAdminPanel: React.FC<Props> = ({
               keywords: "fee alert broadcast due reminder notification तकाजा बकाया ब्रॉडकास्ट",
               icon: Bell,
               action: () => setView("fee_alerts"),
+            },
+            {
+              id: "sub_term_scheduler",
+              label: "Term / Exam Fee & Month Add (किस्त व Exam शुल्क)",
+              desc: "कम रेट में 2-Monthly Exam Fee लागू करें, Reg-Only छात्र के महीने में शुल्क जोड़ें (Full-Paid छूट)",
+              keywords: "term exam fee campaign 2 monthly registration only month add deferred full paid exempt किस्त परीक्षा शुल्क",
+              icon: CalendarClock,
+              action: () => setView("term_scheduler"),
             },
             {
               id: "sub_account_hub",
@@ -5207,6 +5262,45 @@ export const SchoolAdminPanel: React.FC<Props> = ({
                 डीजल लॉग →
               </button>
             </div>
+          </div>
+        </div>
+
+        {/* ── COMPACT ACCOUNTS COUNTER STRIP (KITNE ACCOUNT HAI) ── */}
+        <div className="bg-white dark:bg-slate-900 rounded-2xl px-4 py-3 border border-slate-200 dark:border-slate-800 shadow-xs flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-3 min-w-0">
+            <div className="w-9 h-9 rounded-xl bg-indigo-50 dark:bg-indigo-950/60 text-indigo-600 dark:text-indigo-400 flex items-center justify-center shrink-0">
+              <Users className="w-4.5 h-4.5" />
+            </div>
+            <div className="min-w-0">
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="text-xs sm:text-sm font-bold text-slate-900 dark:text-white">
+                  कुल सक्रिय अकाउंट्स (Total School Accounts):
+                </span>
+                <span className="px-2 py-0.5 rounded-lg bg-indigo-600 text-white text-xs font-black tabular-nums">
+                  {1 + displayedStudents.length + displayedTeachers.length + accountants.length + displayedStaff.length}
+                </span>
+              </div>
+              <p className="text-[11px] text-slate-500 dark:text-slate-400 truncate mt-0.5">
+                {displayedStudents.length} Students • {displayedTeachers.length} Teachers • {accountants.length + displayedStaff.length} Staff/Acc • 1 Admin
+              </p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2 shrink-0">
+            <button
+              type="button"
+              onClick={() => setView("account_hub")}
+              className="px-3 py-1.5 rounded-xl bg-amber-50 hover:bg-amber-100 dark:bg-amber-950/50 dark:hover:bg-amber-900/50 border border-amber-200 dark:border-amber-800 text-amber-800 dark:text-amber-300 text-xs font-bold transition cursor-pointer whitespace-nowrap"
+            >
+              Recovery Info
+            </button>
+            <button
+              type="button"
+              onClick={() => setView("accounts_directory")}
+              className="px-3 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold transition cursor-pointer flex items-center gap-1 whitespace-nowrap"
+            >
+              <span>सभी अकाउंट्स देखें</span>
+              <ChevronRight className="w-3.5 h-3.5" />
+            </button>
           </div>
         </div>
 
@@ -6420,6 +6514,28 @@ export const SchoolAdminPanel: React.FC<Props> = ({
 
         {settingsTab === "profile" && (
           <>
+        {/* Admin Account Recovery Card */}
+        <AccountRecoveryCard
+          uid={adminUid || school?.id || "admin_uid"}
+          role="SCHOOL_ADMIN"
+          name={school?.principalName || `${school?.name || "School"} Admin`}
+          displayId={school?.id}
+          schoolId={schoolId}
+          schoolName={school?.name}
+          initialMobile={school?.phone || ""}
+          initialEmail={school?.adminEmail || school?.email || ""}
+          theme={appTheme}
+          extraSync={async (payload) => {
+            if (schoolId) {
+              const patch: any = {};
+              if (payload.mobile && !school?.phone) patch.phone = payload.mobile;
+              if (payload.email && !school?.adminEmail) patch.adminEmail = payload.email;
+              if (Object.keys(patch).length > 0) {
+                await updateSchool(schoolId, patch).catch(() => {});
+              }
+            }
+          }}
+        />
         {/* Profile Header */}
         <div className="bg-gradient-to-r from-blue-50 via-indigo-50 to-sky-50 dark:from-slate-900 dark:via-slate-900 dark:to-indigo-950/70 rounded-3xl p-6 text-slate-900 dark:text-white shadow-md border-2 border-blue-700 dark:border-blue-500 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
           <div className="flex items-center gap-4">
@@ -9654,6 +9770,23 @@ export const SchoolAdminPanel: React.FC<Props> = ({
     );
   }
 
+  if (view === "term_scheduler") {
+    return renderErpShell(
+      <FeeManager
+        key={view}
+        schoolId={schoolId}
+        className="All Classes"
+        schoolName={school?.name}
+        school={school || undefined}
+        sessionId={activeSession?.id || ""}
+        adminId={adminUid}
+        initialTool="term_scheduler"
+        exitOnToolClose={true}
+        onBack={() => setView("dashboard")}
+      />
+    );
+  }
+
   if (view === "fee_alerts") {
     return renderErpShell(
       <div className="space-y-2">
@@ -10264,6 +10397,13 @@ export const SchoolAdminPanel: React.FC<Props> = ({
         students={displayedStudents}
         classes={displayedClasses}
         isAdmin={true}
+        onStudentUpdated={(updated) =>
+          setStudents((prev) =>
+            prev.some((s) => s.id === updated.id)
+              ? prev.map((s) => (s.id === updated.id ? updated : s))
+              : [updated, ...prev]
+          )
+        }
         onBack={() => setView("dashboard")}
       />
     );
@@ -10610,6 +10750,7 @@ export const SchoolAdminPanel: React.FC<Props> = ({
     { label: "Classes", subtitle: "Sections, Attendance & Marks", icon: <BookOpen className="w-5 h-5 text-purple-500" />, view: "classes", count: displayedClasses.length, locked: false },
     { label: "Teachers & Staff Hub", subtitle: "Directory, Salary, Slips & HRM", icon: <Users className="w-5 h-5 text-green-500" />, view: "teachers", count: displayedTeachers.length, locked: false },
     { label: "Fee Structure & Heads", subtitle: "Class & Online Admission Heads", icon: <IndianRupee className="w-5 h-5 text-emerald-600" />, view: "fee_structure", count: "Class + Adm", locked: false },
+    { label: "Term / Exam Fee & Month Add", subtitle: "2-Monthly Exam, Reg-Only Defer & Exempt", icon: <CalendarClock className="w-5 h-5 text-indigo-500" />, view: "term_scheduler", count: "NEW ⚡", locked: false, featured: true },
     { label: "Marksheet (रिजल्ट)", subtitle: "Report Card & Print", icon: <FileSpreadsheet className="w-5 h-5 text-emerald-600" />, view: "marksheet_hub", count: "Official", locked: false },
     { label: "Notice Board & Holidays", subtitle: "Circulars & Festival Holidays", icon: <Megaphone className="w-5 h-5 text-purple-600" />, view: "notices", count: "Circulars", locked: false },
     { label: "Admit Cards", subtitle: "Exam Hall Tickets", icon: <FileText className="w-5 h-5 text-rose-500" />, view: "admit_cards", count: "Hall Ticket", locked: false },
@@ -10744,6 +10885,29 @@ export const SchoolAdminPanel: React.FC<Props> = ({
             </button>
           </div>
         </div>
+
+        {/* School Admin Account Recovery Card & Edit Modal */}
+        <AccountRecoveryCard
+          uid={adminUid || school?.id || "admin_uid"}
+          role="SCHOOL_ADMIN"
+          name={school?.principalName || `${school?.name || "School"} Admin`}
+          displayId={school?.id}
+          schoolId={schoolId}
+          schoolName={school?.name}
+          initialMobile={school?.phone || ""}
+          initialEmail={school?.adminEmail || school?.email || ""}
+          theme={appTheme}
+          extraSync={async (payload) => {
+            if (schoolId) {
+              const patch: any = {};
+              if (payload.mobile && !school?.phone) patch.phone = payload.mobile;
+              if (payload.email && !school?.adminEmail) patch.adminEmail = payload.email;
+              if (Object.keys(patch).length > 0) {
+                await updateSchool(schoolId, patch).catch(() => {});
+              }
+            }
+          }}
+        />
 
         {/* Section 1: Explore Full NSTA Learning App (Only shown when platform content access is passed, e.g. SuperAdmin) */}
         {onOpenPlatformContent && (
@@ -10985,6 +11149,23 @@ export const SchoolAdminPanel: React.FC<Props> = ({
   const renderListView = () => {
     if (view === "account_hub") {
       return renderAccountHubPage();
+    }
+    if (view === "accounts_directory") {
+      return (
+        <div className="p-4 sm:p-6 max-w-5xl mx-auto">
+          <AdminAccountsDirectory
+            schoolId={schoolId}
+            schoolName={school?.name}
+            school={school}
+            students={displayedStudents}
+            teachers={displayedTeachers}
+            accountants={accountants}
+            staffList={displayedStaff}
+            isSuperAdminMode={false}
+            theme={appTheme}
+          />
+        </div>
+      );
     }
     if (view === "sessions") {
       return (
@@ -14390,6 +14571,43 @@ export const SchoolAdminPanel: React.FC<Props> = ({
                 />
               </div>
             </div>
+          </div>
+
+          {/* Quick Fee Actions Strip */}
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+            <button
+              type="button"
+              onClick={() => setView("term_scheduler")}
+              className="flex items-center justify-between gap-2 px-3.5 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold shadow-xs transition cursor-pointer active:scale-[0.99]"
+            >
+              <span className="inline-flex items-center gap-2 min-w-0 truncate">
+                <CalendarClock className="w-4 h-4 shrink-0" />
+                <span className="truncate">Term / Exam Fee &amp; Month Add</span>
+              </span>
+              <span className="px-1.5 py-0.5 rounded bg-white/20 text-[9px] font-black shrink-0">NEW</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setView("fee_structure")}
+              className="flex items-center justify-between gap-2 px-3.5 py-2.5 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-800 dark:text-slate-100 text-xs font-bold shadow-xs transition cursor-pointer active:scale-[0.99]"
+            >
+              <span className="inline-flex items-center gap-2 min-w-0 truncate">
+                <Sparkles className="w-4 h-4 text-emerald-500 shrink-0" />
+                <span className="truncate">Fee Structure (Adm &amp; Heads)</span>
+              </span>
+              <ChevronRight className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+            </button>
+            <button
+              type="button"
+              onClick={() => setView("fee_all")}
+              className="flex items-center justify-between gap-2 px-3.5 py-2.5 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-800 dark:text-slate-100 text-xs font-bold shadow-xs transition cursor-pointer active:scale-[0.99]"
+            >
+              <span className="inline-flex items-center gap-2 min-w-0 truncate">
+                <Users className="w-4 h-4 text-blue-500 shrink-0" />
+                <span className="truncate">All Classes Fee Ledger</span>
+              </span>
+              <ChevronRight className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+            </button>
           </div>
 
           {/* Section Header */}

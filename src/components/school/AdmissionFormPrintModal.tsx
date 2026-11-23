@@ -28,7 +28,7 @@ import type {
   NstaMessage,
 } from "../../school-types";
 import { ADMISSION_DOCUMENT_OPTIONS, ADMISSION_CATEGORIES, BLOOD_GROUPS } from "../../school-types";
-import { getLocalFees, updateStudent, saveAdmissionApplication, saveNstaMessage } from "../../school-firebase";
+import { getLocalFees, getLocalStudents, updateStudent, saveAdmissionApplication, saveNstaMessage } from "../../school-firebase";
 import { uploadToCloudinary } from "../../services/cloudinaryService";
 import { sendSchoolPushNotification } from "../../utils/schoolPushClient";
 import { getSavedSchoolLogo, getVisibleSchoolRegNo, numberToIndianWords, formatAcademicSession, maskSensitive2Chars } from "./feeReceiptUtils";
@@ -39,6 +39,7 @@ import {
   buildWhatsAppReceiptMessage,
 } from "./feeDocument";
 import { WhatsAppShareModal } from "./WhatsAppShareModal";
+import { sanitizeIndianPhoneInput } from "../../utils/schoolReferralSiblingEngine";
 
 export type AdmissionPrintMode = "classic_box_grid" | "combined" | "form_only" | "receipt_only";
 export type AdmissionSignatoryMode = "both" | "cashier_only" | "principal_only";
@@ -548,13 +549,37 @@ export const AdmissionFormPrintModal: React.FC<Props> = ({
   isStudentView = false,
   defaultMasked = false,
 }) => {
+  const [studentRefreshTick, setStudentRefreshTick] = useState(0);
+  React.useEffect(() => {
+    const onStdUpdated = (ev: Event) => {
+      const detail = (ev as CustomEvent)?.detail;
+      if (!detail?.student?.id || !student?.id || detail.student.id === student.id) {
+        setStudentRefreshTick((t) => t + 1);
+      }
+    };
+    window.addEventListener("nsta:student-updated", onStdUpdated);
+    return () => window.removeEventListener("nsta:student-updated", onStdUpdated);
+  }, [student?.id]);
+
+  // Merge latest cached student data so post-admission store purchases & waivers render live immediately
+  const effectiveStudent = useMemo(() => {
+    if (!student) return student;
+    if (!school?.id || !student.id) return student;
+    try {
+      const localMatch = getLocalStudents(school.id).find((s) => s.id === student.id);
+      return localMatch ? { ...student, ...localMatch } : student;
+    } catch {
+      return student;
+    }
+  }, [student, school?.id, isOpen, studentRefreshTick]);
+
   // Automatically resolve admission fee record if not explicitly passed
   const resolvedFee = useMemo<MonthlyFee>(() => {
     if (feeRecord) return feeRecord;
     if (school?.id) {
       const localFees = getLocalFees(school.id);
-      const stId = student?.id || application?.enrolledStudentId;
-      const admReceipt = student?.admissionReceiptNo || application?.admissionFeeDetails?.receiptNo;
+      const stId = effectiveStudent?.id || application?.enrolledStudentId;
+      const admReceipt = effectiveStudent?.admissionReceiptNo || application?.admissionFeeDetails?.receiptNo;
       const found = localFees.find((f) => {
         const isAdm = f.feeType === "admission" || f.receiptCategory === "admission";
         if (!isAdm) return false;
@@ -970,6 +995,49 @@ export const AdmissionFormPrintModal: React.FC<Props> = ({
   const totalPaid = resolvedFee ? Number(resolvedFee.paidAmount ?? resolvedFee.amount ?? netPayable) : 0;
   const balanceDue = resolvedFee ? Math.max(0, resolvedFee.balanceDue ?? (netPayable - totalPaid)) : 0;
   const paidWords = numberToIndianWords(totalPaid);
+
+  const waivedEntries = Object.entries(effectiveStudent?.waivedFeeHeads || {})
+    .filter(([, w]) => Number(w?.waivedAmount || 0) > 0)
+    .map(([k, w]) => ({
+      key: k,
+      label: w.label || k,
+      originalAmount: Number(w.waivedAmount || 0),
+      waivedAmount: Number(w.waivedAmount || 0),
+      isFullMaaf: Boolean(w.fullWaived),
+      reason: w.reason || "Admission Waiver",
+    }));
+  const itemConRows = feeItems
+    .filter((it) => Number(it.con || 0) > 0)
+    .filter((it) => {
+      const descLow = String(it.description || "").toLowerCase();
+      return !waivedEntries.some((w) => {
+        const wLow = w.label.toLowerCase();
+        return descLow.includes(wLow.slice(0, 8)) || wLow.includes(descLow.slice(0, 8));
+      });
+    })
+    .map((it, i) => {
+      const dueVal = Number(it.due || 0);
+      const conVal = Number(it.con || 0);
+      return {
+        key: `item_${i}`,
+        label: String(it.description || "Fee Head"),
+        originalAmount: dueVal,
+        waivedAmount: conVal,
+        isFullMaaf: dueVal > 0 && conVal >= dueVal,
+        reason: "Discounted at Admission",
+      };
+    });
+  const allWaivedRows = [...waivedEntries, ...itemConRows];
+  const effectiveTotalConcession = Math.max(
+    totalCon,
+    allWaivedRows.reduce((s, r) => s + Number(r.waivedAmount || 0), 0)
+  );
+  const postPurchases = [...(effectiveStudent?.postAdmissionPurchases || [])].sort(
+    (a, b) => String(a.date || "").localeCompare(String(b.date || ""))
+  );
+  const postPurchasesPaidSum = postPurchases.reduce((s, p) => s + Number(p.totalPaid || 0), 0);
+  const postPurchasesDiscSum = postPurchases.reduce((s, p) => s + Number(p.totalDiscount || 0), 0);
+
   const qrVerifyUrl = buildAdmissionQrUrl({
     schoolId: school?.id || "",
     schoolName: school?.name || "",
@@ -1481,8 +1549,69 @@ export const AdmissionFormPrintModal: React.FC<Props> = ({
                       ${totalPaid > 0 ? `₹${totalPaid.toLocaleString("en-IN")} (${resolvedFee?.payModeInfo?.payMode || "Cash"}) • Rcpt #${resolvedFee?.receiptNo || "ADM-01"}` : "Pending at Counter"}
                     </td>
                   </tr>
+                  ${
+                    !isBlankForm && (allWaivedRows.length > 0 || effectiveTotalConcession > 0)
+                      ? `
+                      <tr>
+                        <td colspan="4" style="background:#fef3c7;color:#92400e;font-size:7pt;font-weight:700;padding:1mm 2mm;">
+                          <strong>✓ Discount / Fee Maaf at Admission (छूट / माफ़ी):</strong> ₹${effectiveTotalConcession.toLocaleString("en-IN")}
+                          ${
+                            allWaivedRows.length > 0
+                              ? ` — ${allWaivedRows
+                                  .map(
+                                    (w) =>
+                                      `${escapeHtml(w.label)} (${w.isFullMaaf ? `MAAF ₹${w.waivedAmount.toLocaleString("en-IN")}` : `-₹${w.waivedAmount.toLocaleString("en-IN")}`})`
+                                  )
+                                  .join(" • ")}`
+                              : ""
+                          }
+                        </td>
+                      </tr>
+                    `
+                      : ""
+                  }
                 </tbody>
               </table>
+              ${
+                !isBlankForm && postPurchases.length > 0
+                  ? `
+                  <div style="margin-top:1.8mm;border:1px solid #fed7aa;border-radius:3px;padding:1.2mm 1.8mm;background:#fff7ed;">
+                    <div style="font-weight:800;font-size:7pt;color:#9a3412;margin-bottom:0.8mm;">
+                      POST-ADMISSION STORE PURCHASES, KIT &amp; SUBSEQUENT FEE UPDATES (दिनांक अनुसार लाइव रिकॉर्ड)
+                    </div>
+                    <table class="bio-table" style="font-size:6.8pt;">
+                      <thead>
+                        <tr style="background:#ffedd5;color:#7c2d12;font-weight:800;">
+                          <td style="width:16%;">Date</td>
+                          <td style="width:18%;">Receipt #</td>
+                          <td>Particulars (Kit / Books / Dress / Fee)</td>
+                          <td style="width:12%;text-align:right;">Maaf/Disc</td>
+                          <td style="width:14%;text-align:right;">Paid (₹)</td>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        ${postPurchases
+                          .map((p) => {
+                            const itemsText = (p.items || [])
+                              .map((it) => `${escapeHtml(it.name)}${it.quantity > 1 ? ` ×${it.quantity}` : ""} (₹${Number(it.paidAmount || 0).toLocaleString("en-IN")}${Number(it.discountAmount || 0) > 0 ? `, -₹${Number(it.discountAmount).toLocaleString("en-IN")} off` : ""})`)
+                              .join(", ");
+                            return `
+                              <tr>
+                                <td>${escapeHtml(p.date ? new Date(p.date).toLocaleDateString("en-IN") : "—")}</td>
+                                <td style="font-family:monospace;font-weight:700;">${escapeHtml(p.receiptNo)}</td>
+                                <td>${itemsText}</td>
+                                <td style="text-align:right;color:#b45309;">${Number(p.totalDiscount || 0) > 0 ? `-₹${Number(p.totalDiscount).toLocaleString("en-IN")}` : "₹0"}</td>
+                                <td style="text-align:right;font-weight:800;color:#15803d;">₹${Number(p.totalPaid || 0).toLocaleString("en-IN")}</td>
+                              </tr>
+                            `;
+                          })
+                          .join("")}
+                      </tbody>
+                    </table>
+                  </div>
+                `
+                  : ""
+              }
             </div>
 
             <!-- DOCUMENTS CHECKLIST -->
@@ -1582,12 +1711,16 @@ export const AdmissionFormPrintModal: React.FC<Props> = ({
             const netItem = Math.max(0, dVal - cVal);
             // Proportionally reflect paid if item.paid wasn't capped on partial payments
             const pVal = Number(item.paid !== undefined ? item.paid : netItem);
+            const isMaafLine = cVal > 0 && netItem === 0;
             return `
               <tr>
                 <td style="text-align:center;font-weight:700;">${item.slNo || idx + 1}</td>
-                <td style="font-weight:700;color:#0f172a;">${escapeHtml(item.description)}</td>
+                <td style="font-weight:700;color:#0f172a;">
+                  ${escapeHtml(item.description)}
+                  ${isMaafLine ? `<span style="display:inline-block;margin-left:1.5mm;padding:0.2mm 1.2mm;background:#fef3c7;border:0.5px solid #d97706;color:#92400e;font-size:6.2pt;font-weight:900;border-radius:2px;">MAFF / WAIVED</span>` : cVal > 0 ? `<span style="font-size:6.4pt;color:#b45309;font-weight:700;"> (Disc -₹${cVal.toLocaleString("en-IN")})</span>` : ""}
+                </td>
                 <td class="num">₹${dVal.toLocaleString("en-IN")}</td>
-                <td class="num" style="color:#b45309;">${cVal > 0 ? `-₹${cVal.toLocaleString("en-IN")}` : "₹0"}</td>
+                <td class="num" style="color:#b45309;font-weight:700;">${cVal > 0 ? `-₹${cVal.toLocaleString("en-IN")}${isMaafLine ? " (Maaf)" : ""}` : "₹0"}</td>
                 <td class="num" style="font-weight:800;">₹${netItem.toLocaleString("en-IN")}</td>
                 <td class="num" style="font-weight:800;color:#15803d;">₹${pVal.toLocaleString("en-IN")}</td>
               </tr>
@@ -2055,8 +2188,82 @@ export const AdmissionFormPrintModal: React.FC<Props> = ({
                   ${totalPaid > 0 ? `₹${totalPaid.toLocaleString("en-IN")} (${resolvedFee?.payModeInfo?.payMode || "Cash"}) • Rcpt #${resolvedFee?.receiptNo || "ADM-01"}` : "Pending at Counter"}
                 </td>
               </tr>
+              ${
+                !isBlankForm && (allWaivedRows.length > 0 || effectiveTotalConcession > 0)
+                  ? `
+                  <tr>
+                    <td colspan="4" style="background:#fef3c7;color:#92400e;font-size:7.1pt;font-weight:700;padding:1.2mm 2mm;">
+                      <strong>✓ Discount / Fee Maaf Applied (छूट / माफ़ शुल्क):</strong> ₹${effectiveTotalConcession.toLocaleString("en-IN")}
+                      ${
+                        allWaivedRows.length > 0
+                          ? ` — ${allWaivedRows
+                              .map(
+                                (w) =>
+                                  `${escapeHtml(w.label)} [${w.isFullMaaf ? `MAAF ₹${w.waivedAmount.toLocaleString("en-IN")}` : `Disc -₹${w.waivedAmount.toLocaleString("en-IN")}`}]`
+                              )
+                              .join(" • ")}`
+                          : ""
+                      }
+                    </td>
+                  </tr>
+                `
+                  : ""
+              }
             </tbody>
           </table>
+
+          ${
+            !isBlankForm
+              ? `
+              <div class="section-heading" style="background:#fff7ed;border-left-color:#ea580c;color:#9a3412;">
+                8B. Post-Admission Store Purchases, Kit &amp; Fee Payments (दिनांक अनुसार लाइव रिकॉर्ड)
+              </div>
+              ${
+                postPurchases.length > 0
+                  ? `
+                  <table class="bio-table" style="font-size:7.2pt;">
+                    <thead>
+                      <tr style="background:#ffedd5;font-weight:800;color:#7c2d12;">
+                        <td style="width:14%;">Date (दिनांक)</td>
+                        <td style="width:17%;">Receipt #</td>
+                        <td>Items / Kit / Fee Heads Purchased</td>
+                        <td style="width:12%;text-align:right;">Maaf/Disc</td>
+                        <td style="width:13%;text-align:right;">Paid (₹)</td>
+                        <td style="width:11%;">Mode</td>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      ${postPurchases
+                        .map((p) => {
+                          const itemsText = (p.items || [])
+                            .map((it) => `${escapeHtml(it.name)}${it.quantity > 1 ? ` ×${it.quantity}` : ""} (₹${Number(it.paidAmount || 0).toLocaleString("en-IN")}${Number(it.discountAmount || 0) > 0 ? `, Disc -₹${Number(it.discountAmount).toLocaleString("en-IN")}` : ""})`)
+                            .join(" • ");
+                          return `
+                            <tr>
+                              <td>${escapeHtml(p.date ? new Date(p.date).toLocaleDateString("en-IN") : "—")}</td>
+                              <td style="font-family:monospace;font-weight:700;">${escapeHtml(p.receiptNo)}</td>
+                              <td>${itemsText}</td>
+                              <td style="text-align:right;color:#b45309;font-weight:700;">${Number(p.totalDiscount || 0) > 0 ? `-₹${Number(p.totalDiscount).toLocaleString("en-IN")}` : "₹0"}</td>
+                              <td style="text-align:right;font-weight:900;color:#15803d;">₹${Number(p.totalPaid || 0).toLocaleString("en-IN")}</td>
+                              <td>${escapeHtml(p.paymentMode || "Cash")}</td>
+                            </tr>
+                          `;
+                        })
+                        .join("")}
+                      <tr style="background:#fff7ed;font-weight:800;">
+                        <td colspan="3" style="text-align:right;color:#7c2d12;">Total Store / Subsequent Purchases:</td>
+                        <td style="text-align:right;color:#b45309;">${postPurchasesDiscSum > 0 ? `-₹${postPurchasesDiscSum.toLocaleString("en-IN")}` : "₹0"}</td>
+                        <td style="text-align:right;color:#15803d;">₹${postPurchasesPaidSum.toLocaleString("en-IN")}</td>
+                        <td>—</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                `
+                  : `<div style="font-size:7pt;color:#64748b;border:1px dashed #cbd5e1;border-radius:3px;padding:1.2mm 2mm;background:#f8fafc;">No post-admission store purchases (Books / Dress / Kit / Exam Fee) recorded yet. Any future Store or Fee counter transaction automatically updates here with date &amp; amount.</div>`
+              }
+            `
+              : ""
+          }
 
           <div class="section-heading">9. Submitted Documents Checklist (संलग्न दस्तावेजों की सूची)</div>
           ${docsChecklistHtml}
@@ -2807,8 +3014,9 @@ export const AdmissionFormPrintModal: React.FC<Props> = ({
                 <label className="text-[11px] font-semibold text-slate-600 dark:text-slate-300 block mb-1">Primary Mobile</label>
                 <input
                   type="tel"
+                  maxLength={18}
                   value={editDraft.phone}
-                  onChange={(e) => setEditDraft((p) => ({ ...p, phone: e.target.value }))}
+                  onChange={(e) => setEditDraft((p) => ({ ...p, phone: sanitizeIndianPhoneInput(e.target.value) }))}
                   className="w-full px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-white font-mono"
                 />
               </div>

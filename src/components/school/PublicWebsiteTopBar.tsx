@@ -71,9 +71,14 @@ export const PublicWebsiteTopBar: React.FC<Props> = ({
   const tickerPausedRef = useRef<boolean>(false);
   const [barHeight, setBarHeight] = useState<number>(126);
   const [isSchoolPickerOpen, setIsSchoolPickerOpen] = useState(false);
+  const [logoFailed, setLogoFailed] = useState(false);
 
-  const savedLogo = school?.id ? getSavedSchoolLogo(school.id, school.logoUrl) : school?.logoUrl || "";
-  const hasValidLogo = Boolean(savedLogo && !isAppLogo(savedLogo));
+  const savedLogo = school?.id ? getSavedSchoolLogo(school.logoUrl, school.id) : school?.logoUrl || "";
+  const hasValidLogo = Boolean(savedLogo && !isAppLogo(savedLogo) && !logoFailed);
+
+  useEffect(() => {
+    setLogoFailed(false);
+  }, [savedLogo, school?.id]);
   const primaryPhone = String(school?.phone || "").trim();
   const admissionsOpen = school?.websiteConfig?.admissionsOpen !== false;
   const topTickerEnabled = school?.websiteConfig?.topTickerEnabled !== false;
@@ -248,6 +253,7 @@ export const PublicWebsiteTopBar: React.FC<Props> = ({
                     src={savedLogo}
                     alt={school?.name || "School"}
                     referrerPolicy="no-referrer"
+                    onError={() => setLogoFailed(true)}
                     className="w-8 h-8 sm:w-9 sm:h-9 object-contain rounded-lg bg-white p-0.5 border border-slate-200 shrink-0"
                   />
                 ) : (

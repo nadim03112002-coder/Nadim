@@ -428,12 +428,18 @@ export const FeeManager: React.FC<Props> = ({ schoolId, classId, className, scho
       return Math.max(0, total - paid);
     };
 
-    // Pre-index history by studentId: Map<studentId, Map<month, MonthlyFee>>
-    // and legacy unpaid fees for 0ms instantaneous O(1) lookups
+    // Pure admission & store-fee-sync receipts belong to feeHistory for head-settlement checks,
+    // NOT as the regular monthly tuition receipt in studentHistoryByMonth / feeMap.
+    const isAdmissionReceipt = (f: MonthlyFee) =>
+      f?.feeType === "admission" ||
+      f?.receiptCategory === "admission" ||
+      f?.feeType === "store_fee_sync" ||
+      f?.receiptCategory === "store_fee_sync";
+
     const studentHistoryByMonth = new Map<string, Map<string, MonthlyFee>>();
     const studentLegacyMap = new Map<string, MonthlyFee[]>();
     history.forEach(h => {
-      if (!h.studentId) return;
+      if (!h.studentId || h.cancelled || isAdmissionReceipt(h)) return;
       let monthMap = studentHistoryByMonth.get(h.studentId);
       if (!monthMap) {
         monthMap = new Map<string, MonthlyFee>();
@@ -447,8 +453,8 @@ export const FeeManager: React.FC<Props> = ({ schoolId, classId, className, scho
     const classLookupMap = new Map<string, SchoolClass>();
     schoolClasses.forEach(c => classLookupMap.set(c.id, c));
 
-    // Create fee records for students without one
-    const feeMap = new Map(feeData.map(f => [f.studentId, f]));
+    // Create fee records for students without one (ignoring admission receipts)
+    const feeMap = new Map(feeData.filter(f => !f.cancelled && !isAdmissionReceipt(f)).map(f => [f.studentId, f]));
     const allFees: MonthlyFee[] = sts.map(student => {
       const existing = feeMap.get(student.id);
 
@@ -620,6 +626,15 @@ export const FeeManager: React.FC<Props> = ({ schoolId, classId, className, scho
 
       const currentMonthHeadsTotal = Math.max(0, monthlyAmount + admFee + cauFee + annFee + busFee + termExtraTotal - concession);
 
+      const paidTuitionAtAdmThisMonth = Boolean(
+        !existing &&
+        student.advanceMonthlyFeePaid === true &&
+        student.advanceMonthlyFeeMonth === month
+      );
+      const admPrepaidTuitionCredit = paidTuitionAtAdmThisMonth
+        ? Math.max(0, monthlyAmount + busFee - concession)
+        : 0;
+
       const hasPersistentCarryDue =
         prevSessionDue > 0 ||
         admDueBal > 0 ||
@@ -628,7 +643,9 @@ export const FeeManager: React.FC<Props> = ({ schoolId, classId, className, scho
         ? Number(existing.amount ?? currentMonthHeadsTotal)
         : currentMonthHeadsTotal + arrearsAmount;
 
-      const isPaid = Boolean(existing?.paid) && !hasPersistentCarryDue;
+      const isPaid =
+        (Boolean(existing?.paid) || (paidTuitionAtAdmThisMonth && termExtraTotal === 0)) &&
+        !hasPersistentCarryDue;
       // Normalize legacy FIFO records where full lump-sum payment was saved onto an unpaid/partial current month
       const hasFifoSplitChildren = Boolean(
         existing?.receiptNo &&
@@ -637,14 +654,20 @@ export const FeeManager: React.FC<Props> = ({ schoolId, classId, className, scho
       );
       const rawExistingPaid = existing?.paidAmount !== undefined
         ? Number(existing.paidAmount)
-        : (isPaid ? totalAmount : 0);
+        : (paidTuitionAtAdmThisMonth ? admPrepaidTuitionCredit : (isPaid ? totalAmount : 0));
       const paidAmount = hasFifoSplitChildren && !isPaid && rawExistingPaid > currentMonthHeadsTotal
         ? Math.max(0, currentMonthHeadsTotal - Number(existing?.balanceDue ?? currentMonthHeadsTotal))
         : rawExistingPaid;
 
-      const balanceDue = existing?.balanceDue !== undefined
-        ? Number(existing.balanceDue)
+      const prevExistingTermExtra =
+        Number(existing?.termCampaignAmount || 0) +
+        Number(existing?.deferredAdmissionHeadsAmount || 0);
+      const baseBalanceDue = existing?.balanceDue !== undefined
+        ? Number(existing.balanceDue) + Math.max(0, termExtraTotal - prevExistingTermExtra)
         : (isPaid ? 0 : Math.max(0, currentMonthHeadsTotal - paidAmount));
+      const balanceDue = isExistingPaidClean
+        ? Number(existing?.balanceDue || 0)
+        : Math.min(currentMonthHeadsTotal, Math.max(0, baseBalanceDue));
 
       const lastReceiptPaidAmount = (existing as any)?.lastReceiptPaidAmount ?? (hasFifoSplitChildren ? rawExistingPaid : undefined);
 
@@ -2576,6 +2599,51 @@ td{padding:8px 10px;border-bottom:1px solid #e2e8f0}</style></head>
     );
   }
 
+  if (showTermSchedulerModal) {
+    return (
+      <FeeTermSchedulerModal
+        asPage={true}
+        isOpen={true}
+        onClose={() => {
+          setShowTermSchedulerModal(false);
+          if (exitOnToolClose && initialTool === "term_scheduler" && onBack) onBack();
+        }}
+        schoolId={schoolId}
+        school={liveSchool || school}
+        classes={rawClasses}
+        students={students}
+        feeHistory={feeHistory}
+        currentMonth={month}
+        sessionId={sessionId}
+        actorName={actorName}
+        initialClassId={classId}
+        onCampaignsUpdated={(nextCampaigns) => {
+          setTermCampaigns(nextCampaigns);
+          setLiveSchool((prev) => (prev ? { ...prev, feeTermCampaigns: nextCampaigns } : prev));
+          void loadData(true, nextCampaigns);
+        }}
+        onPlansUpdated={(nextPlans, nextCampaigns) => {
+          setTermCampaigns(nextCampaigns);
+          setLiveSchool((prev) =>
+            prev
+              ? { ...prev, feeTypeSchedulePlans: nextPlans, feeTermCampaigns: nextCampaigns }
+              : ({
+                  id: schoolId,
+                  name: schoolName || "School",
+                  feeTypeSchedulePlans: nextPlans,
+                  feeTermCampaigns: nextCampaigns,
+                } as School)
+          );
+          void loadData(true, nextCampaigns);
+        }}
+        onStudentDeferredUpdated={(stuId, patch) => {
+          setStudents((prev) => prev.map((st) => (st.id === stuId ? { ...st, ...patch } : st)));
+          void loadData(true);
+        }}
+      />
+    );
+  }
+
   return (
     <div className="min-h-screen bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100">
       <div className="sticky top-0 z-20 bg-white/95 dark:bg-slate-900/95 backdrop-blur border-b border-slate-200 dark:border-slate-800 px-4 py-3 flex items-center gap-3">
@@ -2610,15 +2678,15 @@ td{padding:8px 10px;border-bottom:1px solid #e2e8f0}</style></head>
             />
           </div>
 
-          {/* Quick Term / Exam Fee Launcher */}
+          {/* Quick Fee Types & Term Planner Launcher */}
           <button
             type="button"
             onClick={() => setShowTermSchedulerModal(true)}
             className="inline-flex items-center gap-1.5 px-2.5 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold transition-colors active:scale-95 cursor-pointer whitespace-nowrap shadow-xs"
-            title="Exam Fee, Deferred Admission Fee या Term-Wise शुल्क (कम या कस्टम रेट में) किसी भी महीने में लागू करें"
+            title="हर Fee Type का अलग पेज: Class-wise अलग रेट, Term/किस्त, Month व Reg-Only Auto-Add सेट करें"
           >
             <CalendarClock className="w-3.5 h-3.5 shrink-0" />
-            <span className="hidden sm:inline">Term / Exam Fee</span>
+            <span className="whitespace-nowrap">Fee Types<span className="hidden sm:inline"> &amp; Terms</span></span>
             {termCampaigns.filter((c) => c.active !== false && c.targetMonth === month).length > 0 && (
               <span className="font-mono text-[10px] bg-white/20 px-1.5 py-0.2 rounded">
                 {termCampaigns.filter((c) => c.active !== false && c.targetMonth === month).length}
@@ -4784,33 +4852,6 @@ td{padding:8px 10px;border-bottom:1px solid #e2e8f0}</style></head>
             onTemplateApplied={() => setTemplateTick((t) => t + 1)}
           />
         )}
-
-        {/* ── TERM-WISE / EXAM FEE & DEFERRED ADMISSION HEADS SCHEDULER ── */}
-        <FeeTermSchedulerModal
-          isOpen={showTermSchedulerModal}
-          onClose={() => {
-            setShowTermSchedulerModal(false);
-            if (exitOnToolClose && initialTool === "term_scheduler" && onBack) onBack();
-          }}
-          schoolId={schoolId}
-          school={liveSchool || school}
-          classes={rawClasses}
-          students={students}
-          feeHistory={feeHistory}
-          currentMonth={month}
-          sessionId={sessionId}
-          actorName={actorName}
-          initialClassId={classId}
-          onCampaignsUpdated={(nextCampaigns) => {
-            setTermCampaigns(nextCampaigns);
-            setLiveSchool((prev) => (prev ? { ...prev, feeTermCampaigns: nextCampaigns } : prev));
-            void loadData(true, nextCampaigns);
-          }}
-          onStudentDeferredUpdated={(stuId, patch) => {
-            setStudents((prev) => prev.map((st) => (st.id === stuId ? { ...st, ...patch } : st)));
-            void loadData(true);
-          }}
-        />
       </div>
   );
 };

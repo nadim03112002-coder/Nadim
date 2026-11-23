@@ -7,6 +7,7 @@ import type {
 import { shouldUseDemoForSchool, isDemoSchoolId } from "../school-firebase";
 import { rtdb } from "../firebase";
 import { ref as rtdbRef, set as rtdbSet, remove as rtdbRemove } from "firebase/database";
+import { sbRtdbSet, sbRtdbRemove } from "../services/supabaseDbAdapter";
 import {
   loadSchoolSubcollection,
   syncSchoolSubcollection,
@@ -310,8 +311,8 @@ export async function saveRouteRecord(schoolId: string, route: SchoolBusRoute): 
       lastUpdated: new Date().toISOString(),
     };
     localStorage.setItem(liveKey, JSON.stringify(liveEntry));
-    if (rtdb && !isDemoSchoolId(schoolId)) {
-      void rtdbSet(rtdbRef(rtdb, `schools/${schoolId}/bus_fleet/${updatedFit.id}`), {
+    if (!isDemoSchoolId(schoolId)) {
+      const fleetPayload = {
         ...liveEntry,
         stops: route.stops.map((s) => s.stopName),
         stopCoords: route.stops.map((s) => ({
@@ -326,7 +327,11 @@ export async function saveRouteRecord(schoolId: string, route: SchoolBusRoute): 
         routeColor: route.routeColor || "",
         conductorName: route.conductorName || "",
         conductorPhone: route.conductorPhone || "",
-      }).catch(() => {});
+      };
+      void sbRtdbSet(`schools/${schoolId}/bus_fleet/${updatedFit.id}`, fleetPayload).catch(() => {});
+      if (rtdb) {
+        void rtdbSet(rtdbRef(rtdb, `schools/${schoolId}/bus_fleet/${updatedFit.id}`), fleetPayload).catch(() => {});
+      }
     }
   } catch {}
 
@@ -399,11 +404,15 @@ export async function saveVehicleRecord(schoolId: string, vehicle: any): Promise
       lastUpdated: new Date().toISOString(),
     };
     localStorage.setItem(liveKey, JSON.stringify(liveEntry));
-    if (rtdb && !isDemoSchoolId(schoolId)) {
-      void rtdbSet(rtdbRef(rtdb, `schools/${schoolId}/bus_fleet/${id}`), {
+    if (!isDemoSchoolId(schoolId)) {
+      const fleetDoc = {
         ...liveEntry,
         stops: Array.isArray(entry.stops) ? entry.stops : [],
-      }).catch(() => {});
+      };
+      void sbRtdbSet(`schools/${schoolId}/bus_fleet/${id}`, fleetDoc).catch(() => {});
+      if (rtdb) {
+        void rtdbSet(rtdbRef(rtdb, `schools/${schoolId}/bus_fleet/${id}`), fleetDoc).catch(() => {});
+      }
     }
   } catch {}
 
@@ -417,8 +426,11 @@ export async function deleteVehicleRecord(schoolId: string, busId: string): Prom
   writeJsonArray(FITNESS_LOCAL_KEY(schoolId), next);
   try {
     localStorage.removeItem(`nst_live_bus_${schoolId}_${busId}`);
-    if (rtdb && !isDemoSchoolId(schoolId)) {
-      void rtdbRemove(rtdbRef(rtdb, `schools/${schoolId}/bus_fleet/${busId}`)).catch(() => {});
+    if (!isDemoSchoolId(schoolId)) {
+      void sbRtdbRemove(`schools/${schoolId}/bus_fleet/${busId}`).catch(() => {});
+      if (rtdb) {
+        void rtdbRemove(rtdbRef(rtdb, `schools/${schoolId}/bus_fleet/${busId}`)).catch(() => {});
+      }
     }
   } catch {}
   window.dispatchEvent(new CustomEvent("school-transport-updated", { detail: { schoolId } }));

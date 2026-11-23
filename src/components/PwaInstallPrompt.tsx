@@ -11,7 +11,7 @@ export const PwaInstallPrompt: React.FC<PwaInstallPromptProps> = ({ schoolName, 
     const [isVisible, setIsVisible] = useState(false);
     const [isIOSDevice, setIsIOSDevice] = useState(false);
 
-    const displayBrand = (schoolName || '').trim() || 'Life Maker Public School';
+    const displayBrand = (schoolName || '').trim() || 'SCHOOL+';
     const displayIcon =
         schoolLogoUrl && (schoolLogoUrl.startsWith('http') || schoolLogoUrl.startsWith('data:image/') || schoolLogoUrl.startsWith('/'))
             ? schoolLogoUrl

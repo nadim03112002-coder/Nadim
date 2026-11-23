@@ -708,6 +708,7 @@ export const ClassFeeStructureSection: React.FC<Props> = ({
         billingSection: tpl.billingSection,
         targetSection: "ALL",
         isUserOptional: Boolean(it.isUserOptional),
+        ...(it.legacyKey ? { legacyKey: it.legacyKey } : {}),
       })),
     };
     updateClassGroups(classId, (groups) => [...groups, newGroup]);
@@ -3635,6 +3636,14 @@ export const ClassFeeStructureSection: React.FC<Props> = ({
             prev ? { ...prev, feeTermCampaigns: nextCampaigns } : { id: schoolId, name: "School", feeTermCampaigns: nextCampaigns } as School
           );
           toast.success("Term Fee Schedule saved & active in Fee Manager!");
+        }}
+        onPlansUpdated={(nextPlans, nextCampaigns) => {
+          setTermSchedulerSchool((prev) =>
+            prev
+              ? { ...prev, feeTypeSchedulePlans: nextPlans, feeTermCampaigns: nextCampaigns }
+              : ({ id: schoolId, name: "School", feeTypeSchedulePlans: nextPlans, feeTermCampaigns: nextCampaigns } as School)
+          );
+          toast.success("Fee Type Schedule saved & auto-applied!");
         }}
         onStudentDeferredUpdated={(stuId, patch) => {
           setAllStudents((prev) => prev.map((st) => (st.id === stuId ? { ...st, ...patch } : st)));

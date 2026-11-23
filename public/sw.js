@@ -55,7 +55,7 @@ function displayPushNotification(title, body, data, iconUrl) {
     silent: false,
     vibrate: [500, 200, 500, 200, 500],
     timestamp: Date.now(),
-    data: { url: data.url || '/', ...data },
+    data: { url: data.url || '/', title: title || '', body: body || '', ...data },
     actions: [
       { action: 'open', title: 'खोलें (Open)' },
       { action: 'dismiss', title: 'हटाएं' },
@@ -74,7 +74,7 @@ function displayPushNotification(title, body, data, iconUrl) {
       silent: false,
       vibrate: [500, 200, 500, 200, 500],
       timestamp: Date.now(),
-      data: { url: data.url || '/', ...data },
+      data: { url: data.url || '/', title: title || '', body: body || '', ...data },
     });
   });
 }
@@ -140,6 +140,19 @@ self.addEventListener('notificationclick', (event) => {
   if (event.action === 'dismiss') return;
   const notifData = event.notification.data || {};
   const targetUrl = notifData.url || '/';
+  const notifTitle = String(event.notification.title || notifData.title || '');
+  const notifBody = String(event.notification.body || notifData.body || '');
+
+  let openTargetUrl = targetUrl;
+  try {
+    if (notifTitle || notifBody) {
+      const u = new URL(targetUrl, self.location.origin);
+      if (notifTitle) u.searchParams.set('speakTitle', notifTitle.slice(0, 140));
+      if (notifBody) u.searchParams.set('speakBody', notifBody.slice(0, 260));
+      if (notifData.id) u.searchParams.set('speakId', String(notifData.id));
+      openTargetUrl = u.pathname + u.search + u.hash;
+    }
+  } catch (_) {}
 
   event.waitUntil(
     clients.matchAll({ type: 'window', includeUncontrolled: true }).then((windowClients) => {
@@ -149,6 +162,9 @@ self.addEventListener('notificationclick', (event) => {
             client.postMessage({
               type: 'SCHOOL_PUSH_NAVIGATE',
               url: targetUrl,
+              id: notifData.id || '',
+              title: notifTitle,
+              body: notifBody,
               studentId: notifData.studentId || '',
               schoolId: notifData.schoolId || '',
               notifType: notifData.type || notifData.notifType || '',
@@ -163,7 +179,7 @@ self.addEventListener('notificationclick', (event) => {
           return client.focus();
         }
       }
-      return clients.openWindow ? clients.openWindow(targetUrl) : undefined;
+      return clients.openWindow ? clients.openWindow(openTargetUrl) : undefined;
     }),
   );
 });

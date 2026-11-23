@@ -65,6 +65,7 @@ import { TeacherRulesRegulationsView } from "./TeacherRulesRegulationsView";
 import { TeacherSignatureModal } from "./TeacherSignatureModal";
 import { AppointmentLetterModal } from "./AppointmentLetterModal";
 import { HomeDailyRoutineWidget } from "./HomeDailyRoutineWidget";
+import { AccountRecoveryCard } from "./AccountRecoveryCard";
 import { rotateToLandscape, rotateToPortrait, setDesktopMode, useDeviceOrientation } from "../../utils/displayPrefs";
 import { autoSyncSchoolPushIfPermitted } from "../../utils/schoolPushClient";
 import { subscribeUserToPush } from "../NotificationManager";
@@ -107,7 +108,8 @@ type TeacherView =
   | "ptm_scheduler"
   | "growth_diary"
   | "rules_regulations"
-  | "my_leaves";
+  | "my_leaves"
+  | "profile";
 
 export const COMMON_BOOK_PRESETS = [
   { name: "Hindi", icon: "📖", category: "Language" },
@@ -1000,6 +1002,7 @@ export const TeacherPanel: React.FC<Props> = ({
       },
       items: [
         { id: "dashboard" as TeacherView, label: "Teacher Dashboard", icon: Home, desc: "कक्षा समरी व लाइव मेट्रिक्स" },
+        { id: "profile" as TeacherView, label: "My Profile & Recovery", icon: User, desc: "प्रोफाइल, सिग्नेचर व अकाउंट रिकवरी" },
         { id: "my_leaves" as TeacherView, label: "My Leave Requests", icon: Calendar, desc: "Admin को छुट्टी आवेदन भेजें" },
         { id: "rules_regulations" as TeacherView, label: "School Rules & Bonus", icon: ShieldCheck, desc: "13 नियम, +2 दिन बोनस व सैलरी" },
         { id: "community" as TeacherView, label: "Classroom Community", icon: Megaphone, desc: "फोटो, वीडियो व सर्कुलर्स" },
@@ -1336,12 +1339,22 @@ export const TeacherPanel: React.FC<Props> = ({
             </button>
           )}
 
-          <div className={`flex items-center gap-2 px-2.5 py-1.5 rounded-lg border ${
-            isWhite ? "bg-white border-slate-200 text-slate-700" : "bg-white/5 border-white/10 text-emerald-300"
-          }`}>
-            <span className="w-2 h-2 rounded-full bg-emerald-500 shrink-0" />
-            <span className="text-[11px] font-semibold truncate">{teacherName}</span>
-          </div>
+          <button
+            type="button"
+            onClick={() => handleSelectNavView("profile")}
+            className={`w-full flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-lg border text-left transition cursor-pointer ${
+              isWhite
+                ? "bg-white hover:bg-slate-100 border-slate-200 text-slate-700"
+                : "bg-white/5 hover:bg-white/10 border-white/10 text-emerald-300"
+            }`}
+            title="प्रोफाइल व अकाउंट रिकवरी खोलें"
+          >
+            <div className="flex items-center gap-2 min-w-0">
+              <span className="w-2 h-2 rounded-full bg-emerald-500 shrink-0" />
+              <span className="text-[11px] font-semibold truncate">{teacherName}</span>
+            </div>
+            <ChevronRight className="w-3.5 h-3.5 opacity-70 shrink-0" />
+          </button>
           <button
             type="button"
             onClick={handlePerformLogout}
@@ -1625,6 +1638,8 @@ export const TeacherPanel: React.FC<Props> = ({
                 ? "School Rules & Regulations (नियम व शर्तें)"
                 : view === "my_leaves"
                 ? "My Leave Requests (एडमिन को छुट्टी आवेदन)"
+                : view === "profile"
+                ? "Teacher Profile & Account Recovery"
                 : view.replace(/_/g, " ")}
             </h1>
           </div>
@@ -1716,9 +1731,19 @@ export const TeacherPanel: React.FC<Props> = ({
             )}
           </button>
 
-          <span className="hidden sm:inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800/60 text-[11px] font-semibold whitespace-nowrap">
+          <button
+            type="button"
+            onClick={() => setView("profile")}
+            className={`hidden sm:inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full border text-[11px] font-semibold whitespace-nowrap transition cursor-pointer ${
+              view === "profile"
+                ? "bg-emerald-600 text-white border-emerald-600"
+                : "bg-emerald-50 hover:bg-emerald-100 dark:bg-emerald-950/60 dark:hover:bg-emerald-900/70 text-emerald-700 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800/60"
+            }`}
+            title="Teacher Profile & Account Recovery"
+          >
+            <User className="w-3 h-3" />
             <span>{teacherName.split(" ")[0]} (Faculty)</span>
-          </span>
+          </button>
         </div>
       </header>
     );
@@ -1745,6 +1770,106 @@ export const TeacherPanel: React.FC<Props> = ({
           >
             Teacher Dashboard पर लौटें
           </button>
+        </div>
+      );
+    }
+
+    // 0. Teacher Profile & Account Recovery View
+    if (view === "profile") {
+      const tUid = currentTeacher?.id || teacherId;
+      return (
+        <div className="max-w-3xl mx-auto space-y-4 animate-in fade-in duration-200">
+          {/* Teacher Identity Card */}
+          <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-4 sm:p-5 shadow-xs space-y-4">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div className="flex items-center gap-3.5 min-w-0">
+                <div className="w-14 h-14 rounded-2xl bg-indigo-600 text-white font-black text-xl flex items-center justify-center shrink-0 shadow-sm">
+                  {(currentTeacher?.name || teacherName || "T").slice(0, 1).toUpperCase()}
+                </div>
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <h2 className="text-base sm:text-lg font-black text-slate-900 dark:text-white truncate">
+                      {currentTeacher?.name || teacherName}
+                    </h2>
+                    <span className="px-2 py-0.5 rounded-md text-[10px] font-bold bg-emerald-500/15 text-emerald-600 dark:text-emerald-300">
+                      {currentTeacher?.designation || "Faculty Member"}
+                    </span>
+                  </div>
+                  <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                    {school?.name || "School"} {currentTeacher?.assignedClassName ? `• Class: ${currentTeacher.assignedClassName}` : ""}
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => setShowMySignatureModal(true)}
+                  className="px-3 py-1.5 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 text-xs font-bold flex items-center gap-1.5 cursor-pointer"
+                >
+                  <PenTool className="w-3.5 h-3.5" />
+                  <span>{currentTeacher?.signatureUrl ? "Update Sign" : "Add Sign"}</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowMyAppointmentLetter(true)}
+                  className="px-3 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer"
+                >
+                  <FileText className="w-3.5 h-3.5" />
+                  <span>Appointment Letter</span>
+                </button>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 pt-2 border-t border-slate-100 dark:border-slate-800 text-xs">
+              <div className="p-2.5 rounded-xl bg-slate-50 dark:bg-slate-950/60 border border-slate-200/70 dark:border-slate-800">
+                <span className="text-[10px] font-bold uppercase text-slate-400 block">Teacher ID</span>
+                <span className="font-mono font-bold text-slate-800 dark:text-slate-200">{tUid}</span>
+              </div>
+              <div className="p-2.5 rounded-xl bg-slate-50 dark:bg-slate-950/60 border border-slate-200/70 dark:border-slate-800">
+                <span className="text-[10px] font-bold uppercase text-slate-400 block">Subject / Dept</span>
+                <span className="font-bold text-slate-800 dark:text-slate-200">
+                  {Array.isArray(currentTeacher?.subjects) && currentTeacher.subjects.length > 0
+                    ? currentTeacher.subjects.join(", ")
+                    : "All Subjects"}
+                </span>
+              </div>
+              <div className="p-2.5 rounded-xl bg-slate-50 dark:bg-slate-950/60 border border-slate-200/70 dark:border-slate-800">
+                <span className="text-[10px] font-bold uppercase text-slate-400 block">Registered Phone</span>
+                <span className="font-mono font-bold text-slate-800 dark:text-slate-200">{currentTeacher?.phone || "Not set"}</span>
+              </div>
+            </div>
+          </div>
+
+          {/* Account Recovery Card & Modal */}
+          <AccountRecoveryCard
+            uid={tUid}
+            role="TEACHER"
+            name={currentTeacher?.name || teacherName}
+            displayId={tUid}
+            schoolId={schoolId}
+            schoolName={school?.name}
+            initialMobile={currentTeacher?.phone || ""}
+            initialEmail={currentTeacher?.email || ""}
+            initialRecoveryPassword={(currentTeacher as any)?.recoveryPassword || ""}
+            initialSecurityQuestion={(currentTeacher as any)?.securityQuestion || ""}
+            initialSecurityAnswer={(currentTeacher as any)?.securityAnswer || ""}
+            theme={appTheme}
+            extraSync={async (payload) => {
+              if (schoolId && tUid) {
+                const patch: any = {
+                  recoveryMobile: payload.mobile,
+                  recoveryEmail: payload.email,
+                  recoveryPassword: payload.recoveryPassword,
+                  securityQuestion: payload.securityQuestion,
+                  securityAnswer: payload.securityAnswer,
+                };
+                if (payload.mobile && !currentTeacher?.phone) patch.phone = payload.mobile;
+                if (payload.email) patch.email = payload.email;
+                await updateTeacher(schoolId, tUid, patch).catch(() => {});
+              }
+            }}
+          />
         </div>
       );
     }
@@ -3457,6 +3582,25 @@ export const TeacherPanel: React.FC<Props> = ({
                 </div>
               </button>
             )}
+            {/* My Profile & Account Recovery */}
+            <button
+              type="button"
+              onClick={() => setView("profile")}
+              className="bg-white dark:bg-slate-900 rounded-2xl p-4 shadow-xs border border-slate-200 dark:border-slate-800 flex flex-col justify-between gap-3 hover:border-amber-500 transition text-left cursor-pointer"
+            >
+              <div className="flex items-center justify-between w-full">
+                <div className="w-9 h-9 rounded-xl bg-amber-50 dark:bg-amber-950/60 text-amber-600 dark:text-amber-400 flex items-center justify-center">
+                  <ShieldCheck className="w-4 h-4" />
+                </div>
+                <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-amber-50 dark:bg-amber-950/60 text-amber-700 dark:text-amber-300">
+                  RECOVERY
+                </span>
+              </div>
+              <div>
+                <p className="font-bold text-slate-900 dark:text-white text-sm">My Profile &amp; Recovery</p>
+                <p className="text-[11px] text-slate-500 mt-0.5 line-clamp-1">Mobile, Email &amp; Security Question</p>
+              </div>
+            </button>
           </div>
         </div>
       </div>

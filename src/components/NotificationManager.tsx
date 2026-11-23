@@ -1,8 +1,9 @@
 import { VAPID_KEY, getFirebaseMessaging, db, rtdb, auth } from '../firebase';
 import { doc, updateDoc } from 'firebase/firestore';
 import { get, ref, set, onValue, remove, update, query as rtdbQuery, orderByChild, limitToLast } from 'firebase/database';
-import { speakNotification } from '../utils/voiceNotifyEngine';
+import { playNotificationTone, speakNotification } from '../utils/voiceNotifyEngine';
 import { getOrCreatePushDeviceId } from '../utils/schoolPushClient';
+import { sbUpsertFcmToken } from '../services/supabaseDbAdapter';
 
 export const NOTIFICATION_CATEGORY_DEFINITIONS = [
   { key: 'DAILY_ROUTINE', label: 'Today’s routine', description: 'Subah ka daily study target' },
@@ -233,14 +234,19 @@ export const subscribeUserToPush = async (userId?: string): Promise<string | nul
   return null;
 };
 
-export const saveFcmToken = async (userId: string, token: string) => {
+export const saveFcmToken = async (
+  userId: string,
+  token: string,
+  platform: 'pwa' | 'android_native' = 'pwa'
+) => {
   if (!userId || !token) return;
   try {
     const safeUserId = String(userId).replace(/[.#$[\]/]/g, '_');
+    const keySuffix = platform === 'android_native' ? '__android' : '';
 
     // Save in RTDB
     await Promise.all([
-      set(ref(rtdb, `users/${safeUserId}/fcmToken`), token),
+      set(ref(rtdb, `users/${safeUserId}/${platform === 'android_native' ? 'androidFcmToken' : 'fcmToken'}`), token),
       set(ref(rtdb, `users/${safeUserId}/notificationTokenUpdatedAt`), new Date().toISOString()),
     ]).catch(() => {});
 
@@ -281,13 +287,13 @@ export const saveFcmToken = async (userId: string, token: string) => {
       }
     } catch (_) {}
 
-    // Save in user's token list for broadcast pushes
-    const broadcastRef = ref(rtdb, `fcm_tokens/${safeUserId}`);
+    // Save in user's token list for broadcast pushes (native APK stored under __android suffix so it never overwrites Chrome PWA token)
+    const broadcastRef = ref(rtdb, `fcm_tokens/${safeUserId}${keySuffix}`);
     const deviceId = getOrCreatePushDeviceId();
     const tokenRecord = {
       token,
       updatedAt: new Date().toISOString(),
-      platform: 'pwa',
+      platform,
       userId,
       ...(deviceId ? { deviceId } : {}),
       ...(studentId ? { studentId } : {}),
@@ -296,6 +302,17 @@ export const saveFcmToken = async (userId: string, token: string) => {
       ...(className ? { className } : {}),
     };
     await set(broadcastRef, tokenRecord).catch(() => {});
+    void sbUpsertFcmToken({
+      tokenKey: `${safeUserId}${keySuffix}`,
+      userId,
+      studentId,
+      schoolId,
+      classId,
+      className,
+      platform,
+      token,
+      deviceId,
+    }).catch(() => {});
 
     // If student ID(s) are available and different from userId, also register aliases so studentIds lookup matches every linked child
     const studentIdsToAlias = new Set<string>();
@@ -315,18 +332,121 @@ export const saveFcmToken = async (userId: string, token: string) => {
     for (const sid of studentIdsToAlias) {
       if (sid && sid !== userId) {
         const safeStudentId = String(sid).replace(/[.#$[\]/]/g, '_');
-        await set(ref(rtdb, `fcm_tokens/${safeStudentId}`), {
+        await set(ref(rtdb, `fcm_tokens/${safeStudentId}${keySuffix}`), {
           ...tokenRecord,
           studentId: sid,
+        }).catch(() => {});
+        void sbUpsertFcmToken({
+          tokenKey: `${safeStudentId}${keySuffix}`,
+          userId,
+          studentId: sid,
+          schoolId,
+          classId,
+          className,
+          platform,
+          token,
+          deviceId,
         }).catch(() => {});
       }
     }
 
     // Save in Firestore
-    const userDoc = doc(db, 'users', safeUserId);
-    await updateDoc(userDoc, { fcmToken: token }).catch(() => {});
+    if (platform === 'pwa') {
+      const userDoc = doc(db, 'users', safeUserId);
+      await updateDoc(userDoc, { fcmToken: token }).catch(() => {});
+    }
   } catch (e) {
     console.warn('[NotificationManager] Token save non-fatal error:', e);
+  }
+};
+
+export const registerNativeAndroidBridgeToken = async (
+  token: string,
+  userId?: string
+): Promise<boolean> => {
+  const cleanToken = String(token || '').trim();
+  if (!cleanToken) return false;
+  try {
+    localStorage.setItem('nst_native_android_fcm_token', cleanToken);
+  } catch {}
+  let resolvedUid = String(userId || '').trim();
+  if (!resolvedUid) {
+    try {
+      const cuRaw = localStorage.getItem('nst_current_user');
+      const cu = cuRaw ? JSON.parse(cuRaw) : null;
+      resolvedUid = String(auth?.currentUser?.uid || cu?.uid || cu?.id || localStorage.getItem('nst_user_id') || '').trim();
+    } catch {}
+  }
+  if (!resolvedUid) return false;
+  await saveFcmToken(resolvedUid, cleanToken, 'android_native');
+  return true;
+};
+
+export const syncNativeAndroidIdentity = async (explicitUserId?: string): Promise<void> => {
+  if (typeof window === 'undefined') return;
+  const bridge = (window as any).LifeMakerAndroid;
+  if (!bridge) return;
+
+  try {
+    let userId = String(explicitUserId || '').trim();
+    let schoolId = '';
+    let classId = '';
+    let className = '';
+    const studentIdSet = new Set<string>();
+
+    try {
+      const cuRaw = localStorage.getItem('nst_current_user');
+      const cu = cuRaw ? JSON.parse(cuRaw) : null;
+      if (!userId) {
+        userId = String(auth?.currentUser?.uid || cu?.uid || cu?.id || localStorage.getItem('nst_user_id') || '').trim();
+      }
+      if (cu?.studentId) studentIdSet.add(String(cu.studentId).trim());
+      if (cu?.schoolId) schoolId = String(cu.schoolId).trim();
+
+      const stRaw = localStorage.getItem('nst_active_student') || localStorage.getItem('nst_cached_student');
+      if (stRaw) {
+        const st = JSON.parse(stRaw);
+        if (st?.id) studentIdSet.add(String(st.id).trim());
+        if (!schoolId && st?.schoolId) schoolId = String(st.schoolId).trim();
+        if (st?.classId) classId = String(st.classId).trim();
+        if (st?.className) className = String(st.className).trim();
+      }
+
+      const linkedRaw = localStorage.getItem('nst_linked_students');
+      if (linkedRaw) {
+        const linked = JSON.parse(linkedRaw);
+        if (Array.isArray(linked)) {
+          for (const ls of linked) {
+            if (ls?.id) studentIdSet.add(String(ls.id).trim());
+            if (!schoolId && ls?.schoolId) schoolId = String(ls.schoolId).trim();
+          }
+        }
+      }
+
+      if (!schoolId) schoolId = (localStorage.getItem('nst_active_school_id') || '').trim();
+      if (!classId) classId = (localStorage.getItem('nst_user_class') || '').trim();
+    } catch {}
+
+    const payload = {
+      userId,
+      schoolId,
+      classId,
+      className,
+      studentIds: Array.from(studentIdSet).filter(Boolean),
+    };
+
+    if (typeof bridge.syncIdentity === 'function') {
+      bridge.syncIdentity(JSON.stringify(payload));
+    }
+
+    if (typeof bridge.getNativeFcmToken === 'function' && userId) {
+      const nativeToken = String(bridge.getNativeFcmToken() || '').trim();
+      if (nativeToken) {
+        await saveFcmToken(userId, nativeToken, 'android_native');
+      }
+    }
+  } catch (err) {
+    console.warn('[NotificationManager] Native Android sync warning:', err);
   }
 };
 
@@ -590,20 +710,15 @@ export const listenToForegroundMessages = async (onMessageReceived?: (payload: a
         } catch (_) {}
       }
 
-      // Also trigger chime & custom event for in-app toasts
-      try {
-        const audio = new Audio('/branding/notification.mp3');
-        audio.volume = 0.5;
-        audio.play().catch(() => {});
-      } catch (_) {}
-
-      // Auto-speak notification aloud in voice hands-free!
-      try {
-        speakNotification(title, body, { force: true });
-      } catch {}
+      // Also trigger chime & custom event for in-app toasts & voice readout
+      const msgDedupeId = String(payload?.data?.id || payload?.messageId || `${title}|${body}`);
+      const spoke = speakNotification(title, body, { dedupeKey: msgDedupeId, playTone: true });
+      if (!spoke) {
+        playNotificationTone();
+      }
 
       window.dispatchEvent(new CustomEvent('nst_foreground_notification', {
-        detail: { title, body, payload }
+        detail: { id: msgDedupeId, title, body, payload, alreadySpoken: true }
       }));
     });
   } catch (e) {
@@ -660,12 +775,8 @@ export const dispatchSmartNotification = async (payload: SmartNotificationPayloa
         try { navigator.vibrate([200, 100, 200]); } catch (_) {}
       }
 
-      // Play soft notification sound if available
-      try {
-        const audio = new Audio('/branding/notification.mp3');
-        audio.volume = 0.6;
-        audio.play().catch(() => {});
-      } catch (_) {}
+      // Play pleasant Web Audio notification chime
+      playNotificationTone();
 
       if ('serviceWorker' in navigator) {
         const reg = await getFcmServiceWorkerRegistration();
@@ -1263,11 +1374,30 @@ export const subscribeToUserNotifications = (
       try { onNotificationReceived(item); } catch (_) {}
     }
 
-    // 2. Audio Chime (only for fresh real-time messages)
+    // 2. Voice Notification + Audio Chime (for fresh real-time messages & attendance alerts)
+    let voiceTriggered = false;
     try {
-      const audio = new Audio('/branding/notification.mp3');
-      audio.volume = 0.6;
-      audio.play().catch(() => {});
+      voiceTriggered = speakNotification(item.title || 'स्कूल सूचना', item.body || '', {
+        dedupeKey: item.id,
+        playTone: true,
+      });
+    } catch (_) {}
+    if (!voiceTriggered) {
+      playNotificationTone();
+    }
+
+    try {
+      window.dispatchEvent(
+        new CustomEvent('nst_foreground_notification', {
+          detail: {
+            id: item.id,
+            title: item.title,
+            body: item.body,
+            payload: item,
+            alreadySpoken: true,
+          },
+        })
+      );
     } catch (_) {}
 
     // 3. Mobile Hardware Vibration

@@ -17,6 +17,7 @@ import {
   Loader2,
 } from "lucide-react";
 import { safeOpenExternalUrl } from "../../utils/safeBrowserActions";
+import { normalizeWhatsappOrPhone, sanitizeIndianPhoneInput } from "../../utils/schoolReferralSiblingEngine";
 
 export interface WhatsAppShareModalProps {
   isOpen: boolean;
@@ -72,7 +73,7 @@ export const WhatsAppShareModal: React.FC<WhatsAppShareModalProps> = ({
   if (!isOpen) return null;
 
   // Clean 10-digit number
-  const cleanPhone = parentPhone.replace(/\D/g, "").slice(-10);
+  const cleanPhone = normalizeWhatsappOrPhone(parentPhone);
   const hasValidPhone = cleanPhone.length === 10;
   const targetWaNumber = hasValidPhone ? `91${cleanPhone}` : "";
 
@@ -318,9 +319,9 @@ export const WhatsAppShareModal: React.FC<WhatsAppShareModalProps> = ({
                 </span>
                 <input
                   type="tel"
-                  maxLength={10}
+                  maxLength={18}
                   value={parentPhone}
-                  onChange={(e) => setParentPhone(e.target.value.replace(/\D/g, "").slice(0, 10))}
+                  onChange={(e) => setParentPhone(sanitizeIndianPhoneInput(e.target.value))}
                   placeholder="10 अंकों का WhatsApp नंबर"
                   className="w-full pl-11 pr-3 py-2.5 text-base sm:text-lg font-mono font-black rounded-xl border border-emerald-300 dark:border-emerald-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white focus:ring-2 focus:ring-emerald-500 focus:outline-hidden tracking-wider shadow-inner"
                 />

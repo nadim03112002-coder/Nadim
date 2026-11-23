@@ -16,13 +16,32 @@ import {
   injectSchoolBrandingIntoHtml,
   resolveSchoolAssetPayload,
 } from "./_schoolBranding";
+import {
+  resolveTelegramBotToken,
+  resolveTelegramFilePath,
+  invalidateTelegramFilePathCache,
+  isSafeTelegramFilePath,
+  detectMimeType,
+} from "./_telegramProxy";
+import {
+  deleteFcmTokenFromSupabase,
+  deleteWebpushSubFromSupabase,
+  fetchFcmTokensFromSupabase,
+  fetchWebpushDuesFromSupabase,
+  fetchWebpushSubsFromSupabase,
+  getWebpushSubFromSupabase,
+  supabaseServerKeepalive,
+  upsertFcmTokenInSupabase,
+  upsertWebpushDueInSupabase,
+  upsertWebpushSubInSupabase,
+} from "./_supabaseServer";
 
 let cachedBuiltHtmlTemplate: string | null = null;
 
 function getRequestOrigin(req: any): string {
   const proto = String(req.headers?.["x-forwarded-proto"] || "https").split(",")[0].trim() || "https";
   const host = String(req.headers?.["x-forwarded-host"] || req.headers?.host || "").split(",")[0].trim();
-  return host ? `${proto}://${host}` : "https://sms2027.vercel.app";
+  return host ? `${proto}://${host}` : "https://lmps27.vercel.app";
 }
 
 async function loadBaseHtmlTemplate(origin: string): Promise<string | null> {
@@ -153,19 +172,49 @@ function getCurrentMonthCode(): string {
 }
 
 async function rtdbGet<T = any>(rtdbPath: string): Promise<T | null> {
+  if (rtdbPath === "school_webpush_subs") {
+    const sbSubs = await fetchWebpushSubsFromSupabase();
+    if (sbSubs && Object.keys(sbSubs).length > 0) return sbSubs as T;
+  } else if (rtdbPath.startsWith("school_webpush_subs/")) {
+    const subId = rtdbPath.slice("school_webpush_subs/".length);
+    const sbSub = await getWebpushSubFromSupabase(subId);
+    if (sbSub) return sbSub as T;
+  } else if (rtdbPath === "school_webpush_dues") {
+    const sbDues = await fetchWebpushDuesFromSupabase();
+    if (sbDues && Object.keys(sbDues).length > 0) return sbDues as T;
+  }
   try {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 4500);
     const res = await fetch(`${RTDB_BASE_URL}/${rtdbPath}.json`, { signal: controller.signal });
     clearTimeout(timer);
     if (!res.ok) return null;
-    return (await res.json()) as T;
+    const val = (await res.json()) as T;
+    if (val && typeof val === "object") {
+      if (rtdbPath === "school_webpush_subs") {
+        Object.entries(val as Record<string, any>).forEach(([k, rec]) => {
+          if (rec?.subscription?.endpoint) void upsertWebpushSubInSupabase({ ...rec, id: k });
+        });
+      } else if (rtdbPath === "school_webpush_dues") {
+        Object.entries(val as Record<string, any>).forEach(([k, due]) => {
+          if (due?.studentId) void upsertWebpushDueInSupabase(k, due);
+        });
+      }
+    }
+    return val;
   } catch {
     return null;
   }
 }
 
 async function rtdbPut(rtdbPath: string, payload: unknown): Promise<void> {
+  if (rtdbPath.startsWith("school_webpush_subs/") && payload && typeof payload === "object") {
+    const subId = rtdbPath.slice("school_webpush_subs/".length);
+    await upsertWebpushSubInSupabase({ ...(payload as Record<string, any>), id: subId }).catch(() => {});
+  } else if (rtdbPath.startsWith("school_webpush_dues/") && payload && typeof payload === "object") {
+    const dKey = rtdbPath.slice("school_webpush_dues/".length);
+    await upsertWebpushDueInSupabase(dKey, payload).catch(() => {});
+  }
   try {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 4500);
@@ -180,6 +229,10 @@ async function rtdbPut(rtdbPath: string, payload: unknown): Promise<void> {
 }
 
 async function rtdbDelete(rtdbPath: string): Promise<void> {
+  if (rtdbPath.startsWith("school_webpush_subs/")) {
+    const subId = rtdbPath.slice("school_webpush_subs/".length);
+    await deleteWebpushSubFromSupabase(subId).catch(() => {});
+  }
   try {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 4500);
@@ -373,13 +426,23 @@ async function dispatchFcmToUsers(
   const accessToken = await getFcmAccessToken();
   if (!accessToken) return 0;
 
-  const allTokens = await rtdbGet<Record<string, any>>("fcm_tokens");
-  if (!allTokens || typeof allTokens !== "object") return 0;
+  const [sbTokens, rtdbTokens] = await Promise.all([
+    fetchFcmTokensFromSupabase(),
+    rtdbGet<Record<string, any>>("fcm_tokens"),
+  ]);
+  const allTokens: Record<string, any> = {
+    ...(rtdbTokens && typeof rtdbTokens === "object" ? rtdbTokens : {}),
+    ...(sbTokens && typeof sbTokens === "object" ? sbTokens : {}),
+  };
+  if (Object.keys(allTokens).length === 0) return 0;
 
   const cleanSet = new Set(recipientIds.map((id) => String(id).trim().replace(/[.#$[\]/]/g, "_")));
   const rawSet = new Set(recipientIds.map((id) => String(id).trim()));
 
-  const targets: { key: string; token: string }[] = [];
+  const tokenTargets = new Map<
+    string,
+    { keys: string[]; platform: string; studentId?: string; schoolId?: string }
+  >();
   for (const [key, entry] of Object.entries(allTokens)) {
     if (!entry?.token) continue;
     if (filter?.schoolId && entry.schoolId && entry.schoolId !== filter.schoolId) continue;
@@ -401,25 +464,93 @@ async function dispatchFcmToUsers(
     const isMatch =
       (broadcast && !filter?.classId && !filter?.className) ||
       (broadcast && (filter?.classId || filter?.className) && doesClassMatch(entry.classId, entry.className, filter.classId, filter.className)) ||
-      cleanSet.size === 0 ||
+      (cleanSet.size === 0 && broadcast) ||
       explicitIdMatch;
 
     if (isMatch) {
-      targets.push({ key, token: entry.token });
+      const existingTarget = tokenTargets.get(entry.token);
+      if (existingTarget) {
+        existingTarget.keys.push(key);
+        if (entry.platform === "android_native") {
+          existingTarget.platform = "android_native";
+        }
+        if (!existingTarget.studentId && entryStudentId) existingTarget.studentId = entryStudentId;
+        if (!existingTarget.schoolId && entry.schoolId) existingTarget.schoolId = String(entry.schoolId);
+      } else {
+        tokenTargets.set(entry.token, {
+          keys: [key],
+          platform: String(entry.platform || "pwa"),
+          studentId: entryStudentId || undefined,
+          schoolId: entry.schoolId ? String(entry.schoolId) : undefined,
+        });
+      }
     }
-  }
-
-  // Deduplicate by token and track all associated RTDB keys for pruning stale tokens
-  const tokenToKeysMap = new Map<string, string[]>();
-  for (const item of targets) {
-    const list = tokenToKeysMap.get(item.token) || [];
-    list.push(item.key);
-    tokenToKeysMap.set(item.token, list);
   }
 
   let sent = 0;
   await Promise.allSettled(
-    Array.from(tokenToKeysMap.entries()).map(async ([fcmToken, keys]) => {
+    Array.from(tokenTargets.entries()).map(async ([fcmToken, target]) => {
+      const keys = target.keys;
+      const isNativeAndroid = target.platform === "android_native";
+      const dataPayload = {
+        id: String(payload.id || ""),
+        title: payload.title,
+        body: payload.body,
+        type: String(payload.type || "DEFAULT"),
+        url: String(payload.url || "/"),
+        icon: String(payload.icon || "/icons/icon-192.png?v=3"),
+        studentId: String(target.studentId || ""),
+        schoolId: String(filter?.schoolId || target.schoolId || ""),
+        voiceSpeak: "1",
+        urgent: "1",
+      };
+
+      const fcmMessage = isNativeAndroid
+        ? {
+            token: fcmToken,
+            data: dataPayload,
+            android: {
+              priority: "HIGH",
+            },
+          }
+        : {
+            token: fcmToken,
+            notification: {
+              title: payload.title,
+              body: payload.body,
+            },
+            data: dataPayload,
+            android: {
+              priority: "HIGH",
+              notification: {
+                channel_id: "high_importance_channel",
+                notification_priority: "PRIORITY_MAX",
+                default_sound: true,
+                default_vibrate_timings: true,
+                visibility: "PUBLIC",
+              },
+            },
+            webpush: {
+              headers: {
+                Urgency: "high",
+                TTL: "604800",
+              },
+              notification: {
+                title: payload.title,
+                body: payload.body,
+                icon: payload.icon || "/icons/icon-192.png?v=3",
+                badge: "/icons/badge-monochrome.png?v=4",
+                requireInteraction: true,
+                silent: false,
+                vibrate: [300, 150, 300, 150, 300],
+                renotify: true,
+              },
+              fcm_options: {
+                link: payload.url || "/",
+              },
+            },
+          };
+
       try {
         const res = await fetch(
           `https://fcm.googleapis.com/v1/projects/${FIREBASE_PROJECT_ID}/messages:send`,
@@ -429,52 +560,7 @@ async function dispatchFcmToUsers(
               Authorization: `Bearer ${accessToken}`,
               "Content-Type": "application/json",
             },
-            body: JSON.stringify({
-              message: {
-                token: fcmToken,
-                notification: {
-                  title: payload.title,
-                  body: payload.body,
-                },
-                data: {
-                  title: payload.title,
-                  body: payload.body,
-                  type: String(payload.type || "DEFAULT"),
-                  url: String(payload.url || "/"),
-                  icon: String(payload.icon || "/icons/icon-192.png?v=3"),
-                  urgent: "1",
-                },
-                android: {
-                  priority: "HIGH",
-                  notification: {
-                    channel_id: "high_importance_channel",
-                    notification_priority: "PRIORITY_MAX",
-                    default_sound: true,
-                    default_vibrate_timings: true,
-                    visibility: "PUBLIC",
-                  },
-                },
-                webpush: {
-                  headers: {
-                    Urgency: "high",
-                    TTL: "604800",
-                  },
-                  notification: {
-                    title: payload.title,
-                    body: payload.body,
-                    icon: payload.icon || "/icons/icon-192.png?v=3",
-                    badge: "/icons/badge-monochrome.png?v=4",
-                    requireInteraction: true,
-                    silent: false,
-                    vibrate: [300, 150, 300, 150, 300],
-                    renotify: true,
-                  },
-                  fcm_options: {
-                    link: payload.url || "/",
-                  },
-                },
-              },
-            }),
+            body: JSON.stringify({ message: fcmMessage }),
           }
         );
         if (res.ok) {
@@ -495,11 +581,12 @@ async function dispatchFcmToUsers(
             errText.includes("NotRegistered");
 
           if (isDeadToken) {
-            // Automatically prune dead/unregistered/rejected tokens from RTDB so subsequent dispatches succeed cleanly
+            // Automatically prune dead/unregistered/rejected tokens from Supabase & RTDB
             console.info("[FCM] Auto-pruning invalid token for keys:", keys);
-            await Promise.allSettled(
-              keys.map((k) => rtdbDelete(`fcm_tokens/${k}`))
-            );
+            await Promise.allSettled([
+              ...keys.map((k) => rtdbDelete(`fcm_tokens/${k}`)),
+              ...keys.map((k) => deleteFcmTokenFromSupabase(k)),
+            ]);
           } else {
             console.warn("[FCM Send Error]", res.status, errText);
           }
@@ -517,6 +604,46 @@ export default async function handler(req: any, res: any) {
   const method = String(req.method || "GET").toUpperCase();
 
   try {
+    if (method === "GET" && rawPath === "supabase-keepalive") {
+      const ping = await supabaseServerKeepalive();
+      return res.status(ping.ok ? 200 : 200).json({ ok: ping.ok, status: ping.status, service: "supabase-keepalive" });
+    }
+
+    if (method === "POST" && rawPath === "fcm/register-token") {
+      const { userId, token, platform = "pwa", studentId, schoolId, classId, className, role, deviceId } = req.body || {};
+      if (!userId || !token) {
+        return res.status(400).json({ error: "userId and token are required" });
+      }
+      const safeId = String(userId).replace(/[.#$[\]/]/g, "_");
+      const tokenKey = platform === "android_native" ? `${safeId}__android` : safeId;
+      await Promise.allSettled([
+        upsertFcmTokenInSupabase({
+          tokenKey,
+          userId: String(userId),
+          studentId: studentId ? String(studentId) : "",
+          schoolId: schoolId ? String(schoolId) : "",
+          classId: classId ? String(classId) : "",
+          className: className ? String(className) : "",
+          role: role ? String(role) : "",
+          platform: String(platform),
+          token: String(token),
+          deviceId: deviceId ? String(deviceId) : "",
+        }),
+        rtdbPut(`fcm_tokens/${tokenKey}`, {
+          token: String(token),
+          userId: String(userId),
+          platform: String(platform),
+          ...(studentId ? { studentId: String(studentId) } : {}),
+          ...(schoolId ? { schoolId: String(schoolId) } : {}),
+          ...(classId ? { classId: String(classId) } : {}),
+          ...(className ? { className: String(className) } : {}),
+          ...(deviceId ? { deviceId: String(deviceId) } : {}),
+          updatedAt: new Date().toISOString(),
+        }),
+      ]);
+      return res.status(200).json({ ok: true, tokenKey });
+    }
+
     if (method === "GET" && rawPath === "manifest") {
       const origin = getRequestOrigin(req);
       const schoolQuery = String(req.query?.school || req.query?.schoolId || req.query?.s || "").trim();
@@ -757,6 +884,7 @@ export default async function handler(req: any, res: any) {
 
       const isFcmBroadcast =
         Boolean(schoolBroadcast) ||
+        Boolean(classBroadcast) ||
         (!userId && (!studentIds || studentIds.length === 0 || studentIds.includes("all")));
       const fcmDelivered = await dispatchFcmToUsers(
         fcmRecipients,
@@ -938,30 +1066,94 @@ export default async function handler(req: any, res: any) {
     if (method === "GET" && rawPath === "telegram/file") {
       const fileId = String(req.query?.fileId || req.query?.file_id || "").trim();
       let filePath = String(req.query?.path || "").trim();
-      const token = String(req.query?.token || TG_BOT_TOKEN).trim();
-      if (!token) return res.status(400).json({ error: "Missing token" });
+      const fileName = String(req.query?.name || "").trim();
+      const token = resolveTelegramBotToken(req.query?.token ? String(req.query.token) : TG_BOT_TOKEN);
 
+      res.setHeader("Access-Control-Allow-Origin", "*");
+      res.setHeader("Access-Control-Expose-Headers", "Content-Range, Content-Length, Accept-Ranges, Content-Type");
+
+      let knownFileSize: number | undefined;
       if (fileId) {
-        if (!/^[A-Za-z0-9_-]{10,200}$/.test(fileId)) {
-          return res.status(400).json({ error: "Invalid fileId format" });
+        const resolved = await resolveTelegramFilePath(fileId, token);
+        if ("error" in resolved) {
+          return res.status(resolved.status).json({ error: resolved.error });
         }
-        try {
-          const tgRes = await fetch(`https://api.telegram.org/bot${token}/getFile?file_id=${encodeURIComponent(fileId)}`);
-          const tgJson = (await tgRes.json().catch(() => null)) as any;
-          if (!tgRes.ok || !tgJson?.ok || !tgJson?.result?.file_path) {
-            return res.status(404).json({ error: tgJson?.description || "Telegram file not found" });
-          }
-          filePath = String(tgJson.result.file_path);
-        } catch (err: any) {
-          return res.status(502).json({ error: err?.message || "Failed to resolve Telegram fileId" });
-        }
+        filePath = resolved.filePath;
+        knownFileSize = resolved.fileSize;
       }
 
-      if (!filePath || filePath.includes("..") || filePath.startsWith("/")) {
+      if (!isSafeTelegramFilePath(filePath)) {
         return res.status(400).json({ error: "Missing or invalid path" });
       }
-      res.setHeader("Cache-Control", "public, max-age=1800");
-      return res.redirect(302, `https://api.telegram.org/file/bot${token}/${filePath}`);
+
+      // Vercel serverless responses cap around 4.5MB: stream directly for <=3.5MB files (all images, logos, PDFs, audio clips)
+      // so CORS works and the bot token is never exposed; for huge videos or byte-range streaming, redirect with short 5m cache.
+      const hasRangeHeader = Boolean(req.headers?.range);
+      const isTooLargeForServerlessBuffer = typeof knownFileSize === "number" && knownFileSize > 3.5 * 1024 * 1024;
+      if (hasRangeHeader || isTooLargeForServerlessBuffer) {
+        res.setHeader("Cache-Control", "private, max-age=300");
+        return res.redirect(302, `https://api.telegram.org/file/bot${token}/${filePath}`);
+      }
+
+      try {
+        const fetchTarget = async (targetPath: string) => {
+          const controller = new AbortController();
+          const timer = setTimeout(() => controller.abort(), 9000);
+          try {
+            const r = await fetch(`https://api.telegram.org/file/bot${token}/${targetPath}`, {
+              signal: controller.signal,
+            });
+            clearTimeout(timer);
+            return r;
+          } catch (err) {
+            clearTimeout(timer);
+            throw err;
+          }
+        };
+
+        let tgFileRes = await fetchTarget(filePath);
+        if (!tgFileRes.ok && fileId) {
+          invalidateTelegramFilePathCache(fileId, token);
+          const refreshed = await resolveTelegramFilePath(fileId, token, true);
+          if (!("error" in refreshed)) {
+            filePath = refreshed.filePath;
+            tgFileRes = await fetchTarget(filePath);
+          }
+        }
+
+        if (!tgFileRes.ok) {
+          return res.status(tgFileRes.status || 404).json({ error: "Telegram file unavailable" });
+        }
+
+        const contentLenHeader = Number(tgFileRes.headers.get("content-length") || 0);
+        if (contentLenHeader > 3.5 * 1024 * 1024) {
+          res.setHeader("Cache-Control", "private, max-age=300");
+          return res.redirect(302, `https://api.telegram.org/file/bot${token}/${filePath}`);
+        }
+
+        const buf = Buffer.from(await tgFileRes.arrayBuffer());
+        const contentType = detectMimeType({
+          fileName,
+          filePath,
+          headerContentType: tgFileRes.headers.get("content-type"),
+          sampleBytes: buf,
+        });
+
+        res.setHeader("Content-Type", contentType);
+        res.setHeader("Content-Length", String(buf.length));
+        if (fileName) {
+          const safeName = fileName.replace(/["\r\n]/g, "");
+          res.setHeader("Content-Disposition", `inline; filename="${safeName}"`);
+        }
+        res.setHeader(
+          "Cache-Control",
+          fileId ? "public, max-age=86400, stale-while-revalidate=604800" : "public, max-age=300"
+        );
+        return res.status(200).send(buf);
+      } catch {
+        res.setHeader("Cache-Control", "private, max-age=300");
+        return res.redirect(302, `https://api.telegram.org/file/bot${token}/${filePath}`);
+      }
     }
 
     // ── PER-SCHOOL RAZORPAY ONLINE FEE & AUTO-WEBHOOK ROUTES ──────────────
