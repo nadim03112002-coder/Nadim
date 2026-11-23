@@ -138,18 +138,26 @@
             android:id="@+id/splashSubtitle"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:layout_marginTop="12dp"
+            android:layout_marginTop="10dp"
             android:letterSpacing="0.16"
             android:text="SMART SCHOOL ERP · LEARN · GROW"
             android:textColor="#7DD3FC"
             android:textSize="11sp"
             android:textStyle="bold" />
 
+        <ImageView
+            android:id="@+id/splashLogoImage"
+            android:layout_width="132dp"
+            android:layout_height="132dp"
+            android:layout_marginTop="22dp"
+            android:contentDescription="@string/app_name"
+            android:src="@drawable/splash_logo" />
+
         <ProgressBar
             style="?android:attr/progressBarStyleHorizontal"
-            android:layout_width="160dp"
+            android:layout_width="172dp"
             android:layout_height="6dp"
-            android:layout_marginTop="28dp"
+            android:layout_marginTop="26dp"
             android:indeterminate="true"
             android:indeterminateTint="@color/brand_accent" />
 

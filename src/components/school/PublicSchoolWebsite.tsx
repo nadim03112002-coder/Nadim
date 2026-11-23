@@ -1,5 +1,6 @@
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Html5Qrcode } from "html5-qrcode";
+import AndroidBatteryIndicator from "../AndroidBatteryIndicator";
 import type {
   AdmissionApplication,
   ClassSeatConfig,
@@ -1944,6 +1945,7 @@ export const PublicSchoolWebsite: React.FC<Props> = ({
 
           {/* Zone 3: Right Controls */}
           <div className="flex items-center gap-2 shrink-0">
+            <AndroidBatteryIndicator tone="auto" />
             {isAuthenticated && onSwitchToPortal ? (
               <button
                 type="button"

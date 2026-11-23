@@ -1,7 +1,11 @@
 package app.lifemaker.school
 
 import android.content.ContentValues
+import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
 import android.media.MediaScannerConnection
+import android.os.BatteryManager
 import android.os.Build
 import android.os.Environment
 import android.provider.MediaStore
@@ -19,6 +23,37 @@ class WebAppBridge(private val activity: MainActivity) {
 
     @JavascriptInterface
     fun isNativeApp(): Boolean = true
+
+    @JavascriptInterface
+    fun getBatteryStatus(): String {
+        if (!isTrustedHostActive) return """{"supported":false,"level":-1,"charging":false}"""
+        return try {
+            val batteryIntent: Intent? = activity.registerReceiver(
+                null,
+                IntentFilter(Intent.ACTION_BATTERY_CHANGED)
+            )
+            val rawLevel = batteryIntent?.getIntExtra(BatteryManager.EXTRA_LEVEL, -1) ?: -1
+            val scale = batteryIntent?.getIntExtra(BatteryManager.EXTRA_SCALE, -1) ?: -1
+            val pct = if (rawLevel >= 0 && scale > 0) {
+                ((rawLevel * 100f) / scale.toFloat()).toInt().coerceIn(0, 100)
+            } else {
+                val bm = activity.getSystemService(Context.BATTERY_SERVICE) as? BatteryManager
+                bm?.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)?.coerceIn(0, 100) ?: -1
+            }
+            val status = batteryIntent?.getIntExtra(BatteryManager.EXTRA_STATUS, -1) ?: -1
+            val plugged = batteryIntent?.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0) ?: 0
+            val isCharging = status == BatteryManager.BATTERY_STATUS_CHARGING ||
+                status == BatteryManager.BATTERY_STATUS_FULL ||
+                plugged != 0
+            JSONObject().apply {
+                put("supported", pct >= 0)
+                put("level", pct)
+                put("charging", isCharging)
+            }.toString()
+        } catch (_: Exception) {
+            """{"supported":false,"level":-1,"charging":false}"""
+        }
+    }
 
     @JavascriptInterface
     fun getNativeFcmToken(): String {

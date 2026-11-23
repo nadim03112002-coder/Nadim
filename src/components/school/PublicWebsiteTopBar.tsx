@@ -16,6 +16,7 @@ import {
   parseCustomTickerItems,
 } from "../../utils/schoolTickerUtils";
 import { resolveWebsiteAdmissionSessionLabel } from "../../utils/safeBrowserActions";
+import AndroidBatteryIndicator from "../AndroidBatteryIndicator";
 
 export type WebsiteTopNavSection =
   | "home"
@@ -299,6 +300,7 @@ export const PublicWebsiteTopBar: React.FC<Props> = ({
 
             {/* Right Controls: Account/Portal + Apply */}
             <div className="flex items-center gap-2 shrink-0">
+              <AndroidBatteryIndicator tone="auto" />
               {isAuthenticated && onSwitchToPortal ? (
                 <button
                   type="button"

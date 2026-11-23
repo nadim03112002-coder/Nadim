@@ -741,7 +741,10 @@ export function App() {
         path === '/verify'
       );
       const isStandaloneDriver = p.get('driverConsole') === '1' || p.get('driver') === '1';
-      return !isPublicVerify && !isStandaloneDriver;
+      const isNativeAndroidWebView =
+        typeof window !== 'undefined' &&
+        Boolean((window as any).LifeMakerAndroid?.isNativeApp?.());
+      return !isPublicVerify && !isStandaloneDriver && !isNativeAndroidWebView;
     } catch {
       return false;
     }

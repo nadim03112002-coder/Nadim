@@ -1,5 +1,6 @@
 // @ts-nocheck
 import React, { useState, useEffect, useLayoutEffect, useRef, useMemo } from "react";
+import AndroidBatteryIndicator from "../AndroidBatteryIndicator";
 import { toast } from "sonner";
 import {
   subscribeToClasses, subscribeToSubjects, subscribeToStudents,
@@ -1647,6 +1648,7 @@ export const TeacherPanel: React.FC<Props> = ({
 
         {/* Right: Quick Routine Button + 3-Theme Switcher, Screen Rotate Toggle & Faculty Badge */}
         <div className="flex items-center gap-2 shrink-0">
+          <AndroidBatteryIndicator tone="auto" />
           <button
             type="button"
             onClick={() => setView("timetable")}

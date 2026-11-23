@@ -259,12 +259,12 @@ export const AppLoadingScreen: React.FC<AppLoadingScreenProps> = ({
         )}
 
         {/* Staggered Letter-by-Letter SCHOOL+ Wordmark */}
-        <div className="relative inline-flex items-center justify-center px-3 py-2 overflow-hidden rounded-2xl">
+        <div className="relative inline-flex items-center justify-center px-4 py-2 overflow-visible">
           <div className="flex items-center gap-1 sm:gap-1.5">
             {BRAND_LETTERS.map((char, idx) => (
               <span
                 key={`${char}-${idx}`}
-                className="inline-block text-[2.6rem] sm:text-6xl font-black tracking-tight text-transparent bg-clip-text bg-gradient-to-b from-white via-slate-100 to-sky-300 drop-shadow-[0_4px_18px_rgba(56,189,248,0.3)]"
+                className="inline-block text-[2.6rem] sm:text-6xl font-black tracking-tight text-transparent bg-clip-text bg-gradient-to-b from-white via-slate-100 to-sky-300"
                 style={{
                   opacity: 0,
                   animation: `spLetterDrop 0.42s cubic-bezier(0.22, 1, 0.36, 1) ${idx * 55}ms forwards`,
@@ -276,31 +276,22 @@ export const AppLoadingScreen: React.FC<AppLoadingScreenProps> = ({
 
             {/* Animated '+' Badge */}
             <span
-              className="ml-1 inline-flex items-center justify-center w-10 h-10 sm:w-13 sm:h-13 rounded-2xl bg-gradient-to-br from-amber-300 via-amber-400 to-orange-500 text-slate-950 text-3xl sm:text-5xl font-black leading-none border border-amber-200/80"
+              className="ml-1 inline-flex items-center justify-center w-10 h-10 sm:w-13 sm:h-13 rounded-2xl bg-gradient-to-br from-amber-300 via-amber-400 to-orange-500 text-slate-950 text-3xl sm:text-5xl font-black leading-none border border-amber-200/80 shadow-[0_0_20px_rgba(251,191,36,0.45)]"
               style={{
                 opacity: 0,
                 animation: `spPlusPop 0.48s cubic-bezier(0.34, 1.56, 0.64, 1) ${
                   BRAND_LETTERS.length * 55 + 40
-                }ms forwards, spPlusGlow 2.2s ease-in-out ${BRAND_LETTERS.length * 55 + 480}ms infinite`,
+                }ms forwards`,
               }}
             >
               +
             </span>
           </div>
-
-          {/* Glossy Light Sweep across SCHOOL+ */}
-          <div
-            className="pointer-events-none absolute inset-y-0 left-0 w-16 bg-gradient-to-r from-transparent via-white/30 to-transparent"
-            style={{
-              animation: `spSweep 0.85s ease-in-out ${BRAND_LETTERS.length * 55 + 160}ms 1`,
-              transform: 'translateX(-140%) skewX(-18deg)',
-            }}
-          />
         </div>
 
         {/* Glowing Accent Bar */}
         <div
-          className="mt-2 h-[3px] w-40 sm:w-52 rounded-full bg-gradient-to-r from-transparent via-amber-400 to-transparent origin-center"
+          className="mt-1.5 h-[3px] w-40 sm:w-52 rounded-full bg-gradient-to-r from-transparent via-amber-400 to-transparent origin-center"
           style={{
             opacity: 0,
             animation: `spUnderlineExpand 0.45s ease-out ${BRAND_LETTERS.length * 55 + 80}ms forwards`,
@@ -308,7 +299,7 @@ export const AppLoadingScreen: React.FC<AppLoadingScreenProps> = ({
         />
 
         <p
-          className="mt-3 text-[11px] sm:text-xs font-extrabold tracking-[0.22em] uppercase text-sky-300/95"
+          className="mt-2.5 text-[11px] sm:text-xs font-extrabold tracking-[0.22em] uppercase text-sky-300/95"
           style={{
             opacity: 0,
             animation: `spSubFade 0.4s ease-out ${BRAND_LETTERS.length * 55 + 140}ms forwards`,
@@ -316,6 +307,21 @@ export const AppLoadingScreen: React.FC<AppLoadingScreenProps> = ({
         >
           Smart School ERP · Learn · Grow
         </p>
+
+        {/* Navy-Gold SCHOOL+ Emblem Below Animated Wordmark */}
+        <div
+          className="mt-5 flex items-center justify-center"
+          style={{
+            opacity: 0,
+            animation: `spSubFade 0.45s ease-out ${BRAND_LETTERS.length * 55 + 160}ms forwards`,
+          }}
+        >
+          <img
+            src="/branding/schoolplus-splash-logo.png"
+            alt="SCHOOL+ Logo"
+            className="w-28 h-28 sm:w-36 sm:h-36 rounded-[26px] object-contain drop-shadow-[0_14px_32px_rgba(245,158,11,0.28)]"
+          />
+        </div>
 
         {/* Subtle Active School Context Pill */}
         {resolvedSchool.name && (

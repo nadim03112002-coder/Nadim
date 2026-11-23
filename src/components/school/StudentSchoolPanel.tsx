@@ -1,5 +1,6 @@
 // @ts-nocheck
 import React, { useState, useEffect, useMemo, useRef } from "react";
+import AndroidBatteryIndicator from "../AndroidBatteryIndicator";
 import {
   GraduationCap,
   Calendar,
@@ -2975,31 +2976,34 @@ export const StudentSchoolPanel: React.FC<Props> = ({
                 </div>
               </div>
 
-              <button
-                type="button"
-                onClick={() => setShowNotificationModal(true)}
-                className={`w-11 h-11 rounded-xl border flex items-center justify-center transition cursor-pointer active:scale-95 shrink-0 ${
-                  pushEnabled
-                    ? studentTheme === "white"
-                      ? "bg-emerald-50 border-emerald-200 text-emerald-700 hover:bg-emerald-100"
+              <div className="flex items-center gap-2 shrink-0">
+                <AndroidBatteryIndicator tone={studentTheme === "white" ? "light" : "dark"} />
+                <button
+                  type="button"
+                  onClick={() => setShowNotificationModal(true)}
+                  className={`w-11 h-11 rounded-xl border flex items-center justify-center transition cursor-pointer active:scale-95 shrink-0 ${
+                    pushEnabled
+                      ? studentTheme === "white"
+                        ? "bg-emerald-50 border-emerald-200 text-emerald-700 hover:bg-emerald-100"
+                        : studentTheme === "black"
+                        ? "bg-emerald-500/15 border-emerald-500/35 text-emerald-300 hover:bg-emerald-500/25"
+                        : "bg-emerald-500/15 border-emerald-400/35 text-emerald-300 hover:bg-emerald-500/25"
+                      : studentTheme === "white"
+                      ? "bg-slate-100 border-slate-200 text-slate-500 hover:bg-slate-200"
                       : studentTheme === "black"
-                      ? "bg-emerald-500/15 border-emerald-500/35 text-emerald-300 hover:bg-emerald-500/25"
-                      : "bg-emerald-500/15 border-emerald-400/35 text-emerald-300 hover:bg-emerald-500/25"
-                    : studentTheme === "white"
-                    ? "bg-slate-100 border-slate-200 text-slate-500 hover:bg-slate-200"
-                    : studentTheme === "black"
-                    ? "bg-neutral-900 border-neutral-800 text-neutral-400 hover:bg-neutral-800"
-                    : "bg-[#112447] border-[#274882] text-slate-400 hover:bg-[#16305f]"
-                }`}
-                aria-label={pushEnabled ? "Notifications ON" : "Notifications OFF"}
-                title={pushEnabled ? "Notifications ON · Tap to manage" : "Notifications OFF · Tap to enable"}
-              >
-                {pushEnabled ? (
-                  <Bell className="w-5 h-5" />
-                ) : (
-                  <BellOff className="w-5 h-5" />
-                )}
-              </button>
+                      ? "bg-neutral-900 border-neutral-800 text-neutral-400 hover:bg-neutral-800"
+                      : "bg-[#112447] border-[#274882] text-slate-400 hover:bg-[#16305f]"
+                  }`}
+                  aria-label={pushEnabled ? "Notifications ON" : "Notifications OFF"}
+                  title={pushEnabled ? "Notifications ON · Tap to manage" : "Notifications OFF · Tap to enable"}
+                >
+                  {pushEnabled ? (
+                    <Bell className="w-5 h-5" />
+                  ) : (
+                    <BellOff className="w-5 h-5" />
+                  )}
+                </button>
+              </div>
             </div>
 
             {/* Slim Student Greeting Strip + 3 Quick Stats */}

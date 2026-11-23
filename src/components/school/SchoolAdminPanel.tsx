@@ -1,5 +1,6 @@
 // @ts-nocheck
 import React, { useState, useEffect, useLayoutEffect, useRef, useMemo } from "react";
+import AndroidBatteryIndicator from "../AndroidBatteryIndicator";
 import {
   subscribeToSessions, subscribeToClasses, subscribeToSubjects, subscribeToTeachers,
   subscribeToAllStudents, saveSession, saveClass, saveSubject, saveMultipleSubjects, saveTeacher, saveStudent,
@@ -3817,6 +3818,7 @@ export const SchoolAdminPanel: React.FC<Props> = ({
 
           {/* Right: Search + Mobile/Laptop Rotate + Settings Icon (Profile & Theme) */}
           <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
+            <AndroidBatteryIndicator tone={isWhite ? "light" : "dark"} />
             {/* Direct Routine & Timetable Quick Button (Next to Search) */}
             <button
               type="button"

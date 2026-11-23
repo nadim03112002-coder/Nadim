@@ -1,5 +1,6 @@
 // @ts-nocheck
 import React, { useState, useEffect, useRef } from 'react';
+import AndroidBatteryIndicator from './AndroidBatteryIndicator';
 import type { User, SystemSettings } from '../types';
 import { ADMIN_EMAIL } from '../constants';
 import {
@@ -2374,15 +2375,18 @@ export const Auth: React.FC<Props> = ({ onLogin, logActivity, appSettings, onBac
           </span>
         )}
 
-        <button
-          type="button"
-          onClick={() => { triggerAuthHaptic('light'); setShowGuide(true); }}
-          className="inline-flex items-center gap-1.5 px-3 min-h-[40px] rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-xs font-bold text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800 transition-all cursor-pointer shadow-2xs shrink-0 active:scale-95 whitespace-nowrap"
-          title="Login Help Guide"
-        >
-          <HelpCircle size={14} className="text-indigo-600 dark:text-indigo-400" />
-          <span>Portal Guide</span>
-        </button>
+        <div className="flex items-center gap-2 shrink-0">
+          <AndroidBatteryIndicator tone="auto" />
+          <button
+            type="button"
+            onClick={() => { triggerAuthHaptic('light'); setShowGuide(true); }}
+            className="inline-flex items-center gap-1.5 px-3 min-h-[40px] rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-xs font-bold text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800 transition-all cursor-pointer shadow-2xs shrink-0 active:scale-95 whitespace-nowrap"
+            title="Login Help Guide"
+          >
+            <HelpCircle size={14} className="text-indigo-600 dark:text-indigo-400" />
+            <span>Portal Guide</span>
+          </button>
+        </div>
       </div>
 
       {/* ── CENTERED AUTH STAGE (Balanced Vertically on Mobile & 2-Column on Desktop) ── */}

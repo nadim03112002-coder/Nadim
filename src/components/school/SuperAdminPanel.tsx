@@ -1,5 +1,6 @@
 // @ts-nocheck
 import React, { useState, useEffect } from "react";
+import AndroidBatteryIndicator from "../AndroidBatteryIndicator";
 import {
   subscribeToAllSchools, saveSchool, updateSchool, generateId, setSchoolLockCode,
   assignSchoolAdminByEmail, checkEmailSchoolAllotment, lockSchool, deleteSchool
@@ -1603,15 +1604,18 @@ export const SuperAdminPanel: React.FC<Props> = ({ adminUid, onBack, onLogout })
             <h1 className="text-2xl font-black text-slate-900 dark:text-white">IIC×NSTA Control Panel</h1>
             <p className="text-slate-700 dark:text-slate-400 text-sm font-medium mt-1">Manage all schools in the ecosystem</p>
           </div>
-          <button
-            type="button"
-            onClick={handlePerformLogout}
-            className="shrink-0 inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-black shadow-md shadow-rose-600/25 active:scale-95 transition-all cursor-pointer"
-            title="Account Log Out karein"
-          >
-            <LogOut className="w-4 h-4" />
-            <span>Log Out</span>
-          </button>
+          <div className="flex items-center gap-2 shrink-0">
+            <AndroidBatteryIndicator tone="auto" />
+            <button
+              type="button"
+              onClick={handlePerformLogout}
+              className="shrink-0 inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-black shadow-md shadow-rose-600/25 active:scale-95 transition-all cursor-pointer"
+              title="Account Log Out karein"
+            >
+              <LogOut className="w-4 h-4" />
+              <span>Log Out</span>
+            </button>
+          </div>
         </div>
       </div>
 

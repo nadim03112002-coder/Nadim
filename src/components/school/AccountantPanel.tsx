@@ -1,5 +1,6 @@
 // @ts-nocheck
 import React, { useState, useEffect, useMemo } from "react";
+import AndroidBatteryIndicator from "../AndroidBatteryIndicator";
 import { safeOpenExternalUrl } from "../../utils/safeBrowserActions";
 import {
   IndianRupee,
@@ -724,6 +725,7 @@ export const AccountantPanel: React.FC<Props> = ({
 
         {/* Action Controls */}
         <div className="flex items-center gap-2 shrink-0">
+          <AndroidBatteryIndicator tone={isWhite ? "light" : "dark"} />
           <button
             type="button"
             onClick={() => setRefreshTrigger(prev => prev + 1)}

@@ -17,6 +17,7 @@ import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
 import android.net.Uri
+import android.os.BatteryManager
 import android.os.Build
 import android.os.Bundle
 import android.os.Environment
@@ -75,6 +76,8 @@ class MainActivity : AppCompatActivity() {
     private var pendingCameraPhotoUri: Uri? = null
     private var pendingWebPermissionRequest: PermissionRequest? = null
     private var lastBackPressedAt: Long = 0L
+    private var splashStartedAt: Long = 0L
+    private var isHidingSplash: Boolean = false
     private var hasMainFrameError: Boolean = false
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
     private var wasOfflineBannerShown: Boolean = false
@@ -88,10 +91,21 @@ class MainActivity : AppCompatActivity() {
         "api.razorpay.com"
     )
 
+    private var lastBatteryLevel: Int = -1
+    private var lastBatteryCharging: Boolean = false
+    private var isBatteryReceiverRegistered: Boolean = false
+
     private val fcmTokenReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             val token = intent?.getStringExtra(LifeMakerMessagingService.EXTRA_FCM_TOKEN) ?: return
             pushFcmTokenToWebView(token)
+        }
+    }
+
+    private val batteryChangedReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            if (intent?.action != Intent.ACTION_BATTERY_CHANGED) return
+            handleBatteryIntent(intent, forcePush = false)
         }
     }
 
@@ -194,12 +208,7 @@ class MainActivity : AppCompatActivity() {
 
         configureWebView()
 
-        swipeRefresh.setColorSchemeResources(R.color.brand_accent, R.color.brand_primary)
-        swipeRefresh.setOnChildScrollUpCallback { _, _ -> webView.scrollY > 0 }
-        swipeRefresh.setOnRefreshListener {
-            hasMainFrameError = false
-            webView.reload()
-        }
+        swipeRefresh.isEnabled = false
 
         retryButton.setOnClickListener {
             performNativeHaptic("light")
@@ -245,6 +254,8 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun startSplashAnimations() {
+        splashStartedAt = System.currentTimeMillis()
+        isHidingSplash = false
         splashLetterViews.forEachIndexed { index, letterView ->
             letterView.animate().cancel()
             letterView.alpha = 0f
@@ -264,20 +275,26 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun hideSplashSmoothly() {
-        if (splashOverlay.visibility != View.VISIBLE) return
-        splashLetterViews.forEach { it.animate().cancel() }
-        splashOverlay.animate()
-            .alpha(0f)
-            .scaleX(1.04f)
-            .scaleY(1.04f)
-            .setDuration(280L)
-            .withEndAction {
-                splashOverlay.visibility = View.GONE
-                splashOverlay.alpha = 1f
-                splashOverlay.scaleX = 1f
-                splashOverlay.scaleY = 1f
-            }
-            .start()
+        if (splashOverlay.visibility != View.VISIBLE || isHidingSplash) return
+        isHidingSplash = true
+        val elapsed = System.currentTimeMillis() - splashStartedAt
+        val waitMs = (950L - elapsed).coerceAtLeast(0L)
+        splashOverlay.postDelayed({
+            if (isFinishing || isDestroyed || splashOverlay.visibility != View.VISIBLE) return@postDelayed
+            splashOverlay.animate()
+                .alpha(0f)
+                .scaleX(1.03f)
+                .scaleY(1.03f)
+                .setDuration(260L)
+                .withEndAction {
+                    splashOverlay.visibility = View.GONE
+                    splashOverlay.alpha = 1f
+                    splashOverlay.scaleX = 1f
+                    splashOverlay.scaleY = 1f
+                    isHidingSplash = false
+                }
+                .start()
+        }, waitMs)
     }
 
     override fun onStart() {
@@ -288,6 +305,7 @@ class MainActivity : AppCompatActivity() {
         } else {
             registerReceiver(fcmTokenReceiver, filter)
         }
+        registerBatteryReceiver()
         registerNetworkObserver()
     }
 
@@ -295,6 +313,7 @@ class MainActivity : AppCompatActivity() {
         try {
             unregisterReceiver(fcmTokenReceiver)
         } catch (_: Exception) {}
+        unregisterBatteryReceiver()
         unregisterNetworkObserver()
         super.onStop()
     }
@@ -462,6 +481,7 @@ class MainActivity : AppCompatActivity() {
                     if (token.isNotEmpty()) {
                         pushFcmTokenToWebView(token)
                     }
+                    syncCurrentBatteryToWebView()
                 }
             }
 
@@ -474,7 +494,7 @@ class MainActivity : AppCompatActivity() {
                 if (request?.isForMainFrame == true) {
                     hasMainFrameError = true
                     swipeRefresh.isRefreshing = false
-                    splashRingAnimator?.cancel()
+                    splashLetterViews.forEach { it.animate().cancel() }
                     splashOverlay.visibility = View.GONE
                     offlineOverlay.visibility = View.VISIBLE
                 }
@@ -778,8 +798,89 @@ class MainActivity : AppCompatActivity() {
         return File.createTempFile("LMPS_$stamp", ".jpg", cacheDir)
     }
 
+    private fun registerBatteryReceiver() {
+        if (isBatteryReceiverRegistered) return
+        try {
+            val batteryFilter = IntentFilter(Intent.ACTION_BATTERY_CHANGED)
+            val stickyIntent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                registerReceiver(batteryChangedReceiver, batteryFilter, Context.RECEIVER_NOT_EXPORTED)
+            } else {
+                registerReceiver(batteryChangedReceiver, batteryFilter)
+            }
+            isBatteryReceiverRegistered = true
+            handleBatteryIntent(stickyIntent, forcePush = true)
+        } catch (_: Exception) {}
+    }
+
+    private fun unregisterBatteryReceiver() {
+        if (!isBatteryReceiverRegistered) return
+        try {
+            unregisterReceiver(batteryChangedReceiver)
+        } catch (_: Exception) {}
+        isBatteryReceiverRegistered = false
+    }
+
+    private fun syncCurrentBatteryToWebView() {
+        try {
+            val sticky = registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+            if (sticky != null) {
+                handleBatteryIntent(sticky, forcePush = true)
+                return
+            }
+        } catch (_: Exception) {}
+        if (lastBatteryLevel >= 0) {
+            pushBatteryStatusToWebView(lastBatteryLevel, lastBatteryCharging)
+        }
+    }
+
+    private fun handleBatteryIntent(intent: Intent?, forcePush: Boolean) {
+        val rawLevel = intent?.getIntExtra(BatteryManager.EXTRA_LEVEL, -1) ?: -1
+        val scale = intent?.getIntExtra(BatteryManager.EXTRA_SCALE, -1) ?: -1
+        val pct = if (rawLevel >= 0 && scale > 0) {
+            ((rawLevel * 100f) / scale.toFloat()).toInt().coerceIn(0, 100)
+        } else {
+            val bm = getSystemService(Context.BATTERY_SERVICE) as? BatteryManager
+            bm?.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)?.coerceIn(0, 100) ?: -1
+        }
+        if (pct < 0) return
+
+        val status = intent?.getIntExtra(BatteryManager.EXTRA_STATUS, -1) ?: -1
+        val plugged = intent?.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0) ?: 0
+        val isCharging = status == BatteryManager.BATTERY_STATUS_CHARGING ||
+            status == BatteryManager.BATTERY_STATUS_FULL ||
+            plugged != 0
+
+        if (!forcePush && pct == lastBatteryLevel && isCharging == lastBatteryCharging) {
+            return
+        }
+        lastBatteryLevel = pct
+        lastBatteryCharging = isCharging
+        pushBatteryStatusToWebView(pct, isCharging)
+    }
+
+    private fun pushBatteryStatusToWebView(level: Int, isCharging: Boolean) {
+        if (level < 0 || !webAppBridge.isTrustedHostActive) return
+        webView.post {
+            webView.evaluateJavascript(
+                """
+                (function() {
+                  window.__androidBatteryState = { level: $level, charging: $isCharging, supported: true };
+                  if (typeof window.__onAndroidBatteryUpdate === 'function') {
+                    window.__onAndroidBatteryUpdate($level, $isCharging);
+                  }
+                  try {
+                    window.dispatchEvent(new CustomEvent('android-battery-update', { detail: { level: $level, charging: $isCharging } }));
+                  } catch (e) {}
+                })();
+                """.trimIndent(),
+                null
+            )
+        }
+    }
+
     override fun onDestroy() {
-        splashRingAnimator?.cancel()
+        splashLetterViews.forEach { it.animate().cancel() }
+        unregisterBatteryReceiver()
         unregisterNetworkObserver()
         webView.destroy()
         super.onDestroy()

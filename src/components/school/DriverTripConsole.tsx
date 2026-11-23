@@ -1,5 +1,6 @@
 // @ts-nocheck
 import React, { useState, useEffect, useRef } from "react";
+import AndroidBatteryIndicator from "../AndroidBatteryIndicator";
 import {
   Bus, Play, Square, Navigation, Phone, ShieldAlert,
   CheckCircle2, Clock, MapPin, Gauge, AlertTriangle,
@@ -711,8 +712,9 @@ export const DriverTripConsole: React.FC<Props> = ({
           </div>
         </div>
 
-        {/* Live Pulse Indicator + Optional Logout */}
-        <div className="flex items-center gap-2">
+        {/* Live Pulse Indicator + Battery + Optional Logout */}
+        <div className="flex items-center gap-2 shrink-0">
+          <AndroidBatteryIndicator tone="dark" />
           {isTripActive ? (
             <span className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-emerald-500/20 text-emerald-400 border border-emerald-500/40 text-xs font-bold animate-pulse">
               <Radio size={14} className="animate-spin" /> LIVE GPS
