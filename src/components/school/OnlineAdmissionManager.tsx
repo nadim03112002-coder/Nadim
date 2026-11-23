@@ -58,6 +58,8 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { sendSchoolPushNotification } from "../../utils/schoolPushClient";
+import { toUpperFormText, rememberOccupation } from "../../utils/schoolFormUtils";
+import { OccupationAutocomplete } from "./OccupationAutocomplete";
 import {
   fetchSchoolRazorpayConfig,
   startOnlineAdmissionRazorpayCheckout,
@@ -98,6 +100,10 @@ import {
   getDefaultSubjectsForClass,
   DEFAULT_ADMISSION_FIELD_SETTINGS,
 } from "../../school-types";
+import {
+  buildSettledHeadsFromAdmission,
+  canonicalizeFeeHeadKey,
+} from "../../utils/feeTermScheduler";
 import { enrollStudentFromPhotoUrl } from "../../utils/faceRecognitionEngine";
 import {
   getAdmissionApplications,
@@ -2557,6 +2563,28 @@ export const OnlineAdmissionManager: React.FC<Props> = ({
         admissionTotalAmount: Number(app.admissionFeeDetails?.totalPayable ?? existing?.admissionTotalAmount ?? 0),
         admissionPaidAmount: Number(app.admissionFeeDetails?.paidAmount ?? existing?.admissionPaidAmount ?? 0),
         admissionDueBalance: admDue,
+        admissionPaymentPlan: app.paymentPlan || existing?.admissionPaymentPlan || "full_payment",
+        ...(existing?.settledFeeHeads
+          ? { settledFeeHeads: existing.settledFeeHeads }
+          : Array.isArray(app.admissionFeeDetails?.items) && app.admissionFeeDetails.items.length > 0
+          ? {
+              settledFeeHeads: buildSettledHeadsFromAdmission({
+                allDraftLines: app.admissionFeeDetails.items.map((it: any) => ({
+                  id: it.id || it.description,
+                  description: it.description,
+                  due: Number(it.due || 0),
+                  included: true,
+                  headKey: it.headKey || canonicalizeFeeHeadKey(it.id || it.description),
+                })),
+                paidById: new Map(app.admissionFeeDetails.items.map((it: any) => [it.id || it.description, Number(it.paid || 0)])),
+                conById: new Map(app.admissionFeeDetails.items.map((it: any) => [it.id || it.description, Number(it.con || 0)])),
+                paymentPlan: app.paymentPlan || "full_payment",
+                balanceDue: admDue,
+                classObj: targetCls,
+                nowIso: paidIso,
+              }).settledFeeHeads,
+            }
+          : {}),
         advanceMonthlyFeePaid: Boolean(incTuition && admDue === 0),
         advanceMonthlyFeeDue: deferredTuition,
         advanceMonthlyFeeMonth: paidIso.slice(0, 7),
@@ -2719,9 +2747,9 @@ export const OnlineAdmissionManager: React.FC<Props> = ({
 
       const updatedApp: AdmissionApplication = {
         ...editingApp,
-        studentName: String(editAppDraft.studentName).trim(),
-        applicationNo: String(editAppDraft.applicationNo || editingApp.applicationNo).trim(),
-        assignedRollNo: String(editAppDraft.assignedRollNo || editingApp.assignedRollNo || "").trim() || undefined,
+        studentName: toUpperFormText(String(editAppDraft.studentName).trim()),
+        applicationNo: toUpperFormText(String(editAppDraft.applicationNo || editingApp.applicationNo).trim()),
+        assignedRollNo: toUpperFormText(String(editAppDraft.assignedRollNo || editingApp.assignedRollNo || "").trim()) || undefined,
         classId: targetCls?.id || editAppDraft.classId || editingApp.classId,
         className: nextClassName,
         stream: isSeniorClass(targetCls?.name) ? (editAppDraft.stream || "Science") : undefined,
@@ -2729,23 +2757,23 @@ export const OnlineAdmissionManager: React.FC<Props> = ({
         gender: editAppDraft.gender || "male",
         bloodGroup: editAppDraft.bloodGroup || undefined,
         category: editAppDraft.category || "General",
-        religion: editAppDraft.religion || "Hindu",
-        nationality: editAppDraft.nationality || "Indian",
-        motherTongue: editAppDraft.motherTongue || undefined,
-        identificationMark: editAppDraft.identificationMark || undefined,
+        religion: toUpperFormText(editAppDraft.religion || "") || "HINDU",
+        nationality: toUpperFormText(editAppDraft.nationality || "") || "INDIAN",
+        motherTongue: toUpperFormText(editAppDraft.motherTongue || "") || undefined,
+        identificationMark: toUpperFormText(editAppDraft.identificationMark || "") || undefined,
         isOnlyChild: Boolean(editAppDraft.isOnlyChild) || undefined,
         photoUrl: editAppDraft.photoUrl || undefined,
         aadhaarNo: editAppDraft.aadhaarNo || undefined,
-        apaarId: editAppDraft.apaarId || undefined,
-        fatherName: String(editAppDraft.fatherName || "").trim(),
-        fatherQualification: editAppDraft.fatherQualification || undefined,
-        fatherOccupation: editAppDraft.fatherOccupation || undefined,
+        apaarId: toUpperFormText(editAppDraft.apaarId || "") || undefined,
+        fatherName: toUpperFormText(String(editAppDraft.fatherName || "").trim()),
+        fatherQualification: toUpperFormText(editAppDraft.fatherQualification || "") || undefined,
+        fatherOccupation: toUpperFormText(editAppDraft.fatherOccupation || "") || undefined,
         fatherPhone: editAppDraft.fatherPhone || undefined,
         fatherWhatsapp: editAppDraft.fatherWhatsapp || undefined,
         fatherAadhaar: editAppDraft.fatherAadhaar || undefined,
-        motherName: String(editAppDraft.motherName || "").trim(),
-        motherQualification: editAppDraft.motherQualification || undefined,
-        motherOccupation: editAppDraft.motherOccupation || undefined,
+        motherName: toUpperFormText(String(editAppDraft.motherName || "").trim()),
+        motherQualification: toUpperFormText(editAppDraft.motherQualification || "") || undefined,
+        motherOccupation: toUpperFormText(editAppDraft.motherOccupation || "") || undefined,
         motherPhone: editAppDraft.motherPhone || undefined,
         motherWhatsapp: editAppDraft.motherWhatsapp || undefined,
         motherAadhaar: editAppDraft.motherAadhaar || undefined,
@@ -2753,30 +2781,30 @@ export const OnlineAdmissionManager: React.FC<Props> = ({
         phone: String(editAppDraft.phone || "").trim(),
         whatsappNo: editAppDraft.whatsappNo || undefined,
         email: editAppDraft.email || undefined,
-        address: String(editAppDraft.address || "").trim(),
-        city: editAppDraft.city || undefined,
+        address: toUpperFormText(String(editAppDraft.address || "").trim()),
+        city: toUpperFormText(editAppDraft.city || "") || undefined,
         pincode: editAppDraft.pincode || undefined,
-        correspondenceAddress: editAppDraft.correspondenceAddress || editAppDraft.address || undefined,
-        emergencyContact: editAppDraft.emergencyContact || undefined,
+        correspondenceAddress: toUpperFormText(editAppDraft.correspondenceAddress || editAppDraft.address || "") || undefined,
+        emergencyContact: toUpperFormText(editAppDraft.emergencyContact || "") || undefined,
         emergencyPhone: editAppDraft.emergencyPhone || undefined,
-        emergencyRelation: editAppDraft.emergencyRelation || undefined,
+        emergencyRelation: toUpperFormText(editAppDraft.emergencyRelation || "") || undefined,
         emergencyWhatsapp: editAppDraft.emergencyWhatsapp || undefined,
-        medicalHistory: editAppDraft.medicalHistory || undefined,
-        previousSchool: editAppDraft.previousSchool || undefined,
-        previousClassName: editAppDraft.previousClass || undefined,
-        previousBoard: editAppDraft.previousBoard || undefined,
-        previousMarks: editAppDraft.previousMarks || undefined,
-        previousTcNo: editAppDraft.previousTcNo || undefined,
+        medicalHistory: toUpperFormText(editAppDraft.medicalHistory || "") || undefined,
+        previousSchool: toUpperFormText(editAppDraft.previousSchool || "") || undefined,
+        previousClassName: toUpperFormText(editAppDraft.previousClass || "") || undefined,
+        previousBoard: toUpperFormText(editAppDraft.previousBoard || "") || undefined,
+        previousMarks: toUpperFormText(editAppDraft.previousMarks || "") || undefined,
+        previousTcNo: toUpperFormText(editAppDraft.previousTcNo || "") || undefined,
         previousTcDate: editAppDraft.previousTcDate || undefined,
         usesBus: Boolean(editAppDraft.usesBus),
-        busRoute: editAppDraft.usesBus ? (editAppDraft.busRoute || undefined) : undefined,
+        busRoute: editAppDraft.usesBus ? (toUpperFormText(editAppDraft.busRoute || "") || undefined) : undefined,
         busFee: editAppDraft.usesBus ? Number(editAppDraft.busFee || 0) : 0,
         transportModeIfNo: editAppDraft.transportModeIfNo || undefined,
         transportDistanceKm: editAppDraft.transportDistanceKm || undefined,
-        bankAccountName: editAppDraft.bankAccountName || undefined,
-        bankName: editAppDraft.bankName || undefined,
+        bankAccountName: toUpperFormText(editAppDraft.bankAccountName || "") || undefined,
+        bankName: toUpperFormText(editAppDraft.bankName || "") || undefined,
         bankAccountNumber: editAppDraft.bankAccountNumber || undefined,
-        bankIfsc: editAppDraft.bankIfsc || undefined,
+        bankIfsc: toUpperFormText(editAppDraft.bankIfsc || "") || undefined,
         monthlyFee: monthlyTuition,
         includeAdvanceTuition: incTuition,
         paymentPlan: editAppDraft.paymentPlan || "full_payment",
@@ -2784,12 +2812,14 @@ export const OnlineAdmissionManager: React.FC<Props> = ({
         term1PayableAmount: paidVal,
         term2BalanceAmount: nextAdmDue,
         deferredTuitionAmount: deferredTuition,
-        transactionRef: editAppDraft.transactionRef || undefined,
-        remarks: editAppDraft.remarks || undefined,
+        transactionRef: toUpperFormText(editAppDraft.transactionRef || "") || undefined,
+        remarks: toUpperFormText(editAppDraft.remarks || "") || undefined,
         ...(updatedFeeDetails ? { admissionFeeDetails: updatedFeeDetails } : {}),
       };
 
       await saveAdmissionApplication(school.id, updatedApp);
+      rememberOccupation(editAppDraft.fatherOccupation, school.id);
+      rememberOccupation(editAppDraft.motherOccupation, school.id);
 
       // If already approved / enrolled, keep the Class Student record 100% synced in active session!
       if (updatedApp.status === "approved" || updatedApp.enrolledStudentId) {
@@ -2875,6 +2905,7 @@ export const OnlineAdmissionManager: React.FC<Props> = ({
           admissionTotalAmount: planCalc.activePackageTotal,
           admissionPaidAmount: paidVal,
           admissionDueBalance: nextAdmDue,
+          admissionPaymentPlan: updatedApp.paymentPlan || existingStudent?.admissionPaymentPlan || "full_payment",
           advanceMonthlyFeePaid: Boolean(incTuition && nextAdmDue === 0),
           advanceMonthlyFeeDue: deferredTuition,
           advanceMonthlyFeeMonth: existingStudent?.advanceMonthlyFeeMonth || paidIso.slice(0, 7),
@@ -3232,20 +3263,20 @@ export const OnlineAdmissionManager: React.FC<Props> = ({
         id: appId,
         schoolId: school.id,
         applicationNo: appNo,
-        studentName: form.studentName.trim(),
+        studentName: toUpperFormText(form.studentName.trim()),
         stream: chosenStream,
         dateOfBirth: form.dateOfBirth,
         gender: form.gender,
         category: form.category,
-        religion: form.religion,
-        nationality: form.nationality,
+        religion: toUpperFormText(form.religion),
+        nationality: toUpperFormText(form.nationality),
         annualIncome: form.annualIncome.trim() || undefined,
-        emergencyContact: form.emergencyContact.trim() || undefined,
+        emergencyContact: toUpperFormText(form.emergencyContact.trim()) || undefined,
         emergencyPhone: form.emergencyPhone.trim() || undefined,
-        emergencyRelation: form.emergencyRelation.trim() || undefined,
+        emergencyRelation: toUpperFormText(form.emergencyRelation.trim()) || undefined,
         emergencyWhatsapp: form.emergencyWhatsapp.trim() || undefined,
-        identificationMark: form.identificationMark.trim() || undefined,
-        medicalHistory: form.medicalHistory.trim() || undefined,
+        identificationMark: toUpperFormText(form.identificationMark.trim()) || undefined,
+        medicalHistory: toUpperFormText(form.medicalHistory.trim()) || undefined,
         admissionType: form.admissionType || "NEW",
         ...(form.admissionType === "READMISSION"
           ? {
@@ -3255,23 +3286,23 @@ export const OnlineAdmissionManager: React.FC<Props> = ({
               previousStudentId: pulledOldStudent?.id,
               previousSessionId: pulledOldStudent?.sessionId || oldSessionId || undefined,
               previousSessionName: readmPrevSessionName || undefined,
-              previousClassName: pulledOldStudent?.className || form.previousClass.trim() || undefined,
+              previousClassName: pulledOldStudent?.className || toUpperFormText(form.previousClass.trim()) || undefined,
               previousSessionDue: readmCarriedDueAmt,
             }
           : {}),
         bloodGroup: form.bloodGroup || undefined,
-        apaarId: form.apaarId.trim() || undefined,
+        apaarId: toUpperFormText(form.apaarId.trim()) || undefined,
         photoUrl: form.photoUrl || undefined,
         classId: form.classId,
         className: selectedCls ? formatClassLabel(selectedCls) : "General",
-        previousSchool: form.previousSchool.trim() || undefined,
-        previousMarks: form.previousMarks.trim() || undefined,
-        fatherName: form.fatherName.trim(),
-        fatherOccupation: form.fatherOccupation.trim() || undefined,
+        previousSchool: toUpperFormText(form.previousSchool.trim()) || undefined,
+        previousMarks: toUpperFormText(form.previousMarks.trim()) || undefined,
+        fatherName: toUpperFormText(form.fatherName.trim()),
+        fatherOccupation: toUpperFormText(form.fatherOccupation.trim()) || undefined,
         fatherPhone: form.fatherPhone.trim() || undefined,
         fatherWhatsapp: form.fatherWhatsapp.trim() || undefined,
-        motherName: form.motherName.trim(),
-        motherOccupation: form.motherOccupation.trim() || undefined,
+        motherName: toUpperFormText(form.motherName.trim()),
+        motherOccupation: toUpperFormText(form.motherOccupation.trim()) || undefined,
         motherPhone: form.motherPhone.trim() || undefined,
         motherWhatsapp: form.motherWhatsapp.trim() || undefined,
         aadhaarNo: form.aadhaarNo.trim() || undefined,
@@ -3280,12 +3311,12 @@ export const OnlineAdmissionManager: React.FC<Props> = ({
         phone: form.phone.trim(),
         whatsappNo: form.whatsappNo.trim() || form.fatherWhatsapp.trim() || undefined,
         email: form.email.trim() || undefined,
-        address: form.address.trim(),
-        city: form.city.trim() || undefined,
+        address: toUpperFormText(form.address.trim()),
+        city: toUpperFormText(form.city.trim()) || undefined,
         pincode: form.pincode.trim() || undefined,
         usesBus: Boolean(form.usesBus && getClassFees(selectedCls).busAvailable),
         busRoute:
-          form.usesBus && getClassFees(selectedCls).busAvailable ? form.busRoute.trim() : undefined,
+          form.usesBus && getClassFees(selectedCls).busAvailable ? toUpperFormText(form.busRoute.trim()) : undefined,
         busFee:
           form.usesBus && getClassFees(selectedCls).busAvailable
             ? getClassFees(selectedCls, { usesBus: true }).busFee
@@ -3296,7 +3327,7 @@ export const OnlineAdmissionManager: React.FC<Props> = ({
             ? form.uploadedDocuments
             : undefined,
         paymentScreenshotUrl: form.paymentScreenshotUrl.trim() || undefined,
-        transactionRef: form.transactionRef.trim() || undefined,
+        transactionRef: toUpperFormText(form.transactionRef.trim()) || undefined,
         referredByTeacherId: form.referredByTeacherId || undefined,
         referredByTeacherName: form.referredByTeacherId
           ? referrers.find((r) => r.id === form.referredByTeacherId)?.name
@@ -3304,23 +3335,23 @@ export const OnlineAdmissionManager: React.FC<Props> = ({
         isSiblingMarked: formSiblingDetection.isExactFamily || undefined,
         familyGroupId: formSiblingDetection.isExactFamily ? formSiblingDetection.familyGroupId : undefined,
         isOnlyChild: form.isOnlyChild || undefined,
-        motherTongue: form.motherTongue.trim() || undefined,
-        fatherQualification: form.fatherQualification.trim() || undefined,
-        motherQualification: form.motherQualification.trim() || undefined,
-        correspondenceAddress: form.isSameAddress ? form.address.trim() : (form.correspondenceAddress.trim() || form.address.trim()),
+        motherTongue: toUpperFormText(form.motherTongue.trim()) || undefined,
+        fatherQualification: toUpperFormText(form.fatherQualification.trim()) || undefined,
+        motherQualification: toUpperFormText(form.motherQualification.trim()) || undefined,
+        correspondenceAddress: form.isSameAddress ? toUpperFormText(form.address.trim()) : (toUpperFormText(form.correspondenceAddress.trim()) || toUpperFormText(form.address.trim())),
         isSameAddress: form.isSameAddress,
-        previousBoard: form.previousBoard.trim() || undefined,
-        previousTcNo: form.previousTcNo.trim() || undefined,
+        previousBoard: toUpperFormText(form.previousBoard.trim()) || undefined,
+        previousTcNo: toUpperFormText(form.previousTcNo.trim()) || undefined,
         previousTcDate: form.previousTcDate.trim() || undefined,
         transportModeIfNo: form.transportModeIfNo || undefined,
         transportDistanceKm: form.transportDistanceKm.trim() || undefined,
         childSensitivity: form.childSensitivity,
-        childSensitivityRemarks: form.childSensitivityRemarks.trim() || undefined,
-        siblingDetails: form.siblingDetails.length > 0 ? form.siblingDetails : undefined,
-        bankAccountName: form.bankAccountName.trim() || undefined,
-        bankName: form.bankName.trim() || undefined,
+        childSensitivityRemarks: toUpperFormText(form.childSensitivityRemarks.trim()) || undefined,
+        siblingDetails: form.siblingDetails.length > 0 ? form.siblingDetails.map((sd) => ({ ...sd, name: toUpperFormText(sd.name), className: toUpperFormText(sd.className), rollNo: toUpperFormText(sd.rollNo || "") })) : undefined,
+        bankAccountName: toUpperFormText(form.bankAccountName.trim()) || undefined,
+        bankName: toUpperFormText(form.bankName.trim()) || undefined,
         bankAccountNumber: form.bankAccountNumber.trim() || undefined,
-        bankIfsc: form.bankIfsc.trim() || undefined,
+        bankIfsc: toUpperFormText(form.bankIfsc.trim()) || undefined,
         parentDeclarationAccepted: form.parentDeclarationAccepted,
         ageOnAprilFirst: ageOnApril1 || undefined,
         admissionOperatorRole: verifiedOperator.role,
@@ -3460,118 +3491,6 @@ export const OnlineAdmissionManager: React.FC<Props> = ({
           ? formSiblingDetection.familyGroupId || `FAM_${studentId.slice(-6)}`
           : undefined;
 
-        const newStudent: SchoolStudent = {
-          id: studentId,
-          schoolId: school.id,
-          sessionId: resolvedTargetSessionId,
-          classId: form.classId,
-          className: selectedCls ? `${selectedCls.name} ${selectedCls.section || ""}`.trim() : (form.className || "Class"),
-          stream: chosenStream,
-          name: form.studentName.trim(),
-          rollNo: resolvedRollNo,
-          admissionNo: appNo,
-          gender: form.gender,
-          category: form.category || "General",
-          religion: form.religion || "Hindu",
-          nationality: form.nationality || "Indian",
-          annualIncome: form.annualIncome.trim() || undefined,
-          emergencyContact: form.emergencyContact.trim() || undefined,
-          emergencyPhone: form.emergencyPhone.trim() || undefined,
-          emergencyRelation: form.emergencyRelation.trim() || undefined,
-          emergencyWhatsapp: form.emergencyWhatsapp.trim() || undefined,
-          identificationMark: form.identificationMark.trim() || undefined,
-          medicalHistory: form.medicalHistory.trim() || undefined,
-          admissionType: form.admissionType || "NEW",
-          ...(form.admissionType === "READMISSION"
-            ? {
-                previousStudentId: pulledOldStudent?.id,
-                previousSessionId: pulledOldStudent?.sessionId || oldSessionId || undefined,
-                previousSessionName: readmPrevSessionName || "पिछला सत्र",
-                previousClassName: pulledOldStudent?.className || form.previousClass.trim() || "",
-                previousSessionDue: remainingBackDueToSave,
-                previousSessionDueInitial: readmCarriedDueAmt,
-                reAdmissionDate: paidIso.slice(0, 10),
-              }
-            : {}),
-          apaarId: form.apaarId.trim() || undefined,
-          fatherName: form.fatherName.trim(),
-          fatherOccupation: form.fatherOccupation.trim() || undefined,
-          fatherPhone: form.fatherPhone.trim() || undefined,
-          fatherWhatsapp: form.fatherWhatsapp.trim() || undefined,
-          motherName: form.motherName.trim(),
-          motherOccupation: form.motherOccupation.trim() || undefined,
-          motherPhone: form.motherPhone.trim() || undefined,
-          motherWhatsapp: form.motherWhatsapp.trim() || undefined,
-          aadhaarNo: form.aadhaarNo.trim() || undefined,
-          fatherAadhaar: form.fatherAadhaar.trim() || undefined,
-          motherAadhaar: form.motherAadhaar.trim() || undefined,
-          phone: form.phone.trim(),
-          whatsappNo: form.whatsappNo.trim() || form.fatherWhatsapp.trim() || form.phone.trim(),
-          email: form.email.trim() || undefined,
-          dateOfBirth: form.dateOfBirth,
-          bloodGroup: form.bloodGroup || undefined,
-          address: form.address.trim(),
-          city: form.city.trim() || undefined,
-          pincode: form.pincode.trim() || undefined,
-          previousSchool: form.previousSchool.trim() || undefined,
-          previousMarks: form.previousMarks.trim() || undefined,
-          photoUrl: form.photoUrl || undefined,
-          usesBus: Boolean(form.usesBus && getClassFees(selectedCls).busAvailable),
-          busRoute: form.usesBus && getClassFees(selectedCls).busAvailable ? form.busRoute.trim() : undefined,
-          busFee: form.usesBus && getClassFees(selectedCls).busAvailable ? getClassFees(selectedCls, { usesBus: true }).busFee : 0,
-          busNumber: form.usesBus ? configuredRoutes.find((r) => r.routeName === form.busRoute)?.busNumber : undefined,
-          driverName: form.usesBus ? configuredRoutes.find((r) => r.routeName === form.busRoute)?.driverName : undefined,
-          driverPhone: form.usesBus ? configuredRoutes.find((r) => r.routeName === form.busRoute)?.driverPhone : undefined,
-          submittedDocs: form.submittedDocs,
-          admissionReceiptNo: receiptNo,
-          monthlyFee: monthlyTuition,
-          baseMonthlyFee: Number(selectedCls?.feeStructure?.tuitionFee ?? selectedCls?.defaultFee ?? posterRow?.tuitionFee ?? 0) || monthlyTuition,
-          referredByTeacherId: form.referredByTeacherId || undefined,
-          referredByTeacherName: form.referredByTeacherId ? referrers.find((r) => r.id === form.referredByTeacherId)?.name : undefined,
-          familyGroupId: resolvedFamilyGroupId,
-          isSiblingMarked: isFamilyMarked || undefined,
-          siblingStudentIds: siblingIds.length > 0 ? siblingIds : undefined,
-          admissionSiblingDiscount: isFamilyMarked && Number(adminConcession) > 0 ? Number(adminConcession) : undefined,
-          isOnlyChild: form.isOnlyChild || undefined,
-          motherTongue: form.motherTongue.trim() || undefined,
-          fatherQualification: form.fatherQualification.trim() || undefined,
-          motherQualification: form.motherQualification.trim() || undefined,
-          correspondenceAddress: form.isSameAddress ? form.address.trim() : (form.correspondenceAddress.trim() || form.address.trim()),
-          isSameAddress: form.isSameAddress,
-          previousBoard: form.previousBoard.trim() || undefined,
-          previousTcNo: form.previousTcNo.trim() || undefined,
-          previousTcDate: form.previousTcDate.trim() || undefined,
-          transportModeIfNo: form.transportModeIfNo || undefined,
-          transportDistanceKm: form.transportDistanceKm.trim() || undefined,
-          childSensitivity: form.childSensitivity,
-          childSensitivityRemarks: form.childSensitivityRemarks.trim() || undefined,
-          siblingDetails: form.siblingDetails.length > 0 ? form.siblingDetails : undefined,
-          bankAccountName: form.bankAccountName.trim() || undefined,
-          bankName: form.bankName.trim() || undefined,
-          bankAccountNumber: form.bankAccountNumber.trim() || undefined,
-          bankIfsc: form.bankIfsc.trim() || undefined,
-          ageOnAprilFirst: ageOnApril1 || undefined,
-          admissionTotalAmount: netPayable,
-          admissionPaidAmount: paidAdmissionAmt,
-          admissionDueBalance: remainingAdmDueToSave,
-          advanceMonthlyFeePaid: Boolean(adminIncludeAdvanceTuition && remainingAdmDueToSave === 0),
-          advanceMonthlyFeeDue: deferredTuitionAmt,
-          advanceMonthlyFeeMonth: paidIso.slice(0, 7),
-          joinDate: paidIso.slice(0, 10),
-          active: true,
-          createdAt: paidIso,
-        };
-
-        const savedStudent = await saveStudent(newStudent);
-
-        // Update local student cache immediately
-        try {
-          const curLocals = getLocalStudents(school.id);
-          setLocalStudents(school.id, [savedStudent, ...curLocals.filter((s) => s.id !== savedStudent.id)]);
-        } catch (cacheErr) {
-          console.warn("Student cache sync note:", cacheErr);
-        }
-
         // Build admission fee items (allocating Back Due + Admission heads FIFO item-by-item)
         const rawFeeItems = buildDefaultFeeItems(
           selectedCls,
@@ -3632,7 +3551,137 @@ export const OnlineAdmissionManager: React.FC<Props> = ({
           due: Number(it.due) || 0,
           con: conByDirectId.get(it.id) || 0,
           paid: paidByDirectId.get(it.id) || 0,
+          headKey: canonicalizeFeeHeadKey(it.id || it.description),
         }));
+        const directSettlement = buildSettledHeadsFromAdmission({
+          allDraftLines: rawFeeItems.map((it) => ({
+            id: it.id,
+            description: it.description,
+            due: Number(it.due) || 0,
+            included: true,
+            headKey: canonicalizeFeeHeadKey(it.id || it.description),
+          })),
+          paidById: paidByDirectId,
+          conById: conByDirectId,
+          paymentPlan: adminPaymentPlan,
+          balanceDue: remainingAdmDueToSave,
+          classObj: selectedCls,
+          nowIso: paidIso,
+        });
+
+        const newStudent: SchoolStudent = {
+          id: studentId,
+          schoolId: school.id,
+          sessionId: resolvedTargetSessionId,
+          classId: form.classId,
+          className: selectedCls ? `${selectedCls.name} ${selectedCls.section || ""}`.trim() : (form.className || "Class"),
+          stream: chosenStream,
+          name: toUpperFormText(form.studentName.trim()),
+          rollNo: toUpperFormText(resolvedRollNo),
+          admissionNo: toUpperFormText(appNo),
+          gender: form.gender,
+          category: form.category || "General",
+          religion: toUpperFormText(form.religion) || "HINDU",
+          nationality: toUpperFormText(form.nationality) || "INDIAN",
+          annualIncome: form.annualIncome.trim() || undefined,
+          emergencyContact: toUpperFormText(form.emergencyContact.trim()) || undefined,
+          emergencyPhone: form.emergencyPhone.trim() || undefined,
+          emergencyRelation: toUpperFormText(form.emergencyRelation.trim()) || undefined,
+          emergencyWhatsapp: form.emergencyWhatsapp.trim() || undefined,
+          identificationMark: toUpperFormText(form.identificationMark.trim()) || undefined,
+          medicalHistory: toUpperFormText(form.medicalHistory.trim()) || undefined,
+          admissionType: form.admissionType || "NEW",
+          ...(form.admissionType === "READMISSION"
+            ? {
+                previousStudentId: pulledOldStudent?.id,
+                previousSessionId: pulledOldStudent?.sessionId || oldSessionId || undefined,
+                previousSessionName: readmPrevSessionName || "पिछला सत्र",
+                previousClassName: pulledOldStudent?.className || toUpperFormText(form.previousClass.trim()) || "",
+                previousSessionDue: remainingBackDueToSave,
+                previousSessionDueInitial: readmCarriedDueAmt,
+                reAdmissionDate: paidIso.slice(0, 10),
+              }
+            : {}),
+          apaarId: toUpperFormText(form.apaarId.trim()) || undefined,
+          fatherName: toUpperFormText(form.fatherName.trim()),
+          fatherOccupation: toUpperFormText(form.fatherOccupation.trim()) || undefined,
+          fatherPhone: form.fatherPhone.trim() || undefined,
+          fatherWhatsapp: form.fatherWhatsapp.trim() || undefined,
+          motherName: toUpperFormText(form.motherName.trim()),
+          motherOccupation: toUpperFormText(form.motherOccupation.trim()) || undefined,
+          motherPhone: form.motherPhone.trim() || undefined,
+          motherWhatsapp: form.motherWhatsapp.trim() || undefined,
+          aadhaarNo: form.aadhaarNo.trim() || undefined,
+          fatherAadhaar: form.fatherAadhaar.trim() || undefined,
+          motherAadhaar: form.motherAadhaar.trim() || undefined,
+          phone: form.phone.trim(),
+          whatsappNo: form.whatsappNo.trim() || form.fatherWhatsapp.trim() || form.phone.trim(),
+          email: form.email.trim() || undefined,
+          dateOfBirth: form.dateOfBirth,
+          bloodGroup: form.bloodGroup || undefined,
+          address: toUpperFormText(form.address.trim()),
+          city: toUpperFormText(form.city.trim()) || undefined,
+          pincode: form.pincode.trim() || undefined,
+          previousSchool: toUpperFormText(form.previousSchool.trim()) || undefined,
+          previousMarks: toUpperFormText(form.previousMarks.trim()) || undefined,
+          photoUrl: form.photoUrl || undefined,
+          usesBus: Boolean(form.usesBus && getClassFees(selectedCls).busAvailable),
+          busRoute: form.usesBus && getClassFees(selectedCls).busAvailable ? toUpperFormText(form.busRoute.trim()) : undefined,
+          busFee: form.usesBus && getClassFees(selectedCls).busAvailable ? getClassFees(selectedCls, { usesBus: true }).busFee : 0,
+          busNumber: form.usesBus ? configuredRoutes.find((r) => r.routeName === form.busRoute)?.busNumber : undefined,
+          driverName: form.usesBus ? configuredRoutes.find((r) => r.routeName === form.busRoute)?.driverName : undefined,
+          driverPhone: form.usesBus ? configuredRoutes.find((r) => r.routeName === form.busRoute)?.driverPhone : undefined,
+          submittedDocs: form.submittedDocs,
+          admissionReceiptNo: receiptNo,
+          monthlyFee: monthlyTuition,
+          baseMonthlyFee: Number(selectedCls?.feeStructure?.tuitionFee ?? selectedCls?.defaultFee ?? posterRow?.tuitionFee ?? 0) || monthlyTuition,
+          referredByTeacherId: form.referredByTeacherId || undefined,
+          referredByTeacherName: form.referredByTeacherId ? referrers.find((r) => r.id === form.referredByTeacherId)?.name : undefined,
+          familyGroupId: resolvedFamilyGroupId,
+          isSiblingMarked: isFamilyMarked || undefined,
+          siblingStudentIds: siblingIds.length > 0 ? siblingIds : undefined,
+          admissionSiblingDiscount: isFamilyMarked && Number(adminConcession) > 0 ? Number(adminConcession) : undefined,
+          isOnlyChild: form.isOnlyChild || undefined,
+          motherTongue: toUpperFormText(form.motherTongue.trim()) || undefined,
+          fatherQualification: toUpperFormText(form.fatherQualification.trim()) || undefined,
+          motherQualification: toUpperFormText(form.motherQualification.trim()) || undefined,
+          correspondenceAddress: form.isSameAddress ? toUpperFormText(form.address.trim()) : (toUpperFormText(form.correspondenceAddress.trim()) || toUpperFormText(form.address.trim())),
+          isSameAddress: form.isSameAddress,
+          previousBoard: toUpperFormText(form.previousBoard.trim()) || undefined,
+          previousTcNo: toUpperFormText(form.previousTcNo.trim()) || undefined,
+          previousTcDate: form.previousTcDate.trim() || undefined,
+          transportModeIfNo: form.transportModeIfNo || undefined,
+          transportDistanceKm: form.transportDistanceKm.trim() || undefined,
+          childSensitivity: form.childSensitivity,
+          childSensitivityRemarks: toUpperFormText(form.childSensitivityRemarks.trim()) || undefined,
+          siblingDetails: form.siblingDetails.length > 0 ? form.siblingDetails.map((sd) => ({ ...sd, name: toUpperFormText(sd.name), className: toUpperFormText(sd.className), rollNo: toUpperFormText(sd.rollNo || "") })) : undefined,
+          bankAccountName: toUpperFormText(form.bankAccountName.trim()) || undefined,
+          bankName: toUpperFormText(form.bankName.trim()) || undefined,
+          bankAccountNumber: form.bankAccountNumber.trim() || undefined,
+          bankIfsc: toUpperFormText(form.bankIfsc.trim()) || undefined,
+          ageOnAprilFirst: ageOnApril1 || undefined,
+          admissionTotalAmount: netPayable,
+          admissionPaidAmount: paidAdmissionAmt,
+          admissionDueBalance: remainingAdmDueToSave,
+          admissionPaymentPlan: adminPaymentPlan,
+          settledFeeHeads: directSettlement.settledFeeHeads,
+          advanceMonthlyFeePaid: Boolean(adminIncludeAdvanceTuition && remainingAdmDueToSave === 0),
+          advanceMonthlyFeeDue: deferredTuitionAmt,
+          advanceMonthlyFeeMonth: paidIso.slice(0, 7),
+          joinDate: paidIso.slice(0, 10),
+          active: true,
+          createdAt: paidIso,
+        };
+
+        const savedStudent = await saveStudent(newStudent);
+
+        // Update local student cache immediately
+        try {
+          const curLocals = getLocalStudents(school.id);
+          setLocalStudents(school.id, [savedStudent, ...curLocals.filter((s) => s.id !== savedStudent.id)]);
+        } catch (cacheErr) {
+          console.warn("Student cache sync note:", cacheErr);
+        }
 
         const admissionFeeRecord: MonthlyFee = {
           schoolId: school.id,
@@ -3705,6 +3754,8 @@ export const OnlineAdmissionManager: React.FC<Props> = ({
         };
 
         await saveAdmissionApplication(school.id, approvedApp);
+        rememberOccupation(form.fatherOccupation, school.id);
+        rememberOccupation(form.motherOccupation, school.id);
 
         // Instant Confirmation View: Roll Number + Print Form + Print Receipt!
         setConfirmedAdmission({
@@ -3726,6 +3777,8 @@ export const OnlineAdmissionManager: React.FC<Props> = ({
       }
 
       // Online Parent flow OR Admin "Submit as Request": Save as pending
+      rememberOccupation(form.fatherOccupation, school.id);
+      rememberOccupation(form.motherOccupation, school.id);
       await saveAdmissionApplication(school.id, newApp);
       try {
         window.dispatchEvent(new CustomEvent("school-admission-alert", {
@@ -3955,6 +4008,22 @@ export const OnlineAdmissionManager: React.FC<Props> = ({
         admissionTotalAmount: enrollNetPayable,
         admissionPaidAmount: paidAdmissionAmt,
         admissionDueBalance: enrollRemainingAdmDue,
+        admissionPaymentPlan: enrollPaymentPlan,
+        settledFeeHeads: buildSettledHeadsFromAdmission({
+          allDraftLines: validEnrollLines.map((it) => ({
+            id: it.id,
+            description: it.description,
+            due: Number(it.due) || 0,
+            included: true,
+            headKey: canonicalizeFeeHeadKey(it.id || it.description),
+          })),
+          paidById: paidByEnrollId,
+          conById: conByEnrollId,
+          paymentPlan: enrollPaymentPlan,
+          balanceDue: enrollRemainingAdmDue,
+          classObj: selectedCls,
+          nowIso: paidIso,
+        }).settledFeeHeads,
         advanceMonthlyFeePaid: Boolean(enrollIncludeAdvanceTuition && enrollRemainingAdmDue === 0),
         advanceMonthlyFeeDue: enrollIncludeAdvanceTuition
           ? 0
@@ -4065,6 +4134,7 @@ export const OnlineAdmissionManager: React.FC<Props> = ({
         due: Number(it.due) || 0,
         con: conByEnrollId.get(it.id) || 0,
         paid: paidByEnrollId.get(it.id) || 0,
+        headKey: canonicalizeFeeHeadKey(it.id || it.description),
       }));
 
       const enrollDeferredTuition = enrollIncludeAdvanceTuition
@@ -4418,7 +4488,23 @@ export const OnlineAdmissionManager: React.FC<Props> = ({
         due: dueAmt,
         con: conAmt,
         paid: paidAmt,
+        headKey: canonicalizeFeeHeadKey(it.id || it.description),
       };
+    });
+    const rzpSettlement = buildSettledHeadsFromAdmission({
+      allDraftLines: finalItems.map((it) => ({
+        id: it.id,
+        description: it.description,
+        due: it.due,
+        included: true,
+        headKey: it.headKey,
+      })),
+      paidById: new Map(finalItems.map((it) => [it.id, it.paid])),
+      conById: new Map(finalItems.map((it) => [it.id, it.con])),
+      paymentPlan: chosenPlan,
+      balanceDue: term2Bal,
+      classObj: targetCls,
+      nowIso: paidIso,
     });
 
     const appliedMeritOff = Math.max(0, appFeesSummary.totalBeforeEntrance - netPackagePayable);
@@ -4493,6 +4579,8 @@ export const OnlineAdmissionManager: React.FC<Props> = ({
       admissionTotalAmount: netPackagePayable,
       admissionPaidAmount: paidTerm1Amt,
       admissionDueBalance: term2Bal,
+      admissionPaymentPlan: chosenPlan,
+      settledFeeHeads: rzpSettlement.settledFeeHeads,
       advanceMonthlyFeePaid: Boolean(incTuition && term2Bal === 0),
       advanceMonthlyFeeDue: deferredTuition,
       advanceMonthlyFeeMonth: paidIso.slice(0, 7),
@@ -5164,6 +5252,37 @@ export const OnlineAdmissionManager: React.FC<Props> = ({
       const paidIso = new Date().toISOString();
       const studentId = generateId();
 
+      let remQuickPaid = paidTerm1Amt;
+      const itemsList = feeCalcBilled.enabledHeads.map((h, i) => {
+        const itemNet = h.amount;
+        const paidItem = Math.min(itemNet, Math.max(0, remQuickPaid));
+        remQuickPaid = Math.max(0, remQuickPaid - paidItem);
+        return {
+          id: `fs_${h.key}`,
+          slNo: i + 1,
+          description: h.label,
+          due: h.originalAmount,
+          con: h.discountAmount,
+          paid: paidItem,
+          headKey: canonicalizeFeeHeadKey(h.key || h.label),
+        };
+      });
+      const quickSettlement = buildSettledHeadsFromAdmission({
+        allDraftLines: itemsList.map((it) => ({
+          id: it.id,
+          description: it.description,
+          due: it.due,
+          included: true,
+          headKey: it.headKey,
+        })),
+        paidById: new Map(itemsList.map((it) => [it.id, it.paid])),
+        conById: new Map(itemsList.map((it) => [it.id, it.con])),
+        paymentPlan: chosenPlan,
+        balanceDue: term2Bal,
+        classObj: selectedCls,
+        nowIso: paidIso,
+      });
+
       const newStudent: SchoolStudent = {
         id: studentId,
         schoolId: school.id,
@@ -5188,6 +5307,8 @@ export const OnlineAdmissionManager: React.FC<Props> = ({
         admissionTotalAmount: activePkgTotal,
         admissionPaidAmount: paidTerm1Amt,
         admissionDueBalance: term2Bal,
+        admissionPaymentPlan: chosenPlan,
+        settledFeeHeads: quickSettlement.settledFeeHeads,
         advanceMonthlyFeePaid: Boolean(incTuition && term2Bal === 0),
         advanceMonthlyFeeDue: deferredTuitionAmt,
         advanceMonthlyFeeMonth: paidIso.slice(0, 7),
@@ -5258,21 +5379,6 @@ export const OnlineAdmissionManager: React.FC<Props> = ({
           { immediate: true }
         ).catch(() => {});
       } catch {}
-
-      let remQuickPaid = paidTerm1Amt;
-      const itemsList = feeCalcBilled.enabledHeads.map((h, i) => {
-        const itemNet = h.amount;
-        const paidItem = Math.min(itemNet, Math.max(0, remQuickPaid));
-        remQuickPaid = Math.max(0, remQuickPaid - paidItem);
-        return {
-          id: `item_${i + 1}`,
-          slNo: i + 1,
-          description: h.label,
-          due: h.originalAmount,
-          con: h.discountAmount,
-          paid: paidItem,
-        };
-      });
 
       const admissionFeeRecord: MonthlyFee = {
         id: `fee_${studentId}_adm_${Date.now()}`,
@@ -9446,9 +9552,12 @@ export const OnlineAdmissionManager: React.FC<Props> = ({
                         type="text"
                         required
                         value={form.studentName}
-                        onChange={(e) => setForm({ ...form, studentName: e.target.value })}
-                        placeholder="e.g. Aarav Kumar"
-                        className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 text-sm font-semibold focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                        onChange={(e) => {
+                          rememberOccupation(form.fatherOccupation, school?.id);
+                          setForm({ ...form, studentName: toUpperFormText(e.target.value) });
+                        }}
+                        placeholder="E.G. AARAV KUMAR"
+                        className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 text-sm font-semibold uppercase focus:outline-none focus:ring-2 focus:ring-indigo-500"
                       />
                     </div>
                     <div>
@@ -9662,9 +9771,9 @@ export const OnlineAdmissionManager: React.FC<Props> = ({
                               <input
                                 type="text"
                                 value={form.religion === "Other" ? "" : form.religion}
-                                onChange={(e) => setForm({ ...form, religion: e.target.value || "Other" })}
+                                onChange={(e) => setForm({ ...form, religion: toUpperFormText(e.target.value) || "Other" })}
                                 placeholder="अन्य धर्म लिखें (Optional)"
-                                className="mt-1.5 w-full px-3 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                                className="mt-1.5 w-full px-3 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 text-xs font-semibold uppercase focus:outline-none focus:ring-2 focus:ring-indigo-500"
                               />
                             )}
                           </div>
@@ -9677,9 +9786,9 @@ export const OnlineAdmissionManager: React.FC<Props> = ({
                             <input
                               type="text"
                               value={form.nationality}
-                              onChange={(e) => setForm({ ...form, nationality: e.target.value })}
-                              placeholder="Indian"
-                              className="w-full px-3 py-2.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                              onChange={(e) => setForm({ ...form, nationality: toUpperFormText(e.target.value) })}
+                              placeholder="INDIAN"
+                              className="w-full px-3 py-2.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 text-xs font-semibold uppercase focus:outline-none focus:ring-2 focus:ring-indigo-500"
                             />
                           </div>
                         )}
@@ -9697,9 +9806,9 @@ export const OnlineAdmissionManager: React.FC<Props> = ({
                             <input
                               type="text"
                               value={form.motherTongue}
-                              onChange={(e) => setForm({ ...form, motherTongue: e.target.value })}
-                              placeholder="e.g. Hindi / Bhojpuri"
-                              className="w-full px-3 py-2.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                              onChange={(e) => setForm({ ...form, motherTongue: toUpperFormText(e.target.value) })}
+                              placeholder="E.G. HINDI / BHOJPURI"
+                              className="w-full px-3 py-2.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 text-xs font-semibold uppercase focus:outline-none focus:ring-2 focus:ring-indigo-500"
                             />
                           </div>
                         )}
@@ -9711,9 +9820,9 @@ export const OnlineAdmissionManager: React.FC<Props> = ({
                             <input
                               type="text"
                               value={form.identificationMark}
-                              onChange={(e) => setForm({ ...form, identificationMark: e.target.value })}
-                              placeholder="e.g. Mole on right cheek"
-                              className="w-full px-3 py-2.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                              onChange={(e) => setForm({ ...form, identificationMark: toUpperFormText(e.target.value) })}
+                              placeholder="E.G. MOLE ON RIGHT CHEEK"
+                              className="w-full px-3 py-2.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 text-xs font-semibold uppercase focus:outline-none focus:ring-2 focus:ring-indigo-500"
                             />
                           </div>
                         )}
@@ -9746,9 +9855,9 @@ export const OnlineAdmissionManager: React.FC<Props> = ({
                         <input
                           type="text"
                           value={form.apaarId}
-                          onChange={(e) => setForm({ ...form, apaarId: e.target.value })}
+                          onChange={(e) => setForm({ ...form, apaarId: toUpperFormText(e.target.value) })}
                           placeholder="12-digit APAAR or 11-digit PEN ID"
-                          className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 text-sm font-mono font-semibold focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                          className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 text-sm font-mono font-semibold uppercase focus:outline-none focus:ring-2 focus:ring-indigo-500"
                         />
                       </div>
                     )}
@@ -9762,9 +9871,9 @@ export const OnlineAdmissionManager: React.FC<Props> = ({
                         <input
                           type="text"
                           value={form.medicalHistory}
-                          onChange={(e) => setForm({ ...form, medicalHistory: e.target.value })}
-                          placeholder="e.g. None / Normal / Asthma"
-                          className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 text-sm font-semibold focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                          onChange={(e) => setForm({ ...form, medicalHistory: toUpperFormText(e.target.value) })}
+                          placeholder="E.G. NONE / NORMAL / ASTHMA"
+                          className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 text-sm font-semibold uppercase focus:outline-none focus:ring-2 focus:ring-indigo-500"
                         />
                       </div>
                     )}
@@ -9790,9 +9899,9 @@ export const OnlineAdmissionManager: React.FC<Props> = ({
                           type="text"
                           required
                           value={form.fatherName}
-                          onChange={(e) => setForm({ ...form, fatherName: e.target.value })}
-                          placeholder="Father's Full Name"
-                          className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 text-sm font-semibold focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                          onChange={(e) => setForm({ ...form, fatherName: toUpperFormText(e.target.value) })}
+                          placeholder="FATHER'S FULL NAME"
+                          className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 text-sm font-semibold uppercase focus:outline-none focus:ring-2 focus:ring-indigo-500"
                         />
                       </div>
 
@@ -9804,9 +9913,9 @@ export const OnlineAdmissionManager: React.FC<Props> = ({
                           <input
                             type="text"
                             value={form.fatherQualification}
-                            onChange={(e) => setForm({ ...form, fatherQualification: e.target.value })}
-                            placeholder="e.g. Graduate / 12th / Post Graduate"
-                            className="w-full px-3 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                            onChange={(e) => setForm({ ...form, fatherQualification: toUpperFormText(e.target.value) })}
+                            placeholder="E.G. GRADUATE / 12TH / POST GRADUATE"
+                            className="w-full px-3 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 text-xs font-semibold uppercase focus:outline-none focus:ring-2 focus:ring-indigo-500"
                           />
                         </div>
                       )}
@@ -9818,11 +9927,11 @@ export const OnlineAdmissionManager: React.FC<Props> = ({
                               <label className="block text-[11px] font-bold text-slate-700 dark:text-slate-300 mb-1">
                                 Occupation (व्यवसाय)
                               </label>
-                              <input
-                                type="text"
+                              <OccupationAutocomplete
                                 value={form.fatherOccupation}
-                                onChange={(e) => setForm({ ...form, fatherOccupation: e.target.value })}
-                                placeholder="e.g. Business / Service"
+                                onChange={(val) => setForm({ ...form, fatherOccupation: val })}
+                                schoolId={school?.id}
+                                placeholder="e.g. FARMER / BUSINESS"
                                 className="w-full px-3 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-indigo-500"
                               />
                             </div>
@@ -9913,9 +10022,9 @@ export const OnlineAdmissionManager: React.FC<Props> = ({
                         <input
                           type="text"
                           value={form.motherName}
-                          onChange={(e) => setForm({ ...form, motherName: e.target.value })}
-                          placeholder="Mother's Full Name"
-                          className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 text-sm font-semibold focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                          onChange={(e) => setForm({ ...form, motherName: toUpperFormText(e.target.value) })}
+                          placeholder="MOTHER'S FULL NAME"
+                          className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 text-sm font-semibold uppercase focus:outline-none focus:ring-2 focus:ring-indigo-500"
                         />
                       </div>
 
@@ -9927,9 +10036,9 @@ export const OnlineAdmissionManager: React.FC<Props> = ({
                           <input
                             type="text"
                             value={form.motherQualification}
-                            onChange={(e) => setForm({ ...form, motherQualification: e.target.value })}
-                            placeholder="e.g. 10th / Graduate / Housewife"
-                            className="w-full px-3 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                            onChange={(e) => setForm({ ...form, motherQualification: toUpperFormText(e.target.value) })}
+                            placeholder="E.G. 10TH / GRADUATE / HOUSEWIFE"
+                            className="w-full px-3 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 text-xs font-semibold uppercase focus:outline-none focus:ring-2 focus:ring-indigo-500"
                           />
                         </div>
                       )}
@@ -9940,11 +10049,11 @@ export const OnlineAdmissionManager: React.FC<Props> = ({
                             <label className="block text-[11px] font-bold text-slate-700 dark:text-slate-300 mb-1">
                               Occupation (व्यवसाय)
                             </label>
-                            <input
-                              type="text"
+                            <OccupationAutocomplete
                               value={form.motherOccupation}
-                              onChange={(e) => setForm({ ...form, motherOccupation: e.target.value })}
-                              placeholder="Housewife / Teacher"
+                              onChange={(val) => setForm({ ...form, motherOccupation: val })}
+                              schoolId={school?.id}
+                              placeholder="e.g. HOMEMAKER / TEACHER"
                               className="w-full px-3 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-indigo-500"
                             />
                           </div>
@@ -10113,9 +10222,9 @@ export const OnlineAdmissionManager: React.FC<Props> = ({
                             <input
                               type="text"
                               value={form.emergencyContact}
-                              onChange={(e) => setForm({ ...form, emergencyContact: e.target.value })}
-                              placeholder="Name of Uncle / Guardian"
-                              className="w-full px-3 py-2 rounded-xl border border-amber-300 dark:border-amber-800 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-amber-500"
+                              onChange={(e) => setForm({ ...form, emergencyContact: toUpperFormText(e.target.value) })}
+                              placeholder="NAME OF UNCLE / GUARDIAN"
+                              className="w-full px-3 py-2 rounded-xl border border-amber-300 dark:border-amber-800 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 text-xs font-semibold uppercase focus:outline-none focus:ring-2 focus:ring-amber-500"
                             />
                           </div>
                           <div>
@@ -10138,9 +10247,9 @@ export const OnlineAdmissionManager: React.FC<Props> = ({
                             <input
                               type="text"
                               value={form.emergencyRelation}
-                              onChange={(e) => setForm({ ...form, emergencyRelation: e.target.value })}
-                              placeholder="e.g. Uncle / Grandfather"
-                              className="w-full px-3 py-2 rounded-xl border border-amber-300 dark:border-amber-800 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-amber-500"
+                              onChange={(e) => setForm({ ...form, emergencyRelation: toUpperFormText(e.target.value) })}
+                              placeholder="E.G. UNCLE / GRANDFATHER"
+                              className="w-full px-3 py-2 rounded-xl border border-amber-300 dark:border-amber-800 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 text-xs font-semibold uppercase focus:outline-none focus:ring-2 focus:ring-amber-500"
                             />
                           </div>
                           <div>
@@ -10181,9 +10290,9 @@ export const OnlineAdmissionManager: React.FC<Props> = ({
                           type="text"
                           required
                           value={form.address}
-                          onChange={(e) => setForm({ ...form, address: e.target.value })}
-                          placeholder="Village / Ward / Street / Landmark"
-                          className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 text-sm font-semibold focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                          onChange={(e) => setForm({ ...form, address: toUpperFormText(e.target.value) })}
+                          placeholder="VILLAGE / WARD / STREET / LANDMARK"
+                          className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 text-sm font-semibold uppercase focus:outline-none focus:ring-2 focus:ring-indigo-500"
                         />
                       </div>
                       <div>
@@ -10193,9 +10302,9 @@ export const OnlineAdmissionManager: React.FC<Props> = ({
                         <input
                           type="text"
                           value={form.city}
-                          onChange={(e) => setForm({ ...form, city: e.target.value })}
-                          placeholder="e.g. Saran / Chapra"
-                          className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 text-sm font-semibold focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                          onChange={(e) => setForm({ ...form, city: toUpperFormText(e.target.value) })}
+                          placeholder="E.G. SARAN / CHAPRA"
+                          className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 text-sm font-semibold uppercase focus:outline-none focus:ring-2 focus:ring-indigo-500"
                         />
                       </div>
                       <div>
@@ -10240,9 +10349,9 @@ export const OnlineAdmissionManager: React.FC<Props> = ({
                           <input
                             type="text"
                             value={form.correspondenceAddress}
-                            onChange={(e) => setForm({ ...form, correspondenceAddress: e.target.value })}
-                            placeholder="Enter present communication address if different"
-                            className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                            onChange={(e) => setForm({ ...form, correspondenceAddress: toUpperFormText(e.target.value) })}
+                            placeholder="ENTER PRESENT COMMUNICATION ADDRESS"
+                            className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 text-xs font-semibold uppercase focus:outline-none focus:ring-2 focus:ring-indigo-500"
                           />
                         )}
                       </div>
@@ -10265,9 +10374,9 @@ export const OnlineAdmissionManager: React.FC<Props> = ({
                           <input
                             type="text"
                             value={form.previousSchool}
-                            onChange={(e) => setForm({ ...form, previousSchool: e.target.value })}
-                            placeholder="e.g. Govt Middle School"
-                            className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 text-sm font-semibold focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                            onChange={(e) => setForm({ ...form, previousSchool: toUpperFormText(e.target.value) })}
+                            placeholder="E.G. GOVT MIDDLE SCHOOL"
+                            className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 text-sm font-semibold uppercase focus:outline-none focus:ring-2 focus:ring-indigo-500"
                           />
                         </div>
                       )}
@@ -10281,9 +10390,9 @@ export const OnlineAdmissionManager: React.FC<Props> = ({
                             <input
                               type="text"
                               value={form.previousClass}
-                              onChange={(e) => setForm({ ...form, previousClass: e.target.value })}
-                              placeholder="e.g. Class 5"
-                              className="w-full px-3 py-2.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                              onChange={(e) => setForm({ ...form, previousClass: toUpperFormText(e.target.value) })}
+                              placeholder="E.G. CLASS 5"
+                              className="w-full px-3 py-2.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 text-xs font-semibold uppercase focus:outline-none focus:ring-2 focus:ring-indigo-500"
                             />
                           </div>
                           <div>
@@ -10293,9 +10402,9 @@ export const OnlineAdmissionManager: React.FC<Props> = ({
                             <input
                               type="text"
                               value={form.previousBoard}
-                              onChange={(e) => setForm({ ...form, previousBoard: e.target.value })}
-                              placeholder="e.g. BSEB / CBSE"
-                              className="w-full px-3 py-2.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                              onChange={(e) => setForm({ ...form, previousBoard: toUpperFormText(e.target.value) })}
+                              placeholder="E.G. BSEB / CBSE"
+                              className="w-full px-3 py-2.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 text-xs font-semibold uppercase focus:outline-none focus:ring-2 focus:ring-indigo-500"
                             />
                           </div>
                         </div>
@@ -10310,9 +10419,9 @@ export const OnlineAdmissionManager: React.FC<Props> = ({
                             <input
                               type="text"
                               value={form.previousTcNo}
-                              onChange={(e) => setForm({ ...form, previousTcNo: e.target.value })}
-                              placeholder="TC Serial Number"
-                              className="w-full px-3 py-2.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                              onChange={(e) => setForm({ ...form, previousTcNo: toUpperFormText(e.target.value) })}
+                              placeholder="TC SERIAL NUMBER"
+                              className="w-full px-3 py-2.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 text-xs font-semibold uppercase focus:outline-none focus:ring-2 focus:ring-indigo-500"
                             />
                           </div>
                           <div>
@@ -10381,9 +10490,9 @@ export const OnlineAdmissionManager: React.FC<Props> = ({
                               <input
                                 type="text"
                                 value={form.busRoute}
-                                onChange={(e) => setForm({ ...form, busRoute: e.target.value })}
-                                placeholder="Specify Location / Stop (e.g. Main Market Stop)"
-                                className="px-3.5 py-2 rounded-xl border border-amber-300 dark:border-amber-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 text-xs font-semibold sm:w-64 focus:outline-none focus:ring-2 focus:ring-amber-500"
+                                onChange={(e) => setForm({ ...form, busRoute: toUpperFormText(e.target.value) })}
+                                placeholder="SPECIFY LOCATION / STOP"
+                                className="px-3.5 py-2 rounded-xl border border-amber-300 dark:border-amber-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 text-xs font-semibold uppercase sm:w-64 focus:outline-none focus:ring-2 focus:ring-amber-500"
                               />
                             )}
                           </div>
@@ -10462,9 +10571,9 @@ export const OnlineAdmissionManager: React.FC<Props> = ({
                           <input
                             type="text"
                             value={form.childSensitivityRemarks}
-                            onChange={(e) => setForm({ ...form, childSensitivityRemarks: e.target.value })}
-                            placeholder="यदि हाँ, तो विवरण दें (Specify medical condition, allergy, or special care notes)"
-                            className="w-full px-3.5 py-2 rounded-xl border border-rose-300 dark:border-rose-800 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-rose-500"
+                            onChange={(e) => setForm({ ...form, childSensitivityRemarks: toUpperFormText(e.target.value) })}
+                            placeholder="यदि हाँ, तो विवरण दें (MEDICAL CONDITION / ALLERGY)"
+                            className="w-full px-3.5 py-2 rounded-xl border border-rose-300 dark:border-rose-800 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 text-xs font-semibold uppercase focus:outline-none focus:ring-2 focus:ring-rose-500"
                           />
                         )}
                       </div>
@@ -10521,11 +10630,11 @@ export const OnlineAdmissionManager: React.FC<Props> = ({
                                       value={sib.name}
                                       onChange={(e) => {
                                         const updated = [...form.siblingDetails!];
-                                        updated[sIdx].name = e.target.value;
+                                        updated[sIdx].name = toUpperFormText(e.target.value);
                                         setForm({ ...form, siblingDetails: updated });
                                       }}
-                                      placeholder="Sibling's Name"
-                                      className="w-full px-2 py-1 rounded border border-slate-200 dark:border-slate-700 text-xs font-semibold"
+                                      placeholder="SIBLING'S NAME"
+                                      className="w-full px-2 py-1 rounded border border-slate-200 dark:border-slate-700 text-xs font-semibold uppercase"
                                     />
                                   </td>
                                   <td className="p-1.5">
@@ -10548,11 +10657,11 @@ export const OnlineAdmissionManager: React.FC<Props> = ({
                                       value={sib.className}
                                       onChange={(e) => {
                                         const updated = [...form.siblingDetails!];
-                                        updated[sIdx].className = e.target.value;
+                                        updated[sIdx].className = toUpperFormText(e.target.value);
                                         setForm({ ...form, siblingDetails: updated });
                                       }}
-                                      placeholder="Class"
-                                      className="w-full px-2 py-1 rounded border border-slate-200 dark:border-slate-700 text-xs font-semibold"
+                                      placeholder="CLASS"
+                                      className="w-full px-2 py-1 rounded border border-slate-200 dark:border-slate-700 text-xs font-semibold uppercase"
                                     />
                                   </td>
                                   <td className="p-1.5">
@@ -10561,11 +10670,11 @@ export const OnlineAdmissionManager: React.FC<Props> = ({
                                       value={sib.rollNo || ""}
                                       onChange={(e) => {
                                         const updated = [...form.siblingDetails!];
-                                        updated[sIdx].rollNo = e.target.value;
+                                        updated[sIdx].rollNo = toUpperFormText(e.target.value);
                                         setForm({ ...form, siblingDetails: updated });
                                       }}
-                                      placeholder="Roll / Adm"
-                                      className="w-full px-2 py-1 rounded border border-slate-200 dark:border-slate-700 text-xs font-semibold"
+                                      placeholder="ROLL / ADM"
+                                      className="w-full px-2 py-1 rounded border border-slate-200 dark:border-slate-700 text-xs font-semibold uppercase"
                                     />
                                   </td>
                                   <td className="p-1.5 text-center">
@@ -10607,9 +10716,9 @@ export const OnlineAdmissionManager: React.FC<Props> = ({
                           <input
                             type="text"
                             value={form.bankAccountName}
-                            onChange={(e) => setForm({ ...form, bankAccountName: e.target.value })}
-                            placeholder="Student / Parent Name"
-                            className="w-full px-2.5 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs font-semibold"
+                            onChange={(e) => setForm({ ...form, bankAccountName: toUpperFormText(e.target.value) })}
+                            placeholder="STUDENT / PARENT NAME"
+                            className="w-full px-2.5 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs font-semibold uppercase"
                           />
                         </div>
                         <div className="col-span-2 sm:col-span-1">
@@ -10619,9 +10728,9 @@ export const OnlineAdmissionManager: React.FC<Props> = ({
                           <input
                             type="text"
                             value={form.bankName}
-                            onChange={(e) => setForm({ ...form, bankName: e.target.value })}
-                            placeholder="e.g. SBI / PNB"
-                            className="w-full px-2.5 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs font-semibold"
+                            onChange={(e) => setForm({ ...form, bankName: toUpperFormText(e.target.value) })}
+                            placeholder="E.G. SBI / PNB"
+                            className="w-full px-2.5 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs font-semibold uppercase"
                           />
                         </div>
                         <div>
@@ -12540,8 +12649,8 @@ export const OnlineAdmissionManager: React.FC<Props> = ({
                   <input
                     type="text"
                     value={editAppDraft.studentName}
-                    onChange={(e) => setEditAppDraft((p: any) => ({ ...p, studentName: e.target.value }))}
-                    className="w-full px-2.5 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-white text-xs font-bold"
+                    onChange={(e) => setEditAppDraft((p: any) => ({ ...p, studentName: toUpperFormText(e.target.value) }))}
+                    className="w-full px-2.5 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-white text-xs font-bold uppercase"
                   />
                 </div>
                 <div>
@@ -12564,16 +12673,16 @@ export const OnlineAdmissionManager: React.FC<Props> = ({
                     <input
                       type="text"
                       value={editAppDraft.assignedRollNo}
-                      onChange={(e) => setEditAppDraft((p: any) => ({ ...p, assignedRollNo: e.target.value }))}
+                      onChange={(e) => setEditAppDraft((p: any) => ({ ...p, assignedRollNo: toUpperFormText(e.target.value) }))}
                       placeholder="Roll"
-                      className="w-full px-2 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-white text-xs font-bold"
+                      className="w-full px-2 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-white text-xs font-bold uppercase"
                     />
                     <input
                       type="text"
                       value={editAppDraft.applicationNo}
-                      onChange={(e) => setEditAppDraft((p: any) => ({ ...p, applicationNo: e.target.value }))}
+                      onChange={(e) => setEditAppDraft((p: any) => ({ ...p, applicationNo: toUpperFormText(e.target.value) }))}
                       placeholder="App No"
-                      className="w-full px-2 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-white text-xs font-mono font-bold"
+                      className="w-full px-2 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-white text-xs font-mono font-bold uppercase"
                     />
                   </div>
                 </div>
@@ -12651,8 +12760,12 @@ export const OnlineAdmissionManager: React.FC<Props> = ({
                     <input
                       type="text"
                       value={editAppDraft[key] || ""}
-                      onChange={(e) => setEditAppDraft((p: any) => ({ ...p, [key]: e.target.value }))}
-                      className="w-full px-2.5 py-1.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-white font-semibold"
+                      onChange={(e) => {
+                        const raw = e.target.value;
+                        const nextVal = ["aadhaarNo", "previousTcDate"].includes(key) ? raw : toUpperFormText(raw);
+                        setEditAppDraft((p: any) => ({ ...p, [key]: nextVal }));
+                      }}
+                      className={`w-full px-2.5 py-1.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-white font-semibold ${["aadhaarNo", "previousTcDate"].includes(key) ? "" : "uppercase"}`}
                     />
                   </div>
                 ))}
@@ -12682,12 +12795,26 @@ export const OnlineAdmissionManager: React.FC<Props> = ({
                 ].map(([key, label]) => (
                   <div key={key}>
                     <label className="block text-[10px] font-bold text-slate-500 mb-1">{label}</label>
-                    <input
-                      type="text"
-                      value={editAppDraft[key] || ""}
-                      onChange={(e) => setEditAppDraft((p: any) => ({ ...p, [key]: e.target.value }))}
-                      className="w-full px-2.5 py-1.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-white font-semibold"
-                    />
+                    {key === "fatherOccupation" || key === "motherOccupation" ? (
+                      <OccupationAutocomplete
+                        value={editAppDraft[key] || ""}
+                        onChange={(val) => setEditAppDraft((p: any) => ({ ...p, [key]: val }))}
+                        schoolId={school?.id}
+                        placeholder={key === "fatherOccupation" ? "FARMER / BUSINESS" : "HOMEMAKER / TEACHER"}
+                        className="w-full px-2.5 py-1.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-white font-semibold"
+                      />
+                    ) : (
+                      <input
+                        type="text"
+                        value={editAppDraft[key] || ""}
+                        onChange={(e) => {
+                          const raw = e.target.value;
+                          const keepRaw = ["fatherPhone", "fatherWhatsapp", "fatherAadhaar", "motherPhone", "motherWhatsapp", "motherAadhaar", "annualIncome"].includes(key);
+                          setEditAppDraft((p: any) => ({ ...p, [key]: keepRaw ? raw : toUpperFormText(raw) }));
+                        }}
+                        className={`w-full px-2.5 py-1.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-white font-semibold ${["fatherPhone", "fatherWhatsapp", "fatherAadhaar", "motherPhone", "motherWhatsapp", "motherAadhaar", "annualIncome"].includes(key) ? "" : "uppercase"}`}
+                      />
+                    )}
                   </div>
                 ))}
               </div>
@@ -12715,10 +12842,14 @@ export const OnlineAdmissionManager: React.FC<Props> = ({
                   <div key={key}>
                     <label className="block text-[10px] font-bold text-slate-500 mb-1">{label}</label>
                     <input
-                      type="text"
+                      type={key === "email" ? "email" : "text"}
                       value={editAppDraft[key] || ""}
-                      onChange={(e) => setEditAppDraft((p: any) => ({ ...p, [key]: e.target.value }))}
-                      className="w-full px-2.5 py-1.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-white font-semibold"
+                      onChange={(e) => {
+                        const raw = e.target.value;
+                        const keepRaw = ["phone", "whatsappNo", "email", "pincode", "emergencyPhone", "emergencyWhatsapp"].includes(key);
+                        setEditAppDraft((p: any) => ({ ...p, [key]: keepRaw ? raw : toUpperFormText(raw) }));
+                      }}
+                      className={`w-full px-2.5 py-1.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-white font-semibold ${["phone", "whatsappNo", "email", "pincode", "emergencyPhone", "emergencyWhatsapp"].includes(key) ? "" : "uppercase"}`}
                     />
                   </div>
                 ))}
@@ -12747,8 +12878,8 @@ export const OnlineAdmissionManager: React.FC<Props> = ({
                   <input
                     type="text"
                     value={editAppDraft.busRoute || ""}
-                    onChange={(e) => setEditAppDraft((p: any) => ({ ...p, busRoute: e.target.value }))}
-                    className="w-full px-2.5 py-1.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-white font-semibold"
+                    onChange={(e) => setEditAppDraft((p: any) => ({ ...p, busRoute: toUpperFormText(e.target.value) }))}
+                    className="w-full px-2.5 py-1.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-white font-semibold uppercase"
                   />
                 </div>
                 <div>
@@ -12825,8 +12956,11 @@ export const OnlineAdmissionManager: React.FC<Props> = ({
                     <input
                       type="text"
                       value={editAppDraft[key] || ""}
-                      onChange={(e) => setEditAppDraft((p: any) => ({ ...p, [key]: e.target.value }))}
-                      className="w-full px-2.5 py-1.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-white font-semibold"
+                      onChange={(e) => {
+                        const raw = e.target.value;
+                        setEditAppDraft((p: any) => ({ ...p, [key]: key === "bankAccountNumber" ? raw : toUpperFormText(raw) }));
+                      }}
+                      className={`w-full px-2.5 py-1.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-white font-semibold ${key === "bankAccountNumber" ? "" : "uppercase"}`}
                     />
                   </div>
                 ))}

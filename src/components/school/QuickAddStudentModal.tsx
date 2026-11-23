@@ -12,6 +12,7 @@ import {
   sortSchoolClasses,
   getDefaultSubjectsForClass,
 } from "../../school-types";
+import { toUpperFormText } from "../../utils/schoolFormUtils";
 
 interface Props {
   isOpen: boolean;
@@ -86,11 +87,11 @@ export const QuickAddStudentModal: React.FC<Props> = ({
         classId,
         className: selectedCls ? `${selectedCls.name}${selectedCls.section ? ` (${selectedCls.section})` : ""}` : "",
         stream: chosenStream,
-        name: name.trim(),
-        rollNo: rollNo.trim(),
-        admissionNo: admissionNo.trim(),
-        fatherName: fatherName.trim(),
-        motherName: motherName.trim(),
+        name: toUpperFormText(name.trim()),
+        rollNo: toUpperFormText(rollNo.trim()),
+        admissionNo: toUpperFormText(admissionNo.trim()),
+        fatherName: toUpperFormText(fatherName.trim()),
+        motherName: toUpperFormText(motherName.trim()),
         phone: phone.trim(),
         dateOfBirth,
         bloodGroup: bloodGroup.trim() || undefined,
@@ -216,9 +217,9 @@ export const QuickAddStudentModal: React.FC<Props> = ({
                 type="text"
                 required
                 value={rollNo}
-                onChange={e => setRollNo(e.target.value)}
+                onChange={e => setRollNo(toUpperFormText(e.target.value))}
                 placeholder="e.g. 101"
-                className="w-full px-3 py-2 text-xs font-bold rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white focus:ring-2 focus:ring-emerald-500 outline-hidden"
+                className="w-full px-3 py-2 text-xs font-bold uppercase rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white focus:ring-2 focus:ring-emerald-500 outline-hidden"
               />
             </div>
           </div>
@@ -271,9 +272,9 @@ export const QuickAddStudentModal: React.FC<Props> = ({
                 type="text"
                 required
                 value={name}
-                onChange={e => setName(e.target.value)}
-                placeholder="e.g. Aman Kumar Sharma"
-                className="w-full px-3 py-2 text-xs font-bold rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white focus:ring-2 focus:ring-emerald-500 outline-hidden"
+                onChange={e => setName(toUpperFormText(e.target.value))}
+                placeholder="E.G. AMAN KUMAR SHARMA"
+                className="w-full px-3 py-2 text-xs font-bold uppercase rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white focus:ring-2 focus:ring-emerald-500 outline-hidden"
               />
             </div>
             <div>
@@ -283,9 +284,9 @@ export const QuickAddStudentModal: React.FC<Props> = ({
               <input
                 type="text"
                 value={admissionNo}
-                onChange={e => setAdmissionNo(e.target.value)}
-                placeholder="e.g. ADM-101"
-                className="w-full px-3 py-2 text-xs font-mono font-bold rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white focus:ring-2 focus:ring-emerald-500 outline-hidden"
+                onChange={e => setAdmissionNo(toUpperFormText(e.target.value))}
+                placeholder="E.G. ADM-101"
+                className="w-full px-3 py-2 text-xs font-mono font-bold uppercase rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white focus:ring-2 focus:ring-emerald-500 outline-hidden"
               />
             </div>
           </div>
@@ -299,9 +300,9 @@ export const QuickAddStudentModal: React.FC<Props> = ({
               <input
                 type="text"
                 value={fatherName}
-                onChange={e => setFatherName(e.target.value)}
-                placeholder="Shri Rajesh Sharma"
-                className="w-full px-3 py-2 text-xs font-medium rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white focus:ring-2 focus:ring-emerald-500 outline-hidden"
+                onChange={e => setFatherName(toUpperFormText(e.target.value))}
+                placeholder="SHRI RAJESH SHARMA"
+                className="w-full px-3 py-2 text-xs font-medium uppercase rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white focus:ring-2 focus:ring-emerald-500 outline-hidden"
               />
             </div>
             <div>
@@ -311,9 +312,9 @@ export const QuickAddStudentModal: React.FC<Props> = ({
               <input
                 type="text"
                 value={motherName}
-                onChange={e => setMotherName(e.target.value)}
-                placeholder="Smt. Geeta Devi"
-                className="w-full px-3 py-2 text-xs font-medium rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white focus:ring-2 focus:ring-emerald-500 outline-hidden"
+                onChange={e => setMotherName(toUpperFormText(e.target.value))}
+                placeholder="SMT. GEETA DEVI"
+                className="w-full px-3 py-2 text-xs font-medium uppercase rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white focus:ring-2 focus:ring-emerald-500 outline-hidden"
               />
             </div>
           </div>

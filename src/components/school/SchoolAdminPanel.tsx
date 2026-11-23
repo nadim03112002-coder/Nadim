@@ -27,6 +27,8 @@ import {
 import { loadMergedStoreSales } from "../../utils/schoolCloudSync";
 import { buildMergedFleetList } from "../../utils/schoolTransportStore";
 import { computePaymentBreakdown } from "../../utils/paymentBreakdown";
+import { toUpperFormText, rememberOccupation } from "../../utils/schoolFormUtils";
+import { OccupationAutocomplete } from "./OccupationAutocomplete";
 import { COMMON_BOOK_PRESETS, PRESET_BOOK_BUNDLES } from "./TeacherPanel";
 import type { SchoolUserProfile } from "../../school-types";
 import type {
@@ -133,6 +135,7 @@ import { HomeDailyRoutineWidget } from "./HomeDailyRoutineWidget";
 import { AdminDashboardCharts } from "./AdminDashboardCharts";
 import { LessonTopicManagerPanel } from "./LessonTopicManagerPanel";
 import { RolesPermissionsManager } from "./RolesPermissionsManager";
+import { DocumentTemplateStudioModal } from "./DocumentTemplateStudioModal";
 import { evaluateEntranceScore, saveEntranceAdmissionPrefill } from "../../utils/entranceTestEngine";
 import { ShieldCheck, Receipt } from "lucide-react";
 import { rotateToLandscape, rotateToPortrait, isDesktopModeOn, setDesktopMode, useDeviceOrientation } from "../../utils/displayPrefs";
@@ -189,7 +192,8 @@ type AdminView =
   | "student_growth_safety"
   | "entrance_test_hub"
   | "digital_paper_library"
-  | "roles_permissions";
+  | "roles_permissions"
+  | "document_templates";
 
 
 export const SchoolAdminPanel: React.FC<Props> = ({
@@ -1764,9 +1768,9 @@ export const SchoolAdminPanel: React.FC<Props> = ({
     const id = generateId();
     await saveStudent({
       id, schoolId, sessionId: activeSession.id, classId: selectedClass.id,
-      name: studentForm.name, rollNo: studentForm.rollNo,
-      admissionNo: studentForm.admissionNo, fatherName: studentForm.fatherName,
-      motherName: studentForm.motherName, phone: studentForm.phone,
+      name: toUpperFormText(studentForm.name.trim()), rollNo: toUpperFormText(studentForm.rollNo),
+      admissionNo: toUpperFormText(studentForm.admissionNo), fatherName: toUpperFormText(studentForm.fatherName),
+      motherName: toUpperFormText(studentForm.motherName), phone: studentForm.phone,
       dateOfBirth: studentForm.dateOfBirth,
       bloodGroup: studentForm.bloodGroup || "",
       monthlyFee: Number(studentForm.monthlyFee) || 0,
@@ -2265,9 +2269,9 @@ export const SchoolAdminPanel: React.FC<Props> = ({
     const newPhoto = editStudentForm.photoUrl || "";
     const targetClsObj = displayedClasses.find((c) => c.id === editStudentForm.classId);
     const patch: Partial<SchoolStudent> = {
-      name: editStudentForm.name.trim(),
-      rollNo: editStudentForm.rollNo,
-      admissionNo: editStudentForm.admissionNo || undefined,
+      name: toUpperFormText(editStudentForm.name.trim()),
+      rollNo: toUpperFormText(editStudentForm.rollNo),
+      admissionNo: toUpperFormText(editStudentForm.admissionNo || "") || undefined,
       ...(editStudentForm.classId
         ? {
             classId: editStudentForm.classId,
@@ -2277,15 +2281,15 @@ export const SchoolAdminPanel: React.FC<Props> = ({
           }
         : {}),
       stream: editStudentForm.stream || undefined,
-      fatherName: editStudentForm.fatherName,
-      fatherOccupation: editStudentForm.fatherOccupation || undefined,
-      fatherQualification: editStudentForm.fatherQualification || undefined,
+      fatherName: toUpperFormText(editStudentForm.fatherName || ""),
+      fatherOccupation: toUpperFormText(editStudentForm.fatherOccupation || "") || undefined,
+      fatherQualification: toUpperFormText(editStudentForm.fatherQualification || "") || undefined,
       fatherPhone: editStudentForm.fatherPhone || undefined,
       fatherWhatsapp: editStudentForm.fatherWhatsapp || undefined,
       fatherAadhaar: editStudentForm.fatherAadhaar || undefined,
-      motherName: editStudentForm.motherName,
-      motherOccupation: editStudentForm.motherOccupation || undefined,
-      motherQualification: editStudentForm.motherQualification || undefined,
+      motherName: toUpperFormText(editStudentForm.motherName || ""),
+      motherOccupation: toUpperFormText(editStudentForm.motherOccupation || "") || undefined,
+      motherQualification: toUpperFormText(editStudentForm.motherQualification || "") || undefined,
       motherPhone: editStudentForm.motherPhone || undefined,
       motherWhatsapp: editStudentForm.motherWhatsapp || undefined,
       motherAadhaar: editStudentForm.motherAadhaar || undefined,
@@ -2295,38 +2299,40 @@ export const SchoolAdminPanel: React.FC<Props> = ({
       dateOfBirth: editStudentForm.dateOfBirth || undefined,
       gender: editStudentForm.gender || undefined,
       category: editStudentForm.category || undefined,
-      religion: editStudentForm.religion || undefined,
-      nationality: editStudentForm.nationality || undefined,
-      motherTongue: editStudentForm.motherTongue || undefined,
-      identificationMark: editStudentForm.identificationMark || undefined,
+      religion: toUpperFormText(editStudentForm.religion || "") || undefined,
+      nationality: toUpperFormText(editStudentForm.nationality || "") || undefined,
+      motherTongue: toUpperFormText(editStudentForm.motherTongue || "") || undefined,
+      identificationMark: toUpperFormText(editStudentForm.identificationMark || "") || undefined,
       aadhaarNo: editStudentForm.aadhaarNo || undefined,
-      apaarId: editStudentForm.apaarId || undefined,
-      address: editStudentForm.address || undefined,
-      city: editStudentForm.city || undefined,
+      apaarId: toUpperFormText(editStudentForm.apaarId || "") || undefined,
+      address: toUpperFormText(editStudentForm.address || "") || undefined,
+      city: toUpperFormText(editStudentForm.city || "") || undefined,
       pincode: editStudentForm.pincode || undefined,
-      correspondenceAddress: editStudentForm.correspondenceAddress || undefined,
+      correspondenceAddress: toUpperFormText(editStudentForm.correspondenceAddress || "") || undefined,
       annualIncome: editStudentForm.annualIncome || undefined,
-      emergencyContact: editStudentForm.emergencyContact || undefined,
+      emergencyContact: toUpperFormText(editStudentForm.emergencyContact || "") || undefined,
       emergencyPhone: editStudentForm.emergencyPhone || undefined,
-      emergencyRelation: editStudentForm.emergencyRelation || undefined,
-      medicalHistory: editStudentForm.medicalHistory || undefined,
-      previousSchool: editStudentForm.previousSchool || undefined,
-      previousMarks: editStudentForm.previousMarks || undefined,
-      previousBoard: editStudentForm.previousBoard || undefined,
-      previousTcNo: editStudentForm.previousTcNo || undefined,
+      emergencyRelation: toUpperFormText(editStudentForm.emergencyRelation || "") || undefined,
+      medicalHistory: toUpperFormText(editStudentForm.medicalHistory || "") || undefined,
+      previousSchool: toUpperFormText(editStudentForm.previousSchool || "") || undefined,
+      previousMarks: toUpperFormText(editStudentForm.previousMarks || "") || undefined,
+      previousBoard: toUpperFormText(editStudentForm.previousBoard || "") || undefined,
+      previousTcNo: toUpperFormText(editStudentForm.previousTcNo || "") || undefined,
       usesBus: Boolean(editStudentForm.usesBus),
-      busRoute: editStudentForm.usesBus ? (editStudentForm.busRoute || undefined) : undefined,
+      busRoute: editStudentForm.usesBus ? (toUpperFormText(editStudentForm.busRoute || "") || undefined) : undefined,
       busFee: editStudentForm.usesBus ? Number(editStudentForm.busFee) || 0 : 0,
-      bankAccountName: editStudentForm.bankAccountName || undefined,
-      bankName: editStudentForm.bankName || undefined,
+      bankAccountName: toUpperFormText(editStudentForm.bankAccountName || "") || undefined,
+      bankName: toUpperFormText(editStudentForm.bankName || "") || undefined,
       bankAccountNumber: editStudentForm.bankAccountNumber || undefined,
-      bankIfsc: editStudentForm.bankIfsc || undefined,
+      bankIfsc: toUpperFormText(editStudentForm.bankIfsc || "") || undefined,
       bloodGroup: editStudentForm.bloodGroup || "",
       monthlyFee: Number(editStudentForm.monthlyFee) || 0,
       photoUrl: newPhoto || undefined,
     };
     await updateStudent(schoolId, editingStudentId, patch);
-    toast.success(`✅ ${editStudentForm.name.trim()} ki sabhi jankari update ho gayi!`);
+    rememberOccupation(editStudentForm.fatherOccupation, schoolId);
+    rememberOccupation(editStudentForm.motherOccupation, schoolId);
+    toast.success(`✅ ${toUpperFormText(editStudentForm.name.trim())} ki sabhi jankari update ho gayi!`);
     setEditingStudentId(null);
     setSaving(false);
   };
@@ -2983,6 +2989,7 @@ export const SchoolAdminPanel: React.FC<Props> = ({
         { id: "results" as AdminView, label: "Exam Results (मेरिट लिस्ट व परिणाम)", icon: Award, desc: "कक्षा मेरिट लिस्ट, रैंक, टॉपर्स व उत्तीर्ण परिणाम" },
         { id: "marksheet_hub" as AdminView, label: "Marksheet & Results Hub", icon: FileSpreadsheet, desc: "ऑफिशियल अंकपत्र व रिपोर्ट कार्ड" },
         { id: "certificates" as AdminView, label: "Certificates (TC & Merit)", icon: Award, desc: "स्थानांतरण व चरित्र प्रमाण पत्र" },
+        { id: "document_templates" as AdminView, label: "Document Templates (60 Layouts)", icon: Palette, desc: "ID Card, Admit Card, Marksheet, Fee Slip व Certificate के 60 स्ट्रक्चरल लेआउट्स (10 क्लासिक + 50 नए) व कलर चेंजर" },
         { id: "reports_hub" as AdminView, label: "Register Reports & Print", icon: FileSpreadsheet, desc: "40+ मास्टर स्कूल रजिस्टर्स" },
       ]
     },
@@ -10478,6 +10485,17 @@ export const SchoolAdminPanel: React.FC<Props> = ({
     );
   }
 
+  if (view === "document_templates") {
+    return renderErpShell(
+      <DocumentTemplateStudioModal
+        school={school!}
+        asPage={true}
+        onBack={() => setView("dashboard")}
+        onSchoolUpdated={(patch) => setSchool((prev) => (prev ? { ...prev, ...patch } : prev))}
+      />
+    );
+  }
+
   if (view === "hostel_mess") {
     return renderErpShell(
       <HostelMessManager
@@ -13822,9 +13840,9 @@ export const SchoolAdminPanel: React.FC<Props> = ({
                       <div>
                         <label className="text-[11px] text-slate-500 mb-1 block font-semibold">Full Name *</label>
                         <input type="text" value={editStudentForm.name || ""}
-                          onChange={e => setEditStudentForm((p: any) => ({ ...p, name: e.target.value }))}
-                          placeholder="Student Name"
-                          className="w-full px-3 py-2 border dark:border-slate-600 rounded-lg bg-transparent text-slate-800 dark:text-white text-sm font-semibold" />
+                          onChange={e => setEditStudentForm((p: any) => ({ ...p, name: toUpperFormText(e.target.value) }))}
+                          placeholder="STUDENT NAME"
+                          className="w-full px-3 py-2 border dark:border-slate-600 rounded-lg bg-transparent text-slate-800 dark:text-white text-sm font-semibold uppercase" />
                       </div>
                       <div>
                         <label className="text-[11px] text-slate-500 mb-1 block font-semibold">Class</label>
@@ -13843,16 +13861,16 @@ export const SchoolAdminPanel: React.FC<Props> = ({
                       <div>
                         <label className="text-[11px] text-slate-500 mb-1 block font-semibold">Roll Number</label>
                         <input type="text" value={editStudentForm.rollNo || ""}
-                          onChange={e => setEditStudentForm((p: any) => ({ ...p, rollNo: e.target.value }))}
-                          placeholder="Roll No"
-                          className="w-full px-3 py-2 border dark:border-slate-600 rounded-lg bg-transparent text-slate-800 dark:text-white text-sm" />
+                          onChange={e => setEditStudentForm((p: any) => ({ ...p, rollNo: toUpperFormText(e.target.value) }))}
+                          placeholder="ROLL NO"
+                          className="w-full px-3 py-2 border dark:border-slate-600 rounded-lg bg-transparent text-slate-800 dark:text-white text-sm uppercase" />
                       </div>
                       <div>
                         <label className="text-[11px] text-slate-500 mb-1 block font-semibold">Admission No</label>
                         <input type="text" value={editStudentForm.admissionNo || ""}
-                          onChange={e => setEditStudentForm((p: any) => ({ ...p, admissionNo: e.target.value }))}
-                          placeholder="Admission No"
-                          className="w-full px-3 py-2 border dark:border-slate-600 rounded-lg bg-transparent text-slate-800 dark:text-white text-sm" />
+                          onChange={e => setEditStudentForm((p: any) => ({ ...p, admissionNo: toUpperFormText(e.target.value) }))}
+                          placeholder="ADMISSION NO"
+                          className="w-full px-3 py-2 border dark:border-slate-600 rounded-lg bg-transparent text-slate-800 dark:text-white text-sm uppercase" />
                       </div>
                       <div>
                         <label className="text-[11px] text-slate-500 mb-1 block font-semibold">Date of Birth</label>
@@ -13904,9 +13922,9 @@ export const SchoolAdminPanel: React.FC<Props> = ({
                       <div>
                         <label className="text-[11px] text-slate-500 mb-1 block font-semibold">Religion</label>
                         <input type="text" value={editStudentForm.religion || ""}
-                          onChange={e => setEditStudentForm((p: any) => ({ ...p, religion: e.target.value }))}
-                          placeholder="Hindu / Muslim / etc."
-                          className="w-full px-3 py-2 border dark:border-slate-600 rounded-lg bg-transparent text-slate-800 dark:text-white text-sm" />
+                          onChange={e => setEditStudentForm((p: any) => ({ ...p, religion: toUpperFormText(e.target.value) }))}
+                          placeholder="HINDU / MUSLIM / ETC."
+                          className="w-full px-3 py-2 border dark:border-slate-600 rounded-lg bg-transparent text-slate-800 dark:text-white text-sm uppercase" />
                       </div>
                       <div>
                         <label className="text-[11px] text-slate-500 mb-1 block font-semibold">Student Aadhaar</label>
@@ -13918,16 +13936,16 @@ export const SchoolAdminPanel: React.FC<Props> = ({
                       <div>
                         <label className="text-[11px] text-slate-500 mb-1 block font-semibold">APAAR / PEN ID</label>
                         <input type="text" value={editStudentForm.apaarId || ""}
-                          onChange={e => setEditStudentForm((p: any) => ({ ...p, apaarId: e.target.value }))}
+                          onChange={e => setEditStudentForm((p: any) => ({ ...p, apaarId: toUpperFormText(e.target.value) }))}
                           placeholder="APAAR / PEN ID"
-                          className="w-full px-3 py-2 border dark:border-slate-600 rounded-lg bg-transparent text-slate-800 dark:text-white text-sm" />
+                          className="w-full px-3 py-2 border dark:border-slate-600 rounded-lg bg-transparent text-slate-800 dark:text-white text-sm uppercase" />
                       </div>
                       <div>
                         <label className="text-[11px] text-slate-500 mb-1 block font-semibold">Nationality / Mother Tongue</label>
                         <input type="text" value={editStudentForm.nationality || ""}
-                          onChange={e => setEditStudentForm((p: any) => ({ ...p, nationality: e.target.value }))}
-                          placeholder="Indian"
-                          className="w-full px-3 py-2 border dark:border-slate-600 rounded-lg bg-transparent text-slate-800 dark:text-white text-sm" />
+                          onChange={e => setEditStudentForm((p: any) => ({ ...p, nationality: toUpperFormText(e.target.value) }))}
+                          placeholder="INDIAN"
+                          className="w-full px-3 py-2 border dark:border-slate-600 rounded-lg bg-transparent text-slate-800 dark:text-white text-sm uppercase" />
                       </div>
                     </div>
                   </div>
@@ -13953,10 +13971,24 @@ export const SchoolAdminPanel: React.FC<Props> = ({
                       ].map(([k, label, type], fIdx) => (
                         <div key={`edit-parent-${k}-${fIdx}`}>
                           <label className="text-[11px] text-slate-500 mb-1 block font-semibold">{label}</label>
-                          <input type={type} value={(editStudentForm as any)[k] || ""}
-                            onChange={e => setEditStudentForm((p: any) => ({ ...p, [k]: e.target.value }))}
-                            placeholder={label}
-                            className="w-full px-3 py-2 border dark:border-slate-600 rounded-lg bg-transparent text-slate-800 dark:text-white text-sm" />
+                          {k === "fatherOccupation" || k === "motherOccupation" ? (
+                            <OccupationAutocomplete
+                              value={(editStudentForm as any)[k] || ""}
+                              onChange={(val) => setEditStudentForm((p: any) => ({ ...p, [k]: val }))}
+                              schoolId={schoolId}
+                              placeholder={label}
+                              className="w-full px-3 py-2 border dark:border-slate-600 rounded-lg bg-transparent text-slate-800 dark:text-white text-sm"
+                            />
+                          ) : (
+                            <input type={type} value={(editStudentForm as any)[k] || ""}
+                              onChange={e => {
+                                const raw = e.target.value;
+                                const keepRaw = ["fatherPhone", "fatherWhatsapp", "fatherAadhaar", "motherPhone", "motherWhatsapp", "motherAadhaar", "annualIncome"].includes(k);
+                                setEditStudentForm((p: any) => ({ ...p, [k]: keepRaw ? raw : toUpperFormText(raw) }));
+                              }}
+                              placeholder={label}
+                              className={`w-full px-3 py-2 border dark:border-slate-600 rounded-lg bg-transparent text-slate-800 dark:text-white text-sm ${["fatherPhone", "fatherWhatsapp", "fatherAadhaar", "motherPhone", "motherWhatsapp", "motherAadhaar", "annualIncome"].includes(k) ? "" : "uppercase"}`} />
+                          )}
                         </div>
                       ))}
                     </div>
@@ -13983,15 +14015,18 @@ export const SchoolAdminPanel: React.FC<Props> = ({
                         ["previousTcNo", "Previous TC No", "text"],
                         ["identificationMark", "Identification Mark", "text"],
                         ["medicalHistory", "Medical History", "text"],
-                      ].map(([k, label, type], fIdx) => (
-                        <div key={`edit-contact-${k}-${fIdx}`}>
-                          <label className="text-[11px] text-slate-500 mb-1 block font-semibold">{label}</label>
-                          <input type={type} value={(editStudentForm as any)[k] || ""}
-                            onChange={e => setEditStudentForm((p: any) => ({ ...p, [k]: e.target.value }))}
-                            placeholder={label}
-                            className="w-full px-3 py-2 border dark:border-slate-600 rounded-lg bg-transparent text-slate-800 dark:text-white text-sm" />
-                        </div>
-                      ))}
+                      ].map(([k, label, type], fIdx) => {
+                        const keepRaw = ["phone", "whatsappNo", "email", "pincode", "emergencyPhone"].includes(k);
+                        return (
+                          <div key={`edit-contact-${k}-${fIdx}`}>
+                            <label className="text-[11px] text-slate-500 mb-1 block font-semibold">{label}</label>
+                            <input type={type} value={(editStudentForm as any)[k] || ""}
+                              onChange={e => setEditStudentForm((p: any) => ({ ...p, [k]: keepRaw ? e.target.value : toUpperFormText(e.target.value) }))}
+                              placeholder={label}
+                              className={`w-full px-3 py-2 border dark:border-slate-600 rounded-lg bg-transparent text-slate-800 dark:text-white text-sm ${keepRaw ? "" : "uppercase"}`} />
+                          </div>
+                        );
+                      })}
                     </div>
                   </div>
 
@@ -14021,9 +14056,9 @@ export const SchoolAdminPanel: React.FC<Props> = ({
                           <div>
                             <label className="text-[11px] text-slate-500 mb-1 block font-semibold">Bus Route</label>
                             <input type="text" value={editStudentForm.busRoute || ""}
-                              onChange={e => setEditStudentForm((p: any) => ({ ...p, busRoute: e.target.value }))}
-                              placeholder="Bus Route"
-                              className="w-full px-3 py-2 border dark:border-slate-600 rounded-lg bg-transparent text-slate-800 dark:text-white text-sm" />
+                              onChange={e => setEditStudentForm((p: any) => ({ ...p, busRoute: toUpperFormText(e.target.value) }))}
+                              placeholder="BUS ROUTE"
+                              className="w-full px-3 py-2 border dark:border-slate-600 rounded-lg bg-transparent text-slate-800 dark:text-white text-sm uppercase" />
                           </div>
                           <div>
                             <label className="text-[11px] text-slate-500 mb-1 block font-semibold">Monthly Bus Fee (₹)</label>
@@ -14042,9 +14077,9 @@ export const SchoolAdminPanel: React.FC<Props> = ({
                         <div key={`edit-bank-${k}-${fIdx}`}>
                           <label className="text-[11px] text-slate-500 mb-1 block font-semibold">{label}</label>
                           <input type={type} value={(editStudentForm as any)[k] || ""}
-                            onChange={e => setEditStudentForm((p: any) => ({ ...p, [k]: e.target.value }))}
+                            onChange={e => setEditStudentForm((p: any) => ({ ...p, [k]: k === "bankAccountNumber" ? e.target.value : toUpperFormText(e.target.value) }))}
                             placeholder={label}
-                            className="w-full px-3 py-2 border dark:border-slate-600 rounded-lg bg-transparent text-slate-800 dark:text-white text-sm" />
+                            className={`w-full px-3 py-2 border dark:border-slate-600 rounded-lg bg-transparent text-slate-800 dark:text-white text-sm ${k === "bankAccountNumber" ? "" : "uppercase"}`} />
                         </div>
                       ))}
                     </div>

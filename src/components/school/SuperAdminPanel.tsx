@@ -4,7 +4,16 @@ import {
   subscribeToAllSchools, saveSchool, updateSchool, generateId, setSchoolLockCode,
   assignSchoolAdminByEmail, checkEmailSchoolAllotment, lockSchool, deleteSchool
 } from "../../school-firebase";
-import { isSchoolEliteCurriculum, type School, type SchoolSubscription } from "../../school-types";
+import {
+  isSchoolEliteCurriculum,
+  LITE_YEARLY_PRICES,
+  ELITE_YEARLY_PRICING,
+  SUPREME_YEARLY_PRICING,
+  YEARLY_STUDENT_SLABS,
+  getLitePriceForSlab,
+  type School,
+  type SchoolSubscription,
+} from "../../school-types";
 import { SchoolAdminPanel } from "./SchoolAdminPanel";
 import { db, rtdb } from "../../firebase";
 import { ref, set } from "firebase/database";
@@ -29,323 +38,341 @@ interface Props {
   onBack?: () => void;
 }
 
-// ── PRICING CONFIG ────────────────────────────────────────────────────────────
-const FEATURE_PRICES = { reading: 2000, writing: 1000, pdf: 1000, mcq: 1000 };
-const COMBO_PRICE = 4500;       // all-4 combo offer (Pro Plan)
-const COMBO_RETAIL = 5000;      // sum of individual prices
-const COMBO_SAVING = COMBO_RETAIL - COMBO_PRICE; // ₹500
-const LITE_PRICE = 1500;        // Lite plan — student management only
+// ── YEARLY-ONLY DECOY PRICING CONFIG ──────────────────────────────────────────
+type SuperEdition = "lite" | "elite" | "supreme";
+
+const LITE_SLABS = [100, 300, 500, 1000, 2000] as const;
 
 const isCombo = (s: SchoolSubscription) =>
-  s.reading && s.writing && s.pdf && s.mcq;
+  Boolean(s.isElite || s.customCurriculumEnabled || s.tier === "whitelabel_5000");
 
 const calcAmount = (s: SchoolSubscription): number => {
-  if (s.tier === "lite") return LITE_PRICE;
-  if (isCombo(s)) return COMBO_PRICE;
-  let total = 0;
-  if (s.reading) total += FEATURE_PRICES.reading;
-  if (s.writing) total += FEATURE_PRICES.writing;
-  if (s.pdf)     total += FEATURE_PRICES.pdf;
-  if (s.mcq)     total += FEATURE_PRICES.mcq;
-  return total;
-};
-
-const COMBO_SUB: SchoolSubscription = {
-  reading: true, writing: true, pdf: true, mcq: true,
-  monthlyAmount: COMBO_PRICE, status: "active", tier: "full"
+  if (typeof s.yearlyAmount === "number" && s.yearlyAmount > 0) return s.yearlyAmount;
+  if (typeof s.monthlyAmount === "number" && s.monthlyAmount > 0) return s.monthlyAmount;
+  if (s.tier === "whitelabel_5000") return SUPREME_YEARLY_PRICING.price;
+  if (s.isElite || s.customCurriculumEnabled || s.tier === "enterprise_2000" || s.tier === "full") {
+    return s.isRenewal ? ELITE_YEARLY_PRICING.renewal : ELITE_YEARLY_PRICING.firstYear;
+  }
+  return getLitePriceForSlab(s.maxStudents || 100);
 };
 
 const defaultSub: SchoolSubscription = {
-  reading: true, writing: false, pdf: false, mcq: false,
-  monthlyAmount: 2000, status: "active", tier: "full"
+  reading: true,
+  writing: true,
+  pdf: true,
+  mcq: true,
+  tier: "enterprise_2000",
+  maxStudents: 5000,
+  maxTeachers: 9999,
+  maxBranches: 3,
+  isElite: true,
+  customCurriculumEnabled: true,
+  monthlyAmount: ELITE_YEARLY_PRICING.firstYear,
+  yearlyAmount: ELITE_YEARLY_PRICING.firstYear,
+  mrpAmount: ELITE_YEARLY_PRICING.mrp,
+  renewalAmount: ELITE_YEARLY_PRICING.renewal,
+  isRenewal: false,
+  planDuration: "1_year",
+  status: "active",
 };
 
-// ── REUSABLE 3-TIER SUBSCRIPTION EDITOR ─────────────────────────────────────────────
+// ── REUSABLE YEARLY 3-TIER SUBSCRIPTION EDITOR ───────────────────────────────
+const resolveSuperEdition = (sub?: SchoolSubscription | null): SuperEdition => {
+  if (!sub) return "elite";
+  if (sub.tier === "whitelabel_5000") return "supreme";
+  if (sub.isElite || sub.customCurriculumEnabled || sub.tier === "enterprise_2000" || sub.tier === "full") return "elite";
+  return "lite";
+};
+
 const SubEditor = ({
   value,
   onChange,
-  label = "School Management Subscription Plan",
+  label = "School Management Yearly Subscription",
 }: {
   value: SchoolSubscription;
   onChange: (s: SchoolSubscription) => void;
   label?: string;
 }) => {
-  const currentTier = value.tier || (value.maxStudents === 200 ? "starter_200" : value.maxStudents === 500 ? "growth_500" : value.maxStudents >= 5000 ? "whitelabel_5000" : "enterprise_2000");
+  const edition = resolveSuperEdition(value);
+  const currentSlab = value.maxStudents || (edition === "lite" ? 100 : 5000);
+  const isRenewal = Boolean(value.isRenewal);
+  const displayedAmount = calcAmount(value);
 
-  const isEliteActive = Boolean(value.isElite || value.customCurriculumEnabled || currentTier === "whitelabel_5000");
-  const selectTier = (tier: "starter_200" | "growth_500" | "enterprise_2000" | "whitelabel_5000") => {
-    const mult = isEliteActive ? 2 : 1;
-    if (tier === "starter_200") {
+  const applyConfig = (nextEdition: SuperEdition, slab: number, nextRenewal: boolean) => {
+    if (nextEdition === "lite") {
+      const clampedSlab = slab > 2000 ? 2000 : slab;
+      const amt = getLitePriceForSlab(clampedSlab);
       onChange({
         ...value,
-        tier: "starter_200",
-        maxStudents: 200,
-        maxTeachers: 10,
-        monthlyAmount: 999 * mult,
-        isElite: isEliteActive,
-        customCurriculumEnabled: isEliteActive,
+        tier: clampedSlab <= 300 ? "starter_200" : clampedSlab <= 500 ? "growth_500" : "lite",
+        maxStudents: clampedSlab,
+        maxTeachers: 9999,
+        maxBranches: 1,
+        isElite: false,
+        customCurriculumEnabled: false,
+        isRenewal: false,
+        monthlyAmount: amt,
+        yearlyAmount: amt,
+        planDuration: "1_year",
         reading: true,
         writing: true,
         pdf: true,
         mcq: true,
-        status: "active"
+        status: "active",
       });
-    } else if (tier === "growth_500") {
-      onChange({
-        ...value,
-        tier: "growth_500",
-        maxStudents: 500,
-        maxTeachers: 25,
-        monthlyAmount: 1999 * mult,
-        isElite: isEliteActive,
-        customCurriculumEnabled: isEliteActive,
-        reading: true,
-        writing: true,
-        pdf: true,
-        mcq: true,
-        status: "active"
-      });
-    } else if (tier === "whitelabel_5000") {
+    } else if (nextEdition === "supreme") {
+      const amt = SUPREME_YEARLY_PRICING.price;
       onChange({
         ...value,
         tier: "whitelabel_5000",
         maxStudents: 5000,
         maxTeachers: 9999,
-        monthlyAmount: 19999,
+        maxBranches: 9999,
         isElite: true,
         customCurriculumEnabled: true,
+        isRenewal: false,
+        monthlyAmount: amt,
+        yearlyAmount: amt,
+        planDuration: "1_year",
         reading: true,
         writing: true,
         pdf: true,
         mcq: true,
-        status: "active"
+        status: "active",
       });
     } else {
+      const amt = nextRenewal ? ELITE_YEARLY_PRICING.renewal : ELITE_YEARLY_PRICING.firstYear;
       onChange({
         ...value,
         tier: "enterprise_2000",
-        maxStudents: 2000,
+        maxStudents: slab,
         maxTeachers: 9999,
-        monthlyAmount: 3999 * mult,
-        isElite: isEliteActive,
-        customCurriculumEnabled: isEliteActive,
+        maxBranches: ELITE_YEARLY_PRICING.maxBranches,
+        isElite: true,
+        customCurriculumEnabled: true,
+        isRenewal: nextRenewal,
+        mrpAmount: ELITE_YEARLY_PRICING.mrp,
+        renewalAmount: ELITE_YEARLY_PRICING.renewal,
+        monthlyAmount: amt,
+        yearlyAmount: amt,
+        planDuration: "1_year",
         reading: true,
         writing: true,
         pdf: true,
         mcq: true,
-        status: "active"
+        status: "active",
       });
     }
   };
 
   return (
     <div className="bg-white dark:bg-slate-800 rounded-xl p-4 shadow-sm space-y-3.5 border border-slate-200 dark:border-slate-700">
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between gap-2">
         <h3 className="font-bold text-slate-800 dark:text-slate-100 text-sm">{label}</h3>
         <span className="text-[11px] font-black px-2.5 py-0.5 rounded-full bg-emerald-100 dark:bg-emerald-950/60 text-emerald-800 dark:text-emerald-300">
-          ₹{(value.monthlyAmount || 999).toLocaleString()}/month
+          ₹{displayedAmount.toLocaleString("en-IN")}/year
         </span>
       </div>
 
-      {/* 4 Tier Selector Tabs */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5 p-1 bg-slate-100 dark:bg-slate-700/60 rounded-xl">
+      {/* 3 Yearly Plan Editions */}
+      <div className="grid grid-cols-3 gap-1.5 p-1 bg-slate-100 dark:bg-slate-700/60 rounded-xl">
         <button
           type="button"
-          onClick={() => selectTier("starter_200")}
-          className={`py-2 px-1 rounded-lg text-xs font-black transition cursor-pointer text-center ${
-            currentTier === "starter_200" || currentTier === "lite"
+          onClick={() => applyConfig("lite", currentSlab > 2000 ? 100 : currentSlab, false)}
+          className={`py-2 px-1.5 rounded-lg text-xs font-black transition cursor-pointer text-center ${
+            edition === "lite"
               ? "bg-blue-600 text-white shadow-sm"
               : "text-slate-600 dark:text-slate-300 hover:text-slate-900"
           }`}
         >
-          <p className="leading-tight">Tier 1: Basic</p>
-          <span className="text-[10px] opacity-90">200 Std • ₹999</span>
+          <p className="leading-tight">⚡ Lite Yearly</p>
+          <span className="text-[10px] opacity-90">1 Branch · ₹5k–25.3k</span>
         </button>
 
         <button
           type="button"
-          onClick={() => selectTier("growth_500")}
-          className={`py-2 px-1 rounded-lg text-xs font-black transition cursor-pointer text-center ${
-            currentTier === "growth_500"
-              ? "bg-purple-600 text-white shadow-sm"
+          onClick={() => applyConfig("elite", currentSlab || 5000, isRenewal)}
+          className={`py-2 px-1.5 rounded-lg text-xs font-black transition cursor-pointer text-center ${
+            edition === "elite"
+              ? "bg-gradient-to-r from-amber-500 to-orange-500 text-slate-950 shadow-sm"
               : "text-slate-600 dark:text-slate-300 hover:text-slate-900"
           }`}
         >
-          <p className="leading-tight">Tier 2: Standard</p>
-          <span className="text-[10px] opacity-90">500 Std • ₹1,999</span>
+          <p className="leading-tight">👑 Elite Yearly</p>
+          <span className="text-[10px] opacity-90">3 Branches · ₹1L / 80k</span>
         </button>
 
         <button
           type="button"
-          onClick={() => selectTier("enterprise_2000")}
-          className={`py-2 px-1 rounded-lg text-xs font-black transition cursor-pointer text-center ${
-            currentTier === "enterprise_2000" || currentTier === "full"
-              ? "bg-amber-500 text-slate-950 shadow-sm"
-              : "text-slate-600 dark:text-slate-300 hover:text-slate-900"
-          }`}
-        >
-          <p className="leading-tight">Tier 3: Pro</p>
-          <span className="text-[10px] opacity-90">2000 Std • ₹3,999</span>
-        </button>
-
-        <button
-          type="button"
-          onClick={() => selectTier("whitelabel_5000")}
-          className={`py-2 px-1 rounded-lg text-xs font-black transition cursor-pointer text-center ${
-            currentTier === "whitelabel_5000"
+          onClick={() => applyConfig("supreme", 5000, false)}
+          className={`py-2 px-1.5 rounded-lg text-xs font-black transition cursor-pointer text-center ${
+            edition === "supreme"
               ? "bg-rose-600 text-white shadow-sm"
               : "text-slate-600 dark:text-slate-300 hover:text-slate-900"
           }`}
         >
-          <p className="leading-tight">Tier 4: White-Label</p>
-          <span className="text-[10px] opacity-90">5000+ • ₹19,999</span>
+          <p className="leading-tight">💎 Supreme</p>
+          <span className="text-[10px] opacity-90">Unlim · ₹2,00,000</span>
         </button>
       </div>
 
-      {/* Tier Details Card */}
-      <div className={`p-3.5 rounded-xl border text-xs ${
-        currentTier === "starter_200" || currentTier === "lite"
-          ? "bg-blue-50 dark:bg-blue-950/40 border-blue-200 dark:border-blue-800 text-blue-900 dark:text-blue-200"
-          : currentTier === "growth_500"
-          ? "bg-purple-50 dark:bg-purple-950/40 border-purple-200 dark:border-purple-800 text-purple-900 dark:text-purple-200"
-          : currentTier === "whitelabel_5000"
-          ? "bg-rose-50 dark:bg-rose-950/40 border-rose-200 dark:border-rose-800 text-rose-950 dark:text-rose-200"
-          : "bg-amber-50 dark:bg-amber-950/40 border-amber-200 dark:border-amber-800 text-amber-950 dark:text-amber-200"
-      }`}>
-        <div className="flex items-center justify-between mb-1.5">
-          <span className="font-black text-sm">
-            {currentTier === "starter_200" || currentTier === "lite"
-              ? "📦 Tier 1: Basic Plan (Max 200 Students)"
-              : currentTier === "growth_500"
-              ? "🚀 Tier 2: Standard Plan (Max 500 Students)"
-              : currentTier === "whitelabel_5000"
-              ? "👑 Tier 4: Enterprise White-Label (5000+ Students)"
-              : "👑 Tier 3: Pro Plan (Max 2000 Students)"}
-          </span>
-          <span className="font-mono font-bold">
-            {currentTier === "starter_200" || currentTier === "lite" ? "₹999 / mo" : currentTier === "growth_500" ? "₹1,999 / mo" : currentTier === "whitelabel_5000" ? "₹19,999 / mo" : "₹3,999 / mo"}
-          </span>
+      {/* Student Capacity Slabs */}
+      {edition !== "supreme" && (
+        <div>
+          <p className="text-[11px] font-bold text-slate-500 dark:text-slate-400 mb-1.5">
+            Student Capacity Slab (Yearly):
+          </p>
+          <div className="grid grid-cols-3 sm:grid-cols-6 gap-1.5">
+            {YEARLY_STUDENT_SLABS.filter((slab) => (edition === "lite" ? slab <= 2000 : true)).map((slab) => (
+              <button
+                key={slab}
+                type="button"
+                onClick={() => applyConfig(edition, slab, isRenewal)}
+                className={`py-1.5 px-2 rounded-lg border text-[11px] font-black transition cursor-pointer ${
+                  currentSlab === slab
+                    ? edition === "elite"
+                      ? "bg-amber-500 text-slate-950 border-amber-500"
+                      : "bg-blue-600 text-white border-blue-600"
+                    : "bg-slate-50 dark:bg-slate-700/50 text-slate-600 dark:text-slate-300 border-slate-200 dark:border-slate-600"
+                }`}
+              >
+                {slab >= 5000 ? "5000+" : slab}
+                {edition === "lite" && (
+                  <span className="block text-[9px] font-bold opacity-85">
+                    ₹{(LITE_YEARLY_PRICES[slab] || 5000).toLocaleString("en-IN")}
+                  </span>
+                )}
+              </button>
+            ))}
+          </div>
         </div>
-        <ul className="space-y-1 text-[11px] list-disc list-inside opacity-90">
-          <li><strong>Student Capacity:</strong> {currentTier === "starter_200" || currentTier === "lite" ? "Max 200 Active Students" : currentTier === "growth_500" ? "Max 500 Active Students" : currentTier === "whitelabel_5000" ? "5,000+ Active Students" : "Max 2000 Active Students"}</li>
-          <li><strong>Faculty / Teachers:</strong> {currentTier === "starter_200" || currentTier === "lite" ? "Max 10 Teachers" : currentTier === "growth_500" ? "Max 25 Teachers" : "Unlimited Staff & Teachers"}</li>
-          <li><strong>Included Powers:</strong> {currentTier === "starter_200" || currentTier === "lite" ? "Student Management, Fees & Due Slips, Default School Website" : currentTier === "growth_500" ? "Everything in Tier 1 + Sub-Admins, ID Cards & Admit Card Hub" : currentTier === "whitelabel_5000" ? "Play Store Custom App + On-Site Training + 100% Data Migration + Custom .com Website CMS" : "Everything in Tier 2 + Staff HRM Payroll, Online Admissions & Website"}</li>
-        </ul>
-      </div>
+      )}
 
-      {/* Elite Edition 2x Toggle */}
-      <div className={`p-3 rounded-xl border flex items-center justify-between gap-3 ${
-        value.isElite || currentTier === "whitelabel_5000"
-          ? "bg-amber-50 dark:bg-amber-950/40 border-amber-300 dark:border-amber-700"
-          : "bg-slate-50 dark:bg-slate-700/40 border-slate-200 dark:border-slate-600"
-      }`}>
-        <div className="flex-1">
-          <p className="text-xs font-black text-slate-800 dark:text-white flex items-center gap-1.5">
-            <Crown size={14} className="text-amber-500" />
-            Elite Edition (2× Price) — Custom Website CMS, Face ID &amp; Notes
+      {/* Elite 1st Year Offer vs Renewal Fee Toggle */}
+      {edition === "elite" && (
+        <div className="grid grid-cols-2 gap-2">
+          <button
+            type="button"
+            onClick={() => applyConfig("elite", currentSlab, false)}
+            className={`p-2.5 rounded-xl border-2 text-left transition cursor-pointer ${
+              !isRenewal
+                ? "border-amber-500 bg-amber-50 dark:bg-amber-950/30"
+                : "border-slate-200 dark:border-slate-600"
+            }`}
+          >
+            <p className="text-[11px] font-black text-amber-800 dark:text-amber-300">✨ New 1st Year Offer</p>
+            <p className="text-xs font-black text-slate-900 dark:text-white mt-0.5">
+              <span className="line-through text-slate-400 mr-1.5 font-normal">₹1,20,000</span>
+              ₹1,00,000 मात्र
+            </p>
+          </button>
+          <button
+            type="button"
+            onClick={() => applyConfig("elite", currentSlab, true)}
+            className={`p-2.5 rounded-xl border-2 text-left transition cursor-pointer ${
+              isRenewal
+                ? "border-emerald-500 bg-emerald-50 dark:bg-emerald-950/30"
+                : "border-slate-200 dark:border-slate-600"
+            }`}
+          >
+            <p className="text-[11px] font-black text-emerald-700 dark:text-emerald-300">🔄 Yearly Renewal Fee</p>
+            <p className="text-xs font-black text-slate-900 dark:text-white mt-0.5">₹80,000 / Year</p>
+          </button>
+        </div>
+      )}
+
+      {/* Summary + Custom Yearly Override */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 items-center bg-slate-50 dark:bg-slate-700/40 p-3 rounded-xl border border-slate-200 dark:border-slate-600">
+        <div className="text-xs space-y-0.5">
+          <p className="font-black text-slate-800 dark:text-white">
+            {edition === "supreme"
+              ? "💎 Supreme (5,000+ · Unlimited Branches)"
+              : edition === "elite"
+              ? `👑 Elite (${currentSlab >= 5000 ? "5,000" : currentSlab} Std · 3 Branches)`
+              : `⚡ Lite (${currentSlab} Std · 1 Branch Max)`}
           </p>
-          <p className="text-[11px] text-slate-500 dark:text-slate-300 mt-0.5">
-            Custom Website CMS (बैनर, टीचर व गैलरी फोटो), AI Face Attendance, Online Entrance Exam (500 Qs/Subject · 17,500 MCQs &amp; 100-Set PDF) और Class 1–12 Notes अनलॉक। (Lite में Entrance Exam लॉक रहेगा)
+          <p className="text-[11px] text-slate-500 dark:text-slate-300">
+            {edition === "lite"
+              ? "Default Website + QR Attendance (No Face ID / Custom CMS)"
+              : edition === "elite"
+              ? "Custom Website CMS + Face ID + Entrance Exam + Templates"
+              : "Play Store App + On-Site Training + 100% Data Migration"}
           </p>
         </div>
-        <button
-          type="button"
-          disabled={currentTier === "whitelabel_5000"}
-          onClick={() => {
-            const nextElite = !value.isElite;
-            const baseRate = currentTier === "starter_200" || currentTier === "lite" ? 999 : currentTier === "growth_500" ? 1999 : 3999;
-            onChange({
-              ...value,
-              isElite: nextElite,
-              customCurriculumEnabled: nextElite,
-              monthlyAmount: nextElite ? baseRate * 2 : baseRate
-            });
-          }}
-          className={`px-3 py-1.5 rounded-lg text-xs font-black transition cursor-pointer disabled:opacity-80 ${
-            value.isElite || currentTier === "whitelabel_5000"
-              ? "bg-amber-500 text-slate-950 shadow-sm"
-              : "bg-slate-200 dark:bg-slate-600 text-slate-700 dark:text-slate-200"
-          }`}
-        >
-          {currentTier === "whitelabel_5000" ? "👑 White-Label Elite" : value.isElite ? "👑 Elite (2× Active)" : "⚡ Lite (Default Web)"}
-        </button>
+        <div>
+          <label className="text-[10px] font-bold text-slate-500 dark:text-slate-300 block mb-1">
+            Final Assigned Yearly Fee (₹ Editable)
+          </label>
+          <input
+            type="number"
+            min={0}
+            value={displayedAmount}
+            onChange={(e) => {
+              const num = Math.max(0, Number(e.target.value) || 0);
+              onChange({
+                ...value,
+                monthlyAmount: num,
+                yearlyAmount: num,
+              });
+            }}
+            className="w-full px-3 py-1.5 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-sm font-black text-slate-900 dark:text-white"
+          />
+        </div>
       </div>
     </div>
   );
 };
 
-// ── PLAN ASSIGNER COMPONENT ───────────────────────────────────────────────────
-type PlanTier = "starter_200" | "growth_500" | "enterprise_2000" | "whitelabel_5000";
-type PlanDur  = "1_year" | "2_years" | "lifetime" | "monthly" | "weekly" | "3months" | "yearly";
+// ── YEARLY PLAN ASSIGNER COMPONENT ───────────────────────────────────────────
+type PlanDur = "1_year" | "2_years" | "lifetime";
 
-const PLAN_PRICES: Record<PlanTier, Record<PlanDur, number>> = {
-  starter_200:     { "1_year": 9999,  "2_years": 17999, lifetime: 34999,  monthly: 999,  weekly: 299, "3months": 2699,  yearly: 9999 },
-  growth_500:      { "1_year": 19999, "2_years": 35999, lifetime: 69999,  monthly: 1999, weekly: 599, "3months": 5399,  yearly: 19999 },
-  enterprise_2000: { "1_year": 39999, "2_years": 69999, lifetime: 129999, monthly: 3999, weekly: 999, "3months": 10799, yearly: 39999 },
-  whitelabel_5000: { "1_year": 199999, "2_years": 349999, lifetime: 599999, monthly: 19999, weekly: 5999, "3months": 54999, yearly: 199999 },
-};
-const PLAN_SAVINGS: Record<PlanTier, Record<PlanDur, number>> = {
-  starter_200:     { "1_year": 1989, "2_years": 5977,  lifetime: 24965, monthly: 0, weekly: 0, "3months": 298,  yearly: 1989 },
-  growth_500:      { "1_year": 3989, "2_years": 11977, lifetime: 49965, monthly: 0, weekly: 0, "3months": 598,  yearly: 3989 },
-  enterprise_2000: { "1_year": 7989, "2_years": 25977, lifetime: 99965, monthly: 0, weekly: 0, "3months": 1198, yearly: 7989 },
-  whitelabel_5000: { "1_year": 39989, "2_years": 129977, lifetime: 499999, monthly: 0, weekly: 0, "3months": 4998, yearly: 39989 },
-};
 const DURATION_DAYS: Record<PlanDur, number> = {
   "1_year": 365,
   "2_years": 730,
-  lifetime: 7300, // 20 years permanent
-  monthly: 30,
-  weekly: 7,
-  "3months": 90,
-  yearly: 365,
+  lifetime: 7300,
 };
 const DURATION_LABEL: Record<PlanDur, string> = {
-  "1_year": "1st Year Session (1 साल)",
+  "1_year": "1 Year Session (365 Days)",
   "2_years": "2 Years (2 साल)",
   lifetime: "Lifetime (लाइफटाइम)",
-  monthly: "Monthly (1 माह)",
-  weekly: "Weekly",
-  "3months": "3 Months",
-  yearly: "Yearly",
 };
 
 const PlanAssigner: React.FC<{
   school: School;
   onAssigned: (updatedSub: SchoolSubscription) => void;
 }> = ({ school, onAssigned }) => {
-  const [tier, setTier]       = useState<PlanTier>(() => {
-    const st = school?.subscription?.tier;
-    if (st === "starter_200" || st === "growth_500" || st === "enterprise_2000" || st === "whitelabel_5000") return st;
-    return "enterprise_2000";
+  const [edition, setEdition] = useState<SuperEdition>(() => resolveSuperEdition(school?.subscription));
+  const [studentSlab, setStudentSlab] = useState<number>(() => {
+    const ms = school?.subscription?.maxStudents;
+    if (ms && YEARLY_STUDENT_SLABS.includes(ms as any)) return ms;
+    return edition === "lite" ? 100 : 5000;
   });
-  const [isElite, setIsElite] = useState<boolean>(() => {
-    return Boolean(
-      school?.subscription?.tier === "whitelabel_5000" ||
-      school?.subscription?.isElite ||
-      (school as any)?.isElite ||
-      school?.subscription?.customCurriculumEnabled ||
-      (school as any)?.customCurriculumEnabled
-    );
-  });
-  const [duration, setDur]    = useState<PlanDur>("1_year");
-  const [saving, setSaving]   = useState(false);
+  const [isRenewal, setIsRenewal] = useState<boolean>(() => Boolean(school?.subscription?.isRenewal));
+  const [duration, setDur] = useState<PlanDur>("1_year");
+  const [customFinalFee, setCustomFinalFee] = useState<string>("");
+  const [saving, setSaving] = useState(false);
   const [success, setSuccess] = useState(false);
 
-  const effectiveElite = tier === "whitelabel_5000" ? true : isElite;
-  const rawBasePrice  = PLAN_PRICES[tier][duration] || 0;
-  const rawBaseSaving = PLAN_SAVINGS[tier][duration] || 0;
-  // White-label pricing is already inclusive (not doubled by 2x multiplier)
-  const price   = tier === "whitelabel_5000" ? rawBasePrice : effectiveElite ? rawBasePrice * 2 : rawBasePrice;
-  const saving_ = tier === "whitelabel_5000" ? rawBaseSaving : effectiveElite ? rawBaseSaving * 2 : rawBaseSaving;
+  const computedBaseYearly =
+    edition === "supreme"
+      ? SUPREME_YEARLY_PRICING.price
+      : edition === "elite"
+      ? isRenewal
+        ? ELITE_YEARLY_PRICING.renewal
+        : ELITE_YEARLY_PRICING.firstYear
+      : getLitePriceForSlab(studentSlab > 2000 ? 2000 : studentSlab);
+
+  const durationMultiplier = duration === "2_years" ? 2 : duration === "lifetime" ? 4 : 1;
+  const recommendedTotal = computedBaseYearly * durationMultiplier;
+  const price = customFinalFee !== "" ? Math.max(0, Number(customFinalFee) || 0) : recommendedTotal;
 
   const computeExpiry = (dur: PlanDur): string => {
-    if (dur === "lifetime") {
-      const d = new Date();
-      d.setFullYear(d.getFullYear() + 25);
-      return d.toISOString().split("T")[0];
-    }
     const d = new Date();
-    d.setDate(d.getDate() + (DURATION_DAYS[dur] || 365));
+    if (dur === "lifetime") {
+      d.setFullYear(d.getFullYear() + 25);
+    } else {
+      d.setDate(d.getDate() + (DURATION_DAYS[dur] || 365));
+    }
     return d.toISOString().split("T")[0];
   };
 
@@ -353,35 +380,50 @@ const PlanAssigner: React.FC<{
     setSaving(true);
     setSuccess(false);
     const expiresAt = computeExpiry(duration);
-    const maxStudents = tier === "starter_200" ? 200 : tier === "growth_500" ? 500 : tier === "whitelabel_5000" ? 5000 : 2000;
-    const maxTeachers = tier === "starter_200" ? 10 : tier === "growth_500" ? 25 : 9999;
-    const baseMonthly = PLAN_PRICES[tier]["monthly"] || 999;
-    const monthlyAmount = tier === "whitelabel_5000" ? baseMonthly : effectiveElite ? baseMonthly * 2 : baseMonthly;
+    const effectiveSlab = edition === "lite" ? Math.min(2000, studentSlab) : edition === "supreme" ? 5000 : studentSlab;
+    const maxBranches = edition === "supreme" ? 9999 : edition === "elite" ? 3 : 1;
+    const tier =
+      edition === "supreme"
+        ? "whitelabel_5000"
+        : edition === "elite"
+        ? "enterprise_2000"
+        : effectiveSlab <= 300
+        ? "starter_200"
+        : effectiveSlab <= 500
+        ? "growth_500"
+        : "lite";
+    const effectiveElite = edition !== "lite";
 
     const newSub: SchoolSubscription = {
       ...school.subscription,
       tier,
-      maxStudents,
-      maxTeachers,
-      status:        "active",
-      isElite:       effectiveElite,
+      maxStudents: effectiveSlab,
+      maxTeachers: 9999,
+      maxBranches,
+      status: "active",
+      isElite: effectiveElite,
       customCurriculumEnabled: effectiveElite,
+      isRenewal: edition === "elite" ? isRenewal : false,
+      mrpAmount: edition === "elite" ? ELITE_YEARLY_PRICING.mrp : undefined,
+      renewalAmount: edition === "elite" ? ELITE_YEARLY_PRICING.renewal : undefined,
       expiresAt,
-      paidUntil:     expiresAt,
-      reading:       true,
-      writing:       true,
-      pdf:           true,
-      mcq:           true,
-      monthlyAmount,
-      planDuration:  duration,
-      assignedAt:    new Date().toISOString(),
-      lastPaidDate:  new Date().toISOString(),
+      paidUntil: expiresAt,
+      reading: true,
+      writing: true,
+      pdf: true,
+      mcq: true,
+      monthlyAmount: price,
+      yearlyAmount: price,
+      planDuration: duration,
+      assignedAt: new Date().toISOString(),
+      lastPaidDate: new Date().toISOString(),
       lastPaidAmount: price,
-      paymentNotes:  tier === "whitelabel_5000"
-        ? "Enterprise White-Label Active (Play Store App, Custom Domain, On-Site Training & Migration)"
-        : effectiveElite
-        ? "Elite Plan (2× Price — Custom Website CMS, Face Attendance & Class 1-12 Notes Active)"
-        : "Lite Plan Active (Default Website + QR Scan Attendance)",
+      paymentNotes:
+        edition === "supreme"
+          ? "💎 Supreme White-Label Yearly Active (5000+ Std, Unlimited Branches, Play Store App, On-Site Training)"
+          : edition === "elite"
+          ? `👑 Elite Yearly ${isRenewal ? "Renewal (₹80,000)" : "1st Year Offer (₹1,00,000)"} (${effectiveSlab} Std, 3 Branches)`
+          : `⚡ Lite Yearly Active (${effectiveSlab} Std, 1 Branch Max, Default Website + QR Scan)`,
     };
     await updateSchool(school.id, {
       subscription: newSub,
@@ -392,16 +434,15 @@ const PlanAssigner: React.FC<{
     onAssigned(newSub);
     setSaving(false);
     setSuccess(true);
+    toast.success(`Yearly subscription ₹${price.toLocaleString("en-IN")} assign ho gaya!`);
     setTimeout(() => setSuccess(false), 3000);
   };
-
-  const tierLabel = tier === "starter_200" ? "Basic (200)" : tier === "growth_500" ? "Standard (500)" : tier === "whitelabel_5000" ? "White-Label (5000+)" : "Pro (2000)";
 
   return (
     <div className="bg-white dark:bg-slate-800 rounded-xl p-4 shadow-sm space-y-4">
       <div className="flex items-center gap-2">
         <CreditCard className="w-4 h-4 text-indigo-500" />
-        <h3 className="font-semibold text-slate-700 dark:text-slate-200">Plan Assign Karo (Subscription Tier)</h3>
+        <h3 className="font-semibold text-slate-700 dark:text-slate-200">Yearly Plan Assign Karo</h3>
         {school.subscription.expiresAt && (
           <span className="ml-auto text-[10px] text-slate-400">
             Expires: {new Date(school.subscription.expiresAt).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" })}
@@ -409,179 +450,204 @@ const PlanAssigner: React.FC<{
         )}
       </div>
 
-      {/* Tier selector */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5 p-1 bg-slate-100 dark:bg-slate-700 rounded-xl">
-        {(["starter_200", "growth_500", "enterprise_2000", "whitelabel_5000"] as PlanTier[]).map(t => (
-          <button
-            key={t}
-            onClick={() => {
-              setTier(t);
-              if (t === "whitelabel_5000") setIsElite(true);
-            }}
-            className={`py-2 px-1 rounded-lg text-xs font-black transition-all cursor-pointer text-center ${
-              tier === t
-                ? t === "starter_200"
-                  ? "bg-blue-600 text-white shadow"
-                  : t === "growth_500"
-                  ? "bg-purple-600 text-white shadow"
-                  : t === "whitelabel_5000"
-                  ? "bg-rose-600 text-white shadow"
-                  : "bg-amber-500 text-slate-950 shadow"
-                : "text-slate-500 dark:text-slate-400"
-            }`}
-          >
-            {t === "starter_200" ? "📦 Basic (200)" : t === "growth_500" ? "🚀 Standard (500)" : t === "whitelabel_5000" ? "👑 White-Label" : "👑 Pro (2000)"}
-          </button>
-        ))}
+      {/* 3 Decoy Plan Selector */}
+      <div className="grid grid-cols-3 gap-1.5 p-1 bg-slate-100 dark:bg-slate-700 rounded-xl">
+        <button
+          type="button"
+          onClick={() => {
+            setEdition("lite");
+            if (studentSlab > 2000) setStudentSlab(2000);
+            setCustomFinalFee("");
+          }}
+          className={`py-2 px-1.5 rounded-lg text-xs font-black transition-all cursor-pointer text-center ${
+            edition === "lite" ? "bg-blue-600 text-white shadow" : "text-slate-500 dark:text-slate-300"
+          }`}
+        >
+          ⚡ Lite Yearly
+          <span className="block text-[9px] opacity-85">1 Branch · ≤2k Std</span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => {
+            setEdition("elite");
+            setStudentSlab(5000);
+            setCustomFinalFee("");
+          }}
+          className={`py-2 px-1.5 rounded-lg text-xs font-black transition-all cursor-pointer text-center ${
+            edition === "elite"
+              ? "bg-gradient-to-r from-amber-500 to-orange-500 text-slate-950 shadow"
+              : "text-amber-600 dark:text-amber-400"
+          }`}
+        >
+          👑 Elite (Hero)
+          <span className="block text-[9px] opacity-85">3 Branches · ₹1L/80k</span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => {
+            setEdition("supreme");
+            setStudentSlab(5000);
+            setCustomFinalFee("");
+          }}
+          className={`py-2 px-1.5 rounded-lg text-xs font-black transition-all cursor-pointer text-center ${
+            edition === "supreme" ? "bg-rose-600 text-white shadow" : "text-slate-500 dark:text-slate-300"
+          }`}
+        >
+          💎 Supreme
+          <span className="block text-[9px] opacity-85">Unlimited · ₹2L</span>
+        </button>
       </div>
 
-      {/* Plan description */}
-      <div className={`rounded-lg px-3 py-2 text-xs ${
-        tier === "whitelabel_5000"
-          ? "bg-rose-50 dark:bg-rose-900/20 text-rose-700 dark:text-rose-300"
-          : tier === "enterprise_2000"
-          ? "bg-amber-50 dark:bg-amber-900/20 text-amber-700 dark:text-amber-300"
-          : tier === "growth_500"
-          ? "bg-purple-50 dark:bg-purple-900/20 text-purple-700 dark:text-purple-300"
-          : "bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-300"
-      }`}>
-        {tier === "whitelabel_5000"
-          ? "👑 Enterprise White-Label (5000+ Students): Play Store Branded App, On-Site Training, Data Migration & Custom .com Website CMS"
-          : tier === "enterprise_2000"
-          ? "👑 Pro Plan (2000 Students): Unlimited Staff • Multi-Admins, Full Payroll HRM, Advance Accounts & Website"
-          : tier === "growth_500"
-          ? "🚀 Standard Plan (500 Students): 25 Teachers • Sub-Admins, QR ID Cards & Admit Cards"
-          : "📦 Basic Plan (200 Students): 10 Teachers • Core Management, Fees & Default Website"}
-      </div>
-
-      {/* ── 👑 ELITE PLAN (2× PRICE) EDITION SELECTOR ───────────────────── */}
-      <div className="space-y-2">
-        <div className="flex items-center justify-between text-xs">
-          <span className="font-bold text-slate-700 dark:text-slate-200">Plan Edition Chunein:</span>
-          {effectiveElite && (
-            <span className="bg-amber-100 dark:bg-amber-950 text-amber-800 dark:text-amber-300 text-[10px] font-black px-2 py-0.5 rounded-full flex items-center gap-1">
-              <Crown size={11} /> {tier === "whitelabel_5000" ? "All Elite + White-Label Included" : "2× Price Active"}
-            </span>
-          )}
-        </div>
-        <div className="bg-slate-100 dark:bg-slate-700/60 p-1 rounded-xl grid grid-cols-2 gap-1.5">
-          <button
-            type="button"
-            disabled={tier === "whitelabel_5000"}
-            onClick={() => setIsElite(false)}
-            className={`py-2 px-3 rounded-lg text-xs font-black transition-all cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-1.5 ${
-              !effectiveElite
-                ? "bg-white dark:bg-slate-800 text-slate-800 dark:text-white shadow-xs"
-                : "text-slate-500 hover:text-slate-700 dark:hover:text-slate-200"
-            }`}
-          >
-            <Shield className="w-3.5 h-3.5" />
-            Lite (1× · Default Web)
-          </button>
-          <button
-            type="button"
-            onClick={() => setIsElite(true)}
-            className={`py-2 px-3 rounded-lg text-xs font-black transition-all cursor-pointer flex items-center justify-center gap-1.5 ${
-              effectiveElite
-                ? "bg-gradient-to-r from-amber-500 to-orange-500 text-white shadow-xs"
-                : "text-amber-600 dark:text-amber-400 hover:text-amber-700"
-            }`}
-          >
-            <Crown className="w-3.5 h-3.5" />
-            {tier === "whitelabel_5000" ? "👑 White-Label Elite" : "👑 Elite (2× · Custom Web)"}
-          </button>
-        </div>
-
-        {effectiveElite && (
-          <div className="bg-amber-50 dark:bg-amber-950/40 border border-amber-300 dark:border-amber-700 rounded-xl p-3 text-xs text-amber-900 dark:text-amber-200 flex items-start gap-2.5">
-            <Crown className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
-            <div>
-              <p className="font-black text-amber-900 dark:text-amber-100">👑 Elite Custom Website CMS, Face Attendance &amp; Curriculum Unlocked:</p>
-              <p className="text-[11px] text-amber-800 dark:text-amber-300 mt-0.5 leading-relaxed">
-                School ke pass <strong>🌐 Full Custom Website CMS (फ़ोटो, बैनर, टीचर व गैलरी एडिट)</strong>, <strong>🎓 Online Entrance Exam (500 Qs/Subject · 17,500 MCQs &amp; 100-Set PDF)</strong>, <strong>🤖 AI Face Attendance</strong>, aur <strong>Class 1 se 12 Notes</strong> active rahega.
-              </p>
-            </div>
+      {/* Student Slabs */}
+      {edition !== "supreme" && (
+        <div>
+          <p className="text-[11px] font-bold text-slate-500 dark:text-slate-400 mb-1.5">
+            Student Capacity Chunein ({edition === "lite" ? "Lite: +50% per slab up to 2000" : "Elite: up to 5000 Students"}):
+          </p>
+          <div className="grid grid-cols-3 sm:grid-cols-6 gap-1.5">
+            {YEARLY_STUDENT_SLABS.filter((s) => (edition === "lite" ? s <= 2000 : true)).map((slab) => (
+              <button
+                key={slab}
+                type="button"
+                onClick={() => {
+                  setStudentSlab(slab);
+                  setCustomFinalFee("");
+                }}
+                className={`py-1.5 px-2 rounded-lg border text-xs font-black transition cursor-pointer ${
+                  studentSlab === slab
+                    ? edition === "elite"
+                      ? "bg-amber-500 text-slate-950 border-amber-500"
+                      : "bg-blue-600 text-white border-blue-600"
+                    : "bg-slate-50 dark:bg-slate-700/60 text-slate-600 dark:text-slate-300 border-slate-200 dark:border-slate-600"
+                }`}
+              >
+                {slab >= 5000 ? "5000+" : slab}
+                {edition === "lite" && (
+                  <span className="block text-[9px] opacity-85">₹{LITE_YEARLY_PRICES[slab].toLocaleString("en-IN")}</span>
+                )}
+              </button>
+            ))}
           </div>
-        )}
-      </div>
+        </div>
+      )}
 
-      {/* Duration selector */}
-      <div className="grid grid-cols-2 gap-2">
-        {(["1_year", "monthly"] as PlanDur[]).map(d => {
-          const rawP = PLAN_PRICES[tier][d] || 0;
-          const p = tier === "whitelabel_5000" ? rawP : effectiveElite ? rawP * 2 : rawP;
-          const rawS = PLAN_SAVINGS[tier][d] || 0;
-          const s = tier === "whitelabel_5000" ? rawS : effectiveElite ? rawS * 2 : rawS;
+      {/* Elite Offer vs Renewal Toggle */}
+      {edition === "elite" && (
+        <div className="grid grid-cols-2 gap-2">
+          <button
+            type="button"
+            onClick={() => {
+              setIsRenewal(false);
+              setCustomFinalFee("");
+            }}
+            className={`p-2.5 rounded-xl border-2 text-left transition cursor-pointer ${
+              !isRenewal
+                ? "border-amber-500 bg-amber-50 dark:bg-amber-950/30"
+                : "border-slate-200 dark:border-slate-600"
+            }`}
+          >
+            <p className="text-[11px] font-black text-amber-800 dark:text-amber-300">✨ 1st Year Offer</p>
+            <p className="text-xs font-black text-slate-900 dark:text-white mt-0.5">
+              <span className="line-through text-slate-400 mr-1.5 font-normal">₹1,20,000</span>
+              ₹1,00,000 मात्र
+            </p>
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setIsRenewal(true);
+              setCustomFinalFee("");
+            }}
+            className={`p-2.5 rounded-xl border-2 text-left transition cursor-pointer ${
+              isRenewal
+                ? "border-emerald-500 bg-emerald-50 dark:bg-emerald-950/30"
+                : "border-slate-200 dark:border-slate-600"
+            }`}
+          >
+            <p className="text-[11px] font-black text-emerald-700 dark:text-emerald-300">🔄 Annual Renewal Fee</p>
+            <p className="text-xs font-black text-slate-900 dark:text-white mt-0.5">₹80,000 / Year</p>
+          </button>
+        </div>
+      )}
+
+      {/* Yearly Duration Selector (No Monthly!) */}
+      <div className="grid grid-cols-3 gap-2">
+        {(["1_year", "2_years", "lifetime"] as PlanDur[]).map((d) => {
+          const dMult = d === "2_years" ? 2 : d === "lifetime" ? 4 : 1;
+          const p = computedBaseYearly * dMult;
           return (
             <button
               key={d}
-              onClick={() => setDur(d)}
-              className={`flex flex-col items-center gap-1 p-2.5 rounded-xl border-2 transition-all active:scale-95 cursor-pointer text-center ${
+              type="button"
+              onClick={() => {
+                setDur(d);
+                setCustomFinalFee("");
+              }}
+              className={`flex flex-col items-center gap-0.5 p-2 rounded-xl border-2 transition cursor-pointer text-center ${
                 duration === d
-                  ? effectiveElite
+                  ? edition === "elite"
                     ? "border-amber-500 bg-amber-50/70 dark:bg-amber-950/30"
-                    : "border-indigo-500 bg-indigo-50 dark:bg-indigo-900/30"
-                  : "border-slate-200 dark:border-slate-600 hover:border-slate-300"
+                    : edition === "supreme"
+                    ? "border-rose-500 bg-rose-50/70 dark:bg-rose-950/30"
+                    : "border-blue-500 bg-blue-50 dark:bg-blue-900/30"
+                  : "border-slate-200 dark:border-slate-600"
               }`}
             >
-              <span className={`text-[11px] font-black uppercase ${
-                duration === d
-                  ? effectiveElite
-                    ? "text-amber-700 dark:text-amber-300"
-                    : "text-indigo-700 dark:text-indigo-300"
-                  : "text-slate-500 dark:text-slate-400"
-              }`}>
-                {d === "1_year" ? "📅 " : "🗓️ "}
-                {DURATION_LABEL[d]}
+              <span className="text-[10px] font-black uppercase text-slate-700 dark:text-slate-200">
+                {DURATION_LABEL[d].split(" (")[0]}
               </span>
-              <span className={`text-xs font-black ${
-                duration === d
-                  ? effectiveElite
-                    ? "text-amber-700 dark:text-amber-300"
-                    : "text-indigo-600 dark:text-indigo-400"
-                  : "text-slate-600 dark:text-slate-300"
-              }`}>
+              <span className="text-xs font-black text-indigo-600 dark:text-indigo-400">
                 ₹{p.toLocaleString("en-IN")}
               </span>
-              {s > 0 && (
-                <span className="text-[9px] bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300 px-1 rounded font-bold">
-                  Save ₹{s.toLocaleString("en-IN")}
-                </span>
-              )}
             </button>
           );
         })}
       </div>
 
-      {/* Summary */}
-      <div className="flex items-center justify-between bg-slate-50 dark:bg-slate-700/60 rounded-xl px-4 py-3">
-        <div>
-          <p className="text-xs text-slate-400">Plan</p>
-          <p className="text-sm font-black text-slate-800 dark:text-white">
-            {tierLabel} Plan · {tier === "whitelabel_5000" ? "👑 White-Label" : effectiveElite ? "👑 Elite Edition (2×)" : "⚡ Lite Plan"} · {DURATION_LABEL[duration]}
-          </p>
-          <p className="text-[10px] text-slate-400 mt-0.5">
-            Valid till: {computeExpiry(duration)}
-          </p>
-          <p className={`text-[10px] font-bold mt-1 ${effectiveElite ? "text-amber-600 dark:text-amber-400" : "text-slate-500"}`}>
-            {tier === "whitelabel_5000"
-              ? "👑 Play Store App + Custom .com Website CMS + On-Site Training + AI Face Attendance"
-              : effectiveElite
-              ? "👑 Custom Website CMS (फ़ोटो व गैलरी) + AI Face Attendance + Class 1-12 Notes Included"
-              : "⚡ Default Website (बिना कस्टम फ़ोटो) + QR Scan Attendance (No Face Attendance)"}
-          </p>
+      {/* Editable Final Fee + Summary */}
+      <div className="bg-slate-50 dark:bg-slate-700/60 rounded-xl px-4 py-3 space-y-2">
+        <div className="flex items-center justify-between gap-2">
+          <div>
+            <p className="text-xs text-slate-400">Yearly Plan Summary</p>
+            <p className="text-sm font-black text-slate-800 dark:text-white">
+              {edition === "supreme"
+                ? "💎 Supreme White-Label · Unlimited Branches"
+                : edition === "elite"
+                ? `👑 Elite ${isRenewal ? "Renewal" : "1st Year"} · ${studentSlab >= 5000 ? "5000+" : studentSlab} Std · 3 Branches`
+                : `⚡ Lite Yearly · ${studentSlab} Std · 1 Branch Max`}
+            </p>
+            <p className="text-[10px] text-slate-400">Valid till: {computeExpiry(duration)}</p>
+          </div>
+          <div className="text-right">
+            <p className={`text-xl font-black ${edition === "elite" ? "text-amber-600 dark:text-amber-400" : edition === "supreme" ? "text-rose-600 dark:text-rose-400" : "text-blue-600 dark:text-blue-400"}`}>
+              ₹{price.toLocaleString("en-IN")}
+            </p>
+            {edition === "elite" && !isRenewal && (
+              <p className="text-[10px] text-slate-400 line-through">MRP ₹1,20,000</p>
+            )}
+          </div>
         </div>
-        <div className="text-right">
-          <p className={`text-xl font-black ${effectiveElite ? "text-amber-600 dark:text-amber-400" : "text-indigo-600 dark:text-indigo-400"}`}>
-            ₹{price.toLocaleString("en-IN")}
-          </p>
-          {saving_ > 0 && <p className="text-[10px] text-green-600 font-bold">Save ₹{saving_.toLocaleString("en-IN")}</p>}
+
+        <div>
+          <label className="text-[10px] font-bold text-slate-500 dark:text-slate-300 block mb-1">
+            Custom Final Yearly Amount Override (Optional ₹)
+          </label>
+          <input
+            type="number"
+            min={0}
+            placeholder={String(recommendedTotal)}
+            value={customFinalFee}
+            onChange={(e) => setCustomFinalFee(e.target.value)}
+            className="w-full px-3 py-1.5 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-xs font-black text-slate-900 dark:text-white"
+          />
         </div>
       </div>
 
       {success && (
         <div className="flex items-center gap-2 bg-green-50 dark:bg-green-900/20 rounded-xl px-3 py-2.5 text-green-700 dark:text-green-300 text-sm font-bold">
-          <CheckCircle className="w-4 h-4" /> Plan assign ho gaya! ✅
+          <CheckCircle className="w-4 h-4" /> Yearly Plan assign ho gaya! ✅
         </div>
       )}
 
@@ -589,19 +655,21 @@ const PlanAssigner: React.FC<{
         onClick={handleAssign}
         disabled={saving}
         className={`w-full py-3.5 disabled:opacity-60 text-white rounded-xl text-sm font-black flex items-center justify-center gap-2 active:scale-[0.98] transition-all cursor-pointer shadow-md ${
-          effectiveElite
+          edition === "elite"
             ? "bg-gradient-to-r from-amber-600 to-orange-600 hover:from-amber-700 hover:to-orange-700 shadow-amber-500/20"
-            : "bg-indigo-600 hover:bg-indigo-700 shadow-indigo-500/20"
+            : edition === "supreme"
+            ? "bg-gradient-to-r from-rose-600 to-pink-600 hover:from-rose-700 hover:to-pink-700 shadow-rose-500/20"
+            : "bg-blue-600 hover:bg-blue-700 shadow-blue-500/20"
         }`}
       >
         {saving ? (
           <span className="w-4 h-4 border-2 border-white/40 border-t-white rounded-full animate-spin" />
-        ) : effectiveElite ? (
-          <Crown className="w-4 h-4" />
         ) : (
-          <Zap className="w-4 h-4" />
+          <Crown className="w-4 h-4" />
         )}
-        {saving ? "Assigning Plan..." : `Assign ${tierLabel} ${tier === "whitelabel_5000" ? "👑 White-Label" : effectiveElite ? "👑 Elite Plan (2×)" : "Lite Plan"} (₹${price.toLocaleString("en-IN")})`}
+        {saving
+          ? "Assigning Yearly Plan..."
+          : `Assign ${edition === "supreme" ? "💎 Supreme" : edition === "elite" ? "👑 Elite" : "⚡ Lite"} Yearly (₹${price.toLocaleString("en-IN")})`}
       </button>
     </div>
   );
@@ -1935,7 +2003,7 @@ export const SuperAdminPanel: React.FC<Props> = ({ adminUid, onBack }) => {
                     {school.subscription.pdf     && <span className="text-xs bg-orange-50 text-orange-600 px-1.5 py-0.5 rounded">PDF</span>}
                     {school.subscription.mcq     && <span className="text-xs bg-green-50 text-green-600 px-1.5 py-0.5 rounded">MCQ</span>}
                     <span className={`text-xs px-1.5 py-0.5 rounded font-bold ${combo ? "bg-amber-100 text-amber-700" : "bg-slate-100 text-slate-600"}`}>
-                      ₹{school.subscription.monthlyAmount.toLocaleString()}/mo
+                      ₹{(school.subscription.yearlyAmount || school.subscription.monthlyAmount || 0).toLocaleString("en-IN")}/yr
                     </span>
                   </div>
                 </div>

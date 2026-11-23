@@ -8,9 +8,10 @@ import {
   UserCheck, Briefcase, Plus, X, Building2, Wallet,
   CreditCard, TrendingUp, Filter, Award, Trash2, Copy,
   Layers, ChevronDown, ChevronUp, FolderPlus, Tag,
-  Code, Upload, Download, FileText, Calendar
+  Code, Upload, Download, FileText, Calendar, CalendarClock
 } from "lucide-react";
 import type {
+  School,
   SchoolClass,
   SchoolSession,
   ClassFeeStructure,
@@ -20,6 +21,7 @@ import type {
   SchoolTeacher,
   SchoolAccountant,
   TeacherSalaryStructure,
+  MonthlyFee,
 } from "../../school-types";
 import {
   FEE_SECTION_OPTIONS,
@@ -63,7 +65,11 @@ import {
   subscribeToTeachers,
   subscribeToAccountants,
   saveAccountant,
+  getSchool,
+  getSchoolFeeHistory,
+  currentMonthStr,
 } from "../../school-firebase";
+import { FeeTermSchedulerModal } from "./FeeTermSchedulerModal";
 
 interface Props {
   schoolId: string;
@@ -229,6 +235,25 @@ export const ClassFeeStructureSection: React.FC<Props> = ({
 
   // Toast
   const [successToast, setSuccessToast] = useState<string>("");
+
+  // Term / Exam Fee Scheduler state
+  const [showTermScheduler, setShowTermScheduler] = useState<boolean>(false);
+  const [termSchedulerSchool, setTermSchedulerSchool] = useState<School | null>(null);
+  const [termSchedulerHistory, setTermSchedulerHistory] = useState<MonthlyFee[]>([]);
+  const [termSchedulerInitialClassId, setTermSchedulerInitialClassId] = useState<string | undefined>(undefined);
+
+  const openTermScheduler = async (targetClassId?: string) => {
+    setTermSchedulerInitialClassId(targetClassId);
+    setShowTermScheduler(true);
+    try {
+      const [sc, hist] = await Promise.all([
+        getSchool(schoolId).catch(() => null),
+        getSchoolFeeHistory(schoolId, selectedSessionId || sessionId).catch(() => []),
+      ]);
+      if (sc) setTermSchedulerSchool(sc);
+      if (Array.isArray(hist)) setTermSchedulerHistory(hist);
+    } catch {}
+  };
 
   // Sync & subscribe to all academic sessions for this school
   useEffect(() => {
@@ -1599,6 +1624,15 @@ export const ClassFeeStructureSection: React.FC<Props> = ({
                         <Sliders className="w-3.5 h-3.5 text-amber-300 shrink-0" />
                         <span>Apply Standard Preset to All</span>
                       </button>
+                      <button
+                        type="button"
+                        onClick={() => void openTermScheduler()}
+                        className="px-3.5 py-2.5 rounded-xl bg-indigo-500/90 hover:bg-indigo-400 text-white text-xs font-extrabold flex items-center justify-center gap-2 transition active:scale-[0.98] cursor-pointer shadow-xs"
+                        title="Exam Fee, Admission Fee या Custom Term शुल्क को महीने-वार (कम या कस्टम रेट में) लागू करें — Full-Paid छात्र सुरक्षित रहेंगे"
+                      >
+                        <CalendarClock className="w-4 h-4 shrink-0" />
+                        <span>Term / Exam Fee Launcher</span>
+                      </button>
                     </div>
                     <button
                       type="button"
@@ -2352,6 +2386,14 @@ export const ClassFeeStructureSection: React.FC<Props> = ({
                               >
                                 <Copy className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400" />
                                 <span>Copy to All Classes</span>
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => void openTermScheduler(cls.id)}
+                                className="px-2.5 py-1.5 rounded-lg bg-indigo-50 dark:bg-indigo-950/50 border border-indigo-200 dark:border-indigo-800 hover:bg-indigo-100 text-[11px] font-bold text-indigo-700 dark:text-indigo-300 flex items-center gap-1 cursor-pointer"
+                              >
+                                <CalendarClock className="w-3.5 h-3.5" />
+                                <span>Launch Term / Reduced Exam</span>
                               </button>
                               <button
                                 type="button"
@@ -3576,6 +3618,29 @@ export const ClassFeeStructureSection: React.FC<Props> = ({
           </div>
         </div>
       )}
+
+      <FeeTermSchedulerModal
+        isOpen={showTermScheduler}
+        onClose={() => setShowTermScheduler(false)}
+        schoolId={schoolId}
+        school={termSchedulerSchool}
+        classes={classesList}
+        students={allStudents}
+        feeHistory={termSchedulerHistory}
+        currentMonth={currentMonthStr()}
+        sessionId={selectedSessionId || sessionId}
+        initialClassId={termSchedulerInitialClassId}
+        onCampaignsUpdated={(nextCampaigns) => {
+          setTermSchedulerSchool((prev) =>
+            prev ? { ...prev, feeTermCampaigns: nextCampaigns } : { id: schoolId, name: "School", feeTermCampaigns: nextCampaigns } as School
+          );
+          toast.success("Term Fee Schedule saved & active in Fee Manager!");
+        }}
+        onStudentDeferredUpdated={(stuId, patch) => {
+          setAllStudents((prev) => prev.map((st) => (st.id === stuId ? { ...st, ...patch } : st)));
+          toast.success("Student monthly fee head updated!");
+        }}
+      />
     </div>
   );
 };

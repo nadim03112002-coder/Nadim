@@ -6,6 +6,11 @@ import type { Student, SchoolConfig } from '../../types';
 import { getSchoolCacheSync, getSchoolLogoSync } from '../../utils/schoolIndexedDb';
 import { getSchoolFeeDiscountSlabs, formatSlabsHeadline } from '../../utils/feeDiscountSlabs';
 import { buildFeeReceiptQrUrl } from '../../utils/qrVerifyUrl';
+import {
+  getLayoutArchitecture,
+  resolveActiveDocumentTemplate,
+  type DocumentTemplateConfig,
+} from '../../utils/schoolDocumentTemplates';
 
 export const DEFAULT_SCHOOL_CONFIG: SchoolConfig = {
   name: "Life Maker Public School",
@@ -244,6 +249,7 @@ export interface DpsReceiptData {
   signatoryMode?: "both" | "cashier_only" | "principal_only";
   cashierTitle?: string;
   cashierSignatureUrl?: string;
+  templateOverride?: DocumentTemplateConfig;
 }
 
 export interface StudentFeeHistorySummary {
@@ -956,7 +962,22 @@ export function generateDpsReceiptHtml(
        <div class="dps-logo-fallback" style="display:none;width:100%;height:100%;">${fallbackSvg}</div>`
     : fallbackSvg;
 
-  const cardClasses = `dps-receipt-card ${isMini ? "is-mini is-compact" : isCompact ? "is-compact" : ""} ${isDemandNote ? "is-demand-slip" : "is-paid-receipt"}`;
+  const activeSlipTpl = data.templateOverride || resolveActiveDocumentTemplate(data.schoolId, undefined, "fee_slip");
+  const useCustomSlip = Boolean(activeSlipTpl && activeSlipTpl.id !== "default");
+  const slipInlineStyle = useCustomSlip
+    ? `style="--slip-primary:${escapeHtml(activeSlipTpl.colors.primaryColor)};--slip-accent:${escapeHtml(activeSlipTpl.colors.accentColor)};--slip-hdr-text:${escapeHtml(activeSlipTpl.colors.headerTextColor)};--slip-border:${escapeHtml(activeSlipTpl.colors.borderColor)};--slip-badge-bg:${escapeHtml(activeSlipTpl.colors.badgeBg)};--slip-badge-text:${escapeHtml(activeSlipTpl.colors.badgeText)};--slip-surface:${escapeHtml(activeSlipTpl.colors.surfaceTint)};--slip-border-style:${escapeHtml(activeSlipTpl.borderStyle)};position:relative;"`
+    : "";
+  const logoPosClass = useCustomSlip
+    ? activeSlipTpl.logoPosition === "right"
+      ? "dps-logo-right"
+      : activeSlipTpl.logoPosition === "center"
+      ? "dps-logo-center"
+      : ""
+    : "";
+
+  const slipVariant = activeSlipTpl.layoutVariant || "classic_ribbon";
+  const slipArch = useCustomSlip ? getLayoutArchitecture(slipVariant) : null;
+  const cardClasses = `dps-receipt-card ${isMini ? "is-mini is-compact" : isCompact ? "is-compact" : ""} ${isDemandNote ? "is-demand-slip" : "is-paid-receipt"} ${useCustomSlip && slipArch ? `dps-custom-tpl dps-var-${escapeHtml(slipVariant)} dps-hdr-${escapeHtml(slipArch.headerStyle)} dps-frm-${escapeHtml(slipArch.frameStyle)}` : ""} ${logoPosClass}`.trim();
   const cleanDateShort = String(data.receiptDate || "").split("(")[0].trim() || data.receiptDate;
   const showDemandSimpleCols = isDemandNote && totalPaid === 0;
   const showConCol = !showDemandSimpleCols || totalConcession > 0;
@@ -967,7 +988,10 @@ export function generateDpsReceiptHtml(
     : (data.receiptTitle || "OFFICIAL FEE RECEIPT • शुल्क रसीद");
 
   return `
-  <div class="${cardClasses}">
+  <div class="${cardClasses}" ${slipInlineStyle}>
+    ${useCustomSlip && activeSlipTpl.showWatermark ? `
+    <div class="dps-custom-watermark" aria-hidden="true">${escapeHtml((activeSlipTpl.watermarkText || data.schoolName || "RECEIPT").slice(0, 14).toUpperCase())}</div>
+    ` : ""}
     <!-- Top Header with School Logo, Name, Address & Office Helpline -->
     <div class="dps-header">
       <div class="dps-logo-col">
@@ -1294,7 +1318,9 @@ export function generateDpsReceiptHtml(
             data.signatoryMode === "cashier_only" ||
             (!isDemandNote && data.signatoryMode !== "principal_only");
           if (!showCollectorBlock) return "";
-          const collectorRoleText = isManagerCollector ? "Manager" : "Accountant";
+          const collectorRoleText = (useCustomSlip && activeSlipTpl.leftSignatoryLabel)
+            ? activeSlipTpl.leftSignatoryLabel
+            : (isManagerCollector ? "Manager" : "Accountant");
           const collectorTitleText = isManagerCollector
             ? (data.collectedByName || data.managerName || "Manager")
             : (data.collectedByName || data.accountantName || data.cashierTitle || "Accountant");
@@ -1322,11 +1348,14 @@ export function generateDpsReceiptHtml(
               <div class="dps-sign-manual-space"></div>
             `}
             <span class="dps-sign-title">${escapeHtml(data.principalName || "Principal")}</span>
-            <span class="dps-sign-role">${escapeHtml(data.principalTitle || "Principal (Sign & Seal)")}</span>
+            <span class="dps-sign-role">${escapeHtml((useCustomSlip && activeSlipTpl.rightSignatoryLabel) ? activeSlipTpl.rightSignatoryLabel : (data.principalTitle || "Principal (Sign & Seal)"))}</span>
           </div>
         ` : ""}
       </div>
     </div>
+    ${useCustomSlip && activeSlipTpl.footerNote ? `
+    <div class="dps-custom-footer-note">${escapeHtml(activeSlipTpl.footerNote)}</div>
+    ` : ""}
   </div>
   `;
 }
@@ -2714,6 +2743,446 @@ export const DPS_RECEIPT_CSS = `
     font-size: 5px;
   }
 
+  /* Custom Template Overrides (Only active when non-default template is selected) */
+  .dps-receipt-card.dps-custom-tpl {
+    border: 2px var(--slip-border-style, solid) var(--slip-border, #0f172a) !important;
+    overflow: hidden;
+  }
+  .dps-receipt-card.dps-custom-tpl .dps-header {
+    background: linear-gradient(135deg, var(--slip-primary, #1e293b), var(--slip-accent, #0284c7)) !important;
+    color: var(--slip-hdr-text, #ffffff) !important;
+  }
+  .dps-receipt-card.dps-custom-tpl.dps-logo-right .dps-header {
+    flex-direction: row-reverse;
+  }
+  .dps-receipt-card.dps-custom-tpl.dps-logo-center .dps-header {
+    flex-direction: column;
+    text-align: center;
+    gap: 4px;
+  }
+  .dps-receipt-card.dps-custom-tpl.dps-logo-center .dps-school-info {
+    padding-right: 0;
+  }
+  .dps-receipt-card.dps-custom-tpl .dps-school-name,
+  .dps-receipt-card.dps-custom-tpl .dps-school-address {
+    color: var(--slip-hdr-text, #ffffff) !important;
+  }
+  .dps-receipt-card.dps-custom-tpl .dps-banner {
+    background: var(--slip-badge-bg, #e2e8f0) !important;
+    background-color: var(--slip-badge-bg, #e2e8f0) !important;
+    color: var(--slip-badge-text, #0f172a) !important;
+    border-color: var(--slip-border, #0f172a) !important;
+  }
+  .dps-receipt-card.dps-custom-tpl .dps-copy-tag {
+    color: var(--slip-badge-text, #1e293b) !important;
+  }
+  .dps-receipt-card.dps-custom-tpl .dps-meta-grid,
+  .dps-receipt-card.dps-custom-tpl .dps-grand-total-row:not(.is-due-highlight) {
+    background: var(--slip-surface, #f8fafc) !important;
+    border-color: var(--slip-border, #0f172a) !important;
+  }
+  .dps-receipt-card.dps-custom-tpl .dps-fee-table thead th {
+    background: var(--slip-primary, #1e293b) !important;
+    color: var(--slip-hdr-text, #ffffff) !important;
+    border-color: var(--slip-border, #0f172a) !important;
+  }
+
+  /* Design 01: Royal Crest & Ribbon */
+  .dps-receipt-card.dps-custom-tpl.dps-var-classic_ribbon {
+    border-width: 3px !important;
+    box-shadow: inset 0 0 0 2px #ffffff, inset 0 0 0 4px var(--slip-accent, #d97706) !important;
+  }
+
+  /* Design 02: Vertical Left Sidebar Counter Spine */
+  .dps-receipt-card.dps-custom-tpl.dps-var-split_sidebar {
+    border-left: 11px solid var(--slip-primary, #0f766e) !important;
+  }
+  .dps-receipt-card.dps-custom-tpl.dps-var-split_sidebar.is-mini {
+    border-left-width: 6px !important;
+  }
+  .dps-receipt-card.dps-custom-tpl.dps-var-split_sidebar .dps-header {
+    background: var(--slip-surface, #f0fdfa) !important;
+    border-bottom: 2px solid var(--slip-primary, #0f766e) !important;
+  }
+  .dps-receipt-card.dps-custom-tpl.dps-var-split_sidebar .dps-school-name {
+    color: var(--slip-primary, #0f766e) !important;
+  }
+  .dps-receipt-card.dps-custom-tpl.dps-var-split_sidebar .dps-school-address {
+    color: #334155 !important;
+  }
+
+  /* Design 03: Modern Floating Capsule */
+  .dps-receipt-card.dps-custom-tpl.dps-var-modern_floating {
+    border-radius: 12px !important;
+  }
+  .dps-receipt-card.dps-custom-tpl.dps-var-modern_floating .dps-banner {
+    margin: 4px 10px !important;
+    border-radius: 999px !important;
+    border: none !important;
+  }
+  .dps-receipt-card.dps-custom-tpl.dps-var-modern_floating.is-mini .dps-banner {
+    margin: 2px 5px !important;
+  }
+  .dps-receipt-card.dps-custom-tpl.dps-var-modern_floating .dps-fee-table tbody tr:nth-child(even) {
+    background: var(--slip-surface, #f5f3ff) !important;
+  }
+
+  /* Design 04: Official CBSE / Bank Fee Challan Box */
+  .dps-receipt-card.dps-custom-tpl.dps-var-cbse_board {
+    border-radius: 0 !important;
+    border-top: 7px solid var(--slip-primary, #1e3a8a) !important;
+  }
+  .dps-receipt-card.dps-custom-tpl.dps-var-cbse_board .dps-header {
+    background: #ffffff !important;
+    border-bottom: 1.5px solid var(--slip-primary, #1e3a8a) !important;
+  }
+  .dps-receipt-card.dps-custom-tpl.dps-var-cbse_board .dps-school-name {
+    font-family: Georgia, 'Times New Roman', serif !important;
+    color: var(--slip-primary, #1e3a8a) !important;
+  }
+  .dps-receipt-card.dps-custom-tpl.dps-var-cbse_board .dps-school-address {
+    color: #334155 !important;
+  }
+  .dps-receipt-card.dps-custom-tpl.dps-var-cbse_board .dps-fee-table thead th {
+    background: #f8fafc !important;
+    color: var(--slip-primary, #1e3a8a) !important;
+    border-bottom: 2px solid var(--slip-primary, #1e3a8a) !important;
+  }
+
+  /* Design 05: Angular / Geometric Diagonal Cut */
+  .dps-receipt-card.dps-custom-tpl.dps-var-diagonal_sport .dps-header {
+    background: linear-gradient(122deg, var(--slip-primary, #ea580c) 58%, var(--slip-accent, #7c3aed) 58.5%) !important;
+  }
+  .dps-receipt-card.dps-custom-tpl.dps-var-diagonal_sport .dps-banner {
+    margin: 3px 10px !important;
+    transform: skewX(-6deg);
+    border-radius: 3px !important;
+  }
+  .dps-receipt-card.dps-custom-tpl.dps-var-diagonal_sport .dps-fee-table tbody tr:nth-child(even) {
+    background: var(--slip-surface, #fff7ed) !important;
+  }
+
+  /* Design 06: Swiss Minimalist White */
+  .dps-receipt-card.dps-custom-tpl.dps-var-minimal_grid {
+    border: 1px solid #cbd5e1 !important;
+    border-top: 5px solid var(--slip-primary, #0f172a) !important;
+    background: #ffffff !important;
+  }
+  .dps-receipt-card.dps-custom-tpl.dps-var-minimal_grid .dps-header,
+  .dps-receipt-card.dps-custom-tpl.dps-var-minimal_grid .dps-meta-grid,
+  .dps-receipt-card.dps-custom-tpl.dps-var-minimal_grid .dps-grand-total-row:not(.is-due-highlight) {
+    background: #ffffff !important;
+  }
+  .dps-receipt-card.dps-custom-tpl.dps-var-minimal_grid .dps-school-name {
+    color: var(--slip-primary, #0f172a) !important;
+  }
+  .dps-receipt-card.dps-custom-tpl.dps-var-minimal_grid .dps-school-address {
+    color: #475569 !important;
+  }
+  .dps-receipt-card.dps-custom-tpl.dps-var-minimal_grid .dps-banner {
+    background: #ffffff !important;
+    color: var(--slip-primary, #0f172a) !important;
+    border-top: 1px solid #e2e8f0 !important;
+    border-bottom: 1.5px solid var(--slip-primary, #0f172a) !important;
+  }
+  .dps-receipt-card.dps-custom-tpl.dps-var-minimal_grid .dps-fee-table thead th {
+    background: #ffffff !important;
+    color: var(--slip-primary, #0f172a) !important;
+    border-bottom: 2px solid var(--slip-primary, #0f172a) !important;
+  }
+
+  /* Design 07: Diploma / Parchment Receipt Book */
+  .dps-receipt-card.dps-custom-tpl.dps-var-certificate_diploma {
+    background: #fffdf4 !important;
+    border: 4px double var(--slip-border, #78350f) !important;
+    box-shadow: inset 0 0 0 2px #fffdf4, inset 0 0 0 4px var(--slip-accent, #d97706) !important;
+  }
+  .dps-receipt-card.dps-custom-tpl.dps-var-certificate_diploma .dps-header {
+    background: #fffbeb !important;
+    border-bottom: 2px double var(--slip-accent, #d97706) !important;
+  }
+  .dps-receipt-card.dps-custom-tpl.dps-var-certificate_diploma .dps-school-name {
+    font-family: Georgia, 'Times New Roman', serif !important;
+    color: var(--slip-primary, #78350f) !important;
+  }
+  .dps-receipt-card.dps-custom-tpl.dps-var-certificate_diploma .dps-school-address {
+    color: #451a03 !important;
+  }
+  .dps-receipt-card.dps-custom-tpl.dps-var-certificate_diploma .dps-table-container,
+  .dps-receipt-card.dps-custom-tpl.dps-var-certificate_diploma .dps-paymode-grid,
+  .dps-receipt-card.dps-custom-tpl.dps-var-certificate_diploma .dps-words-box,
+  .dps-receipt-card.dps-custom-tpl.dps-var-certificate_diploma .dps-footer {
+    background: #fffdf4 !important;
+  }
+
+  /* Design 08: Big Highlight Total & Stamp Focus */
+  .dps-receipt-card.dps-custom-tpl.dps-var-compact_photo_focus {
+    border-top: 6px solid var(--slip-accent, #0284c7) !important;
+  }
+  .dps-receipt-card.dps-custom-tpl.dps-var-compact_photo_focus .dps-grand-total-row:not(.is-due-highlight) {
+    background: var(--slip-primary, #0f172a) !important;
+    color: var(--slip-hdr-text, #ffffff) !important;
+  }
+  .dps-receipt-card.dps-custom-tpl.dps-var-compact_photo_focus .dps-grand-total-row:not(.is-due-highlight) .grand-val {
+    color: var(--slip-hdr-text, #ffffff) !important;
+    font-size: 17px !important;
+  }
+  .dps-receipt-card.dps-custom-tpl.dps-var-compact_photo_focus.is-compact .dps-grand-total-row:not(.is-due-highlight) .grand-val {
+    font-size: 13.5px !important;
+  }
+
+  /* Design 09: 50/50 Dual-Tone Split */
+  .dps-receipt-card.dps-custom-tpl.dps-var-dual_tone_split .dps-meta-grid {
+    background: var(--slip-primary, #312e81) !important;
+    color: var(--slip-hdr-text, #ffffff) !important;
+  }
+  .dps-receipt-card.dps-custom-tpl.dps-var-dual_tone_split .dps-meta-grid .dps-label,
+  .dps-receipt-card.dps-custom-tpl.dps-var-dual_tone_split .dps-meta-grid .dps-colon,
+  .dps-receipt-card.dps-custom-tpl.dps-var-dual_tone_split .dps-meta-grid .dps-val {
+    color: var(--slip-hdr-text, #ffffff) !important;
+  }
+
+  /* Design 10: Ink-Saver Classic Receipt Ledger */
+  .dps-receipt-card.dps-custom-tpl.dps-var-ink_saver_classic {
+    border: 2px dashed var(--slip-border, #0f172a) !important;
+    background: #ffffff !important;
+  }
+  .dps-receipt-card.dps-custom-tpl.dps-var-ink_saver_classic .dps-header,
+  .dps-receipt-card.dps-custom-tpl.dps-var-ink_saver_classic .dps-meta-grid,
+  .dps-receipt-card.dps-custom-tpl.dps-var-ink_saver_classic .dps-banner,
+  .dps-receipt-card.dps-custom-tpl.dps-var-ink_saver_classic .dps-fee-table thead th,
+  .dps-receipt-card.dps-custom-tpl.dps-var-ink_saver_classic .dps-grand-total-row:not(.is-due-highlight) {
+    background: #ffffff !important;
+    color: #0f172a !important;
+  }
+  .dps-receipt-card.dps-custom-tpl.dps-var-ink_saver_classic .dps-school-name {
+    color: var(--slip-primary, #0f172a) !important;
+  }
+  .dps-receipt-card.dps-custom-tpl.dps-var-ink_saver_classic .dps-school-address {
+    color: #334155 !important;
+  }
+  .dps-receipt-card.dps-custom-tpl.dps-var-ink_saver_classic .dps-banner {
+    border-top: 1.5px dashed var(--slip-primary, #0f172a) !important;
+    border-bottom: 1.5px dashed var(--slip-primary, #0f172a) !important;
+    color: var(--slip-primary, #0f172a) !important;
+  }
+  .dps-receipt-card.dps-custom-tpl.dps-var-ink_saver_classic .dps-fee-table thead th {
+    border-bottom: 1.5px solid var(--slip-primary, #0f172a) !important;
+    color: var(--slip-primary, #0f172a) !important;
+  }
+
+  /* Design 11: Curved Arch & Crown Header */
+  .dps-receipt-card.dps-custom-tpl.dps-var-top_banner_arch .dps-header {
+    border-bottom-left-radius: 40% 18px !important;
+    border-bottom-right-radius: 40% 18px !important;
+  }
+
+  /* Design 12: Vertical Right Sidebar Counter Spine */
+  .dps-receipt-card.dps-custom-tpl.dps-var-right_sidebar_spine {
+    border-right: 11px solid var(--slip-primary, #0369a1) !important;
+  }
+  .dps-receipt-card.dps-custom-tpl.dps-var-right_sidebar_spine.is-mini {
+    border-right-width: 6px !important;
+  }
+  .dps-receipt-card.dps-custom-tpl.dps-var-right_sidebar_spine .dps-header {
+    background: var(--slip-surface, #f0f9ff) !important;
+    border-bottom: 2px solid var(--slip-primary, #0369a1) !important;
+  }
+  .dps-receipt-card.dps-custom-tpl.dps-var-right_sidebar_spine .dps-school-name {
+    color: var(--slip-primary, #0369a1) !important;
+  }
+  .dps-receipt-card.dps-custom-tpl.dps-var-right_sidebar_spine .dps-school-address {
+    color: #334155 !important;
+  }
+
+  /* Design 13: Heritage Ornate Filigree */
+  .dps-receipt-card.dps-custom-tpl.dps-var-heritage_ornate_frame {
+    background: #fffdf4 !important;
+    border: 4px double var(--slip-border, #78350f) !important;
+    box-shadow: inset 0 0 0 2px #fffdf4, inset 0 0 0 4px var(--slip-accent, #d97706) !important;
+  }
+
+  /* Design 14: Smart Corporate Metro */
+  .dps-receipt-card.dps-custom-tpl.dps-var-corporate_badge_card {
+    border-radius: 10px !important;
+    border-top: 6px solid var(--slip-primary, #0f172a) !important;
+  }
+
+  /* Design 15: Academic Gazette Editorial */
+  .dps-receipt-card.dps-custom-tpl.dps-var-newspaper_gazette {
+    border: 4px double var(--slip-border, #1f2937) !important;
+    border-radius: 0 !important;
+  }
+  .dps-receipt-card.dps-custom-tpl.dps-var-newspaper_gazette .dps-header {
+    background: #ffffff !important;
+    border-bottom: 3px double var(--slip-primary, #1f2937) !important;
+  }
+  .dps-receipt-card.dps-custom-tpl.dps-var-newspaper_gazette .dps-school-name {
+    font-family: Georgia, 'Times New Roman', serif !important;
+    color: var(--slip-primary, #1f2937) !important;
+  }
+  .dps-receipt-card.dps-custom-tpl.dps-var-newspaper_gazette .dps-school-address {
+    color: #374151 !important;
+  }
+
+  /* Design 16: Aurora Multi-Gradient */
+  .dps-receipt-card.dps-custom-tpl.dps-var-gradient_aurora_glass .dps-header {
+    background: linear-gradient(125deg, var(--slip-primary, #0d9488), var(--slip-accent, #6366f1), #ec4899) !important;
+  }
+
+  /* Design 17: Tri-Band Heritage Ribbon */
+  .dps-receipt-card.dps-custom-tpl.dps-var-tricolor_patriot_band {
+    border-top: 5px solid #f97316 !important;
+    border-bottom: 5px solid #16a34a !important;
+  }
+  .dps-receipt-card.dps-custom-tpl.dps-var-tricolor_patriot_band .dps-header {
+    background: #ffffff !important;
+    border-bottom: 2px solid #1e3a8a !important;
+  }
+  .dps-receipt-card.dps-custom-tpl.dps-var-tricolor_patriot_band .dps-school-name {
+    color: #1e3a8a !important;
+  }
+  .dps-receipt-card.dps-custom-tpl.dps-var-tricolor_patriot_band .dps-school-address {
+    color: #334155 !important;
+  }
+
+  /* Design 18: Dark Obsidian & Gold Foil */
+  .dps-receipt-card.dps-custom-tpl.dps-var-dark_executive_obsidian .dps-header {
+    background: linear-gradient(135deg, #09090b, var(--slip-primary, #18181b)) !important;
+    border-bottom: 2.5px solid var(--slip-accent, #f59e0b) !important;
+  }
+
+  /* Design 19: Precision Boxed Matrix */
+  .dps-receipt-card.dps-custom-tpl.dps-var-checker_ledger_grid {
+    border-radius: 0 !important;
+    border: 2px solid var(--slip-primary, #1d4ed8) !important;
+  }
+
+  /* Design 20: Emblem Seal Centerpiece */
+  .dps-receipt-card.dps-custom-tpl.dps-var-stamp_seal_watermark {
+    border: 4px double var(--slip-border, #7f1d1d) !important;
+    box-shadow: inset 0 0 0 2px #ffffff, inset 0 0 0 4px var(--slip-accent, #d97706) !important;
+  }
+
+  /* 60 Structural Header & Frame Architectures for Fee Receipts */
+  .dps-receipt-card.dps-custom-tpl.dps-hdr-wave .dps-header {
+    border-bottom-left-radius: 60% 18px !important;
+    border-bottom-right-radius: 20% 6px !important;
+  }
+  .dps-receipt-card.dps-custom-tpl.dps-hdr-arch .dps-header {
+    border-bottom-left-radius: 44% 18px !important;
+    border-bottom-right-radius: 44% 18px !important;
+  }
+  .dps-receipt-card.dps-custom-tpl.dps-hdr-chevron .dps-header {
+    clip-path: polygon(0 0, 100% 0, 100% 82%, 50% 100%, 0 82%);
+    padding-bottom: 12px !important;
+  }
+  .dps-receipt-card.dps-custom-tpl.dps-hdr-scallop .dps-header {
+    border-bottom: 4px dotted var(--slip-badge-bg, #ffffff) !important;
+  }
+  .dps-receipt-card.dps-custom-tpl.dps-hdr-prism .dps-header {
+    background: linear-gradient(135deg, var(--slip-primary, #1e293b) 0%, var(--slip-accent, #0ea5e9) 46%, var(--slip-primary, #1e293b) 47%, #0f172a 100%) !important;
+  }
+  .dps-receipt-card.dps-custom-tpl.dps-hdr-horizon .dps-header {
+    background: radial-gradient(circle at 50% 125%, var(--slip-accent, #f97316), var(--slip-primary, #7c2d12) 72%) !important;
+    border-bottom-left-radius: 50% 16px !important;
+    border-bottom-right-radius: 50% 16px !important;
+  }
+  .dps-receipt-card.dps-custom-tpl.dps-hdr-scoreboard .dps-header {
+    background: #0f172a !important;
+    border-bottom: 3.5px solid var(--slip-accent, #f59e0b) !important;
+  }
+  .dps-receipt-card.dps-custom-tpl.dps-hdr-double_decker .dps-header {
+    border-bottom: 5px solid var(--slip-accent, #0ea5e9) !important;
+  }
+  .dps-receipt-card.dps-custom-tpl.dps-hdr-floating_pill .dps-header,
+  .dps-receipt-card.dps-custom-tpl.dps-hdr-scroll_header .dps-header {
+    margin: 5px 8px 3px !important;
+    border-radius: 999px !important;
+  }
+  .dps-receipt-card.dps-custom-tpl.dps-hdr-ribbon_3d .dps-header {
+    box-shadow: 0 4px 0 var(--slip-border, #0f172a) !important;
+  }
+  .dps-receipt-card.dps-custom-tpl.dps-hdr-gazette_double .dps-header,
+  .dps-receipt-card.dps-custom-tpl.dps-hdr-editorial_split .dps-header {
+    background: #ffffff !important;
+    border-bottom: 3px double var(--slip-primary, #1e293b) !important;
+  }
+  .dps-receipt-card.dps-custom-tpl.dps-hdr-gazette_double .dps-school-name,
+  .dps-receipt-card.dps-custom-tpl.dps-hdr-editorial_split .dps-school-name {
+    color: var(--slip-primary, #1e293b) !important;
+    font-family: Georgia, serif !important;
+  }
+  .dps-receipt-card.dps-custom-tpl.dps-hdr-gazette_double .dps-school-address,
+  .dps-receipt-card.dps-custom-tpl.dps-hdr-editorial_split .dps-school-address {
+    color: #334155 !important;
+  }
+  .dps-receipt-card.dps-custom-tpl.dps-frm-left_wide { border-left: 16px solid var(--slip-primary, #0f172a) !important; }
+  .dps-receipt-card.dps-custom-tpl.dps-frm-right_wide { border-right: 16px solid var(--slip-primary, #0f172a) !important; }
+  .dps-receipt-card.dps-custom-tpl.dps-frm-dual_rails {
+    border-left: 8px solid var(--slip-primary, #0f172a) !important;
+    border-right: 8px solid var(--slip-accent, #0ea5e9) !important;
+  }
+  .dps-receipt-card.dps-custom-tpl.dps-frm-bottom_dock { border-bottom: 10px solid var(--slip-primary, #0f172a) !important; }
+  .dps-receipt-card.dps-custom-tpl.dps-frm-lanyard_punch { border-top: 8px solid var(--slip-primary, #0f172a) !important; border-radius: 14px !important; }
+  .dps-receipt-card.dps-custom-tpl.dps-frm-passport_mrz { border-bottom: 8px dashed #0f172a !important; }
+  .dps-receipt-card.dps-custom-tpl.dps-frm-ticket_notch { border: 2px dashed var(--slip-primary, #0f172a) !important; border-radius: 10px !important; }
+  .dps-receipt-card.dps-custom-tpl.dps-frm-beveled { border-radius: 18px 2px 18px 2px !important; }
+  .dps-receipt-card.dps-custom-tpl.dps-frm-blueprint_grid {
+    background-image: linear-gradient(rgba(15, 23, 42, 0.04) 1px, transparent 1px), linear-gradient(90deg, rgba(15, 23, 42, 0.04) 1px, transparent 1px) !important;
+    background-size: 14px 14px !important;
+  }
+  .dps-receipt-card.dps-custom-tpl.dps-frm-stacked_deck {
+    box-shadow: 4px 4px 0 var(--slip-accent, #0ea5e9), 8px 8px 0 var(--slip-primary, #0f172a) !important;
+  }
+  .dps-receipt-card.dps-custom-tpl.dps-frm-art_deco,
+  .dps-receipt-card.dps-custom-tpl.dps-frm-guilloche,
+  .dps-receipt-card.dps-custom-tpl.dps-frm-museum_plaque,
+  .dps-receipt-card.dps-custom-tpl.dps-frm-laurel_wreath,
+  .dps-receipt-card.dps-custom-tpl.dps-frm-diamond_crest,
+  .dps-receipt-card.dps-custom-tpl.dps-frm-concentric_halo {
+    border: 4px double var(--slip-border, #78350f) !important;
+    box-shadow: inset 0 0 0 2px #fffdf4, inset 0 0 0 4px var(--slip-accent, #d97706) !important;
+  }
+  .dps-receipt-card.dps-custom-tpl.dps-frm-dossier_tab { border-top: 9px solid var(--slip-primary, #0f172a) !important; border-radius: 2px 14px 6px 6px !important; }
+  .dps-receipt-card.dps-custom-tpl.dps-frm-swiss_cross { border-left: 12px solid var(--slip-accent, #dc2626) !important; }
+  .dps-receipt-card.dps-custom-tpl.dps-frm-heavy_bars { border-top: 7px solid var(--slip-primary, #0f172a) !important; border-bottom: 7px solid var(--slip-accent, #0ea5e9) !important; }
+  .dps-receipt-card.dps-custom-tpl.dps-frm-mono_stripe { border-left: 6px solid var(--slip-primary, #0f172a) !important; border-radius: 0 !important; }
+  .dps-receipt-card.dps-custom-tpl.dps-frm-postage_stamp,
+  .dps-receipt-card.dps-custom-tpl.dps-frm-checkered_rim { border: 3px dotted var(--slip-primary, #0f172a) !important; }
+  .dps-receipt-card.dps-custom-tpl.dps-frm-folio_ledger { background: #fafdf7 !important; border-left: 5px double var(--slip-primary, #065f46) !important; }
+  .dps-receipt-card.dps-custom-tpl.dps-frm-bookmark_ribbon { box-shadow: inset -5px 0 0 var(--slip-accent, #d97706) !important; }
+  .dps-receipt-card.dps-custom-tpl.dps-frm-zen_asymmetric { border-left: 8px solid var(--slip-primary, #0f172a) !important; border-radius: 0 !important; }
+  .dps-receipt-card.dps-custom-tpl .dps-custom-watermark {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 38px;
+    font-weight: 900;
+    letter-spacing: 5px;
+    color: var(--slip-primary, #0f172a);
+    opacity: 0.055;
+    transform: rotate(-18deg);
+    pointer-events: none;
+    user-select: none;
+    z-index: 0;
+  }
+  .dps-receipt-card.dps-custom-tpl > *:not(.dps-custom-watermark) {
+    position: relative;
+    z-index: 1;
+  }
+  .dps-custom-footer-note {
+    text-align: center;
+    font-size: 8.5px;
+    font-weight: 700;
+    color: #475569;
+    background: var(--slip-surface, #f8fafc);
+    border-top: 1px dashed var(--slip-border, #cbd5e1);
+    padding: 3px 8px;
+  }
+
   @media screen {
     .dps-preview-wrapper {
       padding: 16px;
@@ -3161,6 +3630,106 @@ export const POS_SLIP_CSS = `
     color: #333333;
     margin-top: 2mm;
   }
+  .pos-slip-card.pos-custom-tpl {
+    border: 2px var(--slip-border-style, solid) var(--slip-border, #0f172a) !important;
+  }
+  .pos-slip-card.pos-custom-tpl .pos-header {
+    background: var(--slip-primary, #1e293b) !important;
+    color: var(--slip-hdr-text, #ffffff) !important;
+    padding: 2mm !important;
+    border-radius: 3px;
+  }
+  .pos-slip-card.pos-custom-tpl .pos-school-sub {
+    color: var(--slip-hdr-text, #ffffff) !important;
+    opacity: 0.9;
+  }
+  .pos-slip-card.pos-custom-tpl .pos-title-badge {
+    background: var(--slip-badge-bg, #e2e8f0) !important;
+    color: var(--slip-badge-text, #0f172a) !important;
+    border-radius: 2px;
+  }
+  .pos-slip-card.pos-custom-tpl .pos-grand-paid {
+    background: var(--slip-surface, #f8fafc) !important;
+    border-color: var(--slip-border, #0f172a) !important;
+    padding-left: 1.5mm;
+    padding-right: 1.5mm;
+  }
+  .pos-slip-card.pos-custom-tpl.pos-var-split_sidebar {
+    border-left: 4px solid var(--slip-primary, #0f766e) !important;
+  }
+  .pos-slip-card.pos-custom-tpl.pos-var-minimal_grid .pos-header,
+  .pos-slip-card.pos-custom-tpl.pos-var-cbse_board .pos-header,
+  .pos-slip-card.pos-custom-tpl.pos-var-ink_saver_classic .pos-header {
+    background: #ffffff !important;
+    color: #000000 !important;
+    border-bottom: 1.5px solid #000000 !important;
+    border-radius: 0 !important;
+  }
+  .pos-slip-card.pos-custom-tpl.pos-var-minimal_grid .pos-school-sub,
+  .pos-slip-card.pos-custom-tpl.pos-var-cbse_board .pos-school-sub,
+  .pos-slip-card.pos-custom-tpl.pos-var-ink_saver_classic .pos-school-sub {
+    color: #111111 !important;
+  }
+  .pos-slip-card.pos-custom-tpl.pos-var-certificate_diploma {
+    background: #fffdf4 !important;
+    border: 3px double #000000 !important;
+  }
+  .pos-slip-card.pos-custom-tpl.pos-var-modern_floating .pos-title-badge {
+    border-radius: 999px !important;
+  }
+  .pos-slip-card.pos-custom-tpl.pos-var-ink_saver_classic {
+    border-style: dashed !important;
+  }
+  .pos-slip-card.pos-custom-tpl.pos-frm-left_spine,
+  .pos-slip-card.pos-custom-tpl.pos-frm-left_wide,
+  .pos-slip-card.pos-custom-tpl.pos-frm-swiss_cross,
+  .pos-slip-card.pos-custom-tpl.pos-frm-mono_stripe {
+    border-left: 5px solid var(--slip-primary, #0f172a) !important;
+  }
+  .pos-slip-card.pos-custom-tpl.pos-frm-right_spine,
+  .pos-slip-card.pos-custom-tpl.pos-frm-right_wide {
+    border-right: 5px solid var(--slip-primary, #0f172a) !important;
+  }
+  .pos-slip-card.pos-custom-tpl.pos-frm-dual_rails {
+    border-left: 4px solid var(--slip-primary, #0f172a) !important;
+    border-right: 4px solid var(--slip-accent, #0ea5e9) !important;
+  }
+  .pos-slip-card.pos-custom-tpl.pos-frm-art_deco,
+  .pos-slip-card.pos-custom-tpl.pos-frm-guilloche,
+  .pos-slip-card.pos-custom-tpl.pos-frm-museum_plaque,
+  .pos-slip-card.pos-custom-tpl.pos-frm-laurel_wreath,
+  .pos-slip-card.pos-custom-tpl.pos-frm-ornate_filigree,
+  .pos-slip-card.pos-custom-tpl.pos-frm-diploma_parchment {
+    background: #fffdf4 !important;
+    border: 3px double #000000 !important;
+  }
+  .pos-slip-card.pos-custom-tpl.pos-frm-ticket_notch,
+  .pos-slip-card.pos-custom-tpl.pos-frm-postage_stamp,
+  .pos-slip-card.pos-custom-tpl.pos-frm-checkered_rim {
+    border-style: dotted !important;
+  }
+  .pos-slip-card.pos-custom-tpl.pos-hdr-gazette_double .pos-header,
+  .pos-slip-card.pos-custom-tpl.pos-hdr-editorial_split .pos-header,
+  .pos-slip-card.pos-custom-tpl.pos-hdr-light_bar .pos-header {
+    background: #ffffff !important;
+    color: #000000 !important;
+    border-bottom: 1.5px solid #000000 !important;
+    border-radius: 0 !important;
+  }
+  .pos-slip-card.pos-custom-tpl.pos-hdr-gazette_double .pos-school-sub,
+  .pos-slip-card.pos-custom-tpl.pos-hdr-editorial_split .pos-school-sub,
+  .pos-slip-card.pos-custom-tpl.pos-hdr-light_bar .pos-school-sub {
+    color: #111111 !important;
+  }
+  .pos-slip-card.pos-custom-tpl.pos-hdr-arch .pos-header,
+  .pos-slip-card.pos-custom-tpl.pos-hdr-wave .pos-header,
+  .pos-slip-card.pos-custom-tpl.pos-hdr-horizon .pos-header {
+    border-bottom-left-radius: 40% 10px !important;
+    border-bottom-right-radius: 40% 10px !important;
+  }
+  .pos-slip-card.pos-custom-tpl.pos-hdr-floating_pill .pos-header {
+    border-radius: 999px !important;
+  }
   @media screen {
     .pos-preview-wrap {
       width: 76mm;
@@ -3250,8 +3819,16 @@ export function generatePosSlipHtml(
     ? `https://api.qrserver.com/v1/create-qr-code/?size=320x320&format=svg&qzone=1&margin=1&data=${encodeURIComponent(posUpiUri)}`
     : "";
 
+  const activeSlipTpl = data.templateOverride || resolveActiveDocumentTemplate(data.schoolId, undefined, "fee_slip");
+  const useCustomSlip = Boolean(activeSlipTpl && activeSlipTpl.id !== "default");
+  const posInlineStyle = useCustomSlip
+    ? `style="--slip-primary:${escapeHtml(activeSlipTpl.colors.primaryColor)};--slip-accent:${escapeHtml(activeSlipTpl.colors.accentColor)};--slip-hdr-text:${escapeHtml(activeSlipTpl.colors.headerTextColor)};--slip-border:${escapeHtml(activeSlipTpl.colors.borderColor)};--slip-badge-bg:${escapeHtml(activeSlipTpl.colors.badgeBg)};--slip-badge-text:${escapeHtml(activeSlipTpl.colors.badgeText)};--slip-surface:${escapeHtml(activeSlipTpl.colors.surfaceTint)};--slip-border-style:${escapeHtml(activeSlipTpl.borderStyle)};"`
+    : "";
+
+  const posVariant = activeSlipTpl.layoutVariant || "classic_ribbon";
+  const posArch = useCustomSlip ? getLayoutArchitecture(posVariant) : null;
   return `
-    <div class="pos-slip-card pos-preview-wrap">
+    <div class="pos-slip-card pos-preview-wrap ${useCustomSlip && posArch ? `pos-custom-tpl pos-var-${escapeHtml(posVariant)} pos-hdr-${escapeHtml(posArch.headerStyle)} pos-frm-${escapeHtml(posArch.frameStyle)}` : ""}" ${posInlineStyle}>
       <!-- School Header -->
       <div class="pos-header">
         <div class="pos-school-name">${escapeHtml(data.schoolName || "School")}</div>
@@ -3500,7 +4077,9 @@ export function generatePosSlipHtml(
       <div style="display:flex;justify-content:space-between;align-items:flex-end;margin-top:2.5mm;font-size:9px;gap:6px;">
         ${totalPaid > 0 ? (() => {
           const isManagerCollector = data.collectedByRole === "manager";
-          const colRole = isManagerCollector ? "Manager" : "Accountant";
+          const colRole = (useCustomSlip && activeSlipTpl.leftSignatoryLabel)
+            ? activeSlipTpl.leftSignatoryLabel
+            : (isManagerCollector ? "Manager" : "Accountant");
           const colName = isManagerCollector
             ? (data.collectedByName || data.managerName || "Manager")
             : (data.collectedByName || data.accountantName || data.cashierTitle || "Accountant");
@@ -3523,12 +4102,13 @@ export function generatePosSlipHtml(
             <img src="${escapeHtml(data.principalSignatureUrl)}" alt="Signature" style="height:18px;max-width:60px;object-fit:contain;display:block;margin-left:auto;margin-bottom:2px;" />
           ` : `<div style="height:16px;"></div>`}
           <span style="font-weight:800;border-top:1px solid #000000;display:inline-block;padding-top:1px;">
-            ${escapeHtml(data.principalName || "Principal")}
+            ${escapeHtml((useCustomSlip && activeSlipTpl.rightSignatoryLabel) ? activeSlipTpl.rightSignatoryLabel : (data.principalName || "Principal"))}
           </span>
         </div>
       </div>
 
       <div class="pos-footer-text">
+        ${useCustomSlip && activeSlipTpl.footerNote ? `${escapeHtml(activeSlipTpl.footerNote)}<br/>` : ""}
         *** Thank You • Keep this slip for record ***<br/>
         Computer Generated Official Slip
       </div>

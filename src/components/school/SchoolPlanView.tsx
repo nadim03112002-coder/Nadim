@@ -2,13 +2,24 @@
 import React, { useState } from "react";
 import {
   ArrowLeft, Crown, Shield, Lock, CheckCircle2, XCircle,
-  Calendar, AlertTriangle, MessageSquare, ChevronDown, ChevronUp,
-  BookOpen, Users, FileText, ClipboardList, IndianRupee, Sparkles,
-  Zap, Copy, Check, ExternalLink, X, Flame, Clock, Camera, QrCode, Globe, Smartphone
+  MessageSquare, ChevronDown, ChevronUp, BookOpen, Users, FileText,
+  IndianRupee, Sparkles, Zap, X, Flame, Clock, Camera, QrCode, Globe,
+  Smartphone, Building2, Star, Check, Layers
 } from "lucide-react";
 import { doc, setDoc, serverTimestamp } from "firebase/firestore";
 import { db } from "../../firebase";
-import { TIER_CONFIG, isSchoolEliteCurriculum, type School, type SubscriptionTier } from "../../school-types";
+import {
+  ELITE_YEARLY_PRICING,
+  LITE_YEARLY_PRICES,
+  SUPREME_YEARLY_PRICING,
+  YEARLY_STUDENT_SLABS,
+  getLitePriceForSlab,
+  getSchoolMaxBranches,
+  getSchoolMaxStudents,
+  isSchoolEliteCurriculum,
+  type School,
+  type SubscriptionTier,
+} from "../../school-types";
 import { ADMIN_WHATSAPP_NUMBER, SUPPORT_PHONE } from "../../constants";
 import { safeOpenExternalUrl } from "../../utils/safeBrowserActions";
 import { getVisibleSchoolRegNo } from "./feeReceiptUtils";
@@ -20,26 +31,18 @@ interface Props {
   onBack: () => void;
 }
 
-// ── Plan feature matrix ───────────────────────────────────────────────────────
 const FEATURES = [
-  { id: "students",       icon: <Users size={14} />, label: "Student Capacity",        basic: "200 Students", standard: "500 Students", pro: "2000 Students", whitelabel: "5,000+ Students" },
-  { id: "teachers",       icon: <Users size={14} />, label: "Staff & Teachers Limit",  basic: "10 Teachers",  standard: "25 Teachers",  pro: "Unlimited Staff", whitelabel: "Unlimited Staff" },
-  { id: "subadmins",      icon: <Shield size={14} />, label: "Multi/Sub-Admins",       basic: "1 Admin Only", standard: "Up to 3 Admins", pro: "Unlimited Admins", whitelabel: "Unlimited Branch Admins" },
-  { id: "attendance",     icon: <QrCode size={14} />, label: "QR Code Scan Attendance", basic: "⚡ Lite Included", standard: "⚡ Lite + SMS Link", pro: "⚡ Lite + Summary", whitelabel: "✅ Included" },
-  { id: "faceattendance", icon: <Camera size={14} />, label: "🤖 AI Face Attendance (0.2s Kiosk & Face ID)", basic: "👑 Elite Only", standard: "👑 Elite Only", pro: "👑 Elite Only", whitelabel: "✅ Kiosk + On-Site Setup" },
-  { id: "notesmanager",   icon: <Sparkles size={14} />, label: "Class 1–12 Notes & Media (Elite)", basic: "👑 Elite Only", standard: "👑 Elite Only", pro: "👑 Elite Only", whitelabel: "✅ Full Suite Included" },
-  { id: "fees",           icon: <IndianRupee size={14} />, label: "Fee & Due Register", basic: "Basic Register", standard: "Monthly Dues + Slip", pro: "Advance Analytics + Export", whitelabel: "Multi-Branch Ledger + Dues Migration" },
-  { id: "whatsapp",       icon: <MessageSquare size={14} />, label: "WhatsApp Alerts", basic: "Manual Share", standard: "1-Click Due/Receipt", pro: "Bulk Alerts & Templates", whitelabel: "Branded Alerts + Priority" },
-  { id: "admissions",     icon: <BookOpen size={14} />, label: "Online Admissions (2027-28)",    basic: "Website Form", standard: "Form + Approval", pro: "Portal + Auto Roll/Class", whitelabel: "Custom Domain Portal" },
-  { id: "website",        icon: <Globe size={14} />, label: "School Public Website", basic: "Default Website (No Custom Edit)", standard: "Default (Lite) / Custom CMS (Elite)", pro: "Default (Lite) / Custom CMS (Elite)", whitelabel: "www.schoolname.com + Full CMS" },
-  { id: "customwebsite",  icon: <Camera size={14} />, label: "🎨 Custom Website CMS, Photos & Memories Gallery", basic: "👑 Elite Only (Lite: Default Only)", standard: "👑 Elite Only (Lite: Default Only)", pro: "👑 Elite Only (Lite: Default Only)", whitelabel: "✅ Full Custom CMS + Domain" },
-  { id: "playstoreapp",   icon: <Smartphone size={14} />, label: "📱 Play Store Branded App (Own Name & Logo)", basic: false, standard: false, pro: false, whitelabel: "White-Label APK/AAB" },
-  { id: "onsitetraining", icon: <Users size={14} />, label: "🏫 On-Site Training & 100% Data Migration", basic: false, standard: false, pro: false, whitelabel: "Campus Training + Excel Migration" },
-  { id: "idcards",        icon: <FileText size={14} />, label: "Live QR ID Cards & Admit", basic: false, standard: "QR Student Cards + Admit", pro: "Student + Staff Smart IDs", whitelabel: "Custom Branded Smart IDs" },
-  { id: "hrm",            icon: <Users size={14} />, label: "Staff HRM & Payroll",      basic: false, standard: "Salary Register", pro: "Full Payroll + Salary Slips", whitelabel: "Multi-Staff Payroll + Biometric" },
-  { id: "referral",       icon: <Sparkles size={14} />, label: "Sibling Auto-Discount", basic: false, standard: true, pro: true, whitelabel: true },
-  { id: "certificates",   icon: <FileText size={14} />, label: "Certificates (TC/Bonafide)", basic: false, standard: "TC Generator", pro: "Unlimited TC, Character & Bonafide", whitelabel: "Custom Marksheet & Certificate Design" },
-  { id: "support",        icon: <Shield size={14} />, label: "Support & Cloud Backup", basic: "Standard Support", standard: "Priority WhatsApp (12h)", pro: "Dedicated VIP + Cloud Backup", whitelabel: "Dedicated Relationship Manager" },
+  { id: "students",       icon: <Users size={14} />,       label: "Student Capacity",                          lite: "Up to 2,000 Students",          elite: "Up to 5,000 Students",            supreme: "5,000+ Students" },
+  { id: "branches",       icon: <Building2 size={14} />,   label: "Multi-Branch Management",                   lite: "1 Branch Only",                 elite: "Up to 3 Branches",                supreme: "Unlimited Branches" },
+  { id: "teachers",       icon: <Users size={14} />,       label: "Staff, Roles & Sub-Admins",               lite: "Included",                      elite: "Unlimited Role Permissions",      supreme: "Unlimited Branch Admins" },
+  { id: "attendance",     icon: <QrCode size={14} />,      label: "QR Code Scan Attendance",                   lite: "⚡ Included",                   elite: "✅ Included",                     supreme: "✅ Included" },
+  { id: "faceattendance", icon: <Camera size={14} />,      label: "AI Face Attendance (0.2s Kiosk)",           lite: false,                           elite: "👑 Included",                     supreme: "👑 Kiosk + On-Site Setup" },
+  { id: "templates",      icon: <FileText size={14} />,    label: "60+ ID/Admit/Marksheet/Certificate/Fee Layouts", lite: "Default Format",     elite: "👑 60 Layouts (10 Classic + 50 New)",    supreme: "👑 Bespoke Custom Design" },
+  { id: "entrance",       icon: <BookOpen size={14} />,    label: "Entrance Exam (17,500+ Qs) & 1–12 Notes",   lite: false,                           elite: "👑 Included",                     supreme: "👑 Full Suite Included" },
+  { id: "customwebsite",  icon: <Globe size={14} />,       label: "Custom Website CMS, Photos & Gallery",      lite: "Default Website Only",          elite: "👑 Full Custom CMS",              supreme: "🌐 Custom .com/.in + CMS" },
+  { id: "fees",           icon: <IndianRupee size={14} />, label: "Fee Collection, POS & WhatsApp Slips",      lite: "Core Register + Slips",         elite: "Full Ledger + Bulk WhatsApp",     supreme: "Multi-Branch Ledger" },
+  { id: "playstoreapp",   icon: <Smartphone size={14} />,  label: "Play Store App (Own School Name & Logo)", lite: false,                           elite: false,                             supreme: "💎 White-Label APK/AAB" },
+  { id: "onsite",         icon: <Layers size={14} />,      label: "On-Site Staff Training & Data Migration",   lite: false,                           elite: false,                             supreme: "💎 100% Campus Setup" },
 ];
 
 const daysRemaining = (isoDate?: string): number => {
@@ -53,13 +56,7 @@ const fmtDate = (iso?: string) =>
     ? new Date(iso).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" })
     : "—";
 
-type PlanOptionKey = "lite_monthly" | "elite_monthly" | "lite_yearly" | "elite_yearly";
-
-interface TierPlanSelection {
-  isElite: boolean;
-  duration: "monthly" | "1_year";
-  key: PlanOptionKey;
-}
+type DecoyEdition = "lite" | "elite" | "supreme";
 
 export const SchoolPlanView: React.FC<Props> = ({ school, schoolId, adminUid, onBack }) => {
   const [showCompare, setShowCompare] = useState(false);
@@ -67,22 +64,16 @@ export const SchoolPlanView: React.FC<Props> = ({ school, schoolId, adminUid, on
   const [sending, setSending]         = useState(false);
   const [sent, setSent]               = useState(false);
 
-  // ── Plan Filter View: All vs Lite vs Elite ───────────────────────────────
-  const [activeTabFilter, setActiveTabFilter] = useState<"all" | "lite" | "elite">("all");
-
-  // ── Compact Plan Option Selection Per Tier ────────────────────────────────
-  // Default: Lite Monthly for starter and growth, Elite Monthly for enterprise
-  const [tierOptions, setTierOptions] = useState<Record<string, TierPlanSelection>>({
-    starter_200: { isElite: false, duration: "monthly", key: "lite_monthly" },
-    growth_500: { isElite: false, duration: "monthly", key: "lite_monthly" },
-    enterprise_2000: { isElite: true, duration: "monthly", key: "elite_monthly" },
-    whitelabel_5000: { isElite: true, duration: "1_year", key: "elite_yearly" },
-  });
+  const [selectedSlab, setSelectedSlab] = useState<number>(100);
+  const [eliteMode, setEliteMode] = useState<"new" | "renewal">("new");
 
   const [buyingPlan, setBuyingPlan] = useState<{
+    edition: DecoyEdition;
     tier: SubscriptionTier;
     isElite: boolean;
-    duration: "monthly" | "1_year";
+    isRenewal: boolean;
+    maxStudents: number;
+    maxBranches: number;
     amount: number;
     title: string;
   } | null>(null);
@@ -90,95 +81,101 @@ export const SchoolPlanView: React.FC<Props> = ({ school, schoolId, adminUid, on
   const [checkoutSubmitting, setCheckoutSubmitting] = useState(false);
   const [checkoutDone, setCheckoutDone] = useState(false);
 
-  // ── Derive plan info ─────────────────────────────────────────────────────
-  const sub            = school?.subscription;
-  const isActive       = sub?.status === "active";
-  const tier           = sub?.tier;
-  const isSchoolElite  = isSchoolEliteCurriculum(school);
-  const planLevel: "none" | "basic" | "standard" | "pro" | "whitelabel" =
-    !isActive ? "none" :
-    tier === "whitelabel_5000" ? "whitelabel" :
-    tier === "starter_200" || tier === "lite" ? "basic" :
-    tier === "growth_500" ? "standard" : "pro";
+  const sub = school?.subscription;
+  const isActive = sub?.status === "active";
+  const tier = sub?.tier;
+  const isSchoolElite = isSchoolEliteCurriculum(school);
+  const isSupreme = tier === "whitelabel_5000";
+  const planLevel: "none" | "lite" | "elite" | "supreme" =
+    !isActive ? "none" : isSupreme ? "supreme" : isSchoolElite ? "elite" : "lite";
 
-  const expiresAt      = sub?.expiresAt || sub?.paidUntil;
-  const days           = daysRemaining(expiresAt);
-  const expiringSoon   = isActive && days > 0 && days <= 30;
+  const activeStudentsCap = getSchoolMaxStudents(school);
+  const activeBranchesCap = getSchoolMaxBranches(school);
+  const expiresAt = sub?.expiresAt || sub?.paidUntil;
+  const days = daysRemaining(expiresAt);
+  const expiringSoon = isActive && days > 0 && days <= 30;
 
-  // ── Plan badge config ────────────────────────────────────────────────────
   const planCfg = {
     none: {
-      label: "No Plan Active",
+      label: "No Yearly Plan Active",
       badge: "INACTIVE",
       color: "from-slate-400 to-slate-500",
-      bg:    "bg-slate-50 dark:bg-slate-800/60 border-slate-200 dark:border-slate-700",
-      icon:  <Lock size={20} className="text-slate-400" />,
-      desc:  "School subscription active nahi hai. Neeche se apna plan chun kar activate karein.",
+      bg: "bg-slate-50 dark:bg-slate-800/60 border-slate-200 dark:border-slate-700",
+      icon: <Lock size={20} className="text-slate-400" />,
+      desc: "School yearly subscription active nahi hai. Neeche se Lite, Elite ya Supreme plan chunein.",
     },
-    basic: {
-      label: isSchoolElite ? "Basic Elite (200 Students)" : "Basic Lite (200 Students)",
-      badge: isSchoolElite ? "👑 ELITE" : "⚡ LITE",
-      color: isSchoolElite ? "from-amber-500 to-orange-500" : "from-blue-600 to-indigo-600",
-      bg:    isSchoolElite ? "bg-amber-50/50 dark:bg-amber-950/20 border-amber-300 dark:border-amber-800" : "bg-blue-50/50 dark:bg-blue-950/20 border-blue-200 dark:border-blue-800",
-      icon:  isSchoolElite ? <Crown size={20} className="text-amber-500" /> : <Shield size={20} className="text-blue-500" />,
-      desc:  isSchoolElite
-        ? "200 Students · 👑 Custom Website CMS (फ़ोटो व गैलरी) + AI Face Attendance + Class 1–12 Notes Active"
-        : "200 Students · ⚡ Default Website (बिना कस्टम फ़ोटो एडिट) · QR Scan Attendance · Fee Register",
+    lite: {
+      label: `Lite Yearly Plan (${activeStudentsCap} Students · 1 Branch)`,
+      badge: "⚡ LITE YEARLY",
+      color: "from-blue-600 to-indigo-600",
+      bg: "bg-blue-50/50 dark:bg-blue-950/20 border-blue-200 dark:border-blue-800",
+      icon: <Shield size={20} className="text-blue-500" />,
+      desc: `Up to ${activeStudentsCap} Students · 1 Branch Max · QR Attendance & Default School Website`,
     },
-    standard: {
-      label: isSchoolElite ? "Standard Elite (500 Students)" : "Standard Lite (500 Students)",
-      badge: isSchoolElite ? "👑 ELITE" : "⚡ LITE",
-      color: isSchoolElite ? "from-amber-500 to-purple-600" : "from-indigo-600 to-purple-600",
-      bg:    isSchoolElite ? "bg-amber-50/50 dark:bg-amber-950/20 border-amber-300 dark:border-amber-800" : "bg-indigo-50/50 dark:bg-indigo-950/20 border-indigo-200 dark:border-indigo-800",
-      icon:  isSchoolElite ? <Crown size={20} className="text-amber-500" /> : <Users size={20} className="text-indigo-500" />,
-      desc:  isSchoolElite
-        ? "500 Students · 👑 Custom Website CMS (फ़ोटो व गैलरी) + AI Face Attendance + QR ID Cards + Notes Active"
-        : "500 Students · ⚡ Default Website (बिना कस्टम फ़ोटो एडिट) · QR Scan Attendance · Sub-Admins",
-    },
-    pro: {
-      label: isSchoolElite ? "Pro Elite (2000 Students)" : "Pro Lite (2000 Students)",
-      badge: isSchoolElite ? "👑 ELITE" : "⚡ LITE",
+    elite: {
+      label: `Elite Yearly Suite (${activeStudentsCap >= 5000 ? "5,000" : activeStudentsCap} Students · ${activeBranchesCap} Branches)`,
+      badge: "👑 ELITE YEARLY",
       color: "from-amber-500 to-orange-500",
-      bg:    "bg-amber-50/50 dark:bg-amber-950/20 border-amber-300 dark:border-amber-800",
-      icon:  <Crown size={20} className="text-amber-500" />,
-      desc:  isSchoolElite
-        ? "2000 Students · 👑 Custom Website CMS (फ़ोटो व गैलरी) + AI Face Attendance + Payroll HRM + Notes Active"
-        : "2000 Students · ⚡ Default Website (सिर्फ़ डिफ़ॉल्ट डेटा) · QR Scan Attendance · Payroll HRM",
+      bg: "bg-amber-50/60 dark:bg-amber-950/25 border-amber-300 dark:border-amber-800",
+      icon: <Crown size={20} className="text-amber-500" />,
+      desc: "3 Branches · Custom Website CMS + AI Face Attendance + 60 Document Layouts (10 Classic + 50 New) + Entrance Exam & Notes",
     },
-    whitelabel: {
-      label: "Enterprise White-Label (5000+ Students)",
-      badge: "👑 WHITE-LABEL",
+    supreme: {
+      label: "Supreme White-Label Yearly (5,000+ Students · Unlimited Branches)",
+      badge: "💎 SUPREME",
       color: "from-rose-500 via-amber-500 to-orange-500",
-      bg:    "bg-gradient-to-r from-amber-50/80 to-rose-50/60 dark:from-amber-950/30 dark:to-rose-950/20 border-amber-400 dark:border-amber-700",
-      icon:  <Crown size={20} className="text-amber-500" />,
-      desc:  "5000+ Students · 👑 Play Store Branded App + Custom .com/.in Website CMS + On-Site Training + Full Data Migration + All Elite Powers Active",
+      bg: "bg-gradient-to-r from-amber-50/80 to-rose-50/60 dark:from-amber-950/30 dark:to-rose-950/20 border-amber-400 dark:border-amber-700",
+      icon: <Crown size={20} className="text-rose-500" />,
+      desc: "Unlimited Branches · Play Store App + On-Site Training + 100% Data Migration + Custom .com Website",
     },
   }[planLevel];
 
-  // ── Handle Buy / Upgrade Click ───────────────────────────────────────────
-  const handleInitiateBuy = (targetTier: SubscriptionTier, option?: TierPlanSelection) => {
-    const cfg = TIER_CONFIG[targetTier];
-    if (!cfg) return;
+  const liteUnavailable = selectedSlab > 2000;
+  const litePrice = liteUnavailable ? LITE_YEARLY_PRICES[2000] : getLitePriceForSlab(selectedSlab);
+  const elitePrice = eliteMode === "renewal" ? ELITE_YEARLY_PRICING.renewal : ELITE_YEARLY_PRICING.firstYear;
+  const supremePrice = SUPREME_YEARLY_PRICING.price;
 
-    const currentOpt = option || tierOptions[targetTier] || { isElite: false, duration: "monthly", key: "lite_monthly" };
-    const isElite = currentOpt.isElite;
-    const isAnnual = currentOpt.duration === "1_year";
-
-    const amount = isElite
-      ? (isAnnual ? cfg.eliteSessionPrice : cfg.eliteMonthlyPrice)
-      : (isAnnual ? cfg.sessionPrice : cfg.monthlyPrice);
-
-    setBuyingPlan({
-      tier: targetTier,
-      isElite,
-      duration: currentOpt.duration,
-      amount,
-      title: `${cfg.name.split("(")[0].trim()} ${isElite ? "👑 Elite Plan" : "⚡ Lite Plan"}`
-    });
+  const handleInitiateBuy = (edition: DecoyEdition) => {
+    if (edition === "lite") {
+      if (liteUnavailable) return;
+      const t: SubscriptionTier =
+        selectedSlab <= 300 ? "starter_200" : selectedSlab <= 500 ? "growth_500" : "lite";
+      setBuyingPlan({
+        edition: "lite",
+        tier: t,
+        isElite: false,
+        isRenewal: false,
+        maxStudents: selectedSlab,
+        maxBranches: 1,
+        amount: litePrice,
+        title: `⚡ Lite Yearly (${selectedSlab} Students · 1 Branch)`,
+      });
+    } else if (edition === "elite") {
+      setBuyingPlan({
+        edition: "elite",
+        tier: "enterprise_2000",
+        isElite: true,
+        isRenewal: eliteMode === "renewal",
+        maxStudents: 5000,
+        maxBranches: 3,
+        amount: elitePrice,
+        title: `👑 Elite Yearly (${eliteMode === "renewal" ? "Annual Renewal" : "1st Year Offer"} · 3 Branches)`,
+      });
+    } else {
+      setBuyingPlan({
+        edition: "supreme",
+        tier: "whitelabel_5000",
+        isElite: true,
+        isRenewal: false,
+        maxStudents: 5000,
+        maxBranches: 9999,
+        amount: supremePrice,
+        title: "💎 Supreme White-Label Yearly (Unlimited Branches)",
+      });
+    }
     setCheckoutDone(false);
   };
 
-  // ── Handle Checkout Confirmation ─────────────────────────────────────────
   const handleConfirmCheckout = async () => {
     if (!buyingPlan) return;
     setCheckoutSubmitting(true);
@@ -192,10 +189,13 @@ export const SchoolPlanView: React.FC<Props> = ({ school, schoolId, adminUid, on
         adminUid,
         targetTier: buyingPlan.tier,
         isElite: buyingPlan.isElite,
-        duration: buyingPlan.duration,
+        isRenewal: buyingPlan.isRenewal,
+        maxStudents: buyingPlan.maxStudents,
+        maxBranches: buyingPlan.maxBranches,
+        duration: "1_year",
         amount: buyingPlan.amount,
         planTitle: buyingPlan.title,
-        message: `School: ${school?.name}${visibleReg ? ` (${visibleReg})` : ""} ne ${buyingPlan.title} (${buyingPlan.duration === '1_year' ? 'Annual Session' : 'Monthly'}) ₹${buyingPlan.amount.toLocaleString('en-IN')} select kiya hai.`,
+        message: `School: ${school?.name}${visibleReg ? ` (${visibleReg})` : ""} ne ${buyingPlan.title} ₹${buyingPlan.amount.toLocaleString("en-IN")}/Year select kiya hai.`,
         requestedAt: serverTimestamp(),
         status: "pending",
       });
@@ -206,30 +206,22 @@ export const SchoolPlanView: React.FC<Props> = ({ school, schoolId, adminUid, on
     setCheckoutSubmitting(false);
   };
 
-  // ── WhatsApp Direct Share ────────────────────────────────────────────────
   const openWhatsAppCheckout = () => {
     if (!buyingPlan) return;
-    const durLabel = buyingPlan.duration === "1_year" ? "1st Year Annual Session (10+2 Mo Free)" : "Monthly Subscription";
-    const eliteText = buyingPlan.tier === "whitelabel_5000"
-      ? "👑 Enterprise White-Label (Play Store Branded App, On-Site Training, Data Migration, Custom .com Website CMS + All Elite Features)"
-      : buyingPlan.isElite
-      ? "👑 Elite Edition (Custom Website CMS + Photos/Gallery, AI Face Attendance, QR Scan & Class 1-12 Notes)"
-      : "⚡ Lite ERP Edition (Default Website Only — No Custom Photos + QR Code Scan Attendance)";
     const visibleReg = getVisibleSchoolRegNo(school);
     const text = encodeURIComponent(
-      `*School Plan Purchase Request*\n\n` +
+      `*School Yearly Plan Request*\n\n` +
       `🏫 *School:* ${school?.name || "School"}\n` +
       (visibleReg ? `🔑 *Reg. No:* ${visibleReg}\n` : "") +
       `📦 *Selected Plan:* ${buyingPlan.title}\n` +
-      `⚡ *Edition:* ${eliteText}\n` +
-      `🗓️ *Duration:* ${durLabel}\n` +
+      `🏢 *Branches Allowed:* ${buyingPlan.maxBranches >= 9999 ? "Unlimited" : buyingPlan.maxBranches}\n` +
+      `🗓️ *Billing:* Yearly Session (12 Months)\n` +
       `💰 *Amount:* ₹${buyingPlan.amount.toLocaleString("en-IN")}\n\n` +
-      `Kripya hamare school ke liye ye plan activate karein.`
+      `Kripya hamare school ke liye ye yearly plan activate karein.`
     );
     safeOpenExternalUrl(`https://wa.me/${ADMIN_WHATSAPP_NUMBER}?text=${text}`);
   };
 
-  // ── Manual Contact Request ───────────────────────────────────────────────
   const sendRequest = async () => {
     if (!contactMsg.trim()) return;
     setSending(true);
@@ -252,13 +244,11 @@ export const SchoolPlanView: React.FC<Props> = ({ school, schoolId, adminUid, on
     setSending(false);
   };
 
-  const TIERS_LIST: SubscriptionTier[] = ["starter_200", "growth_500", "enterprise_2000", "whitelabel_5000"];
-
   return (
     <div className="min-h-screen bg-slate-50 dark:bg-slate-950 pb-16 text-slate-800 dark:text-slate-100">
-      {/* ── TOP NAV BAR (Compact & Premium) ── */}
+      {/* Top Bar */}
       <div className="sticky top-0 z-30 bg-slate-900/95 dark:bg-slate-950/95 backdrop-blur-md border-b border-slate-800 px-4 py-2.5">
-        <div className="max-w-xl mx-auto flex items-center justify-between gap-3">
+        <div className="max-w-5xl mx-auto flex items-center justify-between gap-3">
           <div className="flex items-center gap-2.5 min-w-0">
             <button
               onClick={onBack}
@@ -269,7 +259,7 @@ export const SchoolPlanView: React.FC<Props> = ({ school, schoolId, adminUid, on
             </button>
             <div className="min-w-0">
               <h1 className="text-xs font-black text-white tracking-wide truncate flex items-center gap-1.5">
-                <span>School Plan & Store</span>
+                <span>Yearly Subscription Plans</span>
                 {getVisibleSchoolRegNo(school) && (
                   <span className="text-[10px] px-1.5 py-0.2 rounded bg-indigo-500/20 text-indigo-300 font-mono font-bold border border-indigo-500/30">
                     {getVisibleSchoolRegNo(school)}
@@ -280,22 +270,19 @@ export const SchoolPlanView: React.FC<Props> = ({ school, schoolId, adminUid, on
             </div>
           </div>
 
-          <div className="flex items-center gap-1.5 shrink-0">
-            <span className={`text-[10px] font-black px-2 py-0.5 rounded-full border ${
-              isActive
-                ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/30"
-                : "bg-red-500/10 text-red-400 border-red-500/30"
-            }`}>
-              {isActive ? "Active" : "Expired"}
-            </span>
-          </div>
+          <span className={`text-[10px] font-black px-2 py-0.5 rounded-full border ${
+            isActive
+              ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/30"
+              : "bg-red-500/10 text-red-400 border-red-500/30"
+          }`}>
+            {isActive ? "Active · Yearly" : "Expired"}
+          </span>
         </div>
       </div>
 
-      <div className="px-3.5 py-3.5 space-y-3.5 max-w-xl mx-auto">
-
-        {/* ── CURRENT ACTIVE PLAN CARD (Compact, Sleek, Professional) ── */}
-        <div className={`rounded-xl border p-3.5 ${planCfg.bg} shadow-xs relative overflow-hidden transition-all`}>
+      <div className="px-3.5 py-4 space-y-4 max-w-5xl mx-auto">
+        {/* Current Active Plan Card */}
+        <div className={`rounded-xl border p-3.5 ${planCfg.bg} shadow-xs transition-all`}>
           <div className="flex items-start justify-between gap-2.5">
             <div className="flex items-center gap-2.5 min-w-0">
               <div className={`w-9 h-9 rounded-lg bg-gradient-to-br ${planCfg.color} flex items-center justify-center text-white shadow-xs shrink-0`}>
@@ -303,33 +290,15 @@ export const SchoolPlanView: React.FC<Props> = ({ school, schoolId, adminUid, on
               </div>
               <div className="min-w-0">
                 <div className="flex items-center gap-1.5 flex-wrap">
-                  <span className="text-xs font-black text-slate-900 dark:text-white truncate">
-                    {planCfg.label}
-                  </span>
-                  <span className={`text-[9px] font-black px-1.5 py-0.2 rounded border ${
-                    isSchoolElite
-                      ? "bg-amber-500/15 text-amber-600 dark:text-amber-400 border-amber-500/30"
-                      : "bg-blue-500/15 text-blue-600 dark:text-blue-400 border-blue-500/30"
-                  }`}>
+                  <span className="text-xs font-black text-slate-900 dark:text-white truncate">{planCfg.label}</span>
+                  <span className="text-[9px] font-black px-1.5 py-0.2 rounded border bg-white/70 dark:bg-slate-800 text-slate-700 dark:text-slate-200 border-slate-300 dark:border-slate-700">
                     {planCfg.badge}
                   </span>
-                  {sub?.planDuration === "1_year" ? (
-                    <span className="text-[9px] font-bold text-slate-500 dark:text-slate-400">
-                      · Annual
-                    </span>
-                  ) : (
-                    <span className="text-[9px] font-bold text-slate-500 dark:text-slate-400">
-                      · Monthly
-                    </span>
-                  )}
                 </div>
-                <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5 truncate">
-                  {planCfg.desc}
-                </p>
+                <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">{planCfg.desc}</p>
               </div>
             </div>
 
-            {/* Countdown badge */}
             {isActive && expiresAt && (
               <div className="text-right shrink-0">
                 <span className={`text-[10px] font-black tabular-nums px-2 py-0.5 rounded-md inline-flex items-center gap-1 ${
@@ -343,7 +312,6 @@ export const SchoolPlanView: React.FC<Props> = ({ school, schoolId, adminUid, on
             )}
           </div>
 
-          {/* Expiry Bar / Prompt */}
           {isActive && expiresAt && (
             <div className="mt-2.5 pt-2 border-t border-slate-200/60 dark:border-slate-700/60 flex items-center justify-between text-[10px]">
               <span className="text-slate-500 dark:text-slate-400 font-medium">
@@ -362,583 +330,224 @@ export const SchoolPlanView: React.FC<Props> = ({ school, schoolId, adminUid, on
           )}
         </div>
 
-        {/* ══════════════════════════════════════════════════════════════════
-            SUBSCRIPTION STORE SECTION (Compact, Professional SaaS Grid)
-        ══════════════════════════════════════════════════════════════════ */}
-        <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200/80 dark:border-slate-800 p-3.5 shadow-xs space-y-3">
-          
-          {/* Header & Filter Tabs */}
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-1 border-b border-slate-100 dark:border-slate-800">
+        {/* Yearly Student Capacity Selector */}
+        <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200/80 dark:border-slate-800 p-4 shadow-xs space-y-3">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
             <div>
               <h2 className="text-xs font-black text-slate-900 dark:text-white flex items-center gap-1.5 uppercase tracking-wide">
-                <Zap size={14} className="text-amber-500" /> Plan Kharidein ya Upgrade Karein
+                <Zap size={14} className="text-amber-500" /> Student Capacity Chunein (Yearly Plans Only)
               </h2>
-              <p className="text-[10px] text-slate-400 mt-0.5">
-                Chhota button click karein aur direct select karein:
+              <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">
+                Lite ₹5,000/yr se shuru (+50% per slab, max 2,000 Std, 1 Branch) · Elite mein 5,000 Std &amp; 3 Branches · Supreme mein Unlimited Branches.
               </p>
             </div>
-
-            {/* Quick Segmented Switcher */}
-            <div className="inline-flex items-center gap-1 p-0.5 bg-slate-100 dark:bg-slate-800 rounded-lg shrink-0 self-start sm:self-auto">
-              <button
-                type="button"
-                onClick={() => setActiveTabFilter("all")}
-                className={`px-2 py-1 rounded text-[10px] font-bold transition-all cursor-pointer ${
-                  activeTabFilter === "all"
-                    ? "bg-white dark:bg-slate-700 text-slate-900 dark:text-white shadow-2xs"
-                    : "text-slate-500 hover:text-slate-800 dark:hover:text-slate-200"
-                }`}
-              >
-                Sabhi Plans
-              </button>
-              <button
-                type="button"
-                onClick={() => setActiveTabFilter("lite")}
-                className={`px-2 py-1 rounded text-[10px] font-bold transition-all cursor-pointer flex items-center gap-1 ${
-                  activeTabFilter === "lite"
-                    ? "bg-white dark:bg-slate-700 text-blue-600 dark:text-blue-400 shadow-2xs"
-                    : "text-slate-500 hover:text-slate-800 dark:hover:text-slate-200"
-                }`}
-              >
-                <span>⚡ Lite ERP</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => setActiveTabFilter("elite")}
-                className={`px-2 py-1 rounded text-[10px] font-bold transition-all cursor-pointer flex items-center gap-1 ${
-                  activeTabFilter === "elite"
-                    ? "bg-amber-500 text-slate-950 font-black shadow-2xs"
-                    : "text-slate-500 hover:text-slate-800 dark:hover:text-slate-200"
-                }`}
-              >
-                <Crown size={10} />
-                <span>Elite Store</span>
-              </button>
-            </div>
           </div>
 
-          {/* ── LITE VS ELITE HIGHLIGHT (ATTENDANCE + WEBSITE ACCESS) ── */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-            <div className="rounded-xl border border-blue-200 dark:border-blue-800/70 bg-blue-50/70 dark:bg-blue-950/25 p-2.5 flex items-start gap-2">
-              <div className="w-7 h-7 rounded-lg bg-blue-600 text-white flex items-center justify-center shrink-0">
-                <Globe size={14} />
-              </div>
-              <div className="min-w-0">
-                <p className="text-[11px] font-black text-blue-900 dark:text-blue-200 flex items-center gap-1">
-                  <span>⚡ Lite: QR Attendance + Default Website</span>
+          <div className="grid grid-cols-3 sm:grid-cols-6 gap-2">
+            {YEARLY_STUDENT_SLABS.map((slab) => (
+              <button
+                key={slab}
+                type="button"
+                onClick={() => setSelectedSlab(slab)}
+                className={`p-2 rounded-xl border-2 text-center transition cursor-pointer ${
+                  selectedSlab === slab
+                    ? "border-amber-500 bg-amber-50 dark:bg-amber-950/30 shadow-xs"
+                    : "border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/50"
+                }`}
+              >
+                <p className="text-xs font-black text-slate-900 dark:text-white">
+                  {slab >= 5000 ? "5,000+" : slab} Std
                 </p>
-                <p className="text-[10px] text-blue-700/90 dark:text-blue-300/80 leading-snug mt-0.5">
-                  Lite में 📷 QR Scan + Default School Website मिलेगा (सिर्फ़ स्कूल का डिफ़ॉल्ट डेटा दिखेगा — फोटो/CMS एडिट नहीं कर सकते)।
+                <p className={`text-[10px] font-bold mt-0.5 ${slab > 2000 ? "text-amber-600" : "text-blue-600 dark:text-blue-400"}`}>
+                  {slab > 2000 ? "Elite / Supreme" : `Lite ₹${LITE_YEARLY_PRICES[slab].toLocaleString("en-IN")}`}
                 </p>
-              </div>
-            </div>
-
-            <div className="rounded-xl border border-amber-300 dark:border-amber-700/80 bg-gradient-to-r from-amber-50 to-orange-50/70 dark:from-amber-950/35 dark:to-orange-950/25 p-2.5 flex items-start gap-2">
-              <div className="w-7 h-7 rounded-lg bg-amber-500 text-slate-950 flex items-center justify-center shrink-0 shadow-2xs">
-                <Crown size={14} />
-              </div>
-              <div className="min-w-0">
-                <p className="text-[11px] font-black text-amber-950 dark:text-amber-200 flex items-center gap-1">
-                  <span>👑 Elite: Face Attendance + Custom Website</span>
-                </p>
-                <p className="text-[10px] text-amber-800 dark:text-amber-300/90 leading-snug mt-0.5">
-                  Elite में 🤖 AI Face Attendance + 🎓 Online Entrance Exam (500 Qs/Subject · 17,500 MCQs) + 🎨 Custom Website CMS + Class 1–12 Notes मिलेंगे!
-                </p>
-              </div>
-            </div>
+              </button>
+            ))}
           </div>
 
-          {/* ── TIER CARDS WITH 4 COMPACT BUTTONS ── */}
-          {/* Order in each card: 1. Lite Monthly -> 2. Elite Monthly -> 3. Lite Yearly -> 4. Elite Yearly */}
-          <div className="space-y-2.5">
-            {TIERS_LIST.filter((tKey) => !(activeTabFilter === "lite" && tKey === "whitelabel_5000")).map((tKey) => {
-              const cfg = TIER_CONFIG[tKey];
-              const isWhiteLabel = tKey === "whitelabel_5000";
-              const sel = tierOptions[tKey] || (isWhiteLabel
-                ? { isElite: true, duration: "1_year", key: "elite_yearly" as PlanOptionKey }
-                : { isElite: false, duration: "monthly", key: "lite_monthly" as PlanOptionKey });
-              const isCurrentTier = isActive && (tier === tKey || (tKey === "enterprise_2000" && tier === "full") || (tKey === "starter_200" && tier === "lite"));
+          {/* 3-TIER DECOY GRID */}
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3.5 pt-2">
+            {/* LITE */}
+            <div className="rounded-2xl border-2 border-slate-200 dark:border-slate-800 p-4 flex flex-col justify-between bg-slate-50/50 dark:bg-slate-900">
+              <div className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <span className="text-[10px] font-black px-2 py-0.5 rounded bg-blue-100 dark:bg-blue-950 text-blue-700 dark:text-blue-300">
+                    ⚡ LITE YEARLY
+                  </span>
+                  <span className="text-[10px] font-black text-slate-500">1 Branch Max</span>
+                </div>
+                <div>
+                  <h3 className="text-sm font-black text-slate-900 dark:text-white">
+                    Lite ({liteUnavailable ? "Max 2,000" : selectedSlab} Students)
+                  </h3>
+                  {liteUnavailable ? (
+                    <p className="text-xs font-black text-rose-600 mt-1">
+                      5,000+ ke liye Elite ya Supreme plan lein
+                    </p>
+                  ) : (
+                    <p className="text-2xl font-black text-blue-600 dark:text-blue-400 mt-1">
+                      ₹{litePrice.toLocaleString("en-IN")}
+                      <span className="text-xs font-bold text-slate-500"> / Year</span>
+                    </p>
+                  )}
+                </div>
+                <ul className="space-y-1.5 text-[11px] text-slate-600 dark:text-slate-300">
+                  <li className="flex items-center gap-1.5"><Check size={13} className="text-emerald-500 shrink-0" /> 1 Branch Management</li>
+                  <li className="flex items-center gap-1.5"><Check size={13} className="text-emerald-500 shrink-0" /> QR Scan Attendance &amp; Fees</li>
+                  <li className="flex items-center gap-1.5"><Check size={13} className="text-emerald-500 shrink-0" /> Default School Website Only</li>
+                  <li className="flex items-center gap-1.5 text-slate-400"><Lock size={12} className="shrink-0" /> No Custom CMS / Face ID</li>
+                </ul>
+              </div>
+              <button
+                type="button"
+                disabled={liteUnavailable}
+                onClick={() => handleInitiateBuy("lite")}
+                className="mt-4 w-full py-2.5 rounded-xl bg-blue-600 hover:bg-blue-700 disabled:opacity-40 text-white text-xs font-black transition cursor-pointer"
+              >
+                {liteUnavailable ? "Max 2,000 Students Only" : `Select Lite (₹${litePrice.toLocaleString("en-IN")})`}
+              </button>
+            </div>
 
-              // If user switched global Lite/Elite tab filter, adapt display gracefully for standard 3 tiers
-              const effectiveSel: TierPlanSelection = isWhiteLabel
-                ? { isElite: true, duration: sel.duration, key: sel.duration === "1_year" ? "elite_yearly" : "elite_monthly" }
-                : activeTabFilter === "elite" && !sel.isElite
-                ? { isElite: true, duration: sel.duration, key: sel.duration === "1_year" ? "elite_yearly" : "elite_monthly" }
-                : activeTabFilter === "lite" && sel.isElite
-                ? { isElite: false, duration: sel.duration, key: sel.duration === "1_year" ? "lite_yearly" : "lite_monthly" }
-                : sel;
+            {/* ELITE (HERO) */}
+            <div className="rounded-2xl border-2 border-amber-500 p-4 flex flex-col justify-between bg-gradient-to-b from-amber-50 via-white to-white dark:from-amber-950/35 dark:via-slate-900 dark:to-slate-900 shadow-lg ring-2 ring-amber-500/20">
+              <div className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <span className="text-[10px] font-black px-2 py-0.5 rounded bg-amber-500 text-slate-950 flex items-center gap-1">
+                    <Star size={11} className="fill-slate-950" /> BEST SELLER · ELITE
+                  </span>
+                  <span className="text-[10px] font-black text-amber-700 dark:text-amber-300">3 Branches Max</span>
+                </div>
 
-              const activePrice = effectiveSel.isElite
-                ? (effectiveSel.duration === "1_year" ? cfg.eliteSessionPrice : cfg.eliteMonthlyPrice)
-                : (effectiveSel.duration === "1_year" ? cfg.sessionPrice : cfg.monthlyPrice);
-
-              if (isWhiteLabel) {
-                return (
-                  <div
-                    key={tKey}
-                    className="rounded-2xl border-2 border-amber-400/90 dark:border-amber-600/80 bg-gradient-to-br from-slate-950 via-slate-900 to-amber-950/80 text-white p-4 space-y-3 shadow-lg relative overflow-hidden"
-                  >
-                    <div className="flex items-start justify-between gap-2">
-                      <div className="min-w-0">
-                        <div className="flex items-center gap-1.5 flex-wrap">
-                          <span className="text-[9px] font-black uppercase tracking-wider px-2 py-0.5 rounded bg-amber-400 text-slate-950">
-                            Tier 4 · Exclusive
-                          </span>
-                          {isCurrentTier && (
-                            <span className="text-[9px] font-black bg-emerald-500/20 text-emerald-300 border border-emerald-400/40 px-1.5 py-0.2 rounded">
-                              Current Tier
-                            </span>
-                          )}
-                        </div>
-                        <h3 className="text-sm font-black text-white mt-1 flex items-center gap-1.5">
-                          <Crown size={15} className="text-amber-400 shrink-0" />
-                          <span>Enterprise White-Label Plan</span>
-                        </h3>
-                        <p className="text-[10px] text-amber-200/90 font-semibold mt-0.5">
-                          5,000+ Students &amp; Unlimited Staff · बड़े CBSE/ICSE स्कूलों व ग्रुप ऑफ इंस्टीट्यूशंस के लिए संपूर्ण व्हाइट-लेबल समाधान
-                        </p>
-                      </div>
-
-                      <div className="text-right shrink-0">
-                        <div className="text-base font-black text-amber-300 tabular-nums">
-                          ₹{activePrice.toLocaleString("en-IN")}
-                        </div>
-                        <div className="text-[10px] text-slate-300 font-semibold">
-                          {effectiveSel.duration === "1_year" ? "/ Year" : "/ Month"}
-                        </div>
-                      </div>
+                <div>
+                  <h3 className="text-base font-black text-slate-900 dark:text-white flex items-center gap-1.5">
+                    <Crown size={16} className="text-amber-500" /> Elite Yearly Suite
+                  </h3>
+                  <div className="mt-1.5 bg-amber-500/10 border border-amber-400/50 rounded-xl p-2.5 space-y-1.5">
+                    <div className="flex items-center justify-between text-[11px] font-bold">
+                      <span className="text-slate-600 dark:text-slate-300">12 Months Price:</span>
+                      <span className="line-through text-rose-600 dark:text-rose-400 font-black">₹1,20,000</span>
                     </div>
-
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5 text-[10px] text-slate-200 bg-white/5 rounded-xl p-2.5 border border-white/10">
-                      <div className="flex items-start gap-1.5">
-                        <CheckCircle2 size={12} className="text-amber-400 shrink-0 mt-0.5" />
-                        <span><strong>Play Store App:</strong> स्कूल के नाम व लोगो का अपना White-Label App</span>
-                      </div>
-                      <div className="flex items-start gap-1.5">
-                        <CheckCircle2 size={12} className="text-amber-400 shrink-0 mt-0.5" />
-                        <span><strong>On-Site Training:</strong> कैंपस जाकर स्टाफ ट्रेनिंग व ArcFace कियोस्क सेटअप</span>
-                      </div>
-                      <div className="flex items-start gap-1.5">
-                        <CheckCircle2 size={12} className="text-amber-400 shrink-0 mt-0.5" />
-                        <span><strong>100% Data Migration:</strong> पुराने Excel/रजिस्टर डेटा व बकाया का पूरा अपलोड</span>
-                      </div>
-                      <div className="flex items-start gap-1.5">
-                        <CheckCircle2 size={12} className="text-amber-400 shrink-0 mt-0.5" />
-                        <span><strong>Custom Domain Website:</strong> www.schoolname.com + Full Website CMS</span>
-                      </div>
-                      <div className="flex items-start gap-1.5 sm:col-span-2">
-                        <CheckCircle2 size={12} className="text-amber-400 shrink-0 mt-0.5" />
-                        <span><strong>Dedicated Relationship Manager:</strong> परीक्षा व एडमिशन के समय तुरंत फोन/वीडियो सपोर्ट व कस्टम मार्कशीट डिज़ाइन</span>
-                      </div>
-                    </div>
-
-                    <div className="grid grid-cols-2 gap-2">
+                    <div className="grid grid-cols-2 gap-1.5">
                       <button
                         type="button"
-                        onClick={() => setTierOptions(prev => ({
-                          ...prev,
-                          [tKey]: { isElite: true, duration: "1_year", key: "elite_yearly" }
-                        }))}
-                        className={`p-2 rounded-xl border text-left transition cursor-pointer flex items-center justify-between ${
-                          effectiveSel.duration === "1_year"
-                            ? "bg-amber-400 text-slate-950 border-amber-300 font-black"
-                            : "bg-white/5 hover:bg-white/10 text-slate-200 border-white/15"
+                        onClick={() => setEliteMode("new")}
+                        className={`p-1.5 rounded-lg border text-left transition cursor-pointer ${
+                          eliteMode === "new"
+                            ? "bg-amber-500 text-slate-950 border-amber-600 font-black"
+                            : "bg-white dark:bg-slate-800 border-amber-200 dark:border-slate-700 text-slate-700 dark:text-slate-300"
                         }`}
                       >
-                        <div>
-                          <div className="text-[10px] font-black">👑 Annual White-Label</div>
-                          <div className="text-xs font-black tabular-nums">₹1,99,999 / yr</div>
-                        </div>
-                        {effectiveSel.duration === "1_year" && <Check size={13} />}
+                        <div className="text-[9px] font-black uppercase">1st Year Offer</div>
+                        <div className="text-xs font-black">₹1,00,000 मात्र</div>
                       </button>
-
                       <button
                         type="button"
-                        onClick={() => setTierOptions(prev => ({
-                          ...prev,
-                          [tKey]: { isElite: true, duration: "monthly", key: "elite_monthly" }
-                        }))}
-                        className={`p-2 rounded-xl border text-left transition cursor-pointer flex items-center justify-between ${
-                          effectiveSel.duration === "monthly"
-                            ? "bg-amber-400 text-slate-950 border-amber-300 font-black"
-                            : "bg-white/5 hover:bg-white/10 text-slate-200 border-white/15"
+                        onClick={() => setEliteMode("renewal")}
+                        className={`p-1.5 rounded-lg border text-left transition cursor-pointer ${
+                          eliteMode === "renewal"
+                            ? "bg-emerald-600 text-white border-emerald-700 font-black"
+                            : "bg-white dark:bg-slate-800 border-amber-200 dark:border-slate-700 text-slate-700 dark:text-slate-300"
                         }`}
                       >
-                        <div>
-                          <div className="text-[10px] font-black">👑 Monthly Enterprise</div>
-                          <div className="text-xs font-black tabular-nums">₹19,999 / mo</div>
-                        </div>
-                        {effectiveSel.duration === "monthly" && <Check size={13} />}
+                        <div className="text-[9px] font-black uppercase">Renewal Fee</div>
+                        <div className="text-xs font-black">₹80,000 / yr</div>
                       </button>
                     </div>
-
-                    <div className="pt-1 flex items-center justify-between gap-2">
-                      <span className="text-[10px] text-amber-200 font-semibold">
-                        All Elite Powers + Full White-Label Branding
-                      </span>
-                      <button
-                        type="button"
-                        onClick={() => handleInitiateBuy(tKey, effectiveSel)}
-                        className="py-1.5 px-3.5 rounded-lg bg-amber-400 hover:bg-amber-300 text-slate-950 text-xs font-black transition cursor-pointer flex items-center gap-1 shrink-0"
-                      >
-                        <Crown size={13} />
-                        <span>{isCurrentTier ? "Renew White-Label" : "Book White-Label"}</span>
-                      </button>
-                    </div>
-                  </div>
-                );
-              }
-
-              return (
-                <div
-                  key={tKey}
-                  className={`rounded-xl border p-3 transition-all relative ${
-                    effectiveSel.isElite
-                      ? "border-amber-300/80 dark:border-amber-700/60 bg-gradient-to-r from-amber-50/30 via-white to-amber-50/10 dark:from-slate-900 dark:to-slate-900"
-                      : "border-slate-200/90 dark:border-slate-800 bg-white dark:bg-slate-900"
-                  } hover:border-slate-300 dark:hover:border-slate-700`}
-                >
-                  {/* Top Row: Title, Capacity & Current Badge */}
-                  <div className="flex items-center justify-between gap-2 mb-2">
-                    <div className="flex items-center gap-1.5 flex-wrap min-w-0">
-                      <h3 className="text-xs font-black text-slate-900 dark:text-white truncate">
-                        {cfg.name}
-                      </h3>
-                      <span className="text-[10px] text-slate-400 font-medium">
-                        (Upto {cfg.maxStudents} Students)
-                      </span>
-                      {isCurrentTier && (
-                        <span className="text-[9px] font-black bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border border-emerald-500/30 px-1.5 py-0.2 rounded">
-                          Current Tier
-                        </span>
-                      )}
-                    </div>
-
-                    <div className="text-right shrink-0">
-                      <span className="text-sm font-black text-slate-900 dark:text-white tabular-nums">
-                        ₹{activePrice.toLocaleString("en-IN")}
-                      </span>
-                      <span className="text-[10px] text-slate-400 font-semibold ml-0.5">
-                        {effectiveSel.duration === "1_year" ? "/yr" : "/mo"}
-                      </span>
-                    </div>
-                  </div>
-
-                  {/* Feature Subtext */}
-                  <p className="text-[10px] text-slate-500 dark:text-slate-400 leading-tight mb-2.5">
-                    {cfg.desc}
-                    {effectiveSel.isElite ? (
-                      <span className="text-amber-600 dark:text-amber-400 font-bold ml-1">
-                        · 👑 Custom Website CMS (फ़ोटो व गैलरी) + AI Face Attendance + Class 1–12 Notes Included!
-                      </span>
-                    ) : (
-                      <span className="text-blue-600 dark:text-blue-400 font-bold ml-1">
-                        · ⚡ Default Website (सिर्फ़ डिफ़ॉल्ट डेटा, बिना कस्टम फ़ोटो एडिट) + QR Scan Attendance
-                      </span>
-                    )}
-                  </p>
-
-                  {/* ── 4 COMPACT BUTTONS GRID IN EXACT REQUESTED SEQUENCE:
-                      1. Lite Monthly
-                      2. Elite Monthly
-                      3. Lite Yearly
-                      4. Elite Yearly
-                  ── */}
-                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5">
-                    
-                    {/* 1. LITE MONTHLY BUTTON */}
-                    <button
-                      type="button"
-                      onClick={() => setTierOptions(prev => ({
-                        ...prev,
-                        [tKey]: { isElite: false, duration: "monthly", key: "lite_monthly" }
-                      }))}
-                      className={`p-1.5 rounded-lg border text-left transition-all cursor-pointer flex flex-col justify-between active:scale-97 ${
-                        effectiveSel.key === "lite_monthly"
-                          ? "bg-blue-600 text-white border-blue-600 shadow-2xs font-bold"
-                          : "bg-slate-50 hover:bg-slate-100 dark:bg-slate-800/80 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-300 border-slate-200 dark:border-slate-700"
-                      }`}
-                      title="Lite Monthly Plan"
-                    >
-                      <div className="flex items-center justify-between gap-1">
-                        <span className="text-[10px] font-black truncate">⚡ Lite Monthly</span>
-                        {effectiveSel.key === "lite_monthly" && <Check size={11} className="shrink-0" />}
-                      </div>
-                      <span className={`text-[11px] font-black tabular-nums mt-0.5 ${effectiveSel.key === "lite_monthly" ? "text-white" : "text-slate-900 dark:text-white"}`}>
-                        ₹{cfg.monthlyPrice.toLocaleString("en-IN")}<span className="text-[9px] font-normal opacity-80">/mo</span>
-                      </span>
-                    </button>
-
-                    {/* 2. ELITE MONTHLY BUTTON */}
-                    <button
-                      type="button"
-                      onClick={() => setTierOptions(prev => ({
-                        ...prev,
-                        [tKey]: { isElite: true, duration: "monthly", key: "elite_monthly" }
-                      }))}
-                      className={`p-1.5 rounded-lg border text-left transition-all cursor-pointer flex flex-col justify-between active:scale-97 ${
-                        effectiveSel.key === "elite_monthly"
-                          ? "bg-amber-500 text-slate-950 border-amber-400 shadow-2xs font-black"
-                          : "bg-amber-500/10 hover:bg-amber-500/15 dark:bg-amber-950/20 text-amber-900 dark:text-amber-200 border-amber-200 dark:border-amber-800/70"
-                      }`}
-                      title="Elite Monthly Plan with Custom Website CMS & Face Attendance"
-                    >
-                      <div className="flex items-center justify-between gap-1">
-                        <span className="text-[10px] font-black truncate flex items-center gap-0.5">
-                          <Crown size={10} className="shrink-0 text-amber-600 dark:text-amber-400" /> Elite Monthly
-                        </span>
-                        {effectiveSel.key === "elite_monthly" && <Check size={11} className="shrink-0" />}
-                      </div>
-                      <span className={`text-[11px] font-black tabular-nums mt-0.5 ${effectiveSel.key === "elite_monthly" ? "text-slate-950 font-black" : "text-amber-700 dark:text-amber-300 font-bold"}`}>
-                        ₹{cfg.eliteMonthlyPrice.toLocaleString("en-IN")}<span className="text-[9px] font-normal opacity-80">/mo</span>
-                      </span>
-                    </button>
-
-                    {/* 3. LITE YEARLY BUTTON */}
-                    <button
-                      type="button"
-                      onClick={() => setTierOptions(prev => ({
-                        ...prev,
-                        [tKey]: { isElite: false, duration: "1_year", key: "lite_yearly" }
-                      }))}
-                      className={`p-1.5 rounded-lg border text-left transition-all cursor-pointer flex flex-col justify-between active:scale-97 ${
-                        effectiveSel.key === "lite_yearly"
-                          ? "bg-indigo-600 text-white border-indigo-600 shadow-2xs font-bold"
-                          : "bg-slate-50 hover:bg-slate-100 dark:bg-slate-800/80 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-300 border-slate-200 dark:border-slate-700"
-                      }`}
-                      title="Lite Annual Session Plan"
-                    >
-                      <div className="flex items-center justify-between gap-1">
-                        <span className="text-[10px] font-black truncate">⚡ Lite Yearly</span>
-                        <span className="text-[8px] font-black bg-emerald-500/20 text-emerald-700 dark:text-emerald-300 px-1 rounded">10+2</span>
-                      </div>
-                      <span className={`text-[11px] font-black tabular-nums mt-0.5 ${effectiveSel.key === "lite_yearly" ? "text-white" : "text-slate-900 dark:text-white"}`}>
-                        ₹{cfg.sessionPrice.toLocaleString("en-IN")}<span className="text-[9px] font-normal opacity-80">/yr</span>
-                      </span>
-                    </button>
-
-                    {/* 4. ELITE YEARLY BUTTON */}
-                    <button
-                      type="button"
-                      onClick={() => setTierOptions(prev => ({
-                        ...prev,
-                        [tKey]: { isElite: true, duration: "1_year", key: "elite_yearly" }
-                      }))}
-                      className={`p-1.5 rounded-lg border text-left transition-all cursor-pointer flex flex-col justify-between active:scale-97 ${
-                        effectiveSel.key === "elite_yearly"
-                          ? "bg-gradient-to-r from-amber-500 to-orange-500 text-white border-amber-400 shadow-2xs font-black"
-                          : "bg-amber-500/10 hover:bg-amber-500/15 dark:bg-amber-950/20 text-amber-900 dark:text-amber-200 border-amber-200 dark:border-amber-800/70"
-                      }`}
-                      title="Elite Annual Session Plan with Custom Website CMS & Face Attendance"
-                    >
-                      <div className="flex items-center justify-between gap-1">
-                        <span className="text-[10px] font-black truncate flex items-center gap-0.5">
-                          <Crown size={10} className="shrink-0 text-amber-500" /> Elite Yearly
-                        </span>
-                        <span className="text-[8px] font-black bg-emerald-500 text-white px-1 rounded">Free</span>
-                      </div>
-                      <span className={`text-[11px] font-black tabular-nums mt-0.5 ${effectiveSel.key === "elite_yearly" ? "text-white" : "text-amber-700 dark:text-amber-300 font-bold"}`}>
-                        ₹{cfg.eliteSessionPrice.toLocaleString("en-IN")}<span className="text-[9px] font-normal opacity-80">/yr</span>
-                      </span>
-                    </button>
-                  </div>
-
-                  {/* Bottom Action Strip: Compact Buy / Upgrade Button */}
-                  <div className="mt-2.5 pt-2 border-t border-slate-100 dark:border-slate-800 flex items-center justify-between gap-2">
-                    <div className="text-[10px] text-slate-500 dark:text-slate-400 flex items-center gap-1 truncate">
-                      <span>Selected:</span>
-                      <strong className="text-slate-800 dark:text-slate-200 font-bold truncate">
-                        {effectiveSel.isElite ? "👑 Elite (Custom Website)" : "⚡ Lite (Default Website)"} · {effectiveSel.duration === "1_year" ? "Annual" : "Monthly"}
-                      </strong>
-                    </div>
-
-                    <button
-                      type="button"
-                      onClick={() => handleInitiateBuy(tKey, effectiveSel)}
-                      className={`py-1.5 px-3 rounded-lg text-xs font-black transition-all cursor-pointer flex items-center gap-1 shadow-2xs active:scale-95 shrink-0 ${
-                        effectiveSel.isElite
-                          ? "bg-amber-500 hover:bg-amber-600 text-slate-950 shadow-amber-500/20"
-                          : "bg-blue-600 hover:bg-blue-700 text-white shadow-blue-600/20"
-                      }`}
-                    >
-                      <Zap size={13} />
-                      <span>{isCurrentTier ? "Renew / Switch" : "Kharidein"}</span>
-                      <span className="text-[11px] tabular-nums font-black ml-0.5">
-                        (₹{activePrice.toLocaleString("en-IN")})
-                      </span>
-                    </button>
                   </div>
                 </div>
-              );
-            })}
-          </div>
 
-          {/* ── DEDICATED ELITE ALL-IN-ONE CARD (Clean Compact Callout) ── */}
-          <div className="rounded-xl border border-amber-300 dark:border-amber-800 bg-gradient-to-r from-amber-500/10 via-amber-500/5 to-orange-500/10 dark:from-amber-950/30 dark:to-orange-950/20 p-3 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
-            <div className="flex items-center gap-2">
-              <div className="w-8 h-8 rounded-lg bg-amber-500 text-slate-950 flex items-center justify-center shrink-0 shadow-2xs">
-                <Crown size={16} />
+                <ul className="space-y-1.5 text-[11px] font-semibold text-slate-700 dark:text-slate-200">
+                  <li className="flex items-center gap-1.5"><Check size={13} className="text-amber-600 shrink-0" /> <strong>Up to 5,000 Students &amp; 3 Branches</strong></li>
+                  <li className="flex items-center gap-1.5"><Check size={13} className="text-amber-600 shrink-0" /> AI Face ID + Custom Website CMS</li>
+                  <li className="flex items-center gap-1.5"><Check size={13} className="text-amber-600 shrink-0" /> 60+ Document Template Studio (10 Classic + 50 New)</li>
+                  <li className="flex items-center gap-1.5"><Check size={13} className="text-amber-600 shrink-0" /> Entrance Exam Bank &amp; Notes</li>
+                </ul>
               </div>
-              <div>
-                <p className="text-xs font-black text-amber-950 dark:text-amber-200 leading-tight">
-                  Kyu hai 👑 Elite Plan Schools ki Pehli Pasand?
-                </p>
-                <p className="text-[10px] text-amber-800/80 dark:text-amber-300/80 leading-snug">
-                  👑 Custom School Website CMS (अपनी फ़ोटो, बैनर, टीचर व गैलरी जोड़ें) + 🤖 AI Face Attendance + Class 1–12 Notes &amp; Videos shamil hain.
-                </p>
-              </div>
+              <button
+                type="button"
+                onClick={() => handleInitiateBuy("elite")}
+                className="mt-4 w-full py-2.5 rounded-xl bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-600 hover:to-orange-600 text-slate-950 text-xs font-black transition cursor-pointer shadow-md"
+              >
+                Kharidein Elite (₹{elitePrice.toLocaleString("en-IN")}/yr)
+              </button>
             </div>
 
-            <button
-              type="button"
-              onClick={() => handleInitiateBuy("growth_500", { isElite: true, duration: "monthly", key: "elite_monthly" })}
-              className="py-1 px-2.5 bg-amber-500 hover:bg-amber-600 text-slate-950 rounded-lg text-[11px] font-black whitespace-nowrap self-start sm:self-auto transition cursor-pointer shadow-2xs flex items-center gap-1"
-            >
-              <Sparkles size={12} />
-              <span>Elite 500 Select (₹3,999)</span>
-            </button>
+            {/* SUPREME */}
+            <div className="rounded-2xl border-2 border-rose-500/70 p-4 flex flex-col justify-between bg-slate-900 text-white">
+              <div className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <span className="text-[10px] font-black px-2 py-0.5 rounded bg-rose-600 text-white">
+                    💎 SUPREME 5000+
+                  </span>
+                  <span className="text-[10px] font-black text-rose-300">Unlimited Branches</span>
+                </div>
+                <div>
+                  <h3 className="text-sm font-black text-white">Supreme White-Label</h3>
+                  <p className="text-2xl font-black text-amber-300 mt-1">
+                    ₹2,00,000 <span className="text-xs font-bold text-slate-300">/ Year Fixed</span>
+                  </p>
+                </div>
+                <ul className="space-y-1.5 text-[11px] text-slate-200">
+                  <li className="flex items-center gap-1.5"><Check size={13} className="text-amber-400 shrink-0" /> 5,000+ Students &amp; Unlimited Branches</li>
+                  <li className="flex items-center gap-1.5"><Check size={13} className="text-amber-400 shrink-0" /> Play Store App (Own Name &amp; Logo)</li>
+                  <li className="flex items-center gap-1.5"><Check size={13} className="text-amber-400 shrink-0" /> On-Site Training &amp; Data Migration</li>
+                  <li className="flex items-center gap-1.5"><Check size={13} className="text-amber-400 shrink-0" /> Custom .com/.in + All Elite Powers</li>
+                </ul>
+              </div>
+              <button
+                type="button"
+                onClick={() => handleInitiateBuy("supreme")}
+                className="mt-4 w-full py-2.5 rounded-xl bg-gradient-to-r from-rose-600 to-amber-500 hover:from-rose-700 hover:to-amber-600 text-white text-xs font-black transition cursor-pointer"
+              >
+                Book Supreme (₹2,00,000/yr)
+              </button>
+            </div>
           </div>
         </div>
 
-        {/* ── ACTIVE FEATURES IN CURRENT PLAN (Compact Clean Matrix) ── */}
-        {isActive && (
-          <div className="bg-white dark:bg-slate-900 rounded-xl border border-slate-200/80 dark:border-slate-800 overflow-hidden shadow-xs">
-            <div className="px-3.5 py-2.5 bg-slate-50 dark:bg-slate-800/50 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between">
-              <p className="text-xs font-black text-slate-800 dark:text-slate-100">
-                Aapke Active Plan mein shamil suvidhayen:
-              </p>
-              <span className="text-[10px] font-mono font-bold text-slate-400">
-                {FEATURES.length} Modules
-              </span>
-            </div>
-            <div className="divide-y divide-slate-100 dark:divide-slate-800/60 max-h-56 overflow-y-auto">
-              {FEATURES.map(f => {
-                const val = f[planLevel] ?? false;
-                const hasIt = Boolean(val);
-                return (
-                  <div key={f.id} className="flex items-center gap-2.5 px-3.5 py-1.5 text-[11px]">
-                    <span className={hasIt ? "text-slate-600 dark:text-slate-300" : "text-slate-300 dark:text-slate-600"}>
-                      {f.icon}
-                    </span>
-                    <span className={`flex-1 font-medium truncate ${hasIt ? "text-slate-800 dark:text-slate-200" : "text-slate-400 dark:text-slate-500"}`}>
-                      {f.label}
-                    </span>
-                    {typeof val === "string" ? (
-                      <span className="text-[11px] font-black text-indigo-600 dark:text-indigo-400">
-                        {val}
-                      </span>
-                    ) : hasIt ? (
-                      <CheckCircle2 size={14} className="text-emerald-500 shrink-0" />
-                    ) : (
-                      <XCircle size={14} className="text-slate-300 dark:text-slate-600 shrink-0" />
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        )}
-
-        {/* ── PLAN COMPARISON ACCORDION (4-TIER COMPARISON) ── */}
+        {/* Comparison Table Accordion */}
         <div className="bg-white dark:bg-slate-900 rounded-xl border border-slate-200/80 dark:border-slate-800 overflow-hidden shadow-xs">
           <button
             onClick={() => setShowCompare(v => !v)}
             className="w-full flex items-center justify-between px-3.5 py-2.5 cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800/40 transition"
           >
-            <p className="text-xs font-black text-slate-800 dark:text-slate-200 flex items-center gap-1.5">
-              <span>Full 4-Tier Comparison: Basic vs Standard vs Pro vs White-Label (5000+)</span>
+            <p className="text-xs font-black text-slate-800 dark:text-slate-200">
+              Full Yearly Comparison: ⚡ Lite vs 👑 Elite vs 💎 Supreme
             </p>
-            {showCompare
-              ? <ChevronUp size={15} className="text-slate-400" />
-              : <ChevronDown size={15} className="text-slate-400" />
-            }
+            {showCompare ? <ChevronUp size={15} className="text-slate-400" /> : <ChevronDown size={15} className="text-slate-400" />}
           </button>
 
           {showCompare && (
             <div className="border-t border-slate-100 dark:border-slate-800 overflow-x-auto">
-              <table className="w-full text-[11px] border-collapse min-w-[540px]">
+              <table className="w-full text-[11px] border-collapse min-w-[500px]">
                 <thead>
                   <tr className="bg-slate-50 dark:bg-slate-800/60 text-slate-600 dark:text-slate-300 border-b border-slate-200 dark:border-slate-800">
-                    <th className="p-2 text-left font-black">Plan Rate / Feature</th>
-                    <th className="p-1.5 text-center font-black text-blue-600">Basic (200)</th>
-                    <th className="p-1.5 text-center font-black text-purple-600">Standard (500)</th>
-                    <th className="p-1.5 text-center font-black text-amber-600">Pro (2000)</th>
-                    <th className="p-1.5 text-center font-black text-rose-600">White-Label (5000+)</th>
+                    <th className="p-2 text-left font-black">Feature / Yearly Plan</th>
+                    <th className="p-2 text-center font-black text-blue-600">⚡ Lite Yearly</th>
+                    <th className="p-2 text-center font-black text-amber-600">👑 Elite (Hero)</th>
+                    <th className="p-2 text-center font-black text-rose-600">💎 Supreme</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 dark:divide-slate-800/60">
-                  <tr className="bg-slate-50/50 dark:bg-slate-800/30">
-                    <td className="p-2 font-bold text-slate-700 dark:text-slate-300">⚡ Lite Monthly (Default Website)</td>
-                    <td className="p-1.5 text-center font-black text-slate-700 dark:text-slate-200 tabular-nums">₹999</td>
-                    <td className="p-1.5 text-center font-black text-slate-700 dark:text-slate-200 tabular-nums">₹1,999</td>
-                    <td className="p-1.5 text-center font-black text-slate-700 dark:text-slate-200 tabular-nums">₹3,999</td>
-                    <td className="p-1.5 text-center font-bold text-slate-400">—</td>
-                  </tr>
-                  <tr className="bg-amber-50/40 dark:bg-amber-950/20">
-                    <td className="p-2 font-black text-amber-900 dark:text-amber-200 flex items-center gap-1">
-                      <Crown size={11} className="text-amber-500" /> 👑 Elite Monthly (Custom Website)
+                  <tr>
+                    <td className="p-2 font-bold">Annual Price</td>
+                    <td className="p-2 text-center font-black text-blue-600">₹5,000 – ₹25,313</td>
+                    <td className="p-2 text-center font-black text-amber-600">
+                      <span className="line-through text-slate-400 mr-1">₹1,20,000</span>₹1,00,000 (Renew ₹80k)
                     </td>
-                    <td className="p-1.5 text-center font-black text-amber-600 dark:text-amber-400 tabular-nums">₹1,999</td>
-                    <td className="p-1.5 text-center font-black text-amber-600 dark:text-amber-400 tabular-nums">₹3,999</td>
-                    <td className="p-1.5 text-center font-black text-amber-600 dark:text-amber-400 tabular-nums">₹7,999</td>
-                    <td className="p-1.5 text-center font-black text-rose-600 dark:text-rose-400 tabular-nums">₹19,999</td>
-                  </tr>
-                  <tr className="bg-slate-50/50 dark:bg-slate-800/30">
-                    <td className="p-2 font-bold text-slate-700 dark:text-slate-300">⚡ Lite Yearly (10+2)</td>
-                    <td className="p-1.5 text-center font-black text-blue-600 dark:text-blue-400 tabular-nums">₹9,999</td>
-                    <td className="p-1.5 text-center font-black text-purple-600 dark:text-purple-400 tabular-nums">₹19,999</td>
-                    <td className="p-1.5 text-center font-black text-amber-600 dark:text-amber-400 tabular-nums">₹39,999</td>
-                    <td className="p-1.5 text-center font-bold text-slate-400">—</td>
-                  </tr>
-                  <tr className="bg-amber-50/40 dark:bg-amber-950/20">
-                    <td className="p-2 font-black text-amber-900 dark:text-amber-200 flex items-center gap-1">
-                      <Crown size={11} className="text-amber-500" /> 👑 Elite Yearly (10+2)
-                    </td>
-                    <td className="p-1.5 text-center font-black text-amber-600 dark:text-amber-400 tabular-nums">₹19,999</td>
-                    <td className="p-1.5 text-center font-black text-amber-600 dark:text-amber-400 tabular-nums">₹39,999</td>
-                    <td className="p-1.5 text-center font-black text-amber-600 dark:text-amber-400 tabular-nums">₹79,999</td>
-                    <td className="p-1.5 text-center font-black text-rose-600 dark:text-rose-400 tabular-nums">₹1,99,999</td>
+                    <td className="p-2 text-center font-black text-rose-600">₹2,00,000 Fixed</td>
                   </tr>
                   {FEATURES.map(f => (
-                    <tr key={f.id} className="hover:bg-slate-50/50 dark:hover:bg-slate-800/30">
-                      <td className="p-2 text-slate-600 dark:text-slate-400 font-medium">
-                        {f.label}
+                    <tr key={f.id}>
+                      <td className="p-2 text-slate-600 dark:text-slate-400 font-medium">{f.label}</td>
+                      <td className="p-2 text-center">
+                        {typeof f.lite === "string" ? <span className="font-bold">{f.lite}</span> : f.lite ? <CheckCircle2 size={13} className="text-emerald-500 mx-auto" /> : <XCircle size={13} className="text-slate-300 mx-auto" />}
                       </td>
-                      <td className="p-1.5 text-center">
-                        {typeof f.basic === "string" ? (
-                          <span className="font-bold text-slate-700 dark:text-slate-300">{f.basic}</span>
-                        ) : f.basic ? (
-                          <CheckCircle2 size={13} className="text-emerald-500 mx-auto" />
-                        ) : (
-                          <XCircle size={13} className="text-slate-300 dark:text-slate-600 mx-auto" />
-                        )}
+                      <td className="p-2 text-center bg-amber-50/30 dark:bg-amber-950/10">
+                        {typeof f.elite === "string" ? <span className="font-black text-amber-700 dark:text-amber-300">{f.elite}</span> : f.elite ? <CheckCircle2 size={13} className="text-emerald-500 mx-auto" /> : <XCircle size={13} className="text-slate-300 mx-auto" />}
                       </td>
-                      <td className="p-1.5 text-center">
-                        {typeof f.standard === "string" ? (
-                          <span className="font-bold text-slate-700 dark:text-slate-300">{f.standard}</span>
-                        ) : f.standard ? (
-                          <CheckCircle2 size={13} className="text-emerald-500 mx-auto" />
-                        ) : (
-                          <XCircle size={13} className="text-slate-300 dark:text-slate-600 mx-auto" />
-                        )}
-                      </td>
-                      <td className="p-1.5 text-center">
-                        {typeof f.pro === "string" ? (
-                          <span className="font-bold text-slate-700 dark:text-slate-300">{f.pro}</span>
-                        ) : f.pro ? (
-                          <CheckCircle2 size={13} className="text-emerald-500 mx-auto" />
-                        ) : (
-                          <XCircle size={13} className="text-slate-300 dark:text-slate-600 mx-auto" />
-                        )}
-                      </td>
-                      <td className="p-1.5 text-center bg-amber-50/20 dark:bg-amber-950/10">
-                        {typeof f.whitelabel === "string" ? (
-                          <span className="font-black text-amber-800 dark:text-amber-300">{f.whitelabel}</span>
-                        ) : f.whitelabel ? (
-                          <CheckCircle2 size={13} className="text-emerald-500 mx-auto" />
-                        ) : (
-                          <XCircle size={13} className="text-slate-300 dark:text-slate-600 mx-auto" />
-                        )}
+                      <td className="p-2 text-center">
+                        {typeof f.supreme === "string" ? <span className="font-black text-rose-600 dark:text-rose-400">{f.supreme}</span> : f.supreme ? <CheckCircle2 size={13} className="text-emerald-500 mx-auto" /> : <XCircle size={13} className="text-slate-300 mx-auto" />}
                       </td>
                     </tr>
                   ))}
@@ -948,20 +557,17 @@ export const SchoolPlanView: React.FC<Props> = ({ school, schoolId, adminUid, on
           )}
         </div>
 
-        {/* ── CUSTOM MESSAGE / ASSISTANCE (Compact) ── */}
+        {/* Custom Message Box */}
         <div className="bg-white dark:bg-slate-900 rounded-xl border border-slate-200/80 dark:border-slate-800 p-3 shadow-xs">
           <div className="flex items-center gap-1.5 mb-1.5">
             <MessageSquare size={14} className="text-indigo-600 dark:text-indigo-400" />
             <p className="text-xs font-black text-slate-800 dark:text-slate-100">
-              Koi Sawal ya Custom Requirements?
+              Koi Sawal ya Custom Quotation Chahiye?
             </p>
           </div>
-          <p className="text-[10px] text-slate-500 dark:text-slate-400 mb-2">
-            Super Admin ko direct message bhej kar apna custom quotation ya sawal puchen:
-          </p>
           {sent ? (
             <div className="flex items-center gap-2 bg-emerald-50 dark:bg-emerald-950/40 rounded-lg px-2.5 py-2 border border-emerald-200 dark:border-emerald-800">
-              <CheckCircle2 size={14} className="text-emerald-600 dark:text-emerald-400 shrink-0" />
+              <CheckCircle2 size={14} className="text-emerald-600 shrink-0" />
               <p className="text-[11px] text-emerald-800 dark:text-emerald-200 font-bold">
                 Message bhej diya gaya hai! Super Admin jald reply karenge.
               </p>
@@ -971,20 +577,16 @@ export const SchoolPlanView: React.FC<Props> = ({ school, schoolId, adminUid, on
               <textarea
                 value={contactMsg}
                 onChange={e => setContactMsg(e.target.value)}
-                placeholder="Jaise: Humare school mein 350 students hain, Elite plan chahiye."
+                placeholder="Jaise: Hamare 2 branches hain, Elite Yearly plan activate karna hai."
                 rows={2}
                 className="w-full px-2.5 py-1.5 text-xs border border-slate-200 dark:border-slate-700 rounded-lg bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-white placeholder:text-slate-400 resize-none focus:outline-none focus:ring-1 focus:ring-indigo-400"
               />
               <button
                 onClick={sendRequest}
                 disabled={sending || !contactMsg.trim()}
-                className="w-full py-2 bg-indigo-600 hover:bg-indigo-700 active:bg-indigo-800 disabled:opacity-50 text-white rounded-lg text-xs font-black transition-colors flex items-center justify-center gap-1.5 cursor-pointer shadow-2xs"
+                className="w-full py-2 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white rounded-lg text-xs font-black transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
               >
-                {sending ? (
-                  <span className="w-3.5 h-3.5 border-2 border-white/40 border-t-white rounded-full animate-spin" />
-                ) : (
-                  <MessageSquare size={13} />
-                )}
+                <MessageSquare size={13} />
                 <span>{sending ? "Bhej rahe hain…" : "Super Admin ko Message Bhejo"}</span>
               </button>
             </div>
@@ -992,25 +594,22 @@ export const SchoolPlanView: React.FC<Props> = ({ school, schoolId, adminUid, on
         </div>
       </div>
 
-      {/* ══════════════════════════════════════════════════════════════════
-          CHECKOUT & PLAN PURCHASE MODAL (Compact & Clean)
-      ══════════════════════════════════════════════════════════════════ */}
+      {/* Checkout Modal */}
       {buyingPlan && (
-        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-3.5 animate-in fade-in">
+        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-3.5">
           <div className="bg-white dark:bg-slate-900 rounded-2xl max-w-sm w-full border border-slate-200 dark:border-slate-800 shadow-2xl overflow-hidden flex flex-col">
-            {/* Modal Header */}
             <div className={`p-3.5 text-white flex items-center justify-between ${
-              buyingPlan.isElite
+              buyingPlan.edition === "elite"
                 ? "bg-gradient-to-r from-amber-600 to-orange-600"
+                : buyingPlan.edition === "supreme"
+                ? "bg-gradient-to-r from-rose-600 to-pink-600"
                 : "bg-gradient-to-r from-blue-700 to-indigo-700"
             }`}>
               <div className="flex items-center gap-2">
                 {buyingPlan.isElite ? <Crown size={18} /> : <Zap size={18} />}
                 <div>
                   <h3 className="text-xs font-black leading-tight">{buyingPlan.title}</h3>
-                  <p className="text-[10px] opacity-90">
-                    {buyingPlan.duration === "1_year" ? "1st Year Annual Session (10+2 Mo)" : "Monthly Subscription"}
-                  </p>
+                  <p className="text-[10px] opacity-90">Yearly Session Plan (12 Months)</p>
                 </div>
               </div>
               <button
@@ -1021,111 +620,67 @@ export const SchoolPlanView: React.FC<Props> = ({ school, schoolId, adminUid, on
               </button>
             </div>
 
-            {/* Modal Content */}
-            <div className="p-3.5 space-y-3 overflow-y-auto max-h-[75vh]">
+            <div className="p-3.5 space-y-3">
               {checkoutDone ? (
                 <div className="text-center py-3 space-y-2.5">
                   <div className="w-12 h-12 bg-emerald-100 text-emerald-600 rounded-full flex items-center justify-center mx-auto">
                     <CheckCircle2 size={26} />
                   </div>
-                  <h4 className="text-sm font-black text-slate-800 dark:text-white">Request Sent Successfully!</h4>
-                  <p className="text-[11px] text-slate-600 dark:text-slate-300 leading-normal">
-                    Aapka plan purchase request Super Admin ko bhej diya gaya hai. Instant activation ke liye neeche WhatsApp par slip share karein.
+                  <h4 className="text-sm font-black text-slate-800 dark:text-white">Yearly Request Sent!</h4>
+                  <p className="text-[11px] text-slate-600 dark:text-slate-300">
+                    Request Super Admin ko bhej di gayi hai. Instant activation ke liye WhatsApp par share karein.
                   </p>
                   <button
                     onClick={openWhatsAppCheckout}
-                    className="w-full py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-black flex items-center justify-center gap-1.5 shadow-xs cursor-pointer"
+                    className="w-full py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-black flex items-center justify-center gap-1.5 cursor-pointer"
                   >
-                    <MessageSquare size={15} /> WhatsApp for Instant Activation
+                    <MessageSquare size={15} /> WhatsApp for Activation
                   </button>
                   <button
                     onClick={() => setBuyingPlan(null)}
-                    className="w-full py-1 text-slate-500 hover:text-slate-700 text-[11px] font-bold cursor-pointer"
+                    className="w-full py-1 text-slate-500 text-[11px] font-bold cursor-pointer"
                   >
                     Close
                   </button>
                 </div>
               ) : (
                 <>
-                  {/* Summary Box */}
-                  <div className="bg-slate-50 dark:bg-slate-800/80 p-3 rounded-xl border border-slate-200/80 dark:border-slate-700/80 space-y-1.5 text-xs">
-                    <div className="flex justify-between items-center">
-                      <span className="text-slate-500 dark:text-slate-400 font-medium text-[11px]">School:</span>
-                      <span className="font-bold text-slate-800 dark:text-white truncate max-w-[170px]">{school?.name || "School"}</span>
+                  <div className="bg-slate-50 dark:bg-slate-800/80 p-3 rounded-xl border border-slate-200 dark:border-slate-700 space-y-1.5 text-xs">
+                    <div className="flex justify-between">
+                      <span className="text-slate-500">School:</span>
+                      <span className="font-bold truncate max-w-[170px]">{school?.name || "School"}</span>
                     </div>
-                    <div className="flex justify-between items-center">
-                      <span className="text-slate-500 dark:text-slate-400 font-medium text-[11px]">Edition:</span>
-                      <span className={`font-black text-[11px] ${buyingPlan.isElite ? "text-amber-600 dark:text-amber-400" : "text-blue-600 dark:text-blue-400"}`}>
-                        {buyingPlan.tier === "whitelabel_5000"
-                          ? "👑 Enterprise White-Label (Play Store App + Custom Web)"
-                          : buyingPlan.isElite
-                          ? "👑 Elite (Custom Website CMS + Face ID + Notes)"
-                          : "⚡ Lite ERP (Default Website + QR Scan)"}
-                      </span>
+                    <div className="flex justify-between">
+                      <span className="text-slate-500">Students Limit:</span>
+                      <span className="font-bold">{buyingPlan.maxStudents >= 5000 ? "5,000+" : buyingPlan.maxStudents}</span>
                     </div>
-                    <div className="flex justify-between items-center">
-                      <span className="text-slate-500 dark:text-slate-400 font-medium text-[11px]">Duration:</span>
-                      <span className="font-bold text-slate-800 dark:text-white text-[11px]">
-                        {buyingPlan.duration === "1_year" ? "12 Mahine (Annual Session)" : "Monthly"}
-                      </span>
+                    <div className="flex justify-between">
+                      <span className="text-slate-500">Branches Limit:</span>
+                      <span className="font-bold">{buyingPlan.maxBranches >= 9999 ? "Unlimited" : `${buyingPlan.maxBranches} Branch(es)`}</span>
                     </div>
                     <div className="border-t border-slate-200 dark:border-slate-700 pt-1.5 flex justify-between items-center">
-                      <span className="text-xs font-black text-slate-900 dark:text-white">Amount:</span>
-                      <span className="text-base font-black text-emerald-600 dark:text-emerald-400 tabular-nums">
+                      <span className="font-black">Yearly Fee:</span>
+                      <span className="text-base font-black text-emerald-600 dark:text-emerald-400">
                         ₹{buyingPlan.amount.toLocaleString("en-IN")}
                       </span>
                     </div>
                   </div>
 
-                  {buyingPlan.isElite ? (
-                    <div className="bg-amber-50 dark:bg-amber-950/30 border border-amber-300 dark:border-amber-800 rounded-lg p-2.5 text-[11px] text-amber-900 dark:text-amber-200 flex items-start gap-1.5">
-                      <Sparkles size={14} className="text-amber-600 shrink-0 mt-0.5" />
-                      <div>
-                        <p className="font-black">
-                          {buyingPlan.tier === "whitelabel_5000"
-                            ? "👑 Enterprise White-Label Suite Unlocked:"
-                            : "👑 Elite Custom Website CMS & Face ID Unlocked:"}
-                        </p>
-                        <p className="text-[10px] mt-0.5 text-amber-800 dark:text-amber-300 font-medium">
-                          {buyingPlan.tier === "whitelabel_5000"
-                            ? "Play Store Branded App, Custom .com Website CMS, On-Site Staff Training, Data Migration, AI Face Attendance & Class 1–12 Notes activate honge."
-                            : "🌐 Custom School Website CMS (अपनी फ़ोटो, बैनर, टीचर व गैलरी जोड़ें), 🤖 AI Face Attendance (0.2s Kiosk + Live Face ID), QR Scan aur Class 1–12 Notes activate honge."}
-                        </p>
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="bg-blue-50 dark:bg-blue-950/30 border border-blue-200 dark:border-blue-800 rounded-lg p-2.5 text-[11px] text-blue-900 dark:text-blue-200 flex items-start gap-1.5">
-                      <QrCode size={14} className="text-blue-600 shrink-0 mt-0.5" />
-                      <div>
-                        <p className="font-black">⚡ Lite Plan — Default Website &amp; QR Scan:</p>
-                        <p className="text-[10px] mt-0.5 text-blue-800 dark:text-blue-300 font-medium">
-                          🌐 Default School Website (केवल डिफ़ॉल्ट डेटा, कस्टम फ़ोटो एडिट बंद) + 📷 QR Code Scan Attendance. Custom Website CMS व AI Face ID ke liye 👑 Elite chunein.
-                        </p>
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Actions */}
-                  <div className="space-y-1.5 pt-1">
+                  <div className="space-y-1.5">
                     <button
                       type="button"
                       onClick={openWhatsAppCheckout}
-                      className="w-full py-2.5 bg-emerald-600 hover:bg-emerald-700 active:scale-98 text-white rounded-xl text-xs font-black transition-all flex items-center justify-center gap-1.5 shadow-sm cursor-pointer"
+                      className="w-full py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-black flex items-center justify-center gap-1.5 cursor-pointer"
                     >
                       <MessageSquare size={15} /> WhatsApp (+91 {SUPPORT_PHONE}) se Buy Karein
                     </button>
-
                     <button
                       type="button"
                       onClick={handleConfirmCheckout}
                       disabled={checkoutSubmitting}
-                      className="w-full py-2 bg-slate-900 hover:bg-slate-800 dark:bg-slate-800 dark:hover:bg-slate-700 text-white rounded-xl text-xs font-black transition-all flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50"
+                      className="w-full py-2 bg-slate-900 hover:bg-slate-800 text-white rounded-xl text-xs font-black flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50"
                     >
-                      {checkoutSubmitting ? (
-                        <span className="w-3.5 h-3.5 border-2 border-white/40 border-t-white rounded-full animate-spin" />
-                      ) : (
-                        <CheckCircle2 size={14} />
-                      )}
+                      <CheckCircle2 size={14} />
                       <span>{checkoutSubmitting ? "Submitting…" : "In-App Activation Request Bhejein"}</span>
                     </button>
                   </div>
@@ -1138,4 +693,5 @@ export const SchoolPlanView: React.FC<Props> = ({ school, schoolId, adminUid, on
     </div>
   );
 };
+
 export default SchoolPlanView;

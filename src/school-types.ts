@@ -13,88 +13,144 @@ export interface SchoolSubscription {
   writing?: boolean;
   pdf?: boolean;
   mcq?: boolean;
-  isElite?: boolean; // Elite Plan (2× Price) — Unlocks Custom Website CMS, AI Face Attendance & Custom Curriculum
+  isElite?: boolean; // Elite Plan — Unlocks Custom Website CMS, AI Face Attendance, Entrance Exam, 3 Branches & Custom Curriculum
   customCurriculumEnabled?: boolean; // Direct flag for custom school notes & curriculum power
   expiresAt?: string; // ISO date — plan hard expiry (set on assign)
-  monthlyAmount: number;
+  monthlyAmount: number; // Legacy field kept in sync with assigned yearly/amount for revenue & dashboard compatibility
+  yearlyAmount?: number; // Assigned yearly tariff (₹)
+  mrpAmount?: number; // Strike-through MRP e.g. 120000 for Elite
+  renewalAmount?: number; // Renewal yearly fee e.g. 80000 for Elite
+  isRenewal?: boolean; // Whether assigned/purchased at renewal rate
   paidUntil?: string; // ISO date — subscription paid up to this date
   lastPaidDate?: string; // ISO date — when last payment was received
   lastPaidAmount?: number; // amount received in last payment
   paymentNotes?: string; // admin notes on payment
   status: 'active' | 'inactive' | 'suspended';
   tier?: SubscriptionTier;
-  maxStudents?: number; // 200, 500, 2000, or 5000+ students
-  maxTeachers?: number; // 10, 25, or unlimited
-  planDuration?: PlanDuration; // duration of last assigned plan
+  maxStudents?: number; // 100, 300, 500, 1000, 2000, or 5000+ students
+  maxTeachers?: number; // Unlimited or tier-based staff limit
+  maxBranches?: number; // Lite = 1, Elite = 3, Supreme (whitelabel_5000) = 9999 (Unlimited)
+  planDuration?: PlanDuration; // Yearly duration of assigned plan
   assignedAt?: string; // ISO date — when plan was last assigned by super admin
 }
 
-export const TIER_CONFIG: Record<SubscriptionTier, { name: string; maxStudents: number; maxTeachers: number; monthlyPrice: number; sessionPrice: number; eliteMonthlyPrice: number; eliteSessionPrice: number; badge: string; desc: string }> = {
+export const YEARLY_STUDENT_SLABS = [100, 300, 500, 1000, 2000, 5000] as const;
+export type YearlyStudentSlab = (typeof YEARLY_STUDENT_SLABS)[number];
+
+export const LITE_YEARLY_PRICES: Record<number, number> = {
+  100: 5000,
+  300: 7500,
+  500: 11250,
+  1000: 16875,
+  2000: 25313,
+};
+
+export const ELITE_YEARLY_PRICING = {
+  mrp: 120000,
+  firstYear: 100000,
+  renewal: 80000,
+  maxStudents: 5000,
+  maxBranches: 3,
+} as const;
+
+export const SUPREME_YEARLY_PRICING = {
+  price: 200000,
+  maxStudents: 5000,
+  maxBranches: 9999,
+} as const;
+
+export const getLitePriceForSlab = (students: number): number => {
+  if (students <= 100) return LITE_YEARLY_PRICES[100];
+  if (students <= 300) return LITE_YEARLY_PRICES[300];
+  if (students <= 500) return LITE_YEARLY_PRICES[500];
+  if (students <= 1000) return LITE_YEARLY_PRICES[1000];
+  return LITE_YEARLY_PRICES[2000];
+};
+
+export const TIER_CONFIG: Record<SubscriptionTier, { name: string; maxStudents: number; maxTeachers: number; maxBranches: number; monthlyPrice: number; sessionPrice: number; eliteMonthlyPrice: number; eliteSessionPrice: number; eliteRenewalPrice?: number; eliteMrpPrice?: number; badge: string; desc: string }> = {
   starter_200: {
-    name: "Basic Plan (200 Students)",
-    maxStudents: 200,
-    maxTeachers: 10,
-    monthlyPrice: 999,
-    sessionPrice: 9999,
-    eliteMonthlyPrice: 1999, // 2× price for Elite AI Face Attendance, Custom Website CMS & Curriculum
-    eliteSessionPrice: 19999,
-    badge: "BASIC 200",
-    desc: "Upto 200 Students • 10 Teachers • QR Attendance, Core ERP & Default School Website"
+    name: "Lite Yearly (100–2000 Students)",
+    maxStudents: 2000,
+    maxTeachers: 9999,
+    maxBranches: 1,
+    monthlyPrice: 5000,
+    sessionPrice: 5000,
+    eliteMonthlyPrice: 100000,
+    eliteSessionPrice: 100000,
+    eliteRenewalPrice: 80000,
+    eliteMrpPrice: 120000,
+    badge: "LITE YEARLY",
+    desc: "Up to 2,000 Students • 1 Branch • QR Attendance, Core ERP & Default School Website"
   },
   growth_500: {
-    name: "Standard Plan (500 Students)",
+    name: "Lite Growth (500 Students)",
     maxStudents: 500,
-    maxTeachers: 25,
-    monthlyPrice: 1999,
-    sessionPrice: 19999,
-    eliteMonthlyPrice: 3999, // 2× price for Elite AI Face Attendance, Custom Website CMS & Curriculum
-    eliteSessionPrice: 39999,
-    badge: "STANDARD 500",
-    desc: "Upto 500 Students • 25 Teachers • Sub-Admins, QR ID Cards, SMS/WhatsApp & Website"
+    maxTeachers: 9999,
+    maxBranches: 1,
+    monthlyPrice: 11250,
+    sessionPrice: 11250,
+    eliteMonthlyPrice: 100000,
+    eliteSessionPrice: 100000,
+    eliteRenewalPrice: 80000,
+    eliteMrpPrice: 120000,
+    badge: "LITE 500",
+    desc: "Up to 500 Students • 1 Branch • Sub-Admins, QR ID Cards, Fees & Default Website"
   },
   enterprise_2000: {
-    name: "Pro Plan (2000 Students)",
-    maxStudents: 2000,
-    maxTeachers: 9999,
-    monthlyPrice: 3999,
-    sessionPrice: 39999,
-    eliteMonthlyPrice: 7999, // 2× price for Elite AI Face Attendance, Custom Website CMS & Curriculum
-    eliteSessionPrice: 79999,
-    badge: "PRO 2000",
-    desc: "Upto 2000 Students • Unlimited Staff • Payroll HRM, Bulk Alerts & Class 1–12 Notes"
-  },
-  whitelabel_5000: {
-    name: "Enterprise White-Label (5000+ Students)",
+    name: "Elite Yearly (Up to 5,000 Students)",
     maxStudents: 5000,
     maxTeachers: 9999,
-    monthlyPrice: 19999,
-    sessionPrice: 199999,
-    eliteMonthlyPrice: 19999,
-    eliteSessionPrice: 199999,
-    badge: "WHITE-LABEL 5000+",
-    desc: "5,000+ Students • Unlimited Staff • School Play Store App, On-Site Training, Data Migration & Custom Domain"
+    maxBranches: 3,
+    monthlyPrice: 100000,
+    sessionPrice: 25313,
+    eliteMonthlyPrice: 100000,
+    eliteSessionPrice: 100000,
+    eliteRenewalPrice: 80000,
+    eliteMrpPrice: 120000,
+    badge: "👑 ELITE BEST SELLER",
+    desc: "Up to 5,000 Students • 3 Branches • Custom Website CMS, AI Face ID, Entrance Exam & Notes"
+  },
+  whitelabel_5000: {
+    name: "Supreme White-Label (5,000+ Students)",
+    maxStudents: 5000,
+    maxTeachers: 9999,
+    maxBranches: 9999,
+    monthlyPrice: 200000,
+    sessionPrice: 200000,
+    eliteMonthlyPrice: 200000,
+    eliteSessionPrice: 200000,
+    eliteRenewalPrice: 200000,
+    eliteMrpPrice: 240000,
+    badge: "💎 SUPREME 5000+",
+    desc: "5,000+ Students • Unlimited Branches • Branded Play Store App, On-Site Training & Data Migration"
   },
   lite: {
-    name: "Basic Plan (200 Students)",
-    maxStudents: 200,
-    maxTeachers: 10,
-    monthlyPrice: 999,
-    sessionPrice: 9999,
-    eliteMonthlyPrice: 1999,
-    eliteSessionPrice: 19999,
-    badge: "BASIC 200",
-    desc: "Upto 200 Students • 10 Teachers • QR Code Scan Attendance & Default School Website"
-  },
-  full: {
-    name: "Pro Plan (2000 Students)",
+    name: "Lite Yearly (Up to 2,000 Students)",
     maxStudents: 2000,
     maxTeachers: 9999,
-    monthlyPrice: 3999,
-    sessionPrice: 39999,
-    eliteMonthlyPrice: 7999,
-    eliteSessionPrice: 79999,
-    badge: "PRO 2000",
-    desc: "Upto 2000 Students • Unlimited Staff • QR Scan Attendance, Payroll HRM & Advance Accounts"
+    maxBranches: 1,
+    monthlyPrice: 5000,
+    sessionPrice: 5000,
+    eliteMonthlyPrice: 100000,
+    eliteSessionPrice: 100000,
+    eliteRenewalPrice: 80000,
+    eliteMrpPrice: 120000,
+    badge: "LITE YEARLY",
+    desc: "Up to 2,000 Students • 1 Branch • QR Code Scan Attendance & Default School Website"
+  },
+  full: {
+    name: "Elite Yearly (Up to 5,000 Students)",
+    maxStudents: 5000,
+    maxTeachers: 9999,
+    maxBranches: 3,
+    monthlyPrice: 100000,
+    sessionPrice: 100000,
+    eliteMonthlyPrice: 100000,
+    eliteSessionPrice: 100000,
+    eliteRenewalPrice: 80000,
+    eliteMrpPrice: 120000,
+    badge: "👑 ELITE YEARLY",
+    desc: "Up to 5,000 Students • 3 Branches • Custom Website CMS, AI Face ID, HRM & Full Suite"
   }
 };
 
@@ -118,9 +174,8 @@ export const isSchoolEliteCurriculum = (school?: School | null): boolean => {
   if (sub.isElite === true || sub.customCurriculumEnabled === true) return true;
   // If tier name indicates elite
   if (typeof sub.tier === 'string' && sub.tier.toLowerCase().includes('elite')) return true;
-  // If monthly amount reflects 2x elite pricing
+  // If monthly/yearly amount reflects elite tier & payment notes mention elite
   if (sub.monthlyAmount && sub.monthlyAmount >= 1999 && sub.status === 'active') {
-    // Check if designated elite in paymentNotes or config
     if (sub.paymentNotes?.toLowerCase()?.includes('elite')) return true;
   }
   return false;
@@ -150,7 +205,7 @@ export const isEntranceExamFeatureEnabled = (school?: School | null): boolean =>
   return school?.websiteConfig?.entranceExamEnabled !== false;
 };
 
-// QR Code Scan Attendance is included for Lite, Standard, Pro, and Elite schools
+// QR Code Scan Attendance is included for Lite, Elite, and Supreme schools
 export const hasQrAttendanceAccess = (school?: School | null): boolean => {
   if (!school) return true;
   if (
@@ -165,15 +220,39 @@ export const hasQrAttendanceAccess = (school?: School | null): boolean => {
 };
 
 export const getSchoolMaxStudents = (school?: School | null): number => {
+  if (school?.subscription?.maxStudents && school.subscription.maxStudents > 0) {
+    return school.subscription.maxStudents;
+  }
   const tier = school?.subscription?.tier || 'enterprise_2000';
   if (tier && TIER_CONFIG[tier]) return TIER_CONFIG[tier].maxStudents;
-  return school?.subscription?.maxStudents || 2000;
+  return 2000;
 };
 
 export const getSchoolMaxTeachers = (school?: School | null): number => {
+  if (school?.subscription?.maxTeachers && school.subscription.maxTeachers > 0) {
+    return school.subscription.maxTeachers;
+  }
   const tier = school?.subscription?.tier || 'enterprise_2000';
   if (tier && TIER_CONFIG[tier]) return TIER_CONFIG[tier].maxTeachers;
-  return school?.subscription?.maxTeachers || 9999;
+  return 9999;
+};
+
+export const getSchoolMaxBranches = (school?: School | null): number => {
+  if (!school) return 9999;
+  if (
+    school.id === 'demo_school' ||
+    school.id?.startsWith('demo') ||
+    school.id?.includes('demo') ||
+    (school as any).isDemo === true
+  ) {
+    return 9999;
+  }
+  const tier = school.subscription?.tier;
+  if (tier === 'whitelabel_5000') return 9999;
+  if (school.subscription?.maxBranches && school.subscription.maxBranches > 0) {
+    return school.subscription.maxBranches;
+  }
+  return isSchoolEliteCurriculum(school) ? ELITE_YEARLY_PRICING.maxBranches : 1;
 };
 
 export interface SchoolProfileCustomField {
@@ -247,6 +326,7 @@ export interface School {
   erpAppFeatures?: string[]; // Highlighted benefits printed alongside the School ERP App QR
   customFields?: SchoolProfileCustomField[];
   documentPrintFields?: SchoolDocumentPrintFields;
+  documentTemplates?: any; // School-level template selections, color customizations & custom templates for ID Card, Admit Card, Marksheet, Fee Slip
   idCardFieldSettings?: Record<string, boolean>;
   admissionFieldSettings?: AdmissionFormFieldSettings;
   upiId?: string; // Official School UPI ID for Scan & Pay on Fee Due Slips
@@ -271,8 +351,54 @@ export interface School {
   geoFenceEnabled?: boolean; // Geofence verification on punch
   locationUpdatedAt?: string;
   feeDiscountSlabs?: FeeDiscountSlab[];
+  feeTermCampaigns?: FeeTermCampaign[];
   isDefaultPublicWebsite?: boolean;
   websiteConfig?: SchoolWebsiteConfig;
+}
+
+export interface SettledFeeHeadRecord {
+  fullPaid: boolean;
+  totalPaid: number;
+  targetCap?: number;
+  updatedAt?: string;
+}
+
+export interface DeferredScheduledFeeHead {
+  id: string;
+  headKey: string;
+  description: string;
+  amount: number;
+  targetMonth: string; // "YYYY-MM"
+  settled?: boolean;
+  paidAmount?: number;
+  settledDate?: string;
+  receiptNo?: string;
+}
+
+export interface FeeTermCampaign {
+  id: string;
+  schoolId: string;
+  sessionId?: string;
+  title: string;
+  headKey: string;
+  amount: number;
+  targetMonth: string; // "YYYY-MM"
+  classIds: string[] | "ALL";
+  skipFullPaidStudents: boolean;
+  skipSettledHeadStudents: boolean;
+  respectHeadCap?: boolean;
+  onlyPartialOrRegStudents?: boolean;
+  active: boolean;
+  createdAt: string;
+  createdBy?: string;
+}
+
+export interface AppliedTermFeeItem {
+  campaignId: string;
+  headKey: string;
+  title: string;
+  amount: number;
+  source: "term_campaign" | "deferred_admission";
 }
 
 export interface SchoolWebsiteHighlight {
@@ -746,6 +872,9 @@ export interface SchoolStudent {
   tcIssued?: boolean;
   tcNumber?: string;
   tcDate?: string;
+  admissionPaymentPlan?: 'registration_only' | 'half_payment' | 'full_payment';
+  settledFeeHeads?: Record<string, SettledFeeHeadRecord>;
+  deferredScheduledHeads?: DeferredScheduledFeeHead[];
 }
 
 // ── CANONICAL CLASS & STREAM CONFIGURATION ──────────────────────────────────
@@ -1063,6 +1192,7 @@ export interface MonthlyFee {
     due: number;
     con: number;
     paid: number;
+    headKey?: string;
   }[];
   siblingDiscountAmount?: number;
   referredByTeacherId?: string;
@@ -1071,6 +1201,9 @@ export interface MonthlyFee {
   paymentPlanLabel?: string;
   includeAdvanceTuition?: boolean;
   deferredTuitionAmount?: number;
+  appliedTermFees?: AppliedTermFeeItem[];
+  termCampaignAmount?: number;
+  deferredAdmissionHeadsAmount?: number;
 }
 
 // HOMEWORK

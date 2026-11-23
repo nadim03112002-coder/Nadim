@@ -1,12 +1,16 @@
 // @ts-nocheck
 import React, { useState, useEffect } from "react";
 import {
-  getStudents, getMonthlyFees, getClasses, saveFee, markFeePaid, currentMonthStr, getSchoolFeeHistory, isStudentInClass, updateStudent, getLocalFees, isDemoRecord, getAccountants, autoSendFeeSlipToSchoolDesk
+  getStudents, getMonthlyFees, getClasses, saveFee, markFeePaid, currentMonthStr, getSchoolFeeHistory, isStudentInClass, updateStudent, getLocalFees, isDemoRecord, getAccountants, autoSendFeeSlipToSchoolDesk, getSchool
 } from "../../school-firebase";
 import { toast } from "sonner";
-import type { SchoolStudent, SchoolClass, MonthlyFee, School, SchoolDocumentPrintFields, SchoolAccountant } from "../../school-types";
+import type { SchoolStudent, SchoolClass, MonthlyFee, School, SchoolDocumentPrintFields, SchoolAccountant, FeeTermCampaign, AppliedTermFeeItem } from "../../school-types";
 import { schoolPrintFieldEnabled } from "../../school-types";
-import { CheckCircle, Clock, Download, ChevronLeft, ChevronRight, ChevronDown, IndianRupee, Users, TrendingUp, AlertCircle, Printer, MessageCircle, MessageSquare, ReceiptText, Building2, Sparkles, X, Check, RotateCcw, CheckCircle2, ShieldCheck, ToggleLeft, ToggleRight, Bus, QrCode, Search, Filter, Loader2, Bell, FileSpreadsheet, FileText, Plus, Trash2, CreditCard } from "lucide-react";
+import { CheckCircle, Clock, Download, ChevronLeft, ChevronRight, ChevronDown, IndianRupee, Users, TrendingUp, AlertCircle, Printer, MessageCircle, MessageSquare, ReceiptText, Building2, Sparkles, X, Check, RotateCcw, CheckCircle2, ShieldCheck, ToggleLeft, ToggleRight, Bus, QrCode, Search, Filter, Loader2, Bell, FileSpreadsheet, FileText, Plus, Trash2, CreditCard, Palette, CalendarClock } from "lucide-react";
+import { FeeTermSchedulerModal } from "./FeeTermSchedulerModal";
+import { resolveScheduledFeesForStudentMonth, mergeSettlementAfterPayment } from "../../utils/feeTermScheduler";
+import { DocumentTemplateStudioModal } from "./DocumentTemplateStudioModal";
+import { DOCUMENT_TEMPLATE_EVENT } from "../../utils/schoolDocumentTemplates";
 import { downloadFeeDocument, shareFeeReceiptOnWhatsApp, generateFeeDocumentPdfBlob, buildWhatsAppReceiptMessage } from "./feeDocument";
 import { WhatsAppShareModal } from "./WhatsAppShareModal";
 import {
@@ -81,7 +85,7 @@ interface Props {
   allowDiscountOverride?: boolean;
   maxDiscountLimitPct?: number;
   onBack?: () => void;
-  initialTool?: "qr_scanner" | "bus" | "admission_receipt" | "class_rates" | "fee_alert" | "header" | "razorpay" | "cancel_receipt";
+  initialTool?: "qr_scanner" | "bus" | "admission_receipt" | "class_rates" | "fee_alert" | "header" | "razorpay" | "cancel_receipt" | "term_scheduler";
   exitOnToolClose?: boolean;
 }
 
@@ -135,6 +139,26 @@ export const FeeManager: React.FC<Props> = ({ schoolId, classId, className, scho
   } | null>(null);
   const [showClassFeeAlertModal, setShowClassFeeAlertModal] = useState<boolean>(false);
   const [showRazorpaySettingsModal, setShowRazorpaySettingsModal] = useState<boolean>(false);
+  const [showTemplateStudio, setShowTemplateStudio] = useState<boolean>(false);
+  const [showTermSchedulerModal, setShowTermSchedulerModal] = useState<boolean>(false);
+  const [liveSchool, setLiveSchool] = useState<School | undefined>(school);
+  const [termCampaigns, setTermCampaigns] = useState<FeeTermCampaign[]>(() => school?.feeTermCampaigns || []);
+  const [templateTick, setTemplateTick] = useState<number>(0);
+
+  React.useEffect(() => {
+    if (school) {
+      setLiveSchool(school);
+      if (Array.isArray(school.feeTermCampaigns)) {
+        setTermCampaigns(school.feeTermCampaigns);
+      }
+    }
+  }, [school]);
+
+  React.useEffect(() => {
+    const onTplUpdated = () => setTemplateTick((t) => t + 1);
+    window.addEventListener(DOCUMENT_TEMPLATE_EVENT, onTplUpdated);
+    return () => window.removeEventListener(DOCUMENT_TEMPLATE_EVENT, onTplUpdated);
+  }, []);
 
   const [pushBannerMsg, setPushBannerMsg] = useState<string | null>(null);
 
@@ -278,6 +302,7 @@ export const FeeManager: React.FC<Props> = ({ schoolId, classId, className, scho
     else if (initialTool === "header") setShowSchoolHeaderModal(true);
     else if (initialTool === "razorpay") setShowRazorpaySettingsModal(true);
     else if (initialTool === "cancel_receipt") setShowReceiptCancellationModal(true);
+    else if (initialTool === "term_scheduler") setShowTermSchedulerModal(true);
 
     const handleOpenTool = (e: any) => {
       const tool = e?.detail?.tool;
@@ -289,6 +314,7 @@ export const FeeManager: React.FC<Props> = ({ schoolId, classId, className, scho
       else if (tool === "header") setShowSchoolHeaderModal(true);
       else if (tool === "razorpay") setShowRazorpaySettingsModal(true);
       else if (tool === "cancel_receipt") setShowReceiptCancellationModal(true);
+      else if (tool === "term_scheduler") setShowTermSchedulerModal(true);
     };
     window.addEventListener("open-fee-tool", handleOpenTool);
     return () => window.removeEventListener("open-fee-tool", handleOpenTool);
@@ -329,16 +355,29 @@ export const FeeManager: React.FC<Props> = ({ schoolId, classId, className, scho
     }));
   }, [school]);
 
-  const loadData = async (isSilent = false) => {
+  const loadData = async (isSilent = false, campaignsOverride?: FeeTermCampaign[]) => {
     if (!isSilent) setLoading(true);
     setFeeError(null);
-    const [fetchedStudents, allFeeData, schoolClasses, feeHistory, fetchedAccountants] = await Promise.all([
+    const [fetchedStudents, allFeeData, schoolClasses, feeHistory, fetchedAccountants, fetchedSchool] = await Promise.all([
       getStudents(schoolId, classId, className, sessionId),
       getMonthlyFees(schoolId, month, classId, sessionId),
       getClasses(schoolId, sessionId),
       getSchoolFeeHistory(schoolId, sessionId),
       getAccountants(schoolId).catch(() => []),
+      campaignsOverride ? Promise.resolve(null) : getSchool(schoolId).catch(() => null),
     ]);
+    if (fetchedSchool) {
+      setLiveSchool(fetchedSchool);
+      if (Array.isArray(fetchedSchool.feeTermCampaigns)) {
+        setTermCampaigns(fetchedSchool.feeTermCampaigns);
+      }
+    }
+    const activeCampaigns: FeeTermCampaign[] =
+      campaignsOverride ??
+      fetchedSchool?.feeTermCampaigns ??
+      termCampaigns ??
+      school?.feeTermCampaigns ??
+      [];
     setAccountants(Array.isArray(fetchedAccountants) ? fetchedAccountants : []);
 
     const isDemoSession = Boolean(sessionId && (sessionId === "demo_session_2026_27" || sessionId.startsWith("demo_") || sessionId.includes("demo")));
@@ -479,9 +518,17 @@ export const FeeManager: React.FC<Props> = ({ schoolId, classId, className, scho
           const paidAtAdmissionMonth =
             student.advanceMonthlyFeePaid === true &&
             student.advanceMonthlyFeeMonth === pMonth;
-          if (!paidAtAdmissionMonth) {
-            // Month was in running session but student has no payment recorded -> Unpaid due automatically accumulates!
-            calculatedArrears += monthlyBaseRate;
+          const priorTermRes = resolveScheduledFeesForStudentMonth({
+            student,
+            month: pMonth,
+            classObj: targetClass,
+            campaigns: activeCampaigns,
+            feeHistory: history,
+          });
+          const basePriorDue = paidAtAdmissionMonth ? 0 : monthlyBaseRate;
+          const extraPriorDue = priorTermRes.totalExtraHeadsAmount;
+          if (basePriorDue + extraPriorDue > 0) {
+            calculatedArrears += basePriorDue + extraPriorDue;
             unpaidMonthsSet.add(pMonth);
           }
         }
@@ -550,7 +597,28 @@ export const FeeManager: React.FC<Props> = ({ schoolId, classId, className, scho
         : Math.max(Number(student.siblingDiscountAmount || 0), pctDisc);
       const concession = Number(existing?.concession ?? permanentStudentDiscount);
 
-      const currentMonthHeadsTotal = Math.max(0, monthlyAmount + admFee + cauFee + annFee + busFee - concession);
+      const isExistingPaidClean = Boolean(existing?.paid && (!existing.balanceDue || existing.balanceDue === 0));
+      const termResolution = !isExistingPaidClean
+        ? resolveScheduledFeesForStudentMonth({
+            student,
+            month,
+            classObj: targetClass,
+            campaigns: activeCampaigns,
+            feeHistory: history,
+          })
+        : null;
+      const appliedTermFees: AppliedTermFeeItem[] = isExistingPaidClean
+        ? (existing?.appliedTermFees || [])
+        : (termResolution?.items || []);
+      const termCampaignAmount = isExistingPaidClean
+        ? Number(existing?.termCampaignAmount || 0)
+        : Number(termResolution?.totalTermCampaignAmount || 0);
+      const deferredAdmissionHeadsAmount = isExistingPaidClean
+        ? Number(existing?.deferredAdmissionHeadsAmount || 0)
+        : Number(termResolution?.totalDeferredAdmissionAmount || 0);
+      const termExtraTotal = termCampaignAmount + deferredAdmissionHeadsAmount;
+
+      const currentMonthHeadsTotal = Math.max(0, monthlyAmount + admFee + cauFee + annFee + busFee + termExtraTotal - concession);
 
       const hasPersistentCarryDue =
         prevSessionDue > 0 ||
@@ -628,6 +696,9 @@ export const FeeManager: React.FC<Props> = ({ schoolId, classId, className, scho
         paidAmount,
         balanceDue,
         concession,
+        appliedTermFees,
+        termCampaignAmount,
+        deferredAdmissionHeadsAmount,
       } as MonthlyFee;
     });
     const currentMonth = currentMonthStr();
@@ -645,6 +716,8 @@ export const FeeManager: React.FC<Props> = ({ schoolId, classId, className, scho
           Number(stored.monthlyAmount ?? 0) !== Number(fee.monthlyAmount ?? 0) ||
           Number(stored.arrearsAmount ?? 0) !== Number(fee.arrearsAmount ?? 0) ||
           Number(stored.balanceDue ?? 0) !== Number(fee.balanceDue ?? 0) ||
+          Number(stored.termCampaignAmount ?? 0) !== Number(fee.termCampaignAmount ?? 0) ||
+          Number(stored.deferredAdmissionHeadsAmount ?? 0) !== Number(fee.deferredAdmissionHeadsAmount ?? 0) ||
           Boolean(stored.includeAdmissionFee) !== Boolean(fee.includeAdmissionFee) ||
           JSON.stringify(storedMonths) !== JSON.stringify(calculatedMonths)
         );
@@ -705,6 +778,22 @@ export const FeeManager: React.FC<Props> = ({ schoolId, classId, className, scho
       if (paid) {
         await saveFee(updatedFee);
         await markFeePaid(schoolId, fee.studentId, month, adminId, collectorInfo);
+        const targetStudent = students.find((s) => s.id === fee.studentId);
+        const targetClassObj = rawClasses.find((c) => c.id === fee.classId);
+        if (targetStudent && Array.isArray(fee.appliedTermFees) && fee.appliedTermFees.length > 0) {
+          const settlePatch = mergeSettlementAfterPayment({
+            student: targetStudent,
+            appliedItems: fee.appliedTermFees,
+            isMonthFullyPaid: true,
+            month,
+            classObj: targetClassObj,
+            paidDate,
+            receiptNo,
+          });
+          if (Object.keys(settlePatch).length > 0) {
+            await updateStudent(schoolId, targetStudent.id, settlePatch).catch(() => {});
+          }
+        }
       } else {
         await saveFee(updatedFee);
       }
@@ -787,9 +876,10 @@ export const FeeManager: React.FC<Props> = ({ schoolId, classId, className, scho
       : (earlyDisc > 0 ? earlyDisc + permanentDisc : baseConcession);
     setCustomConcession(effectiveConcession > 0 ? String(effectiveConcession) : "");
 
-    // Auto calculate net payable: Old Arrears (no discount) + Discounted Current Tuition
+    // Auto calculate net payable: Old Arrears (no discount) + Discounted Current Tuition + Term/Deferred Heads
     const arrears = Number(fee.arrearsAmount || 0);
-    const autoNetPayable = arrears + Math.max(0, baseMonthly - effectiveConcession);
+    const termExtra = Number(fee.termCampaignAmount || 0) + Number(fee.deferredAdmissionHeadsAmount || 0);
+    const autoNetPayable = arrears + Math.max(0, baseMonthly + termExtra - effectiveConcession);
 
     // Auto pre-fill with net payable (e.g. 300 arrears + 360 current = 660) if new collection, or prior paidAmount
     const initialPaid = fee.paid && Number(fee.paidAmount || 0) > 0
@@ -1090,14 +1180,19 @@ export const FeeManager: React.FC<Props> = ({ schoolId, classId, className, scho
     const slabResolution = resolveSlabForDay(feeDiscountSlabs, paymentDay, monthlyAmount);
     const earlyDiscount = canGiveDiscount ? slabResolution.discountAmount : 0;
 
-    const currentHeadsGross = monthlyAmount + admAmount + cauAmount + annAmount + busAmount;
+    const termExtraItems = Array.isArray(fee.appliedTermFees) ? fee.appliedTermFees : [];
+    const termExtraAmount =
+      termExtraItems.reduce((sum, it) => sum + Number(it.amount || 0), 0) ||
+      (Number(fee.termCampaignAmount || 0) + Number(fee.deferredAdmissionHeadsAmount || 0));
+
+    const currentHeadsGross = monthlyAmount + admAmount + cauAmount + annAmount + busAmount + termExtraAmount;
     const rawManualConcession = canGiveDiscount ? Math.max(0, Number(customConcession) || 0) : 0;
     const manualConcession = clampByRoleLimit(currentHeadsGross, rawManualConcession);
     const totalConcession = Math.max(manualConcession, earlyDiscount);
 
     // Discount is permanently waived on current month heads and NEVER added to next month's due/arrears
     const currentMonthTuition = Math.max(0, monthlyAmount - earlyDiscount);
-    const currentMonthHeadDue = Math.max(0, currentMonthTuition + admAmount + cauAmount + annAmount + busAmount - (manualConcession > earlyDiscount ? manualConcession - earlyDiscount : 0));
+    const currentMonthHeadDue = Math.max(0, currentMonthTuition + admAmount + cauAmount + annAmount + busAmount + termExtraAmount - (manualConcession > earlyDiscount ? manualConcession - earlyDiscount : 0));
     const totalBill = currentMonthHeadDue + arrearsAmount;
 
     if (markUnpaidDirectly || customPaidAmount.trim() === "0") {
@@ -1112,13 +1207,16 @@ export const FeeManager: React.FC<Props> = ({ schoolId, classId, className, scho
         includeBusFee: customIncludeBusFee,
         busFeeAmount: busAmount,
         busRoute: student?.busRoute || fee.busRoute || "Route 1",
+        appliedTermFees: fee.appliedTermFees || [],
+        termCampaignAmount: Number(fee.termCampaignAmount || 0),
+        deferredAdmissionHeadsAmount: Number(fee.deferredAdmissionHeadsAmount || 0),
         amount: currentMonthHeadDue + arrearsAmount,
         paid: false,
         paidAmount: 0,
         balanceDue: currentMonthHeadDue,
         arrearsAmount,
         arrearsMonths: fee.arrearsMonths || [],
-        concession,
+        concession: totalConcession,
         paidDate: undefined,
         paidBy: undefined,
         receiptNo: undefined,
@@ -1248,7 +1346,16 @@ export const FeeManager: React.FC<Props> = ({ schoolId, classId, className, scho
         }
         const hist = localFeeList.find(h => h.studentId === fee.studentId && h.month === m)
           || feeHistory.find(h => h.studentId === fee.studentId && h.month === m);
-        const stdRate = monthlyAmount + busAmount;
+        const priorTermExtra = !hist
+          ? resolveScheduledFeesForStudentMonth({
+              student: student || ({ id: fee.studentId, classId: fee.classId } as SchoolStudent),
+              month: m,
+              classObj: targetClass,
+              campaigns: termCampaigns,
+              feeHistory,
+            }).totalExtraHeadsAmount
+          : 0;
+        const stdRate = monthlyAmount + busAmount + priorTermExtra;
         const alreadyPaid = Number(hist?.paidAmount || 0);
         const due = hist?.balanceDue !== undefined
           ? Number(hist.balanceDue)
@@ -1296,6 +1403,11 @@ export const FeeManager: React.FC<Props> = ({ schoolId, classId, className, scho
         includeBusFee: isCurrentMonthRecord ? customIncludeBusFee : Boolean(existingRecord?.includeBusFee),
         busFeeAmount: isCurrentMonthRecord ? busAmount : (existingRecord?.busFeeAmount ?? 0),
         busRoute: student?.busRoute || fee.busRoute || "Route 1",
+        ...(isCurrentMonthRecord ? {
+          appliedTermFees: termExtraItems,
+          termCampaignAmount: Number(fee.termCampaignAmount || 0),
+          deferredAdmissionHeadsAmount: Number(fee.deferredAdmissionHeadsAmount || 0),
+        } : {}),
         amount: isCurrentMonthRecord ? totalBill : (existingRecord?.amount ?? alloc.originalDue),
         paid: alloc.status === "PAID",
         paidAmount: alloc.totalPaidAfter,
@@ -1334,6 +1446,33 @@ export const FeeManager: React.FC<Props> = ({ schoolId, classId, className, scho
     const currentMonthBalance = currentAlloc ? currentAlloc.balanceDueAfter : currentMonthHeadDue;
     const currentMonthPaidAmount = currentAlloc ? currentAlloc.totalPaidAfter : 0;
 
+    // Build itemized current-month lines when single month is settled cleanly (so Tuition, Bus & Term Fees print line-by-line!)
+    const isSingleCurrentMonthFifo =
+      priorRemainingArrears === 0 &&
+      arrearsAmount === 0 &&
+      termExtraItems.length > 0;
+    let itemizedReceiptLines = fifoResult.receiptItems.length > 0 ? fifoResult.receiptItems : [];
+    if (isSingleCurrentMonthFifo) {
+      const singleLines: NonNullable<MonthlyFee["items"]> = [];
+      let remItemPay = currentMonthPaidAmount;
+      let slNum = 1;
+      const pushHeadLine = (id: string, description: string, dueAmt: number, conAmt = 0, headKey?: string) => {
+        const net = Math.max(0, dueAmt - conAmt);
+        const p = Math.min(net, Math.max(0, remItemPay));
+        remItemPay = Math.max(0, remItemPay - p);
+        singleLines.push({ id, slNo: slNum++, description, due: dueAmt, con: conAmt, paid: p, ...(headKey ? { headKey } : {}) });
+      };
+      pushHeadLine("tuition", "Tuition Fee", monthlyAmount, totalConcession, "tuition");
+      if (admAmount > 0) pushHeadLine("admission", "Admission Fee", admAmount, 0, "admission");
+      if (cauAmount > 0) pushHeadLine("caution", "Caution Money", cauAmount, 0, "caution");
+      if (annAmount > 0) pushHeadLine("annual", "Annual Charges", annAmount, 0, "annual");
+      if (busAmount > 0) pushHeadLine("bus", `Bus Fee${student?.busRoute ? ` (${student.busRoute})` : ""}`, busAmount, 0, "bus");
+      termExtraItems.forEach((tf) => {
+        pushHeadLine(`term_${tf.campaignId}`, tf.title, tf.amount, 0, tf.headKey);
+      });
+      itemizedReceiptLines = singleLines;
+    }
+
     // Persist only THIS month's allocated paidAmount so Student Ledger never double-counts FIFO months!
     const updatedFee: MonthlyFee = {
       ...fee,
@@ -1345,6 +1484,9 @@ export const FeeManager: React.FC<Props> = ({ schoolId, classId, className, scho
       includeBusFee: customIncludeBusFee,
       busFeeAmount: busAmount,
       busRoute: student?.busRoute || fee.busRoute || "Route 1",
+      appliedTermFees: termExtraItems,
+      termCampaignAmount: Number(fee.termCampaignAmount || 0),
+      deferredAdmissionHeadsAmount: Number(fee.deferredAdmissionHeadsAmount || 0),
       amount: currentMonthHeadDue + priorRemainingArrears,
       paid: isCurrentFullPaid && priorRemainingArrears === 0,
       paidAmount: currentMonthPaidAmount,
@@ -1362,7 +1504,7 @@ export const FeeManager: React.FC<Props> = ({ schoolId, classId, className, scho
       collectorSignatureUrl: effectivePaid > 0 ? collectorInfo?.collectorSignatureUrl : undefined,
       receiptNo: effectivePaid > 0 ? receiptNo : undefined,
       payModeInfo,
-      items: fifoResult.receiptItems.length > 0 ? fifoResult.receiptItems : [],
+      items: itemizedReceiptLines,
       note: earlyDiscount > 0
         ? `Paid on day ${paymentDay} (${slabResolution.label || "Date Offer"}) (-₹${earlyDiscount}) (Receipt: ${receiptNo})`
         : `${fifoResult.summaryHindi} (Receipt: ${receiptNo})`,
@@ -1455,6 +1597,19 @@ export const FeeManager: React.FC<Props> = ({ schoolId, classId, className, scho
             studentPatch.advanceMonthlyFeePaid = true;
             studentPatch.advanceMonthlyFeeDue = 0;
           }
+        }
+        if (isCurrentFullPaid && termExtraItems.length > 0) {
+          const settlePatch = mergeSettlementAfterPayment({
+            student,
+            appliedItems: termExtraItems,
+            isMonthFullyPaid: true,
+            month: fee.month,
+            classObj: targetClass,
+            paidDate,
+            receiptNo,
+          });
+          if (settlePatch.settledFeeHeads) studentPatch.settledFeeHeads = settlePatch.settledFeeHeads;
+          if (settlePatch.deferredScheduledHeads) studentPatch.deferredScheduledHeads = settlePatch.deferredScheduledHeads;
         }
         if (Object.keys(studentPatch).length > 0) {
           setStudents(prev => prev.map(st => st.id === student.id ? { ...st, ...studentPatch } : st));
@@ -1680,6 +1835,24 @@ export const FeeManager: React.FC<Props> = ({ schoolId, classId, className, scho
 
     if (fee.items && fee.items.length > 0) {
       const nextItems = [...fee.items];
+      const hasFifoSummaryRow = nextItems.some((it) => String(it.id || "").startsWith("fifo_"));
+      if (!hasFifoSummaryRow && Array.isArray(fee.appliedTermFees) && fee.appliedTermFees.length > 0) {
+        fee.appliedTermFees.forEach((tf) => {
+          const exists = nextItems.some(
+            (it) => it.id === `term_${tf.campaignId}` || it.description === tf.title
+          );
+          if (!exists) {
+            nextItems.push({
+              id: `term_${tf.campaignId}`,
+              slNo: nextItems.length + 1,
+              description: tf.title,
+              due: tf.amount,
+              con: 0,
+              paid: isPaid ? tf.amount : 0,
+            });
+          }
+        });
+      }
       const hasAdmDueItem = nextItems.some(
         (it) => it.id === "adm-due" || it.description.toLowerCase().includes("admission balance due") || it.description.includes("प्रवेश बकाया")
       );
@@ -1771,6 +1944,20 @@ export const FeeManager: React.FC<Props> = ({ schoolId, classId, className, scho
         due: bus,
         con: 0,
         paid: isPaid ? bus : (fee.paidAmount && fee.paidAmount > baseFee ? Math.min(bus, fee.paidAmount - baseFee) : 0),
+      });
+    }
+
+    // 5b. Applied Term / Exam / Deferred Admission Fee Heads for this month
+    if (Array.isArray(fee.appliedTermFees) && fee.appliedTermFees.length > 0) {
+      fee.appliedTermFees.forEach((tf) => {
+        itemsList.push({
+          id: `term_${tf.campaignId}`,
+          slNo: sl++,
+          description: tf.title,
+          due: tf.amount,
+          con: 0,
+          paid: isPaid ? tf.amount : 0,
+        });
       });
     }
 
@@ -2202,11 +2389,15 @@ td{padding:8px 10px;border-bottom:1px solid #e2e8f0}</style></head>
   const modalSlabsSummary = formatSlabsHeadline(feeDiscountSlabs);
 
   // Date-limited offer applies strictly to regular tuition fee, never to old arrears
+  const modalTermItems = Array.isArray(collectingFee?.appliedTermFees) ? collectingFee.appliedTermFees : [];
+  const modalTermExtra =
+    modalTermItems.reduce((s, it) => s + Number(it.amount || 0), 0) ||
+    (Number(collectingFee?.termCampaignAmount || 0) + Number(collectingFee?.deferredAdmissionHeadsAmount || 0));
   const currentMonthTuitionAfterDiscount = Math.max(0, modalMonthly - effectiveEarlyDiscount);
-  const modalCurrentMonthGross = modalMonthly + modalAdm + modalCau + modalAnn + modalBus;
+  const modalCurrentMonthGross = modalMonthly + modalAdm + modalCau + modalAnn + modalBus + modalTermExtra;
   const modalGrossTotalBeforeDiscount = modalArrears + modalCurrentMonthGross;
 
-  const modalCurrentMonthBill = Math.max(0, currentMonthTuitionAfterDiscount + modalAdm + modalCau + modalAnn + modalBus - (modalConcession > effectiveEarlyDiscount ? modalConcession - effectiveEarlyDiscount : 0));
+  const modalCurrentMonthBill = Math.max(0, currentMonthTuitionAfterDiscount + modalAdm + modalCau + modalAnn + modalBus + modalTermExtra - (modalConcession > effectiveEarlyDiscount ? modalConcession - effectiveEarlyDiscount : 0));
   const modalTotalBill = modalCurrentMonthBill + modalArrears;
   // Default to 0 (Unpaid) when nothing is typed; only allocates what user explicitly writes or clicks
   const enteredPaid = customPaidAmount.trim() !== "" ? Math.max(0, Number(customPaidAmount)) : 0;
@@ -2248,10 +2439,19 @@ td{padding:8px 10px;border-bottom:1px solid #e2e8f0}</style></head>
       }
       const hist = localFeeList.find(h => h.studentId === collectingFee.studentId && h.month === m)
         || feeHistory.find(h => h.studentId === collectingFee.studentId && h.month === m);
+      const priorTermExtra = !hist && activeCollectingStudent
+        ? resolveScheduledFeesForStudentMonth({
+            student: activeCollectingStudent,
+            month: m,
+            classObj: modalTargetClass,
+            campaigns: termCampaigns,
+            feeHistory,
+          }).totalExtraHeadsAmount
+        : 0;
       const alreadyPaid = Number(hist?.paidAmount || 0);
       const due = hist?.balanceDue !== undefined
         ? Number(hist.balanceDue)
-        : (hist?.paid ? 0 : Number(hist?.amount || hist?.monthlyAmount || standardRate));
+        : (hist?.paid ? 0 : Number(hist?.amount || hist?.monthlyAmount || (standardRate + priorTermExtra)));
       return { month: m, hist, alreadyPaid, due };
     });
 
@@ -2409,6 +2609,33 @@ td{padding:8px 10px;border-bottom:1px solid #e2e8f0}</style></head>
               className="pl-8 pr-3 py-1.5 rounded-lg text-xs bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 text-slate-900 dark:text-white placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-slate-900/15 dark:focus:ring-white/20 w-40 lg:w-52"
             />
           </div>
+
+          {/* Quick Term / Exam Fee Launcher */}
+          <button
+            type="button"
+            onClick={() => setShowTermSchedulerModal(true)}
+            className="inline-flex items-center gap-1.5 px-2.5 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold transition-colors active:scale-95 cursor-pointer whitespace-nowrap shadow-xs"
+            title="Exam Fee, Deferred Admission Fee या Term-Wise शुल्क (कम या कस्टम रेट में) किसी भी महीने में लागू करें"
+          >
+            <CalendarClock className="w-3.5 h-3.5 shrink-0" />
+            <span className="hidden sm:inline">Term / Exam Fee</span>
+            {termCampaigns.filter((c) => c.active !== false && c.targetMonth === month).length > 0 && (
+              <span className="font-mono text-[10px] bg-white/20 px-1.5 py-0.2 rounded">
+                {termCampaigns.filter((c) => c.active !== false && c.targetMonth === month).length}
+              </span>
+            )}
+          </button>
+
+          {/* Quick Fee Slip Templates Studio */}
+          <button
+            type="button"
+            onClick={() => setShowTemplateStudio(true)}
+            className="inline-flex items-center gap-1.5 px-2.5 py-2 rounded-lg bg-slate-900 hover:bg-indigo-700 text-white text-xs font-black transition-colors active:scale-95 cursor-pointer whitespace-nowrap shadow-xs"
+            title="Fee Receipt / Demand Slip के 10+ Templates और Colors बदलें"
+          >
+            <Palette className="w-3.5 h-3.5 text-amber-300 shrink-0" />
+            <span className="hidden md:inline">Templates (10+)</span>
+          </button>
 
           {/* Quick Excel Export */}
           <button
@@ -3060,6 +3287,14 @@ td{padding:8px 10px;border-bottom:1px solid #e2e8f0}</style></head>
                         </span>
                       </>
                     )}
+                    {Array.isArray(fee.appliedTermFees) && fee.appliedTermFees.map((tf) => (
+                      <React.Fragment key={tf.campaignId}>
+                        <span aria-hidden="true">·</span>
+                        <span className="font-semibold text-indigo-700 dark:text-indigo-300">
+                          {tf.title}: +₹{Number(tf.amount).toLocaleString("en-IN")}
+                        </span>
+                      </React.Fragment>
+                    ))}
                     {fee.receiptNo && (
                       <>
                         <span aria-hidden="true">·</span>
@@ -3588,6 +3823,26 @@ td{padding:8px 10px;border-bottom:1px solid #e2e8f0}</style></head>
                     {customIncludeBusFee ? `+₹${Number(studentBusFee).toLocaleString("en-IN")}` : "₹0"}
                   </span>
                 </label>
+
+                {/* Applied Term Fee / Exam Fee / Deferred Admission Heads for this Month */}
+                {modalTermItems.map((tf) => (
+                  <div
+                    key={tf.campaignId}
+                    className="p-2 rounded-lg bg-indigo-50/90 dark:bg-indigo-950/40 border border-indigo-200 dark:border-indigo-800 text-xs flex items-center justify-between text-indigo-900 dark:text-indigo-200"
+                  >
+                    <div>
+                      <span className="font-black block">{tf.title}</span>
+                      <span className="text-[10px] text-indigo-700 dark:text-indigo-300">
+                        {tf.source === "deferred_admission"
+                          ? "Admission Deferred Head • Is mahine shamil"
+                          : "Scheduled Term / Exam Fee • Full-Paid Students Exempt"}
+                      </span>
+                    </div>
+                    <span className="font-black text-sm text-indigo-700 dark:text-indigo-300 font-mono tabular-nums">
+                      +₹{Number(tf.amount || 0).toLocaleString("en-IN")}
+                    </span>
+                  </div>
+                ))}
 
                 {/* Term 2 Scheduled Admission Balance */}
                 {Number(modalStudent?.admissionDueBalance || 0) > 0 && (
@@ -4519,6 +4774,43 @@ td{padding:8px 10px;border-bottom:1px solid #e2e8f0}</style></head>
             }}
           />
         )}
+
+        {/* ── DOCUMENT TEMPLATE STUDIO (FEE SLIPS: 10+ DESIGNS + COLOR CUSTOMIZER) ── */}
+        {showTemplateStudio && (
+          <DocumentTemplateStudioModal
+            school={school || ({ id: schoolId, name: schoolName || "School" } as any)}
+            initialDocType="fee_slip"
+            onClose={() => setShowTemplateStudio(false)}
+            onTemplateApplied={() => setTemplateTick((t) => t + 1)}
+          />
+        )}
+
+        {/* ── TERM-WISE / EXAM FEE & DEFERRED ADMISSION HEADS SCHEDULER ── */}
+        <FeeTermSchedulerModal
+          isOpen={showTermSchedulerModal}
+          onClose={() => {
+            setShowTermSchedulerModal(false);
+            if (exitOnToolClose && initialTool === "term_scheduler" && onBack) onBack();
+          }}
+          schoolId={schoolId}
+          school={liveSchool || school}
+          classes={rawClasses}
+          students={students}
+          feeHistory={feeHistory}
+          currentMonth={month}
+          sessionId={sessionId}
+          actorName={actorName}
+          initialClassId={classId}
+          onCampaignsUpdated={(nextCampaigns) => {
+            setTermCampaigns(nextCampaigns);
+            setLiveSchool((prev) => (prev ? { ...prev, feeTermCampaigns: nextCampaigns } : prev));
+            void loadData(true, nextCampaigns);
+          }}
+          onStudentDeferredUpdated={(stuId, patch) => {
+            setStudents((prev) => prev.map((st) => (st.id === stuId ? { ...st, ...patch } : st)));
+            void loadData(true);
+          }}
+        />
       </div>
   );
 };

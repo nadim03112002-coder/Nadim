@@ -1,7 +1,7 @@
 // @ts-nocheck
 import React, { useState, useMemo, useEffect } from "react";
 import {
-  X, Printer, Download, MessageCircle, CheckCircle2, Loader2, Send, Eye, EyeOff
+  X, Printer, Download, MessageCircle, CheckCircle2, Loader2, Send, Eye, EyeOff, Palette
 } from "lucide-react";
 import type { School, MonthlyFee, SchoolStudent } from "../../school-types";
 import {
@@ -32,6 +32,8 @@ import {
   buildWhatsAppReceiptMessage,
 } from "./feeDocument";
 import { WhatsAppShareModal } from "./WhatsAppShareModal";
+import { DocumentTemplateStudioModal } from "./DocumentTemplateStudioModal";
+import { DOCUMENT_TEMPLATE_EVENT } from "../../utils/schoolDocumentTemplates";
 
 interface Props {
   isOpen: boolean;
@@ -82,6 +84,14 @@ export const OfficialFeeReceiptModal: React.FC<Props> = ({
   }, [defaultMasked, isOpen]);
 
   const [fetchedHistory, setFetchedHistory] = useState<MonthlyFee[]>([]);
+  const [showTemplateStudio, setShowTemplateStudio] = useState(false);
+  const [templateTick, setTemplateTick] = useState(0);
+
+  useEffect(() => {
+    const onTplUpdated = () => setTemplateTick((t) => t + 1);
+    window.addEventListener(DOCUMENT_TEMPLATE_EVENT, onTplUpdated);
+    return () => window.removeEventListener(DOCUMENT_TEMPLATE_EVENT, onTplUpdated);
+  }, []);
 
   useEffect(() => {
     const sid = school?.id || fee?.schoolId;
@@ -629,6 +639,17 @@ export const OfficialFeeReceiptModal: React.FC<Props> = ({
                 💡 पूरी जानकारी के लिए &quot;Full A4&quot; चुनें
               </span>
             )}
+            {!isStudentView && (
+              <button
+                type="button"
+                onClick={() => setShowTemplateStudio(true)}
+                className="px-2.5 py-1 rounded-lg bg-slate-900 hover:bg-indigo-700 text-white text-[11px] font-black flex items-center gap-1 shadow-xs transition cursor-pointer shrink-0"
+                title="Fee Slip के 10+ Templates और Colors बदलें"
+              >
+                <Palette className="w-3.5 h-3.5 text-amber-300" />
+                <span>Templates</span>
+              </button>
+            )}
             <button
               type="button"
               onClick={() => setMaskSensitiveData((prev) => !prev)}
@@ -653,6 +674,7 @@ export const OfficialFeeReceiptModal: React.FC<Props> = ({
 
           <div className="w-full flex justify-center py-1 overflow-x-auto">
             <div
+              key={`${activeFormat}-${templateTick}`}
               className="flex justify-center"
               style={{
                 width: activeFormat === "4in1" ? "210mm" : activeFormat === "full" ? "100%" : "auto",
@@ -692,6 +714,15 @@ export const OfficialFeeReceiptModal: React.FC<Props> = ({
         balanceDue={balanceDue}
         generatePdfBlob={() => generateFeeDocumentPdfBlob(feeDocumentOptions)}
       />
+
+      {showTemplateStudio && (
+        <DocumentTemplateStudioModal
+          school={school}
+          initialDocType="fee_slip"
+          onClose={() => setShowTemplateStudio(false)}
+          onTemplateApplied={() => setTemplateTick((t) => t + 1)}
+        />
+      )}
     </div>
   );
 };

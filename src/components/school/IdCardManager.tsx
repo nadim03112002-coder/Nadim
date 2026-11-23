@@ -7,7 +7,7 @@ import {
   CreditCard, Printer, Download, Eye, ChevronLeft, User, Phone, MapPin,
   Calendar, Award, Sparkles, Filter, CheckSquare, Square, Layers, RefreshCw,
   Building2, UserPlus, Sliders, CheckCircle2, QrCode, FileText, Image as ImageIcon,
-  Edit2, AlertTriangle, ArrowRightLeft, ShieldCheck, HelpCircle, ChevronDown, ChevronUp, Save, Search
+  Edit2, AlertTriangle, ArrowRightLeft, ShieldCheck, HelpCircle, ChevronDown, ChevronUp, Save, Search, Palette
 } from "lucide-react";
 import { SchoolHeaderEditorModal, type SchoolHeaderDetails } from "./SchoolHeaderEditorModal";
 import { QuickAddStudentModal } from "./QuickAddStudentModal";
@@ -15,6 +15,8 @@ import { DirectUploadButton } from "../DirectUploadButton";
 import { updateSchool, isStudentInClass, isActiveSchoolTeacherRecord, isActiveStaffRecord, getDeletedTeacherIds } from "../../school-firebase";
 import { cleanLogoUrl, isAppLogo, getSavedSchoolLogo, getVisibleSchoolRegNo, formatAcademicSession } from "./feeReceiptUtils";
 import { buildStudentIdCardQrUrl, buildStaffIdCardQrUrl } from "../../utils/qrVerifyUrl";
+import { DocumentTemplateStudioModal } from "./DocumentTemplateStudioModal";
+import { resolveActiveDocumentTemplate, DOCUMENT_TEMPLATE_EVENT, getLayoutArchitecture } from "../../utils/schoolDocumentTemplates";
 
 interface Props {
   school: School;
@@ -114,8 +116,22 @@ export const IdCardManager: React.FC<Props> = ({
   const [showAddStudentModal, setShowAddStudentModal] = useState(false);
   const [showQuickSchoolEditor, setShowQuickSchoolEditor] = useState(false);
   const [showAutoMappingOptions, setShowAutoMappingOptions] = useState(false);
+  const [showTemplateStudio, setShowTemplateStudio] = useState(false);
+  const [templateTick, setTemplateTick] = useState(0);
   const [savingDefault, setSavingDefault] = useState(false);
   const [saveSuccessMsg, setSaveSuccessMsg] = useState("");
+
+  useEffect(() => {
+    const handler = () => setTemplateTick(t => t + 1);
+    window.addEventListener(DOCUMENT_TEMPLATE_EVENT, handler);
+    return () => window.removeEventListener(DOCUMENT_TEMPLATE_EVENT, handler);
+  }, []);
+
+  const activeIdTemplate = React.useMemo(
+    () => resolveActiveDocumentTemplate(school?.id, school, "id_card"),
+    [school, templateTick]
+  );
+  const useCustomTpl = activeIdTemplate.id !== "default";
 
   const [schoolDetails, setSchoolDetails] = useState<SchoolHeaderDetails & { session: string }>({
     schoolName: school?.name || "",
@@ -367,10 +383,541 @@ export const IdCardManager: React.FC<Props> = ({
     const isLandscape = cardOrientation === "landscape";
 
     const cleanSessionLabel = formatAcademicSession(schoolDetails.session || "2026-27");
-    const resolvedSignatoryTitle =
-      schoolDetails.principalTitle && !/auth\.?\s*signatory/i.test(schoolDetails.principalTitle)
+    const resolvedSignatoryTitle = useCustomTpl && activeIdTemplate.rightSignatoryLabel
+      ? activeIdTemplate.rightSignatoryLabel
+      : schoolDetails.principalTitle && !/auth\.?\s*signatory/i.test(schoolDetails.principalTitle)
         ? schoolDetails.principalTitle
         : "Principal";
+
+    const tplColors = activeIdTemplate.colors;
+    const cardContainerStyle: React.CSSProperties = useCustomTpl
+      ? {
+          fontFamily: "'Inter', sans-serif",
+          boxSizing: "border-box",
+          borderColor: tplColors.borderColor,
+          borderStyle: activeIdTemplate.borderStyle,
+          borderWidth: activeIdTemplate.borderStyle === "double" ? "3px" : "2px",
+        }
+      : { fontFamily: "'Inter', sans-serif", boxSizing: "border-box" };
+
+    const cardHeaderStyle: React.CSSProperties | undefined = useCustomTpl
+      ? {
+          background: `linear-gradient(135deg, ${tplColors.primaryColor}, ${tplColors.accentColor})`,
+          color: tplColors.headerTextColor,
+        }
+      : undefined;
+
+    const cardBadgeStyle: React.CSSProperties | undefined = useCustomTpl
+      ? {
+          backgroundColor: tplColors.badgeBg,
+          color: tplColors.badgeText,
+        }
+      : undefined;
+
+    const renderWatermarkOverlay = () =>
+      useCustomTpl && activeIdTemplate.showWatermark ? (
+        <div className="absolute inset-0 flex items-center justify-center pointer-events-none select-none opacity-[0.06] z-0">
+          <span
+            className="text-lg font-black uppercase tracking-widest -rotate-12"
+            style={{ color: tplColors.primaryColor }}
+          >
+            {activeIdTemplate.watermarkText || cleanSchoolName.slice(0, 12)}
+          </span>
+        </div>
+      ) : null;
+
+    if (useCustomTpl) {
+      const variant = activeIdTemplate.layoutVariant || "classic_ribbon";
+      const arch = getLayoutArchitecture(variant);
+      const schoolLogo = getSavedSchoolLogo(schoolDetails.logoUrl, school?.id);
+      const idRoleBadge = isStaff ? "STAFF ID" : "STUDENT ID";
+      const subClassLabel = isStaff ? item.designation : className;
+      const isOrnateFrame =
+        arch.frameStyle === "ornate_filigree" ||
+        arch.frameStyle === "diploma_parchment" ||
+        arch.frameStyle === "seal_center" ||
+        arch.frameStyle === "laurel_wreath" ||
+        arch.frameStyle === "museum_plaque" ||
+        arch.frameStyle === "art_deco" ||
+        arch.frameStyle === "guilloche";
+      const paperBg = arch.creamPaper ? "#fffdf4" : arch.frameStyle === "blueprint_grid" ? "#f8fbff" : "#ffffff";
+      const isLightTop =
+        arch.headerStyle === "light_bar" ||
+        arch.headerStyle === "gazette_double" ||
+        arch.headerStyle === "editorial_split";
+      const isLeftSpine = arch.frameStyle === "left_spine" || arch.frameStyle === "left_wide";
+      const isRightSpine = arch.frameStyle === "right_spine" || arch.frameStyle === "right_wide";
+      const isWideSpine = arch.frameStyle === "left_wide" || arch.frameStyle === "right_wide";
+      const isDualRails = arch.frameStyle === "dual_rails";
+      const isBottomDock = arch.frameStyle === "bottom_dock";
+      const isLanyard = arch.frameStyle === "lanyard_punch";
+      const isPassport = arch.frameStyle === "passport_mrz";
+      const isTicket = arch.frameStyle === "ticket_notch";
+      const isBrackets = arch.frameStyle === "corner_brackets" || arch.frameStyle === "cyber_hud";
+      const isBeveled = arch.frameStyle === "beveled";
+      const isBlueprint = arch.frameStyle === "blueprint_grid";
+      const isObsidian = arch.headerStyle === "obsidian";
+      const isTricolor = arch.frameStyle === "tricolor";
+      const isHeavyBars = arch.frameStyle === "heavy_bars";
+      const isMonoStripe = arch.frameStyle === "mono_stripe";
+      const isBookmark = arch.frameStyle === "bookmark_ribbon";
+      const isSwissCross = arch.frameStyle === "swiss_cross";
+      const sizeClasses = isLandscape
+        ? "w-[350px] min-h-[220px] max-h-[220px] print:w-[85.6mm] print:h-[54mm] print:min-h-[54mm] print:max-h-[54mm]"
+        : "w-[260px] min-h-[390px] max-h-[390px] print:w-[54mm] print:h-[85.6mm] print:min-h-[85.6mm] print:max-h-[85.6mm]";
+
+      const renderDetailsLines = (compact: boolean) => (
+        <div className={`${compact ? "text-[7.5px] space-y-0.5" : "text-[8px] space-y-0.5"} text-slate-700 leading-tight`}>
+          {!isStaff ? (
+            <>
+              {fieldSettings.showRollNo && (
+                <div className="flex justify-between gap-1"><span className="text-slate-400 font-bold">Roll:</span><span className="font-black text-slate-900">#{item.rollNo || "—"}</span></div>
+              )}
+              {fieldSettings.showAdmissionNo && (
+                <div className="flex justify-between gap-1"><span className="text-slate-400 font-bold">Adm:</span><span className="font-mono font-black text-slate-900 truncate">{item.admissionNo || "—"}</span></div>
+              )}
+              {fieldSettings.showFatherName && (
+                <div className="flex justify-between gap-1"><span className="text-slate-400 font-bold">Father:</span><span className="font-semibold text-slate-800 truncate max-w-[115px]">{item.fatherName || "—"}</span></div>
+              )}
+              {fieldSettings.showPhone && (
+                <div className="flex justify-between gap-1"><span className="text-slate-400 font-bold">Mobile:</span><span className="font-semibold text-slate-800">{item.phone || "—"}</span></div>
+              )}
+              {fieldSettings.showDateOfBirth && item.dateOfBirth && (
+                <div className="flex justify-between gap-1"><span className="text-slate-400 font-bold">DOB:</span><span className="font-semibold text-slate-800">{item.dateOfBirth}</span></div>
+              )}
+              {!isLandscape && fieldSettings.showMotherName && item.motherName && (
+                <div className="flex justify-between gap-1"><span className="text-slate-400 font-bold">Mother:</span><span className="font-semibold text-slate-800 truncate max-w-[110px]">{item.motherName}</span></div>
+              )}
+              {!isLandscape && fieldSettings.showStudentAddress && item.address && (
+                <div className="flex justify-between gap-1"><span className="text-slate-400 font-bold">Addr:</span><span className="font-semibold text-slate-800 truncate max-w-[110px]">{item.address}</span></div>
+              )}
+              {fieldSettings.showSession && (
+                <div className="flex justify-between gap-1"><span className="text-slate-400 font-bold">Session:</span><span className="font-black" style={{ color: tplColors.primaryColor }}>{cleanSessionLabel}</span></div>
+              )}
+            </>
+          ) : (
+            <>
+              <div className="flex justify-between gap-1"><span className="text-slate-400 font-bold">Emp ID:</span><span className="font-mono font-black text-slate-900">{item.employeeId || item.id.slice(0, 6).toUpperCase()}</span></div>
+              <div className="flex justify-between gap-1"><span className="text-slate-400 font-bold">Dept:</span><span className="font-bold text-slate-800 truncate">{item.department || "Academic"}</span></div>
+              <div className="flex justify-between gap-1"><span className="text-slate-400 font-bold">Contact:</span><span className="font-semibold text-slate-800">{item.phone || "—"}</span></div>
+            </>
+          )}
+        </div>
+      );
+
+      const renderFooterStrip = () => (
+        <div
+          className="px-2 py-1 border-t flex items-center justify-between gap-1.5 text-[5.8px] shrink-0 relative z-10 mt-auto"
+          style={{ backgroundColor: tplColors.surfaceTint, borderColor: tplColors.borderColor + "50" }}
+        >
+          <div className="min-w-0 flex-1 leading-tight text-slate-600 truncate">
+            {showSchoolDetail("address") && schoolDetails.address && <span className="font-bold text-slate-700">{schoolDetails.address}</span>}
+            {showSchoolDetail("phone") && schoolDetails.phone && <span className="ml-1 font-semibold">• {schoolDetails.phone}</span>}
+            {activeIdTemplate.footerNote && <span className="ml-1 text-slate-500">• {activeIdTemplate.footerNote}</span>}
+          </div>
+          <div className="text-right shrink-0 flex flex-col items-end">
+            {schoolDetails.principalSignatureUrl ? (
+              <img src={schoolDetails.principalSignatureUrl} alt="Sign" className="h-3.5 max-w-[55px] object-contain" />
+            ) : schoolDetails.principalName ? (
+              <span className="font-serif italic font-bold text-slate-900 text-[6.5px] leading-none">{schoolDetails.principalName}</span>
+            ) : null}
+            <span className="text-[5.8px] font-black uppercase text-slate-800">{resolvedSignatoryTitle}</span>
+          </div>
+        </div>
+      );
+
+      // VERTICAL LEFT OR RIGHT SIDEBAR SPINE / WIDE 35% PROFILE COLUMN (Layouts 02, 12, 41, 42)
+      if (isLeftSpine || isRightSpine) {
+        return (
+          <div
+            key={item.id}
+            className={`${sizeClasses} bg-white rounded-xl shadow-lg flex ${isRightSpine ? "flex-row-reverse" : "flex-row"} relative print-card-box print:shadow-none print:m-1.5 print:break-inside-avoid print:inline-flex overflow-hidden`}
+            style={{ ...cardContainerStyle, backgroundColor: paperBg }}
+          >
+            {renderWatermarkOverlay()}
+            {/* Vertical Colored Spine */}
+            <div
+              className={`${isWideSpine ? (isLandscape ? "w-[82px]" : "w-[68px]") : (isLandscape ? "w-[58px]" : "w-[50px]")} shrink-0 flex flex-col items-center justify-between py-2 px-1 text-center relative z-10`}
+              style={{ background: `linear-gradient(180deg, ${tplColors.primaryColor}, ${tplColors.accentColor})`, color: tplColors.headerTextColor }}
+            >
+              {schoolLogo ? (
+                <img src={cleanLogoUrl(schoolLogo)} alt="Logo" className="w-8 h-8 rounded-lg bg-white p-0.5 object-contain shadow" />
+              ) : (
+                <div className="w-8 h-8 rounded-lg bg-white text-slate-900 font-black text-[10px] flex items-center justify-center">{(cleanSchoolName || "SC").slice(0, 2).toUpperCase()}</div>
+              )}
+              <div className="text-[7px] font-black uppercase tracking-widest leading-tight -rotate-90 whitespace-nowrap">
+                {idRoleBadge}
+              </div>
+              <span className="px-1 py-0.5 rounded text-[6px] font-black" style={cardBadgeStyle}>{cleanSessionLabel}</span>
+            </div>
+
+            {/* Main Panel */}
+            <div className="flex-1 min-w-0 flex flex-col justify-between relative z-10">
+              <div className="px-2.5 pt-1.5 pb-1 border-b" style={{ borderColor: tplColors.borderColor + "40" }}>
+                <h3 className="font-black text-[10px] uppercase tracking-tight truncate" style={{ color: tplColors.primaryColor }}>{schoolDetails.schoolName}</h3>
+                {schoolDetails.affiliation && <p className="text-[6px] text-slate-500 truncate">{schoolDetails.affiliation}</p>}
+              </div>
+
+              {isLandscape ? (
+                <div className="px-2.5 py-1 flex-1 flex items-center justify-between gap-2 min-h-0">
+                  <div className="flex-1 min-w-0">
+                    <h4 className="font-black text-[11px] text-slate-900 truncate">{item.name}</h4>
+                    <div className="flex items-center gap-1 my-0.5">
+                      <span className="px-1.5 py-0.2 rounded text-[7px] font-black uppercase" style={cardBadgeStyle}>{subClassLabel}</span>
+                      {fieldSettings.showBloodGroup && item.bloodGroup && <span className="px-1 rounded text-[7px] font-black bg-rose-50 text-rose-700 border border-rose-200">{item.bloodGroup}</span>}
+                    </div>
+                    {renderDetailsLines(true)}
+                  </div>
+                  <div className="flex flex-col items-center gap-1 shrink-0">
+                    <div className="w-[50px] h-[60px] rounded-lg border-2 overflow-hidden bg-slate-100 flex items-center justify-center" style={{ borderColor: tplColors.primaryColor }}>
+                      {item.photoUrl ? <img src={item.photoUrl} alt={item.name} className="w-full h-full object-cover" /> : <User className="w-5 h-5 text-slate-400" />}
+                    </div>
+                    <div className="p-0.5 bg-white border rounded"><QRCode value={qrVerifyUrl} size={42} level="L" /></div>
+                  </div>
+                </div>
+              ) : (
+                <div className="px-2.5 py-1.5 flex-1 flex flex-col justify-between min-h-0">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="w-[62px] h-[74px] rounded-lg border-2 overflow-hidden bg-slate-100 flex items-center justify-center" style={{ borderColor: tplColors.primaryColor }}>
+                      {item.photoUrl ? <img src={item.photoUrl} alt={item.name} className="w-full h-full object-cover" /> : <User className="w-6 h-6 text-slate-400" />}
+                    </div>
+                    <div className="p-1 bg-white border rounded"><QRCode value={qrVerifyUrl} size={56} level="L" /></div>
+                  </div>
+                  <div className="p-1.5 rounded-lg border my-1" style={{ backgroundColor: tplColors.surfaceTint, borderColor: tplColors.borderColor + "40" }}>
+                    <h4 className="font-black text-[11px] text-slate-900 truncate">{item.name}</h4>
+                    <span className="inline-block px-1.5 py-0.2 rounded text-[7.5px] font-black mt-0.5" style={cardBadgeStyle}>{subClassLabel}</span>
+                  </div>
+                  {renderDetailsLines(false)}
+                </div>
+              )}
+              {renderFooterStrip()}
+            </div>
+          </div>
+        );
+      }
+
+      // DESIGN 09 & 18: 50/50 DUAL-TONE SPLIT / DARK OBSIDIAN GOLD
+      if (variant === "dual_tone_split" || isObsidian) {
+        return (
+          <div
+            key={item.id}
+            className={`${sizeClasses} bg-white rounded-2xl shadow-lg flex flex-col relative print-card-box print:shadow-none print:m-1.5 print:break-inside-avoid print:inline-flex overflow-hidden`}
+            style={cardContainerStyle}
+          >
+            {renderWatermarkOverlay()}
+            {/* Top Colored Hero Half */}
+            <div
+              className={`${isLandscape ? "px-3 py-2" : "px-3 pt-3 pb-2.5"} relative z-10`}
+              style={{
+                background: isObsidian
+                  ? `linear-gradient(135deg, #09090b, ${tplColors.primaryColor})`
+                  : `linear-gradient(135deg, ${tplColors.primaryColor}, ${tplColors.accentColor})`,
+                color: tplColors.headerTextColor,
+                borderBottom: isObsidian ? `2px solid ${tplColors.accentColor}` : undefined,
+              }}
+            >
+              <div className="flex items-center justify-between gap-1.5 mb-1.5">
+                <div className="flex items-center gap-1.5 min-w-0">
+                  {schoolLogo && <img src={cleanLogoUrl(schoolLogo)} alt="Logo" className="w-5 h-5 rounded-full bg-white p-0.5 object-contain shrink-0" />}
+                  <h3 className="font-black text-[9.5px] uppercase truncate" style={{ color: tplColors.headerTextColor }}>{schoolDetails.schoolName}</h3>
+                </div>
+                <span className="px-1.5 py-0.2 rounded text-[6.5px] font-black shrink-0" style={cardBadgeStyle}>{cleanSessionLabel}</span>
+              </div>
+              <div className={`flex ${isLandscape ? "items-center gap-2.5" : "flex-col items-center text-center gap-1.5"}`}>
+                <div className={`${isLandscape ? "w-[52px] h-[60px]" : "w-[74px] h-[84px]"} rounded-xl border-2 bg-white overflow-hidden shadow shrink-0 flex items-center justify-center`} style={{ borderColor: isObsidian ? tplColors.accentColor : "#ffffff" }}>
+                  {item.photoUrl ? <img src={item.photoUrl} alt={item.name} className="w-full h-full object-cover" /> : <User className="w-7 h-7 text-slate-400" />}
+                </div>
+                <div className="min-w-0">
+                  <h4 className="font-black text-[12px] leading-tight truncate" style={{ color: tplColors.headerTextColor }}>{item.name}</h4>
+                  <span className="inline-block mt-0.5 px-2 py-0.2 rounded-full text-[7.5px] font-black bg-white/20 backdrop-blur-xs">{subClassLabel}</span>
+                </div>
+              </div>
+            </div>
+
+            {/* Bottom Crisp White Details + QR Half */}
+            <div className="flex-1 bg-white px-2.5 py-1.5 flex items-center justify-between gap-2 min-h-0 relative z-10">
+              <div className="flex-1 min-w-0">{renderDetailsLines(true)}</div>
+              <div className="flex flex-col items-center shrink-0">
+                <div className="p-0.5 border rounded bg-white"><QRCode value={qrVerifyUrl} size={isLandscape ? 54 : 62} level="L" /></div>
+                <span className="text-[5.5px] font-black text-slate-500 mt-0.5">SCAN VERIFY</span>
+              </div>
+            </div>
+            {renderFooterStrip()}
+          </div>
+        );
+      }
+
+      // DESIGN 07, 13 & 20: DIPLOMA / HERITAGE ORNATE / EMBLEM SEAL FRAME
+      if (isOrnateFrame) {
+        return (
+          <div
+            key={item.id}
+            className={`${sizeClasses} p-1 shadow-lg flex flex-col relative print-card-box print:shadow-none print:m-1.5 print:break-inside-avoid print:inline-flex overflow-hidden rounded-lg`}
+            style={{ ...cardContainerStyle, backgroundColor: paperBg, border: `3px double ${tplColors.borderColor}` }}
+          >
+            <div className="w-full h-full border rounded flex flex-col justify-between overflow-hidden relative" style={{ borderColor: tplColors.accentColor }}>
+              {renderWatermarkOverlay()}
+              <div className="px-2.5 py-1 text-center border-b relative z-10" style={{ borderColor: tplColors.borderColor + "60", backgroundColor: tplColors.surfaceTint }}>
+                <div className="text-[6px] font-black tracking-[0.2em] uppercase" style={{ color: tplColors.accentColor }}>★ OFFICIAL ACADEMIC IDENTITY ★</div>
+                <h3 className="font-serif font-black text-[10.5px] uppercase truncate" style={{ color: tplColors.primaryColor }}>{schoolDetails.schoolName}</h3>
+              </div>
+
+              <div className={`px-2.5 py-1 flex-1 flex ${isLandscape ? "items-center justify-between gap-2" : "flex-col items-center justify-between gap-1"} relative z-10 min-h-0`}>
+                <div className={`${isLandscape ? "w-[56px] h-[68px]" : "w-[68px] h-[78px]"} rounded-full border-2 overflow-hidden bg-white shadow-xs shrink-0 flex items-center justify-center`} style={{ borderColor: tplColors.accentColor }}>
+                  {item.photoUrl ? <img src={item.photoUrl} alt={item.name} className="w-full h-full object-cover" /> : <User className="w-7 h-7 text-slate-400" />}
+                </div>
+                <div className={`flex-1 min-w-0 ${isLandscape ? "" : "w-full text-center"}`}>
+                  <h4 className="font-serif font-black text-[11px] text-slate-900 truncate">{item.name}</h4>
+                  <span className="inline-block px-2 py-0.2 rounded-full text-[7px] font-black border mb-1" style={{ ...cardBadgeStyle, borderColor: tplColors.accentColor }}>{subClassLabel}</span>
+                  {renderDetailsLines(true)}
+                </div>
+                <div className="flex flex-col items-center shrink-0">
+                  <div className="p-0.5 bg-white border rounded" style={{ borderColor: tplColors.borderColor }}><QRCode value={qrVerifyUrl} size={isLandscape ? 54 : 52} level="L" /></div>
+                </div>
+              </div>
+              {renderFooterStrip()}
+            </div>
+          </div>
+        );
+      }
+
+      // REMAINING 50+ STRUCTURAL VARIANTS (Wave, Arch, Chevron, Scallop, Prism, Horizon, Diagonal, Obsidian, Lanyard, Passport MRZ, Ticket Notch, Dual Rails, Bottom Dock, Brackets, Beveled, Blueprint, Checkered, Bookmark, Swiss Cross, Mono Stripe, Heavy Bars, etc.)
+      const getCardHeaderBgStyle = (): React.CSSProperties => {
+        if (isLightTop) {
+          return {
+            backgroundColor: "#ffffff",
+            color: "#0f172a",
+            borderBottom: arch.headerStyle === "gazette_double" ? `3px double ${tplColors.borderColor}` : `2px solid ${tplColors.borderColor}`,
+          };
+        }
+        switch (arch.headerStyle) {
+          case "diagonal":
+            return { background: `linear-gradient(122deg, ${tplColors.primaryColor} 64%, ${tplColors.accentColor} 64%)`, color: tplColors.headerTextColor };
+          case "aurora":
+            return { background: `linear-gradient(125deg, ${tplColors.primaryColor}, ${tplColors.accentColor}, #ec4899)`, color: tplColors.headerTextColor };
+          case "prism":
+            return { background: `linear-gradient(135deg, ${tplColors.primaryColor} 0%, ${tplColors.accentColor} 45%, ${tplColors.primaryColor} 46%, #0f172a 100%)`, color: tplColors.headerTextColor };
+          case "horizon":
+            return { background: `radial-gradient(circle at 50% 120%, ${tplColors.accentColor}, ${tplColors.primaryColor} 72%)`, color: tplColors.headerTextColor, borderBottomLeftRadius: "50% 12px", borderBottomRightRadius: "50% 12px" };
+          case "arch":
+            return { background: `linear-gradient(135deg, ${tplColors.primaryColor}, ${tplColors.accentColor})`, color: tplColors.headerTextColor, borderBottomLeftRadius: "42% 12px", borderBottomRightRadius: "42% 12px" };
+          case "wave":
+            return { background: `linear-gradient(135deg, ${tplColors.primaryColor}, ${tplColors.accentColor})`, color: tplColors.headerTextColor, borderBottomLeftRadius: "60% 14px", borderBottomRightRadius: "20% 4px" };
+          case "scallop":
+            return { background: `linear-gradient(135deg, ${tplColors.primaryColor}, ${tplColors.accentColor})`, color: tplColors.headerTextColor, borderBottom: `3px dotted ${tplColors.badgeBg}` };
+          case "chevron":
+            return { background: `linear-gradient(135deg, ${tplColors.primaryColor}, ${tplColors.accentColor})`, color: tplColors.headerTextColor, clipPath: "polygon(0 0, 100% 0, 100% 82%, 50% 100%, 0 82%)", paddingBottom: "8px" };
+          case "scoreboard":
+            return { background: "#0f172a", color: "#ffffff", borderBottom: `3px solid ${tplColors.accentColor}` };
+          case "double_decker":
+            return { background: tplColors.primaryColor, color: tplColors.headerTextColor, borderBottom: `4px solid ${tplColors.accentColor}` };
+          case "floating_pill":
+          case "scroll_header":
+            return { background: `linear-gradient(135deg, ${tplColors.primaryColor}, ${tplColors.accentColor})`, color: tplColors.headerTextColor, margin: "4px 6px 0", borderRadius: "9999px" };
+          default:
+            return { background: `linear-gradient(135deg, ${tplColors.primaryColor}, ${tplColors.accentColor})`, color: tplColors.headerTextColor };
+        }
+      };
+
+      const showBigHeroPhoto = arch.frameStyle === "hero_photo";
+      const isMinimalGrid = arch.sharpCorners || arch.frameStyle === "matrix_boxed" || arch.frameStyle === "blueprint_grid";
+      const isArchShape = arch.headerStyle === "arch" || arch.headerStyle === "wave" || arch.headerStyle === "scallop";
+
+      return (
+        <div
+          key={item.id}
+          className={`${sizeClasses} ${isBeveled ? "rounded-none" : arch.sharpCorners ? "rounded-md" : "rounded-xl"} shadow-lg flex ${isDualRails ? "flex-row" : "flex-col"} relative print-card-box print:shadow-none print:m-1.5 print:break-inside-avoid print:inline-flex overflow-hidden`}
+          style={{
+            ...cardContainerStyle,
+            backgroundColor: paperBg,
+            backgroundImage: isBlueprint
+              ? `linear-gradient(${tplColors.primaryColor}10 1px, transparent 1px), linear-gradient(90deg, ${tplColors.primaryColor}10 1px, transparent 1px)`
+              : undefined,
+            backgroundSize: isBlueprint ? "10px 10px" : undefined,
+            borderRadius: isBeveled ? "14px 2px 14px 2px" : undefined,
+            borderTopWidth: isHeavyBars ? "6px" : cardContainerStyle.borderWidth,
+            borderBottomWidth: isHeavyBars ? "6px" : cardContainerStyle.borderWidth,
+            borderLeftWidth: isMonoStripe ? "5px" : isSwissCross ? "8px" : cardContainerStyle.borderWidth,
+            fontFamily: arch.serifFont ? "Georgia, serif" : arch.monoAccent ? "'JetBrains Mono', monospace" : undefined,
+          }}
+        >
+          {isDualRails && <div className="w-2.5 shrink-0" style={{ background: `linear-gradient(180deg, ${tplColors.primaryColor}, ${tplColors.accentColor})` }} />}
+          {isSwissCross && (
+            <div className="absolute top-1.5 right-1.5 z-20 w-4 h-4 rounded-xs flex items-center justify-center text-[10px] font-black shadow-xs" style={{ backgroundColor: tplColors.accentColor, color: "#ffffff" }}>
+              ✚
+            </div>
+          )}
+          <div className="flex-1 flex flex-col min-w-0 relative">
+          {renderWatermarkOverlay()}
+          {/* Lanyard Punch Slot */}
+          {isLanyard && (
+            <div className="py-1 flex justify-center shrink-0 relative z-20" style={{ backgroundColor: tplColors.primaryColor }}>
+              <div className="w-8 h-1.5 rounded-full bg-white/90 border border-slate-400" />
+            </div>
+          )}
+          {/* Ticket Side Notches */}
+          {isTicket && (
+            <>
+              <div className="absolute -left-2 top-1/2 -translate-y-1/2 w-4 h-4 rounded-full bg-slate-100 border-r z-20" style={{ borderColor: tplColors.borderColor }} />
+              <div className="absolute -right-2 top-1/2 -translate-y-1/2 w-4 h-4 rounded-full bg-slate-100 border-l z-20" style={{ borderColor: tplColors.borderColor }} />
+            </>
+          )}
+          {/* Hanging Bookmark Flag */}
+          {isBookmark && (
+            <div
+              className="absolute top-0 right-3 w-4 h-7 z-20 flex items-center justify-center text-[6px] font-black text-white shadow"
+              style={{ backgroundColor: tplColors.accentColor, clipPath: "polygon(0 0, 100% 0, 100% 100%, 50% 75%, 0 100%)" }}
+            >
+              ★
+            </div>
+          )}
+          {/* Corner Brackets / Cyber HUD */}
+          {isBrackets && (
+            <>
+              <span className="absolute top-0.5 left-0.5 w-2.5 h-2.5 border-t-2 border-l-2 z-20" style={{ borderColor: tplColors.accentColor }} />
+              <span className="absolute top-0.5 right-0.5 w-2.5 h-2.5 border-t-2 border-r-2 z-20" style={{ borderColor: tplColors.accentColor }} />
+              <span className="absolute bottom-0.5 left-0.5 w-2.5 h-2.5 border-b-2 border-l-2 z-20" style={{ borderColor: tplColors.accentColor }} />
+              <span className="absolute bottom-0.5 right-0.5 w-2.5 h-2.5 border-b-2 border-r-2 z-20" style={{ borderColor: tplColors.accentColor }} />
+            </>
+          )}
+          {/* Tricolor Heritage Top Band */}
+          {isTricolor && (
+            <div className="h-1.5 w-full flex shrink-0 relative z-10">
+              <div className="flex-1 bg-orange-500" />
+              <div className="flex-1 bg-white" />
+              <div className="flex-1 bg-emerald-600" />
+            </div>
+          )}
+          {/* Top Accent Rule */}
+          {(isLightTop || arch.topAccentBar) && !isTricolor && (
+            <div className="h-1.5 w-full shrink-0 relative z-10" style={{ background: `linear-gradient(90deg, ${tplColors.primaryColor}, ${tplColors.accentColor})` }} />
+          )}
+
+          {/* Card Header */}
+          <div
+            className={`px-2.5 ${isLandscape ? "py-1.5" : "py-2"} flex items-center gap-1.5 shrink-0 relative z-10 ${
+              activeIdTemplate.logoPosition === "center"
+                ? "justify-center text-center"
+                : activeIdTemplate.logoPosition === "right"
+                ? "flex-row-reverse justify-between"
+                : "justify-between"
+            }`}
+            style={getCardHeaderBgStyle()}
+          >
+            <div className="flex items-center gap-1.5 min-w-0">
+              {schoolLogo ? (
+                <img src={cleanLogoUrl(schoolLogo)} alt="Logo" className={`w-5 h-5 ${isArchShape ? "rounded-full" : "rounded-md"} bg-white object-contain p-0.5 border shrink-0`} />
+              ) : (
+                <div className={`w-5 h-5 ${isArchShape ? "rounded-full" : "rounded-md"} font-black text-[8px] flex items-center justify-center shrink-0`} style={{ backgroundColor: isLightTop ? tplColors.primaryColor : "#fff", color: isLightTop ? "#fff" : tplColors.primaryColor }}>
+                  {(cleanSchoolName || "SC").slice(0, 2).toUpperCase()}
+                </div>
+              )}
+              <div className="min-w-0">
+                <h3 className={`font-black text-[10px] uppercase tracking-tight truncate max-w-[195px] ${arch.serifFont ? "font-serif" : ""}`} style={isLightTop ? { color: tplColors.primaryColor } : { color: tplColors.headerTextColor }}>
+                  {schoolDetails.schoolName}
+                </h3>
+                {showSchoolDetail("affiliation") && (schoolDetails.affiliation || schoolDetails.tagline) && (
+                  <p className="text-[6px] opacity-80 truncate max-w-[195px]">{schoolDetails.affiliation || schoolDetails.tagline}</p>
+                )}
+              </div>
+            </div>
+            {activeIdTemplate.logoPosition !== "center" && (
+              <span
+                className={`px-1.5 py-0.5 text-[6.5px] font-black uppercase shrink-0 ${arch.pillBadges ? "rounded-full" : arch.skewBadge ? "-skew-x-12" : "rounded-xs"}`}
+                style={cardBadgeStyle}
+              >
+                {idRoleBadge}
+              </span>
+            )}
+          </div>
+
+          {/* Body Architecture */}
+          {isLandscape ? (
+            <div className={`px-2.5 py-1.5 flex-1 flex items-center justify-between gap-2 bg-white relative z-10 min-h-0 ${isMinimalGrid ? "divide-x divide-slate-200" : ""}`}>
+              <div className={`shrink-0 flex flex-col items-center ${variant === "modern_floating" ? "-mt-3" : ""}`}>
+                <div
+                  className={`${showBigHeroPhoto ? "w-[70px] h-[86px]" : "w-[58px] h-[72px]"} ${variant === "modern_floating" ? "rounded-2xl shadow-md" : variant === "cbse_board" || variant === "checker_ledger_grid" ? "rounded-xs" : "rounded-lg"} border-2 overflow-hidden bg-slate-100 flex items-center justify-center`}
+                  style={{ borderColor: tplColors.primaryColor }}
+                >
+                  {item.photoUrl ? <img src={item.photoUrl} alt={item.name} className="w-full h-full object-cover" /> : <User className="w-7 h-7 text-slate-400" />}
+                </div>
+              </div>
+
+              <div className={`flex-1 min-w-0 ${isMinimalGrid ? "pl-2" : ""}`}>
+                <h4 className="font-black text-[11px] text-slate-900 truncate">{item.name}</h4>
+                <div className="flex items-center gap-1 mb-0.5 flex-wrap">
+                  <span className={`text-[7px] font-black px-1.5 py-0.2 ${variant === "modern_floating" || variant === "corporate_badge_card" ? "rounded-full" : "rounded-xs"}`} style={cardBadgeStyle}>{subClassLabel}</span>
+                  {fieldSettings.showBloodGroup && item.bloodGroup && <span className="text-[7px] font-black px-1 rounded bg-rose-50 text-rose-700 border border-rose-200">{item.bloodGroup}</span>}
+                </div>
+                {renderDetailsLines(true)}
+              </div>
+
+              <div className={`shrink-0 flex flex-col items-center justify-center ${isMinimalGrid ? "pl-2" : ""}`}>
+                <div className="p-0.5 bg-white border rounded" style={{ borderColor: tplColors.borderColor }}><QRCode value={qrVerifyUrl} size={58} level="L" /></div>
+                <span className="text-[5.5px] font-mono font-bold text-slate-500 mt-0.5">{item.admissionNo || item.rollNo || "ID"}</span>
+              </div>
+            </div>
+          ) : (
+            <div className="px-2.5 py-1.5 flex-1 flex flex-col justify-between bg-white relative z-10 min-h-0">
+              <div className={`flex ${showBigHeroPhoto ? "flex-col items-center gap-1" : "items-center justify-between gap-2"} ${variant === "modern_floating" ? "-mt-3" : ""}`}>
+                <div
+                  className={`${showBigHeroPhoto ? "w-[82px] h-[94px]" : "w-[66px] h-[78px]"} ${variant === "modern_floating" ? "rounded-2xl shadow-md" : "rounded-lg"} border-2 overflow-hidden bg-slate-100 flex items-center justify-center shrink-0`}
+                  style={{ borderColor: tplColors.primaryColor }}
+                >
+                  {item.photoUrl ? <img src={item.photoUrl} alt={item.name} className="w-full h-full object-cover" /> : <User className="w-7 h-7 text-slate-400" />}
+                </div>
+                {!showBigHeroPhoto && (
+                  <div className="p-1 bg-white border rounded shrink-0" style={{ borderColor: tplColors.borderColor }}><QRCode value={qrVerifyUrl} size={58} level="L" /></div>
+                )}
+              </div>
+
+              <div className="px-2 py-1 rounded-lg border text-center my-0.5" style={{ backgroundColor: tplColors.surfaceTint, borderColor: tplColors.borderColor + "40" }}>
+                <h4 className="font-black text-[11px] text-slate-900 truncate">{item.name}</h4>
+                <div className="flex items-center justify-center gap-1 mt-0.5">
+                  <span className="px-2 py-0.2 rounded-full text-[7.5px] font-black" style={cardBadgeStyle}>{subClassLabel}</span>
+                  {fieldSettings.showBloodGroup && item.bloodGroup && <span className="px-1.5 py-0.2 rounded text-[7px] font-black bg-rose-50 text-rose-700 border border-rose-200">{item.bloodGroup}</span>}
+                </div>
+              </div>
+
+              <div className="flex items-end justify-between gap-2 flex-1 min-h-0">
+                <div className="flex-1 min-w-0">{renderDetailsLines(false)}</div>
+                {showBigHeroPhoto && (
+                  <div className="p-0.5 bg-white border rounded shrink-0" style={{ borderColor: tplColors.borderColor }}><QRCode value={qrVerifyUrl} size={46} level="L" /></div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Passport MRZ Strip */}
+          {isPassport && (
+            <div className="px-2 py-0.5 bg-slate-900 text-emerald-300 font-mono text-[5.5px] tracking-widest truncate">
+              ID&lt;IND&lt;{(item.name || "STUDENT").toUpperCase().replace(/\s+/g, "&lt;")}&lt;&lt;{item.admissionNo || item.rollNo || "01"}
+            </div>
+          )}
+
+          {isBottomDock ? (
+            <div
+              className="px-2 py-1 flex items-center justify-between text-[6px] font-black mt-auto"
+              style={{ backgroundColor: tplColors.primaryColor, color: tplColors.headerTextColor }}
+            >
+              <span>{schoolDetails.phone || cleanSessionLabel}</span>
+              <span>{resolvedSignatoryTitle}</span>
+            </div>
+          ) : (
+            renderFooterStrip()
+          )}
+          {isTricolor && (
+            <div className="h-1 w-full flex shrink-0 relative z-10">
+              <div className="flex-1 bg-orange-500" />
+              <div className="flex-1 bg-white" />
+              <div className="flex-1 bg-emerald-600" />
+            </div>
+          )}
+          </div>
+          {isDualRails && <div className="w-2.5 shrink-0" style={{ background: `linear-gradient(180deg, ${tplColors.accentColor}, ${tplColors.primaryColor})` }} />}
+        </div>
+      );
+    }
 
     if (isLandscape) {
       // ──────────────────────────────────────────────────────────────────────────
@@ -383,11 +930,15 @@ export const IdCardManager: React.FC<Props> = ({
       return (
         <div
           key={item.id}
-          className={`w-[350px] min-h-[220px] max-h-[220px] bg-white rounded-xl shadow-lg border-2 ${currentTheme.border} flex flex-col relative print-card-box print:w-[85.6mm] print:h-[54mm] print:min-h-[54mm] print:max-h-[54mm] print:shadow-none print:m-1.5 print:break-inside-avoid print:inline-block overflow-hidden`}
-          style={{ fontFamily: "'Inter', sans-serif", boxSizing: "border-box" }}
+          className={`w-[350px] min-h-[220px] max-h-[220px] bg-white rounded-xl shadow-lg ${useCustomTpl ? "" : `border-2 ${currentTheme.border}`} flex flex-col relative print-card-box print:w-[85.6mm] print:h-[54mm] print:min-h-[54mm] print:max-h-[54mm] print:shadow-none print:m-1.5 print:break-inside-avoid print:inline-block overflow-hidden`}
+          style={cardContainerStyle}
         >
+          {renderWatermarkOverlay()}
           {/* Top School Brand Header */}
-          <div className={`${currentTheme.headerBg} px-2.5 py-1 text-white flex items-center justify-between shrink-0`}>
+          <div
+            className={`${useCustomTpl ? "" : `${currentTheme.headerBg} text-white`} px-2.5 py-1 flex items-center justify-between shrink-0 relative z-10 ${useCustomTpl && activeIdTemplate.logoPosition === "right" ? "flex-row-reverse" : ""}`}
+            style={cardHeaderStyle}
+          >
             <div className="flex items-center gap-1.5 min-w-0">
               {getSavedSchoolLogo(schoolDetails.logoUrl, school?.id) ? (
                 <img
@@ -405,19 +956,22 @@ export const IdCardManager: React.FC<Props> = ({
                 {(schoolDetails.schoolName || "SC").slice(0, 2).toUpperCase()}
               </div>
               <div className="min-w-0 leading-tight">
-                {showSchoolDetail("schoolName") && <h3 className="font-black text-[10.5px] tracking-tight truncate max-w-[205px] text-white">{schoolDetails.schoolName}</h3>}
+                {showSchoolDetail("schoolName") && <h3 className="font-black text-[10.5px] tracking-tight truncate max-w-[205px]" style={useCustomTpl ? { color: tplColors.headerTextColor } : undefined}>{schoolDetails.schoolName}</h3>}
                 {showSchoolDetail("affiliation") && (schoolDetails.affiliation || schoolDetails.tagline) && (
-                  <p className="text-[6.5px] text-indigo-100 truncate max-w-[205px]">
+                  <p className={`text-[6.5px] truncate max-w-[205px] ${useCustomTpl ? "opacity-85" : "text-indigo-100"}`}>
                     {(schoolDetails.affiliation || schoolDetails.tagline).replace(/affiliation\s*code/gi, "School Code")}
                   </p>
                 )}
               </div>
             </div>
             <div className="text-right shrink-0">
-              <span className="inline-block px-1.5 py-0.5 rounded-sm bg-amber-400 text-slate-950 text-[7px] font-black uppercase tracking-wider">
+              <span
+                className={`inline-block px-1.5 py-0.5 rounded-sm ${useCustomTpl ? "" : "bg-amber-400 text-slate-950"} text-[7px] font-black uppercase tracking-wider`}
+                style={cardBadgeStyle}
+              >
                 {isStaff ? "STAFF ID" : "STUDENT ID"}
               </span>
-              <p className="text-[6.5px] text-amber-200 font-bold mt-0.5 text-right">{cleanSessionLabel}</p>
+              <p className={`text-[6.5px] font-bold mt-0.5 text-right ${useCustomTpl ? "opacity-90" : "text-amber-200"}`}>{cleanSessionLabel}</p>
             </div>
           </div>
 
@@ -442,7 +996,10 @@ export const IdCardManager: React.FC<Props> = ({
               <div className="border-b border-slate-100 pb-0.5">
                 <h4 className="font-black text-[11.5px] text-slate-900 truncate">{item.name}</h4>
                 <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
-                  <span className={`text-[7.5px] font-black px-1.5 py-0.2 rounded-full ${currentTheme.badge} uppercase tracking-wider`}>
+                  <span
+                    className={`text-[7.5px] font-black px-1.5 py-0.2 rounded-full ${useCustomTpl ? "" : currentTheme.badge} uppercase tracking-wider`}
+                    style={cardBadgeStyle}
+                  >
                     {isStaff ? item.designation : className}
                   </span>
                   {fieldSettings.showBloodGroup && item.bloodGroup && (
@@ -530,13 +1087,17 @@ export const IdCardManager: React.FC<Props> = ({
           </div>
 
           {/* Bottom Card Footer: School Office Helpline & Principal Signatory (No Personal Phones) */}
-          <div className="px-2.5 py-1 bg-slate-50 border-t border-slate-200 flex items-center justify-between gap-2 text-[6px] text-slate-600 shrink-0">
+          <div
+            className="px-2.5 py-1 bg-slate-50 border-t border-slate-200 flex items-center justify-between gap-2 text-[6px] text-slate-600 shrink-0 relative z-10"
+            style={useCustomTpl ? { backgroundColor: tplColors.surfaceTint, borderColor: tplColors.borderColor + "40" } : undefined}
+          >
             <div className="min-w-0 flex-1 leading-tight break-words">
               {showSchoolDetail("address") && schoolDetails.address && <span className="font-bold text-slate-700">{schoolDetails.address}</span>}
               {showSchoolDetail("phone") && schoolDetails.phone && <span className="ml-1 text-slate-600 font-semibold">• Helpline: {schoolDetails.phone}</span>}
               {showSchoolDetail("email") && schoolDetails.email && <span className="ml-1 text-slate-500">• {schoolDetails.email}</span>}
               {showSchoolDetail("code") && getVisibleSchoolRegNo(school, schoolDetails.code) && <span className="ml-1 text-slate-500">• Reg. No: {getVisibleSchoolRegNo(school, schoolDetails.code)}</span>}
               {customSchoolDetails && <span className="ml-1 text-slate-500">• {customSchoolDetails}</span>}
+              {useCustomTpl && activeIdTemplate.footerNote && <span className="ml-1 font-semibold text-slate-700">• {activeIdTemplate.footerNote}</span>}
             </div>
             <div className="text-right shrink-0 flex flex-col items-end justify-end">
               {schoolDetails.principalSignatureUrl ? (
@@ -570,14 +1131,18 @@ export const IdCardManager: React.FC<Props> = ({
     return (
       <div
         key={item.id}
-        className={`w-[260px] min-h-[390px] max-h-[390px] bg-white rounded-2xl shadow-xl border-2 ${currentTheme.border} flex flex-col relative print-card-box print:w-[54mm] print:h-[85.6mm] print:min-h-[85.6mm] print:max-h-[85.6mm] print:shadow-none print:m-1.5 print:break-inside-avoid print:inline-block overflow-hidden`}
-        style={{ fontFamily: "'Inter', sans-serif", boxSizing: "border-box" }}
+        className={`w-[260px] min-h-[390px] max-h-[390px] bg-white rounded-2xl shadow-xl ${useCustomTpl ? "" : `border-2 ${currentTheme.border}`} flex flex-col relative print-card-box print:w-[54mm] print:h-[85.6mm] print:min-h-[85.6mm] print:max-h-[85.6mm] print:shadow-none print:m-1.5 print:break-inside-avoid print:inline-block overflow-hidden`}
+        style={cardContainerStyle}
       >
+        {renderWatermarkOverlay()}
         {/* Lanyard Hole Guide */}
         <div className="absolute top-1 left-1/2 -translate-x-1/2 w-7 h-1.5 rounded-full bg-white/40 z-20 print:border print:border-slate-300"></div>
 
         {/* Header with School Branding */}
-        <div className={`${currentTheme.headerBg} pt-3 pb-1.5 px-2 text-center text-white relative shrink-0`}>
+        <div
+          className={`${useCustomTpl ? "" : `${currentTheme.headerBg} text-white`} pt-3 pb-1.5 px-2 text-center relative shrink-0 z-10`}
+          style={cardHeaderStyle}
+        >
           <div className="flex items-center justify-center gap-1.5 mb-0.5">
             {getSavedSchoolLogo(schoolDetails.logoUrl, school?.id) ? (
               <img
@@ -597,11 +1162,14 @@ export const IdCardManager: React.FC<Props> = ({
             {showSchoolDetail("schoolName") && <h3 className="font-black text-[11px] tracking-tight leading-tight line-clamp-1">{schoolDetails.schoolName}</h3>}
           </div>
           {showSchoolDetail("affiliation") && (schoolDetails.affiliation || schoolDetails.tagline) && (
-            <p className="text-[6.5px] text-indigo-100 truncate mb-1">
+            <p className={`text-[6.5px] truncate mb-1 ${useCustomTpl ? "opacity-85" : "text-indigo-100"}`}>
               {(schoolDetails.affiliation || schoolDetails.tagline).replace(/affiliation\s*code/gi, "School Code")}
             </p>
           )}
-          <div className="inline-block px-2 py-0.2 rounded-full bg-amber-400 text-slate-950 text-[7px] font-black uppercase tracking-widest">
+          <div
+            className={`inline-block px-2 py-0.2 rounded-full ${useCustomTpl ? "" : "bg-amber-400 text-slate-950"} text-[7px] font-black uppercase tracking-widest`}
+            style={cardBadgeStyle}
+          >
             {isStaff ? "STAFF ID CARD" : "STUDENT ID CARD"} • {cleanSessionLabel}
           </div>
         </div>
@@ -637,12 +1205,18 @@ export const IdCardManager: React.FC<Props> = ({
         </div>
 
         {/* Student Name & Designation Band */}
-        <div className="px-3 py-1 text-center bg-slate-50/70 border-y border-slate-100 shrink-0">
+        <div
+          className="px-3 py-1 text-center bg-slate-50/70 border-y border-slate-100 shrink-0 relative z-10"
+          style={useCustomTpl ? { backgroundColor: tplColors.surfaceTint, borderColor: tplColors.borderColor + "40" } : undefined}
+        >
           <h2 className="text-xs font-black text-slate-900 leading-tight truncate">
             {item.name}
           </h2>
           <div className="flex items-center justify-center gap-1.5 mt-0.5">
-            <span className={`text-[8.5px] font-black px-2 py-0.2 rounded-full ${currentTheme.badge}`}>
+            <span
+              className={`text-[8.5px] font-black px-2 py-0.2 rounded-full ${useCustomTpl ? "" : currentTheme.badge}`}
+              style={cardBadgeStyle}
+            >
               {isStaff ? item.designation : className}
             </span>
             {fieldSettings.showBloodGroup && item.bloodGroup && (
@@ -836,14 +1410,26 @@ export const IdCardManager: React.FC<Props> = ({
               </span>
             </div>
 
-            <button
-              type="button"
-              onClick={handlePrint}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white rounded-xl text-xs font-black shadow-sm active:scale-95 transition cursor-pointer shrink-0"
-            >
-              <Printer className="w-3.5 h-3.5" />
-              <span>Print / PDF</span>
-            </button>
+            <div className="flex items-center gap-1.5 shrink-0">
+              <button
+                type="button"
+                onClick={() => setShowTemplateStudio(true)}
+                className="inline-flex items-center gap-1 px-2.5 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-black shadow-sm active:scale-95 transition cursor-pointer shrink-0"
+                title="10 Auto-Build Templates + Custom Designer + Colors Badlein"
+              >
+                <Palette className="w-3.5 h-3.5 text-amber-300" />
+                <span className="hidden sm:inline">Templates (10+)</span>
+                <span className="sm:hidden">Templates</span>
+              </button>
+              <button
+                type="button"
+                onClick={handlePrint}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white rounded-xl text-xs font-black shadow-sm active:scale-95 transition cursor-pointer shrink-0"
+              >
+                <Printer className="w-3.5 h-3.5" />
+                <span>Print / PDF</span>
+              </button>
+            </div>
           </div>
 
           {/* Compact 4-Button Action Strip (Always 1 Row) */}
@@ -1440,6 +2026,15 @@ export const IdCardManager: React.FC<Props> = ({
             setStudents(prev => [newStu, ...prev]);
             setSelectedStudent(newStu);
           }}
+        />
+      )}
+
+      {showTemplateStudio && (
+        <DocumentTemplateStudioModal
+          school={school}
+          initialDocType="id_card"
+          onClose={() => setShowTemplateStudio(false)}
+          onTemplateApplied={() => setTemplateTick(t => t + 1)}
         />
       )}
     </div>

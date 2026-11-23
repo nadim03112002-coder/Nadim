@@ -19,9 +19,10 @@ import {
   ExternalLink,
   ShieldCheck,
   ChevronRight,
-  Sparkles
+  Sparkles,
+  Lock
 } from "lucide-react";
-import type { School, SchoolBranch, SchoolStudent, SchoolClass } from "../../school-types";
+import { getSchoolMaxBranches, type School, type SchoolBranch, type SchoolStudent, type SchoolClass } from "../../school-types";
 import { loadSchoolSubcollection, syncSchoolSubcollection, saveSchoolSubdoc } from "../../utils/schoolCloudSync";
 import { shouldUseDemoForSchool } from "../../school-firebase";
 
@@ -154,8 +155,32 @@ export const MultiBranchManager: React.FC<Props> = ({
     syncSchoolSubcollection(school?.id, "school_branches", updated);
   };
 
+  const maxBranches = getSchoolMaxBranches(school);
+  const isUnlimitedBranches = maxBranches >= 9999;
+  const isAtBranchLimit = !isUnlimitedBranches && branches.length >= maxBranches;
+
+  const openNewBranchModal = () => {
+    if (isAtBranchLimit) {
+      toast.error(
+        maxBranches <= 1
+          ? "Lite Plan mein sirf 1 Branch allowed hai! 3 Branches ke liye Elite Plan (₹1,00,000/yr) ya Unlimited ke liye Supreme (₹2,00,000/yr) upgrade karein."
+          : `Elite Plan mein maximum ${maxBranches} Branches allowed hain! Unlimited Branches ke liye Supreme Plan (₹2,00,000/yr) upgrade karein.`
+      );
+      return;
+    }
+    setShowAddModal(true);
+  };
+
   const handleCreateBranch = (e: React.FormEvent) => {
     e.preventDefault();
+    if (isAtBranchLimit) {
+      toast.error(
+        maxBranches <= 1
+          ? "Lite Plan branch limit (1 Branch) poori ho chuki hai! Elite (3 Branches) ya Supreme (Unlimited) upgrade karein."
+          : `Elite Plan branch limit (${maxBranches} Branches) poori ho chuki hai! Unlimited Branches ke liye Supreme Plan upgrade karein.`
+      );
+      return;
+    }
     if (!newBranchName.trim()) {
       toast.error("Please enter a branch name.");
       return;
@@ -239,7 +264,7 @@ export const MultiBranchManager: React.FC<Props> = ({
                 Multi-Branch &amp; Franchise Desk
               </h2>
               <span className="px-2.5 py-0.5 rounded-full text-[11px] font-black bg-purple-500/20 text-purple-300 border border-purple-500/30">
-                {branches.length} Branches Active
+                {isUnlimitedBranches ? `${branches.length} Branches (Unlimited)` : `${branches.length} / ${maxBranches} Branches`}
               </span>
             </div>
             <p className="text-xs text-slate-400 mt-0.5">
@@ -251,11 +276,15 @@ export const MultiBranchManager: React.FC<Props> = ({
         <div className="flex items-center gap-2">
           <button
             type="button"
-            onClick={() => setShowAddModal(true)}
-            className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-slate-950 font-black text-xs shadow-md transition active:scale-95 cursor-pointer"
+            onClick={openNewBranchModal}
+            className={`flex items-center gap-1.5 px-4 py-2 rounded-xl font-black text-xs shadow-md transition active:scale-95 cursor-pointer ${
+              isAtBranchLimit
+                ? "bg-slate-700 text-amber-300 border border-amber-500/40 hover:bg-slate-600"
+                : "bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-slate-950"
+            }`}
           >
-            <Plus className="w-4 h-4 stroke-[3]" />
-            <span>+ New Branch</span>
+            {isAtBranchLimit ? <Lock className="w-3.5 h-3.5" /> : <Plus className="w-4 h-4 stroke-[3]" />}
+            <span>{isAtBranchLimit ? `Limit Reached (${maxBranches})` : "+ New Branch"}</span>
           </button>
           {onClose && (
             <button

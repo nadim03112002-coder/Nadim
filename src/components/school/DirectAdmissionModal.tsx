@@ -23,11 +23,18 @@ import {
 import { DirectUploadButton } from "../DirectUploadButton";
 import { getDynamicAcademicSessionLabel } from "../../utils/safeBrowserActions";
 import { getLocalRoutes } from "../../utils/schoolTransportStore";
+import { toUpperFormText, rememberOccupation } from "../../utils/schoolFormUtils";
+import { OccupationAutocomplete } from "./OccupationAutocomplete";
 import {
   getPosterFeeRowForClass,
   calculateAdmissionPaymentPlan,
+  resolveEffectiveClassForAdmission,
   type AdmissionPaymentPlanType,
 } from "../../utils/schoolFeeChart2027";
+import {
+  buildSettledHeadsFromAdmission,
+  canonicalizeFeeHeadKey,
+} from "../../utils/feeTermScheduler";
 import {
   saveStudent,
   updateStudent,
@@ -93,7 +100,12 @@ interface FeeLineDraft {
   id: string;
   description: string;
   due: number;
+  included?: boolean;
+  deferToMonth?: string;
+  headKey?: string;
 }
+
+const isLineBilledNow = (l: FeeLineDraft) => l.included !== false && !l.deferToMonth;
 
 interface Props {
   isOpen: boolean;
@@ -128,6 +140,7 @@ interface BatchStudentDraft {
   busRoute: string;
   busFee: number;
   feeLines: FeeLineDraft[];
+  allFeeLines?: FeeLineDraft[];
   grossTotal: number;
   concession: number;
 }
@@ -246,6 +259,11 @@ export const DirectAdmissionModal: React.FC<Props> = ({
   const [paymentPlan, setPaymentPlan] = useState<AdmissionPaymentPlanType>("full_payment");
   const [includeAdvanceTuition, setIncludeAdvanceTuition] = useState<boolean>(false);
   const [feeLines, setFeeLines] = useState<FeeLineDraft[]>([]);
+  const [defaultDeferMonth, setDefaultDeferMonth] = useState<string>(() => {
+    const d = new Date();
+    d.setMonth(d.getMonth() + 1);
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+  });
   const [concession, setConcession] = useState<number>(0);
   const [onlinePaidInput, setOnlinePaidInput] = useState<string>("0");
   const [offlinePaidInput, setOfflinePaidInput] = useState<string>("");
@@ -511,13 +529,13 @@ export const DirectAdmissionModal: React.FC<Props> = ({
       .catch(() => {});
   };
 
-  const selectedClass = useMemo(
-    () =>
+  const selectedClass = useMemo(() => {
+    const raw =
       effectiveTargetClasses.find((c) => c.id === classId) ||
       classes.find((c) => c.id === classId) ||
-      null,
-    [effectiveTargetClasses, classes, classId]
-  );
+      null;
+    return raw ? resolveEffectiveClassForAdmission(raw, school) : null;
+  }, [effectiveTargetClasses, classes, classId, school]);
 
   useEffect(() => {
     if (selectedClass?.stream && (selectedClass.stream === "Science" || selectedClass.stream === "Commerce" || selectedClass.stream === "Arts")) {
@@ -525,9 +543,9 @@ export const DirectAdmissionModal: React.FC<Props> = ({
     }
   }, [selectedClass]);
 
-  // Build dynamic fee rows from selected class feeStructure & Admin enabledHeads
-  // Build dynamic fee rows from selected class feeStructure & Admin enabledHeads
-  const buildDefaultFeeLinesForClass = (cls: SchoolClass | null, includeBus: boolean, customBusAmt?: number): FeeLineDraft[] => {
+  // Build dynamic fee rows matching Online Admission fee rules & Admin enabledHeads
+  const buildDefaultFeeLinesForClass = (rawCls: SchoolClass | null, includeBus: boolean, customBusAmt?: number): FeeLineDraft[] => {
+    const cls = rawCls ? resolveEffectiveClassForAdmission(rawCls, school) : null;
     const fs = cls?.feeStructure;
     const lines: FeeLineDraft[] = [];
     if (fs?.feeGroups && Array.isArray(fs.feeGroups) && fs.feeGroups.length > 0) {
@@ -725,10 +743,11 @@ export const DirectAdmissionModal: React.FC<Props> = ({
   // Update class-linked defaults (next roll no, monthly tuition, bus fee, admission fee heads)
   useEffect(() => {
     if (!isOpen) return;
-    const cls =
+    const rawCls =
       effectiveTargetClasses.find((c) => c.id === classId) ||
       classes.find((c) => c.id === classId) ||
       null;
+    const cls = rawCls ? resolveEffectiveClassForAdmission(rawCls, school) : null;
     const classStudents = existingStudents.filter((s) => isStudentInClass(s, classId, cls?.name));
     const maxRoll = classStudents.reduce((max, s) => {
       const num = parseInt(String(s.rollNo || "").replace(/\D/g, ""), 10);
@@ -820,20 +839,29 @@ export const DirectAdmissionModal: React.FC<Props> = ({
     [fatherName, motherName, whatsappNo, phone, fatherAadhaar, motherAadhaar, aadhaarNo, address, studentPoolForFamilyCheck]
   );
 
-  const grossTotal = useMemo(
-    () => feeLines.reduce((sum, item) => sum + (Number(item.due) || 0), 0),
+  const activeFeeLines = useMemo(
+    () => feeLines.filter(isLineBilledNow),
     [feeLines]
+  );
+  const deferredFeeLines = useMemo(
+    () => feeLines.filter((l) => Boolean(l.deferToMonth) && Number(l.due) > 0),
+    [feeLines]
+  );
+
+  const grossTotal = useMemo(
+    () => activeFeeLines.reduce((sum, item) => sum + (Number(item.due) || 0), 0),
+    [activeFeeLines]
   );
   const busLineTotal = useMemo(
     () =>
-      feeLines.reduce(
+      activeFeeLines.reduce(
         (sum, item) =>
           item.id === "fs_bus" || item.id === "def_bus" || /bus|transport|वाहन/i.test(item.description)
             ? sum + (Number(item.due) || 0)
             : sum,
         0
       ),
-    [feeLines]
+    [activeFeeLines]
   );
   const eligibleGrossExclBus = Math.max(0, grossTotal - busLineTotal);
   const effectiveConcession = useMemo(() => {
@@ -865,20 +893,20 @@ export const DirectAdmissionModal: React.FC<Props> = ({
 
   // Detect 1st month tuition & registration fee for 3-Option / 3-Term Admission Payment Plan
   const detectedTuitionLineAmt = useMemo(() => {
-    const tuiLine = feeLines.find(
+    const tuiLine = activeFeeLines.find(
       (l) => l.id === "fs_tui" || l.id === "def_tui" || /1st\s*month\s*tuition|tuition\s*fee|मासिक\s*शिक्षण/i.test(l.description)
     );
     return tuiLine ? Math.max(0, Number(tuiLine.due) || 0) : 0;
-  }, [feeLines]);
+  }, [activeFeeLines]);
 
   const detectedRegFeeAmt = useMemo(() => {
-    const regLine = feeLines.find(
+    const regLine = activeFeeLines.find(
       (l) => l.id === "fs_reg" || l.id === "def_reg" || /registration|फॉर्म\s*शुल्क|पंजीकरण/i.test(l.description)
     );
     if (regLine && Number(regLine.due) > 0) return Math.round(Number(regLine.due));
     const posterRow = getPosterFeeRowForClass(selectedClass?.name);
     return Number(selectedClass?.feeStructure?.registrationFee || posterRow?.registrationFee || 300);
-  }, [feeLines, selectedClass]);
+  }, [activeFeeLines, selectedClass]);
 
   const directPlanSummary = useMemo(() => {
     const baseNet = batchQueue.length > 0 ? effectiveCombinedNetPayable : netPayable;
@@ -955,22 +983,23 @@ export const DirectAdmissionModal: React.FC<Props> = ({
     }
     const draft: BatchStudentDraft = {
       id: `draft_${Date.now()}_${Math.random().toString(36).slice(2, 5)}`,
-      name: name.trim(),
+      name: toUpperFormText(name.trim()),
       classId,
       className: selectedClass ? `${selectedClass.name}${selectedClass.section ? ` (${selectedClass.section})` : ""}` : "",
-      fatherName: fatherName.trim(),
-      motherName: motherName.trim(),
+      fatherName: toUpperFormText(fatherName.trim()),
+      motherName: toUpperFormText(motherName.trim()),
       phone: phone.trim() || fatherPhone.trim() || whatsappNo.trim(),
       whatsappNo: whatsappNo.trim() || fatherWhatsapp.trim() || phone.trim(),
       gender,
-      rollNo: rollNo.trim() || String(existingStudents.filter((s) => isStudentInClass(s, classId)).length + batchQueue.length + 1),
-      admissionNo: admissionNo.trim() || generateNextAdmissionNo(school, existingStudents.length + batchQueue.length),
+      rollNo: toUpperFormText(rollNo.trim()) || String(existingStudents.filter((s) => isStudentInClass(s, classId)).length + batchQueue.length + 1),
+      admissionNo: toUpperFormText(admissionNo.trim()) || generateNextAdmissionNo(school, existingStudents.length + batchQueue.length),
       monthlyFee: Number(monthlyFee) || 0,
       baseMonthlyFee: baseMonthlyFee || Number(monthlyFee) || 0,
       usesBus,
-      busRoute: busRoute.trim(),
+      busRoute: toUpperFormText(busRoute.trim()),
       busFee: Number(busFee) || 0,
-      feeLines: [...feeLines],
+      feeLines: [...activeFeeLines],
+      allFeeLines: [...feeLines],
       grossTotal,
       concession: canGiveDiscount ? effectiveConcession : 0,
     };
@@ -1081,6 +1110,7 @@ export const DirectAdmissionModal: React.FC<Props> = ({
           busRoute: string;
           busFee: number;
           feeLines: FeeLineDraft[];
+          allFeeLines?: FeeLineDraft[];
           grossTotal: number;
           concessionAmt: number;
           allocatedPaidOnline: number;
@@ -1141,6 +1171,57 @@ export const DirectAdmissionModal: React.FC<Props> = ({
           remainingAdmDueToSave = Math.max(0, admNet - paidTowardAdm);
         }
 
+        // Pre-compute FIFO allocation across admission heads so settledFeeHeads & deferredScheduledHeads stay exact
+        const filteredLines = collectFeeNow && sEffectiveGross > 0
+          ? sEffectiveFeeLines.filter((l) => l.description.trim() && Number(l.due) >= 0)
+          : [];
+        let remConAlloc = draft.concessionAmt;
+        const nonBackCons = new Map<string, number>();
+        filteredLines.forEach((l) => {
+          if (l.id !== "readm_back_due") {
+            const cVal = Math.min(Number(l.due) || 0, Math.max(0, remConAlloc));
+            nonBackCons.set(l.id, cVal);
+            remConAlloc = Math.max(0, remConAlloc - cVal);
+          }
+        });
+        filteredLines.forEach((l) => {
+          if (l.id === "readm_back_due") {
+            const cVal = Math.min(Number(l.due) || 0, Math.max(0, remConAlloc));
+            nonBackCons.set(l.id, cVal);
+            remConAlloc = Math.max(0, remConAlloc - cVal);
+          }
+        });
+
+        let remPaidAlloc = collectFeeNow ? sPaidTotal : 0;
+        const paidById = new Map<string, number>();
+        filteredLines.forEach((l) => {
+          if (l.id === "readm_back_due") {
+            const netLine = Math.max(0, (Number(l.due) || 0) - (nonBackCons.get(l.id) || 0));
+            const pVal = Math.min(netLine, Math.max(0, remPaidAlloc));
+            paidById.set(l.id, pVal);
+            remPaidAlloc = Math.max(0, remPaidAlloc - pVal);
+          }
+        });
+        filteredLines.forEach((l) => {
+          if (l.id !== "readm_back_due") {
+            const netLine = Math.max(0, (Number(l.due) || 0) - (nonBackCons.get(l.id) || 0));
+            const pVal = Math.min(netLine, Math.max(0, remPaidAlloc));
+            paidById.set(l.id, pVal);
+            remPaidAlloc = Math.max(0, remPaidAlloc - pVal);
+          }
+        });
+
+        const draftClsObj =
+          effectiveTargetClasses.find((c) => c.id === draft.classId) || selectedClass;
+        const { settledFeeHeads, deferredScheduledHeads } = buildSettledHeadsFromAdmission({
+          allDraftLines: draft.allFeeLines || draft.feeLines,
+          paidById,
+          conById: nonBackCons,
+          paymentPlan: collectFeeNow ? paymentPlan : "registration_only",
+          balanceDue: remainingAdmDueToSave,
+          classObj: draftClsObj,
+        });
+
         const sObj: SchoolStudent = {
           id: sId,
           schoolId: school.id,
@@ -1148,41 +1229,41 @@ export const DirectAdmissionModal: React.FC<Props> = ({
           classId: draft.classId,
           className: draft.className,
           stream: draft.isPrimaryForm ? chosenStream : undefined,
-          name: draft.name,
-          rollNo: sRoll,
-          admissionNo: sAdmNo,
+          name: toUpperFormText(draft.name),
+          rollNo: toUpperFormText(sRoll),
+          admissionNo: toUpperFormText(sAdmNo),
           gender: draft.gender,
           dateOfBirth: draft.isPrimaryForm ? (dateOfBirth || undefined) : undefined,
           bloodGroup: draft.isPrimaryForm ? (bloodGroup || undefined) : undefined,
           category: draft.isPrimaryForm ? (category || "General") : "General",
-          apaarId: draft.isPrimaryForm ? (apaarId.trim() || undefined) : undefined,
+          apaarId: draft.isPrimaryForm ? (toUpperFormText(apaarId.trim()) || undefined) : undefined,
           aadhaarNo: draft.isPrimaryForm ? (aadhaarNo.trim() || undefined) : undefined,
-          fatherName: draft.fatherName || undefined,
-          fatherOccupation: draft.isPrimaryForm ? (fatherOccupation.trim() || undefined) : undefined,
+          fatherName: toUpperFormText(draft.fatherName) || undefined,
+          fatherOccupation: draft.isPrimaryForm ? (toUpperFormText(fatherOccupation.trim()) || undefined) : undefined,
           fatherAadhaar: draft.isPrimaryForm ? (fatherAadhaar.trim() || undefined) : undefined,
           fatherPhone: draft.isPrimaryForm ? (fatherPhone.trim() || undefined) : undefined,
           fatherWhatsapp: draft.isPrimaryForm ? (fatherWhatsapp.trim() || undefined) : undefined,
-          motherName: draft.motherName || undefined,
-          motherOccupation: draft.isPrimaryForm ? (motherOccupation.trim() || undefined) : undefined,
+          motherName: toUpperFormText(draft.motherName) || undefined,
+          motherOccupation: draft.isPrimaryForm ? (toUpperFormText(motherOccupation.trim()) || undefined) : undefined,
           motherAadhaar: draft.isPrimaryForm ? (motherAadhaar.trim() || undefined) : undefined,
           motherPhone: draft.isPrimaryForm ? (motherPhone.trim() || undefined) : undefined,
           motherWhatsapp: draft.isPrimaryForm ? (motherWhatsapp.trim() || undefined) : undefined,
           phone: draft.phone || undefined,
           whatsappNo: draft.whatsappNo || undefined,
           email: draft.isPrimaryForm ? (email.trim() || undefined) : undefined,
-          address: address.trim() || undefined,
-          city: city.trim() || undefined,
+          address: toUpperFormText(address.trim()) || undefined,
+          city: toUpperFormText(city.trim()) || undefined,
           pincode: pincode.trim() || undefined,
-          previousSchool: draft.isPrimaryForm ? (previousSchool.trim() || undefined) : undefined,
-          previousMarks: draft.isPrimaryForm ? (previousMarks.trim() || undefined) : undefined,
-          religion: religion.trim() || undefined,
-          nationality: nationality.trim() || undefined,
+          previousSchool: draft.isPrimaryForm ? (toUpperFormText(previousSchool.trim()) || undefined) : undefined,
+          previousMarks: draft.isPrimaryForm ? (toUpperFormText(previousMarks.trim()) || undefined) : undefined,
+          religion: toUpperFormText(religion.trim()) || undefined,
+          nationality: toUpperFormText(nationality.trim()) || undefined,
           annualIncome: annualIncome.trim() || undefined,
-          identificationMark: draft.isPrimaryForm ? (identificationMark.trim() || undefined) : undefined,
-          medicalHistory: draft.isPrimaryForm ? (medicalHistory.trim() || undefined) : undefined,
-          emergencyContact: emergencyContact.trim() || undefined,
+          identificationMark: draft.isPrimaryForm ? (toUpperFormText(identificationMark.trim()) || undefined) : undefined,
+          medicalHistory: draft.isPrimaryForm ? (toUpperFormText(medicalHistory.trim()) || undefined) : undefined,
+          emergencyContact: toUpperFormText(emergencyContact.trim()) || undefined,
           emergencyPhone: emergencyPhone.trim() || undefined,
-          emergencyRelation: emergencyRelation.trim() || undefined,
+          emergencyRelation: toUpperFormText(emergencyRelation.trim()) || undefined,
           emergencyWhatsapp: emergencyWhatsapp.trim() || undefined,
           admissionType,
           ...(admissionType === "READMISSION"
@@ -1200,7 +1281,7 @@ export const DirectAdmissionModal: React.FC<Props> = ({
             : {}),
           photoUrl: draft.isPrimaryForm ? (photoUrl || undefined) : undefined,
           usesBus: draft.usesBus,
-          busRoute: draft.usesBus ? draft.busRoute : undefined,
+          busRoute: draft.usesBus ? (toUpperFormText(draft.busRoute) || undefined) : undefined,
           busFee: draft.usesBus ? draft.busFee : 0,
           busNumber: draft.usesBus ? selectedRouteObj?.busNumber : undefined,
           driverName: draft.usesBus ? selectedRouteObj?.driverName : undefined,
@@ -1210,6 +1291,9 @@ export const DirectAdmissionModal: React.FC<Props> = ({
           admissionTotalAmount: collectFeeNow ? sActiveNetPayable : 0,
           admissionPaidAmount: collectFeeNow ? sPaidTotal : 0,
           admissionDueBalance: remainingAdmDueToSave,
+          admissionPaymentPlan: collectFeeNow ? paymentPlan : "registration_only",
+          settledFeeHeads,
+          ...(deferredScheduledHeads.length > 0 ? { deferredScheduledHeads } : {}),
           advanceMonthlyFeePaid: Boolean(collectFeeNow && includeAdvanceTuition && detectedTuitionLineAmt > 0 && remainingAdmDueToSave === 0),
           advanceMonthlyFeeDue: includeAdvanceTuition && detectedTuitionLineAmt > 0 ? 0 : (detectedTuitionLineAmt || draft.monthlyFee),
           advanceMonthlyFeeMonth: (admissionDate || new Date().toISOString()).slice(0, 7),
@@ -1232,6 +1316,8 @@ export const DirectAdmissionModal: React.FC<Props> = ({
         };
 
         const saved = await saveStudent(sObj);
+        rememberOccupation(fatherOccupation, school.id);
+        rememberOccupation(motherOccupation, school.id);
 
         try {
           const curLocals = getLocalStudents(school.id);
@@ -1298,43 +1384,6 @@ export const DirectAdmissionModal: React.FC<Props> = ({
 
         let savedFeeRec: MonthlyFee | null = null;
         if (collectFeeNow && sEffectiveGross > 0 && sReceiptNo) {
-          const filteredLines = sEffectiveFeeLines.filter((l) => l.description.trim() && Number(l.due) >= 0);
-          let remConAlloc = draft.concessionAmt;
-          const nonBackCons = new Map<string, number>();
-          filteredLines.forEach((l) => {
-            if (l.id !== "readm_back_due") {
-              const cVal = Math.min(Number(l.due) || 0, Math.max(0, remConAlloc));
-              nonBackCons.set(l.id, cVal);
-              remConAlloc = Math.max(0, remConAlloc - cVal);
-            }
-          });
-          filteredLines.forEach((l) => {
-            if (l.id === "readm_back_due") {
-              const cVal = Math.min(Number(l.due) || 0, Math.max(0, remConAlloc));
-              nonBackCons.set(l.id, cVal);
-              remConAlloc = Math.max(0, remConAlloc - cVal);
-            }
-          });
-
-          let remPaidAlloc = sPaidTotal;
-          const paidById = new Map<string, number>();
-          filteredLines.forEach((l) => {
-            if (l.id === "readm_back_due") {
-              const netLine = Math.max(0, (Number(l.due) || 0) - (nonBackCons.get(l.id) || 0));
-              const pVal = Math.min(netLine, Math.max(0, remPaidAlloc));
-              paidById.set(l.id, pVal);
-              remPaidAlloc = Math.max(0, remPaidAlloc - pVal);
-            }
-          });
-          filteredLines.forEach((l) => {
-            if (l.id !== "readm_back_due") {
-              const netLine = Math.max(0, (Number(l.due) || 0) - (nonBackCons.get(l.id) || 0));
-              const pVal = Math.min(netLine, Math.max(0, remPaidAlloc));
-              paidById.set(l.id, pVal);
-              remPaidAlloc = Math.max(0, remPaidAlloc - pVal);
-            }
-          });
-
           const validItems = filteredLines.map((l, idx) => ({
             id: l.id,
             slNo: idx + 1,
@@ -1342,6 +1391,7 @@ export const DirectAdmissionModal: React.FC<Props> = ({
             due: Number(l.due) || 0,
             con: nonBackCons.get(l.id) || 0,
             paid: paidById.get(l.id) || 0,
+            headKey: l.headKey || canonicalizeFeeHeadKey(l.id || l.description),
           }));
 
           const sPayMode = buildSplitPayModeInfo({
@@ -1445,6 +1495,7 @@ export const DirectAdmissionModal: React.FC<Props> = ({
           busRoute: b.busRoute,
           busFee: b.busFee,
           feeLines: b.feeLines,
+          allFeeLines: b.allFeeLines || b.feeLines,
           grossTotal: b.grossTotal,
           rawConcession: b.concession,
           isPrimaryForm: false,
@@ -1465,7 +1516,8 @@ export const DirectAdmissionModal: React.FC<Props> = ({
           usesBus,
           busRoute: busRoute.trim(),
           busFee: Number(busFee) || 0,
-          feeLines,
+          feeLines: activeFeeLines,
+          allFeeLines: feeLines,
           grossTotal,
           rawConcession: effectiveConcession,
           isPrimaryForm: true,
@@ -1566,40 +1618,40 @@ export const DirectAdmissionModal: React.FC<Props> = ({
           </button>
         </div>
 
-        {/* 2-Mode Switcher + New/Re-Admission Toggle */}
-        <div className="px-5 py-3 bg-slate-50 dark:bg-slate-800/80 border-b border-slate-200 dark:border-slate-800 flex flex-wrap items-center justify-between gap-2">
-          <div className="grid grid-cols-2 gap-2 w-full sm:w-auto flex-1 max-w-md">
+        {/* 2-Mode Switcher + New/Re-Admission Toggle (Mobile-Safe Zero-Overlap Stack) */}
+        <div className="px-4 sm:px-5 py-3 bg-slate-50 dark:bg-slate-800/80 border-b border-slate-200 dark:border-slate-800 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2.5">
+          <div className="grid grid-cols-2 gap-2 w-full sm:w-auto sm:min-w-[290px]">
             <button
               type="button"
               onClick={() => setEntryMode("quick")}
-              className={`flex items-center justify-center gap-1.5 py-2 px-3 rounded-xl text-xs font-black border transition cursor-pointer ${
+              className={`flex items-center justify-center gap-1.5 py-2 px-2.5 rounded-xl text-xs font-black border transition cursor-pointer whitespace-nowrap truncate ${
                 entryMode === "quick"
                   ? "bg-blue-600 text-white border-blue-600 shadow-xs"
                   : "bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300 border-slate-200 dark:border-slate-700"
               }`}
             >
-              <Zap className="w-3.5 h-3.5" />
-              <span>⚡ Quick Entry (15s)</span>
+              <Zap className="w-3.5 h-3.5 shrink-0" />
+              <span className="truncate">Quick Entry (15s)</span>
             </button>
             <button
               type="button"
               onClick={() => setEntryMode("full")}
-              className={`flex items-center justify-center gap-1.5 py-2 px-3 rounded-xl text-xs font-black border transition cursor-pointer ${
+              className={`flex items-center justify-center gap-1.5 py-2 px-2.5 rounded-xl text-xs font-black border transition cursor-pointer whitespace-nowrap truncate ${
                 entryMode === "full"
                   ? "bg-indigo-600 text-white border-indigo-600 shadow-xs"
                   : "bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300 border-slate-200 dark:border-slate-700"
               }`}
             >
-              <ClipboardList className="w-3.5 h-3.5" />
-              <span>📋 Full Admission + Receipt</span>
+              <ClipboardList className="w-3.5 h-3.5 shrink-0" />
+              <span className="truncate">Full Admission + Receipt</span>
             </button>
           </div>
 
-          <div className="flex items-center gap-1 bg-white dark:bg-slate-900 p-1 rounded-xl border border-slate-200 dark:border-slate-700 text-xs font-black">
+          <div className="grid grid-cols-2 gap-1 w-full sm:w-auto bg-white dark:bg-slate-900 p-1 rounded-xl border border-slate-200 dark:border-slate-700 text-xs font-black">
             <button
               type="button"
               onClick={() => setAdmissionType("NEW")}
-              className={`px-3 py-1.5 rounded-lg transition cursor-pointer ${
+              className={`px-3 py-1.5 rounded-lg transition cursor-pointer whitespace-nowrap truncate ${
                 admissionType === "NEW"
                   ? "bg-blue-600 text-white shadow-xs"
                   : "text-slate-600 dark:text-slate-300 hover:text-slate-900"
@@ -1610,14 +1662,14 @@ export const DirectAdmissionModal: React.FC<Props> = ({
             <button
               type="button"
               onClick={() => setAdmissionType("READMISSION")}
-              className={`px-3 py-1.5 rounded-lg transition cursor-pointer flex items-center gap-1.5 ${
+              className={`px-3 py-1.5 rounded-lg transition cursor-pointer flex items-center justify-center gap-1.5 whitespace-nowrap truncate ${
                 admissionType === "READMISSION"
                   ? "bg-indigo-600 text-white shadow-xs"
                   : "text-slate-600 dark:text-slate-300 hover:text-slate-900"
               }`}
             >
-              <History className="w-3.5 h-3.5" />
-              Re-Admission (पुनः प्रवेश)
+              <History className="w-3.5 h-3.5 shrink-0" />
+              <span className="truncate">Re-Admission</span>
             </button>
           </div>
         </div>
@@ -1982,9 +2034,9 @@ export const DirectAdmissionModal: React.FC<Props> = ({
                 <input
                   type="text"
                   value={admissionNo}
-                  onChange={(e) => setAdmissionNo(e.target.value)}
+                  onChange={(e) => setAdmissionNo(toUpperFormText(e.target.value))}
                   placeholder="e.g. LMPS-2026-001"
-                  className="w-full px-3 py-2 rounded-xl border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 text-sm font-mono font-bold text-blue-700 dark:text-blue-300"
+                  className="w-full px-3 py-2 rounded-xl border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 text-sm font-mono font-bold uppercase text-blue-700 dark:text-blue-300"
                 />
               </div>
 
@@ -1995,10 +2047,10 @@ export const DirectAdmissionModal: React.FC<Props> = ({
                 <input
                   type="text"
                   value={rollNo}
-                  onChange={(e) => setRollNo(e.target.value)}
+                  onChange={(e) => setRollNo(toUpperFormText(e.target.value))}
                   required
                   placeholder="e.g. 1"
-                  className="w-full px-3 py-2 rounded-xl border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 text-sm font-bold text-slate-800 dark:text-white"
+                  className="w-full px-3 py-2 rounded-xl border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 text-sm font-bold uppercase text-slate-800 dark:text-white"
                 />
               </div>
             </div>
@@ -2050,9 +2102,9 @@ export const DirectAdmissionModal: React.FC<Props> = ({
                   type="text"
                   required
                   value={name}
-                  onChange={(e) => setName(e.target.value)}
-                  placeholder="Enter Student Full Name"
-                  className="w-full px-3 py-2 rounded-xl border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 text-sm font-bold text-slate-800 dark:text-white"
+                  onChange={(e) => setName(toUpperFormText(e.target.value))}
+                  placeholder="ENTER STUDENT FULL NAME"
+                  className="w-full px-3 py-2 rounded-xl border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 text-sm font-bold uppercase text-slate-800 dark:text-white"
                 />
               </div>
 
@@ -2129,9 +2181,9 @@ export const DirectAdmissionModal: React.FC<Props> = ({
                 <input
                   type="text"
                   value={fatherName}
-                  onChange={(e) => setFatherName(e.target.value)}
-                  placeholder="Father's Full Name"
-                  className="w-full px-3 py-2 rounded-xl border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 text-sm text-slate-800 dark:text-white"
+                  onChange={(e) => setFatherName(toUpperFormText(e.target.value))}
+                  placeholder="FATHER'S FULL NAME"
+                  className="w-full px-3 py-2 rounded-xl border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 text-sm uppercase text-slate-800 dark:text-white"
                 />
               </div>
 
@@ -2142,9 +2194,9 @@ export const DirectAdmissionModal: React.FC<Props> = ({
                 <input
                   type="text"
                   value={motherName}
-                  onChange={(e) => setMotherName(e.target.value)}
-                  placeholder="Mother's Full Name"
-                  className="w-full px-3 py-2 rounded-xl border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 text-sm text-slate-800 dark:text-white"
+                  onChange={(e) => setMotherName(toUpperFormText(e.target.value))}
+                  placeholder="MOTHER'S FULL NAME"
+                  className="w-full px-3 py-2 rounded-xl border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 text-sm uppercase text-slate-800 dark:text-white"
                 />
               </div>
 
@@ -2225,9 +2277,9 @@ export const DirectAdmissionModal: React.FC<Props> = ({
                 <input
                   type="text"
                   value={address}
-                  onChange={(e) => setAddress(e.target.value)}
-                  placeholder="Village / Street Address"
-                  className="w-full px-3 py-2 rounded-xl border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 text-xs font-semibold text-slate-800 dark:text-white"
+                  onChange={(e) => setAddress(toUpperFormText(e.target.value))}
+                  placeholder="VILLAGE / STREET ADDRESS"
+                  className="w-full px-3 py-2 rounded-xl border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 text-xs font-semibold uppercase text-slate-800 dark:text-white"
                 />
               </div>
             </div>
@@ -2315,11 +2367,11 @@ export const DirectAdmissionModal: React.FC<Props> = ({
                 <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
                   <div>
                     <label className="text-[11px] font-bold text-slate-500 block mb-1">Father Occupation</label>
-                    <input
-                      type="text"
+                    <OccupationAutocomplete
                       value={fatherOccupation}
-                      onChange={(e) => setFatherOccupation(e.target.value)}
-                      placeholder="e.g. Farmer / Business"
+                      onChange={setFatherOccupation}
+                      schoolId={school?.id}
+                      placeholder="e.g. FARMER / BUSINESS"
                       className="w-full px-3 py-2 rounded-xl border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 text-xs text-slate-800 dark:text-white"
                     />
                   </div>
@@ -2336,11 +2388,11 @@ export const DirectAdmissionModal: React.FC<Props> = ({
                   </div>
                   <div>
                     <label className="text-[11px] font-bold text-slate-500 block mb-1">Mother Occupation</label>
-                    <input
-                      type="text"
+                    <OccupationAutocomplete
                       value={motherOccupation}
-                      onChange={(e) => setMotherOccupation(e.target.value)}
-                      placeholder="e.g. Homemaker / Teacher"
+                      onChange={setMotherOccupation}
+                      schoolId={school?.id}
+                      placeholder="e.g. HOMEMAKER / TEACHER"
                       className="w-full px-3 py-2 rounded-xl border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 text-xs text-slate-800 dark:text-white"
                     />
                   </div>
@@ -2509,9 +2561,9 @@ export const DirectAdmissionModal: React.FC<Props> = ({
                       <input
                         type="text"
                         value={religion === "Other" ? "" : religion}
-                        onChange={(e) => setReligion(e.target.value || "Other")}
+                        onChange={(e) => setReligion(toUpperFormText(e.target.value) || "Other")}
                         placeholder="अन्य धर्म लिखें (Optional)"
-                        className="mt-1.5 w-full px-3 py-1.5 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 text-xs text-slate-900 dark:text-slate-100"
+                        className="mt-1.5 w-full px-3 py-1.5 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 text-xs uppercase text-slate-900 dark:text-slate-100"
                       />
                     )}
                   </div>
@@ -2520,9 +2572,9 @@ export const DirectAdmissionModal: React.FC<Props> = ({
                     <input
                       type="text"
                       value={nationality}
-                      onChange={(e) => setNationality(e.target.value)}
-                      placeholder="Indian"
-                      className="w-full px-3 py-2 rounded-xl border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 text-xs text-slate-900 dark:text-slate-100 placeholder:text-slate-400"
+                      onChange={(e) => setNationality(toUpperFormText(e.target.value))}
+                      placeholder="INDIAN"
+                      className="w-full px-3 py-2 rounded-xl border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 text-xs uppercase text-slate-900 dark:text-slate-100 placeholder:text-slate-400"
                     />
                   </div>
                   <div>
@@ -2542,9 +2594,9 @@ export const DirectAdmissionModal: React.FC<Props> = ({
                   <input
                     type="text"
                     value={medicalHistory}
-                    onChange={(e) => setMedicalHistory(e.target.value)}
-                    placeholder="Normal / Fit"
-                    className="w-full px-3 py-2 rounded-xl border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 text-xs text-slate-900 dark:text-slate-100 placeholder:text-slate-400"
+                    onChange={(e) => setMedicalHistory(toUpperFormText(e.target.value))}
+                    placeholder="NORMAL / FIT"
+                    className="w-full px-3 py-2 rounded-xl border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 text-xs uppercase text-slate-900 dark:text-slate-100 placeholder:text-slate-400"
                   />
                 </div>
 
@@ -2554,9 +2606,9 @@ export const DirectAdmissionModal: React.FC<Props> = ({
                     <input
                       type="text"
                       value={emergencyContact}
-                      onChange={(e) => setEmergencyContact(e.target.value)}
-                      placeholder="Uncle / Guardian Name"
-                      className="w-full px-3 py-2 rounded-xl border border-amber-300 dark:border-amber-700 bg-white dark:bg-slate-900 text-xs text-slate-900 dark:text-slate-100 placeholder:text-slate-400"
+                      onChange={(e) => setEmergencyContact(toUpperFormText(e.target.value))}
+                      placeholder="UNCLE / GUARDIAN NAME"
+                      className="w-full px-3 py-2 rounded-xl border border-amber-300 dark:border-amber-700 bg-white dark:bg-slate-900 text-xs uppercase text-slate-900 dark:text-slate-100 placeholder:text-slate-400"
                     />
                   </div>
                   <div>
@@ -2575,9 +2627,9 @@ export const DirectAdmissionModal: React.FC<Props> = ({
                     <input
                       type="text"
                       value={emergencyRelation}
-                      onChange={(e) => setEmergencyRelation(e.target.value)}
-                      placeholder="Uncle / Brother"
-                      className="w-full px-3 py-2 rounded-xl border border-amber-300 dark:border-amber-700 bg-white dark:bg-slate-900 text-xs text-slate-900 dark:text-slate-100 placeholder:text-slate-400"
+                      onChange={(e) => setEmergencyRelation(toUpperFormText(e.target.value))}
+                      placeholder="UNCLE / BROTHER"
+                      className="w-full px-3 py-2 rounded-xl border border-amber-300 dark:border-amber-700 bg-white dark:bg-slate-900 text-xs uppercase text-slate-900 dark:text-slate-100 placeholder:text-slate-400"
                     />
                   </div>
                   <div>
@@ -2610,9 +2662,9 @@ export const DirectAdmissionModal: React.FC<Props> = ({
                     <input
                       type="text"
                       value={address}
-                      onChange={(e) => setAddress(e.target.value)}
-                      placeholder="Complete residential address"
-                      className="w-full px-3 py-2 rounded-xl border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 text-xs text-slate-900 dark:text-slate-100 placeholder:text-slate-400"
+                      onChange={(e) => setAddress(toUpperFormText(e.target.value))}
+                      placeholder="COMPLETE RESIDENTIAL ADDRESS"
+                      className="w-full px-3 py-2 rounded-xl border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 text-xs uppercase text-slate-900 dark:text-slate-100 placeholder:text-slate-400"
                     />
                   </div>
                   <div>
@@ -2620,9 +2672,9 @@ export const DirectAdmissionModal: React.FC<Props> = ({
                     <input
                       type="text"
                       value={city}
-                      onChange={(e) => setCity(e.target.value)}
-                      placeholder="City / District"
-                      className="w-full px-3 py-2 rounded-xl border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 text-xs text-slate-900 dark:text-slate-100 placeholder:text-slate-400"
+                      onChange={(e) => setCity(toUpperFormText(e.target.value))}
+                      placeholder="CITY / DISTRICT"
+                      className="w-full px-3 py-2 rounded-xl border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 text-xs uppercase text-slate-900 dark:text-slate-100 placeholder:text-slate-400"
                     />
                   </div>
                   <div>
@@ -2682,9 +2734,9 @@ export const DirectAdmissionModal: React.FC<Props> = ({
                         <input
                           type="text"
                           value={busRoute}
-                          onChange={(e) => setBusRoute(e.target.value)}
-                          placeholder="Stop / Route Name"
-                          className="px-3 py-1.5 rounded-xl border border-amber-300 dark:border-amber-700 bg-amber-50/40 dark:bg-slate-900 text-xs font-semibold text-slate-800 dark:text-white w-44"
+                          onChange={(e) => setBusRoute(toUpperFormText(e.target.value))}
+                          placeholder="STOP / ROUTE NAME"
+                          className="px-3 py-1.5 rounded-xl border border-amber-300 dark:border-amber-700 bg-amber-50/40 dark:bg-slate-900 text-xs font-semibold uppercase text-slate-800 dark:text-white w-44"
                         />
                       )}
                       <div className="flex items-center gap-1">
@@ -2782,47 +2834,191 @@ export const DirectAdmissionModal: React.FC<Props> = ({
 
             {collectFeeNow && (
               <div className="space-y-2.5 pt-1">
-                <div className="space-y-1.5">
-                  {feeLines.map((line, index) => (
-                    <div key={line.id} className="flex items-center gap-2">
-                      <span className="text-xs font-bold text-slate-400 w-5">{index + 1}.</span>
+                {/* Online Admission Parity & Selective Per-Head Controls Bar */}
+                <div className="p-2.5 rounded-xl bg-white dark:bg-slate-900 border border-emerald-200 dark:border-emerald-800/60 flex flex-wrap items-center justify-between gap-2 text-[11px]">
+                  <div className="text-slate-600 dark:text-slate-300 font-semibold">
+                    Online Admission की तरह हर Fee Head अलग-अलग ON/OFF करें या किसी चुने हुए महीने में जोड़ें:
+                  </div>
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setFeeLines((prev) => prev.map((it) => ({ ...it, included: true, deferToMonth: undefined })));
+                        setPaidManuallyEdited(false);
+                      }}
+                      className="px-2 py-1 rounded-lg bg-emerald-50 hover:bg-emerald-100 text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800 font-bold cursor-pointer"
+                    >
+                      All ON Today
+                    </button>
+                    <div className="inline-flex items-center gap-1 bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800 rounded-lg px-1.5 py-0.5">
+                      <span className="text-[10px] font-bold text-amber-800 dark:text-amber-300">Defer Month:</span>
                       <input
-                        type="text"
-                        value={line.description}
-                        onChange={(e) =>
-                          setFeeLines((prev) =>
-                            prev.map((item) => (item.id === line.id ? { ...item, description: e.target.value } : item))
-                          )
-                        }
-                        placeholder="Fee Head Name"
-                        className="flex-1 px-3 py-1.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs font-semibold text-slate-800 dark:text-white"
+                        type="month"
+                        value={defaultDeferMonth}
+                        onChange={(e) => setDefaultDeferMonth(e.target.value)}
+                        className="bg-transparent text-[10px] font-mono font-bold text-amber-900 dark:text-amber-200 focus:outline-none"
                       />
-                      <div className="relative w-28">
-                        <span className="absolute left-2.5 top-1.5 text-xs text-slate-400 font-bold">₹</span>
-                        <input
-                          type="number"
-                          value={line.due}
-                          onChange={(e) =>
-                            setFeeLines((prev) =>
-                              prev.map((item) =>
-                                item.id === line.id ? { ...item, due: Math.max(0, Number(e.target.value)) } : item
-                              )
-                            )
-                          }
-                          className="w-full pl-6 pr-2 py-1.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs font-black text-right text-slate-800 dark:text-white"
-                        />
-                      </div>
                       <button
                         type="button"
-                        onClick={() => setFeeLines((prev) => prev.filter((item) => item.id !== line.id))}
-                        className="p-1.5 rounded-lg text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-950/40 cursor-pointer"
-                        title="Remove Fee Head"
+                        onClick={() => {
+                          setPaymentPlan("registration_only");
+                          setFeeLines((prev) =>
+                            prev.map((it) => {
+                              const k = it.headKey || canonicalizeFeeHeadKey(it.id || it.description);
+                              if (k === "registration") {
+                                return { ...it, included: true, deferToMonth: undefined };
+                              }
+                              if (k === "tuition_first_month") {
+                                return { ...it, included: true, deferToMonth: undefined };
+                              }
+                              return { ...it, included: true, deferToMonth: defaultDeferMonth };
+                            })
+                          );
+                          setPaidManuallyEdited(false);
+                        }}
+                        className="px-1.5 py-0.5 rounded bg-amber-600 hover:bg-amber-700 text-white text-[10px] font-bold cursor-pointer whitespace-nowrap"
+                        title="केवल Registration आज लें, बाकी शुल्क चुने हुए महीने में स्वतः जोड़ें"
                       >
-                        <Trash2 className="w-3.5 h-3.5" />
+                        Only Reg Now
                       </button>
                     </div>
-                  ))}
+                  </div>
                 </div>
+
+                <div className="space-y-1.5">
+                  {feeLines.map((line, index) => {
+                    const isIncluded = line.included !== false;
+                    const isDeferred = Boolean(line.deferToMonth);
+                    const isBilledToday = isIncluded && !isDeferred;
+                    return (
+                      <div
+                        key={line.id}
+                        className={`p-2 rounded-xl border transition ${
+                          isDeferred
+                            ? "bg-amber-50/70 dark:bg-amber-950/25 border-amber-200 dark:border-amber-800/70"
+                            : isIncluded
+                            ? "bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-700"
+                            : "bg-slate-100/70 dark:bg-slate-900/40 border-slate-200 dark:border-slate-800 opacity-65"
+                        }`}
+                      >
+                        <div className="flex flex-wrap sm:flex-nowrap items-center gap-2">
+                          <input
+                            type="checkbox"
+                            checked={isIncluded}
+                            onChange={(e) => {
+                              const nextChecked = e.target.checked;
+                              setFeeLines((prev) =>
+                                prev.map((item) =>
+                                  item.id === line.id
+                                    ? {
+                                        ...item,
+                                        included: nextChecked,
+                                        deferToMonth: nextChecked ? item.deferToMonth : undefined,
+                                      }
+                                    : item
+                                )
+                              );
+                              setPaidManuallyEdited(false);
+                            }}
+                            className="h-4 w-4 accent-emerald-600 rounded cursor-pointer shrink-0"
+                            title={isIncluded ? "Is fee head ko ON/OFF karein" : "Excluded — click to enable"}
+                          />
+                          <span className="text-xs font-bold text-slate-400 w-4 shrink-0">{index + 1}.</span>
+                          <input
+                            type="text"
+                            value={line.description}
+                            onChange={(e) =>
+                              setFeeLines((prev) =>
+                                prev.map((item) => (item.id === line.id ? { ...item, description: e.target.value } : item))
+                              )
+                            }
+                            placeholder="Fee Head Name"
+                            className="flex-1 min-w-[140px] px-2.5 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs font-semibold text-slate-800 dark:text-white"
+                          />
+                          <div className="relative w-24 shrink-0">
+                            <span className="absolute left-2 top-1.5 text-xs text-slate-400 font-bold">₹</span>
+                            <input
+                              type="number"
+                              value={line.due}
+                              onChange={(e) => {
+                                setFeeLines((prev) =>
+                                  prev.map((item) =>
+                                    item.id === line.id ? { ...item, due: Math.max(0, Number(e.target.value)) } : item
+                                  )
+                                );
+                                setPaidManuallyEdited(false);
+                              }}
+                              className="w-full pl-5 pr-2 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs font-black font-mono tabular-nums text-right text-slate-800 dark:text-white"
+                            />
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setFeeLines((prev) =>
+                                prev.map((item) =>
+                                  item.id === line.id
+                                    ? {
+                                        ...item,
+                                        included: true,
+                                        deferToMonth: item.deferToMonth ? undefined : defaultDeferMonth,
+                                      }
+                                    : item
+                                )
+                              );
+                              setPaidManuallyEdited(false);
+                            }}
+                            className={`px-2 py-1 rounded-lg text-[10px] font-bold border cursor-pointer whitespace-nowrap shrink-0 ${
+                              isDeferred
+                                ? "bg-amber-600 text-white border-amber-600"
+                                : "bg-slate-50 dark:bg-slate-800 text-slate-600 dark:text-slate-300 border-slate-200 dark:border-slate-700 hover:border-amber-400"
+                            }`}
+                            title="Aaj lene ke bajay kisi mahine ke Fee Bill me bhejein"
+                          >
+                            {isDeferred ? "Scheduled" : isBilledToday ? "Now" : "OFF"}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setFeeLines((prev) => prev.filter((item) => item.id !== line.id));
+                              setPaidManuallyEdited(false);
+                            }}
+                            className="p-1.5 rounded-lg text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-950/40 cursor-pointer shrink-0"
+                            title="Remove Fee Head"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+
+                        {isDeferred && (
+                          <div className="mt-1.5 pl-6 flex flex-wrap items-center justify-between gap-2 text-[11px]">
+                            <span className="text-amber-800 dark:text-amber-300 font-semibold">
+                              यह ₹{Number(line.due).toLocaleString("en-IN")} शुल्क आज नहीं जुड़ेगा — चुने हुए महीने के बिल में अपने आप जुड़ेगा:
+                            </span>
+                            <input
+                              type="month"
+                              value={line.deferToMonth || defaultDeferMonth}
+                              onChange={(e) =>
+                                setFeeLines((prev) =>
+                                  prev.map((item) =>
+                                    item.id === line.id ? { ...item, deferToMonth: e.target.value } : item
+                                  )
+                                )
+                              }
+                              className="px-2 py-0.5 rounded border border-amber-300 dark:border-amber-700 bg-white dark:bg-slate-900 font-mono font-bold text-amber-900 dark:text-amber-200 text-[11px]"
+                            />
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {deferredFeeLines.length > 0 && (
+                  <div className="px-3 py-2 rounded-xl bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 text-[11px] font-semibold text-amber-900 dark:text-amber-200">
+                    📅 {deferredFeeLines.length} Deferred Head(s) (कुल ₹
+                    {deferredFeeLines.reduce((s, d) => s + Number(d.due || 0), 0).toLocaleString("en-IN")}) चुने हुए महीनों के Fee Manager बिल में स्वतः जुड़ेंगे।
+                  </div>
+                )}
 
                 {/* Multi-Admission Batch (2-3 Students) Bar */}
                 <div className="bg-white dark:bg-slate-900 rounded-xl p-3 border border-indigo-200 dark:border-indigo-800/70 space-y-2.5">
