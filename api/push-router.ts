@@ -25,6 +25,8 @@ import {
   resolveTelegramBotToken,
   getTelegramTokenDiagnostics,
   getConfiguredTelegramStorageChatId,
+  getTelegramBotHealth,
+  noteTelegramFloodWait,
   telegramBotApiRequest,
   resolveTelegramFilePath,
   resolveTelegramStorageChatId,
@@ -42,6 +44,7 @@ import {
   fetchWebpushDuesFromSupabase,
   fetchWebpushSubsFromSupabase,
   getWebpushSubFromSupabase,
+  readMediaVaultSlice,
   supabaseServerKeepalive,
   upsertFcmTokenInSupabase,
   upsertWebpushDueInSupabase,
@@ -1080,37 +1083,8 @@ export default async function handler(req: any, res: any) {
               : "Server par TELEGRAM_BOT_TOKEN set nahi hai. Vercel Environment Variables me Production ke liye TELEGRAM_BOT_TOKEN add karke Redeploy karein.",
         });
       }
-      try {
-        const { status: tgStatus, ok: tgOk, json: rawJson } = await telegramBotApiRequest<any>({
-          token,
-          methodPath: "getMe",
-          httpMethod: "GET",
-          timeoutMs: 10000,
-        });
-        const data = rawJson || { ok: false };
-        const configuredChatId = getConfiguredTelegramStorageChatId();
-        const discoveredChats =
-          !configuredChatId && data?.ok ? await discoverTelegramStorageChats(token) : [];
-        const status = tgOk ? 200 : tgStatus === 429 ? 429 : 502;
-        return res.status(status).json({
-          ok: Boolean(data?.ok),
-          configured: true,
-          bot: data?.result ? { id: data.result.id, username: data.result.username, first_name: data.result.first_name } : undefined,
-          hasStorageChatId: Boolean(configuredChatId || discoveredChats.length > 0),
-          storageChatConfigured: Boolean(configuredChatId),
-          discoveredChats: discoveredChats.slice(0, 5),
-          ...(data?.parameters?.retry_after ? { retryAfter: Number(data.parameters.retry_after) } : {}),
-          error: data?.description,
-        });
-      } catch (err: any) {
-        const isAbort = err?.name === "AbortError" || /abort/i.test(String(err?.message || ""));
-        return res.status(isAbort ? 504 : 502).json({
-          ok: false,
-          configured: true,
-          storageChatConfigured: Boolean(getConfiguredTelegramStorageChatId()),
-          error: isAbort ? "Telegram getMe timeout" : err?.message || "Telegram health check failed",
-        });
-      }
+      const health = await getTelegramBotHealth(token);
+      return res.status(health.status).json(health.body);
     }
 
     if (method === "POST" && rawPath === "telegram/upload") {
@@ -1146,6 +1120,9 @@ export default async function handler(req: any, res: any) {
           }),
           timeoutMs: 12000,
         });
+        if (tgStatus === 429) {
+          noteTelegramFloodWait(Number(json?.parameters?.retry_after || 10));
+        }
         return res.status(tgOk ? 200 : tgStatus === 429 ? 429 : 502).json(json || { ok: false });
       } catch (err: any) {
         const isAbort = err?.name === "AbortError" || /abort/i.test(String(err?.message || ""));
@@ -1156,14 +1133,54 @@ export default async function handler(req: any, res: any) {
       }
     }
 
-    if (method === "GET" && rawPath === "telegram/file") {
+    if (method === "OPTIONS" && rawPath === "telegram/file") {
+      res.setHeader("Access-Control-Allow-Origin", "*");
+      res.setHeader("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS");
+      res.setHeader("Access-Control-Allow-Headers", "Range, Content-Type");
+      return res.status(204).end();
+    }
+
+    if ((method === "GET" || method === "HEAD") && rawPath === "telegram/file") {
+      const mediaId = String(req.query?.mediaId || "").trim();
       const fileId = String(req.query?.fileId || req.query?.file_id || "").trim();
       let filePath = String(req.query?.path || "").trim();
       const fileName = String(req.query?.name || "").trim();
-      const token = resolveTelegramBotToken();
 
       res.setHeader("Access-Control-Allow-Origin", "*");
       res.setHeader("Access-Control-Expose-Headers", "Content-Range, Content-Length, Accept-Ranges, Content-Type");
+
+      if (mediaId) {
+        const vaultRes = await readMediaVaultSlice({
+          mediaId,
+          rangeHeader: req.headers?.range ? String(req.headers.range) : undefined,
+        });
+        if ("error" in vaultRes) {
+          res.setHeader("Cache-Control", "no-store");
+          return res.status(vaultRes.status).json({ error: vaultRes.error });
+        }
+        const contentType = detectMimeType({
+          fileName: fileName || vaultRes.fileName,
+          headerContentType: vaultRes.mimeType,
+          sampleBytes: vaultRes.buffer,
+        });
+        res.setHeader("Content-Type", contentType);
+        res.setHeader("Accept-Ranges", "bytes");
+        res.setHeader("Content-Length", String(vaultRes.buffer.length));
+        if (vaultRes.isPartial) {
+          res.setHeader("Content-Range", `bytes ${vaultRes.start}-${vaultRes.end}/${vaultRes.totalSize}`);
+        }
+        const outName = (fileName || vaultRes.fileName || "").replace(/["\r\n]/g, "");
+        if (outName) {
+          res.setHeader("Content-Disposition", `inline; filename="${outName}"`);
+        }
+        res.setHeader("Cache-Control", "public, max-age=86400, stale-while-revalidate=604800");
+        if (method === "HEAD") {
+          return res.status(vaultRes.isPartial ? 206 : 200).end();
+        }
+        return res.status(vaultRes.isPartial ? 206 : 200).send(vaultRes.buffer);
+      }
+
+      const token = resolveTelegramBotToken();
 
       if (!token) {
         res.setHeader("Cache-Control", "no-store");
@@ -1256,7 +1273,11 @@ export default async function handler(req: any, res: any) {
           "Cache-Control",
           fileId ? "public, max-age=86400, stale-while-revalidate=604800" : "public, max-age=300"
         );
-        return res.status(tgFileRes.status === 206 ? 206 : 200).send(buf);
+        const outStatus = tgFileRes.status === 206 ? 206 : 200;
+        if (method === "HEAD") {
+          return res.status(outStatus).end();
+        }
+        return res.status(outStatus).send(buf);
       } catch (err: any) {
         res.setHeader("Cache-Control", "no-store");
         return res.status(502).json({ error: err?.message || "Failed to stream Telegram media" });

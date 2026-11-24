@@ -8691,12 +8691,12 @@ export const saveNstaMessage = async (msg: NstaMessage): Promise<void> => {
   const writes: Promise<void>[] = [];
   if (rtdb) {
     writes.push(
-      withTimeout(set(ref(rtdb, `schools/${msg.schoolId}/nsta_messages/${msg.id}`), sanitized), 2500).catch(() => {})
+      withTimeout(set(ref(rtdb, `schools/${msg.schoolId}/nsta_messages/${msg.id}`), sanitized), 8000).catch(() => {})
     );
   }
   if (db) {
     writes.push(
-      withTimeout(setDoc(d(`schools/${msg.schoolId}/nsta_messages/${msg.id}`), sanitized), 2500).catch(() => {})
+      withTimeout(setDoc(d(`schools/${msg.schoolId}/nsta_messages/${msg.id}`), sanitized), 8000).catch(() => {})
     );
   }
   await Promise.allSettled(writes);
@@ -9181,7 +9181,7 @@ export const subscribeToNstaMessages = (
     const expiredIds: string[] = [];
     const nowMs = Date.now();
 
-    const cutoff = nowMs - 30_000;
+    const cutoff = nowMs - 120_000;
     if (Array.isArray(cur)) {
       for (const m of cur) {
         if (m?.id && m.createdAt && new Date(m.createdAt).getTime() >= cutoff) {
@@ -9300,7 +9300,7 @@ export const subscribeToAllSchoolNstaMessages = (
     const mergedMap = new Map<string, NstaMessage>();
     const expiredIds: string[] = [];
     const nowMs = Date.now();
-    const cutoff = nowMs - 30_000;
+    const cutoff = nowMs - 120_000;
     if (Array.isArray(cur)) {
       for (const m of cur) {
         if (m?.id && m.createdAt && new Date(m.createdAt).getTime() >= cutoff) {

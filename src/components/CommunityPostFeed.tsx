@@ -53,7 +53,7 @@ import {
 } from '../firebase';
 import { uploadImageToImgBB, compressImage } from '../services/imgbbService';
 import { uploadToCloudinary, getOptimizedVideoUrl } from '../services/cloudinaryService';
-import { resolveTelegramUrl } from '../services/telegramStorageService';
+import { resolveTelegramUrl, handleTelegramImageError } from '../services/telegramStorageService';
 import { ImageCropper } from './ImageCropper';
 import { GuestRestrictionModal } from './GuestRestrictionModal';
 import { notifyCommunityUpdateInBackground } from './NotificationManager';
@@ -2368,14 +2368,7 @@ export const CommunityPostFeed: React.FC<CommunityPostFeedProps> = ({
                         alt={post.text ? post.text.slice(0, 30) : 'Post Image'}
                         className="w-full max-h-96 object-cover object-center group-hover:scale-[1.01] transition-transform duration-300 bg-slate-900/10"
                         loading="lazy"
-                        onError={(e) => {
-                          const target = e.currentTarget;
-                          const raw = post.imageUrl || (post as any).mediaUrl;
-                          if (raw && !target.dataset.retried) {
-                            target.dataset.retried = '1';
-                            target.src = raw;
-                          }
-                        }}
+                        onError={(e) => handleTelegramImageError(e.currentTarget, post.imageUrl || (post as any).mediaUrl)}
                       />
                       <div className="absolute bottom-2 right-2 p-1.5 bg-black/60 hover:bg-black/80 text-white rounded-lg opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-1 text-[10px] font-bold">
                         {post.isHd && <span className="text-emerald-400 text-[9px] font-black mr-0.5">HD</span>}
@@ -2796,6 +2789,7 @@ export const CommunityPostFeed: React.FC<CommunityPostFeedProps> = ({
             <img
               src={resolveTelegramUrl(lightboxImageUrl)}
               alt="Photo Fullscreen View"
+              onError={(e) => handleTelegramImageError(e.currentTarget, lightboxImageUrl)}
               className="max-w-full max-h-[85vh] object-contain rounded-2xl shadow-2xl"
             />
           </div>

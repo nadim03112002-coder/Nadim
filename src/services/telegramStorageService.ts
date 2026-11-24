@@ -8,6 +8,8 @@
  * - Files are served permanently via /api/telegram/file?fileId=... with CORS, Range requests & auto-refreshing file_path
  */
 
+import { sbSetDocument } from './supabaseDbAdapter';
+
 const _env = (typeof import.meta !== 'undefined' && (import.meta as any).env) || {};
 
 export const DEFAULT_STORAGE_CHAT_ID = (_env.VITE_TELEGRAM_STORAGE_CHAT_ID || '').trim();
@@ -17,6 +19,9 @@ const STORAGE_CHAT_KEY = 'nst_telegram_storage_chat_id';
 
 // Telegram Bot API `getFile` strictly rejects downloading/streaming any file > 20MB.
 export const TELEGRAM_MAX_FILE_SIZE_BYTES = Math.floor(19.5 * 1024 * 1024);
+// Vercel serverless functions cap request bodies at 4.5MB; files above 3.5MB use chunked Media Vault upload.
+const SERVER_PROXY_SAFE_BYTES = Math.floor(3.5 * 1024 * 1024);
+const MEDIA_VAULT_CHUNK_BYTES = 512 * 1024;
 
 export interface TelegramUploadResult {
   url: string;
@@ -36,12 +41,19 @@ export interface UploadOptions {
   onProgress?: (percent: number) => void;
 }
 
+const LEGACY_CLIENT_CHAT_IDS = new Set(['7849468653', '-1004290996442']);
+
 /**
  * Gets custom storage chat ID if explicitly configured locally
  */
 export const getTelegramStorageChatId = (): string => {
   try {
-    return (localStorage.getItem(STORAGE_CHAT_KEY) || DEFAULT_STORAGE_CHAT_ID || '').trim();
+    const stored = (localStorage.getItem(STORAGE_CHAT_KEY) || '').trim();
+    if (stored && LEGACY_CLIENT_CHAT_IDS.has(stored)) {
+      localStorage.removeItem(STORAGE_CHAT_KEY);
+      return DEFAULT_STORAGE_CHAT_ID;
+    }
+    return stored || DEFAULT_STORAGE_CHAT_ID;
   } catch {
     return DEFAULT_STORAGE_CHAT_ID;
   }
@@ -52,8 +64,9 @@ export const getTelegramStorageChatId = (): string => {
  */
 export const setTelegramStorageChatId = (chatId: string) => {
   try {
-    if (chatId) {
-      localStorage.setItem(STORAGE_CHAT_KEY, chatId.trim());
+    const clean = String(chatId || '').trim();
+    if (clean && !LEGACY_CLIENT_CHAT_IDS.has(clean)) {
+      localStorage.setItem(STORAGE_CHAT_KEY, clean);
     } else {
       localStorage.removeItem(STORAGE_CHAT_KEY);
     }
@@ -85,6 +98,44 @@ export function buildPermanentTelegramUrl(fileId: string, fileName?: string): st
   return `/api/telegram/file?fileId=${encodeURIComponent(cleanId)}${nameParam}`;
 }
 
+const UPLOADED_IMAGE_PREVIEW_MAP = new Map<string, string>();
+
+export function cacheUploadedMediaPreview(permanentUrl: string, blob: Blob): void {
+  try {
+    if (
+      typeof URL === 'undefined' ||
+      typeof URL.createObjectURL !== 'function' ||
+      !permanentUrl ||
+      !blob ||
+      blob.size === 0 ||
+      !blob.type.startsWith('image/')
+    ) {
+      return;
+    }
+    const key = resolveTelegramUrl(permanentUrl);
+    if (!key) return;
+    const existing = UPLOADED_IMAGE_PREVIEW_MAP.get(key);
+    if (existing) return;
+    if (UPLOADED_IMAGE_PREVIEW_MAP.size >= 40) {
+      const oldestKey = UPLOADED_IMAGE_PREVIEW_MAP.keys().next().value;
+      if (oldestKey) {
+        const oldUrl = UPLOADED_IMAGE_PREVIEW_MAP.get(oldestKey);
+        UPLOADED_IMAGE_PREVIEW_MAP.delete(oldestKey);
+        if (oldUrl) {
+          try { URL.revokeObjectURL(oldUrl); } catch {}
+        }
+      }
+    }
+    UPLOADED_IMAGE_PREVIEW_MAP.set(key, URL.createObjectURL(blob));
+  } catch {}
+}
+
+export function getCachedMediaPreviewUrl(rawUrl?: string | null): string {
+  if (!rawUrl) return '';
+  const key = resolveTelegramUrl(String(rawUrl));
+  return UPLOADED_IMAGE_PREVIEW_MAP.get(key) || '';
+}
+
 /**
  * Resolves Telegram and media URLs for browser loading.
  * Preserves permanent /api/telegram/file?fileId=... URLs untouched so links never expire.
@@ -107,7 +158,10 @@ export function resolveTelegramUrl(rawUrl: string): string {
     return trimmed;
   }
 
-  if (trimmed.includes('/api/telegram/file') && trimmed.includes('fileId=')) {
+  if (
+    trimmed.includes('/api/telegram/file') &&
+    (trimmed.includes('fileId=') || trimmed.includes('mediaId='))
+  ) {
     try {
       const idx = trimmed.indexOf('/api/telegram/file');
       return trimmed.slice(idx);
@@ -119,6 +173,44 @@ export function resolveTelegramUrl(rawUrl: string): string {
   }
 
   return trimmed;
+}
+
+/**
+ * Resilient <img> onError handler for Telegram & Media Vault images:
+ * retries transient 429/502/propagation delays before falling back to local session preview.
+ */
+export function handleTelegramImageError(
+  img: HTMLImageElement,
+  rawUrl?: string | null,
+  onFinalFail?: () => void
+): void {
+  const baseUrl = resolveTelegramUrl(String(rawUrl || img.getAttribute('src') || ''));
+  if (!baseUrl || baseUrl.startsWith('data:') || baseUrl.startsWith('blob:')) {
+    onFinalFail?.();
+    return;
+  }
+
+  const attempt = Number(img.dataset.tgRetryCount || '0');
+  if (attempt < 2) {
+    const nextAttempt = attempt + 1;
+    img.dataset.tgRetryCount = String(nextAttempt);
+    const delayMs = nextAttempt === 1 ? 800 : 1800;
+    const sep = baseUrl.includes('?') ? '&' : '?';
+    setTimeout(() => {
+      if (!img.isConnected) return;
+      img.src = `${baseUrl}${sep}_rt=${nextAttempt}`;
+    }, delayMs);
+    return;
+  }
+
+  const localPreview = getCachedMediaPreviewUrl(baseUrl);
+  if (localPreview && !img.dataset.tgLocalFallback) {
+    img.dataset.tgLocalFallback = '1';
+    img.src = localPreview;
+    return;
+  }
+
+  onFinalFail?.();
 }
 
 function parseServerUploadError(status: number, data: any): string {
@@ -174,6 +266,7 @@ async function uploadViaServerProxyOnce(
 
         if (xhr.status >= 200 && xhr.status < 300 && data?.ok && data?.fileId) {
           const permanentUrl = data.url || buildPermanentTelegramUrl(data.fileId, data.fileName || fileName);
+          cacheUploadedMediaPreview(permanentUrl, blob);
           if (opts.onProgress) opts.onProgress(100);
           resolve({
             url: permanentUrl,
@@ -186,6 +279,7 @@ async function uploadViaServerProxyOnce(
         } else {
           const err: any = new Error(parseServerUploadError(xhr.status, data));
           err.status = xhr.status;
+          if (data?.retryAfter) err.retryAfter = Number(data.retryAfter);
           reject(err);
         }
       };
@@ -245,10 +339,12 @@ async function uploadViaServerProxyOnce(
     if (!res.ok || !data?.ok || !data?.fileId) {
       const err: any = new Error(parseServerUploadError(res.status, data));
       err.status = res.status;
+      if (data?.retryAfter) err.retryAfter = Number(data.retryAfter);
       throw err;
     }
 
     const permanentUrl = data.url || buildPermanentTelegramUrl(data.fileId, data.fileName || fileName);
+    cacheUploadedMediaPreview(permanentUrl, blob);
     if (opts.onProgress) opts.onProgress(100);
 
     return {
@@ -265,25 +361,180 @@ async function uploadViaServerProxyOnce(
   }
 }
 
+function blobSliceToBase64(slice: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = String(reader.result || '');
+      const commaIdx = result.indexOf(',');
+      resolve(commaIdx !== -1 ? result.slice(commaIdx + 1) : result);
+    };
+    reader.onerror = () => reject(reader.error || new Error('Failed to read media chunk'));
+    reader.readAsDataURL(slice);
+  });
+}
+
+async function uploadToSupabaseMediaVault(
+  blob: Blob,
+  fileName: string,
+  opts: UploadOptions = {}
+): Promise<TelegramUploadResult> {
+  const mimeType = blob.type || 'application/octet-stream';
+  const mediaId = `mv_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+  const createdAt = new Date().toISOString();
+
+  if (opts.onProgress) opts.onProgress(20);
+
+  if (blob.size <= MEDIA_VAULT_CHUNK_BYTES) {
+    const b64 = await blobSliceToBase64(blob);
+    const saved = await sbSetDocument(
+      `media_vault/${mediaId}`,
+      {
+        mediaId,
+        fileName,
+        mimeType,
+        fileSize: blob.size,
+        chunkCount: 1,
+        chunkSize: blob.size,
+        encoding: 'base64',
+        data: b64,
+        createdAt,
+      },
+      false
+    );
+    if (!saved) {
+      throw new Error('Media vault upload failed');
+    }
+    const permanentUrl = `/api/telegram/file?mediaId=${encodeURIComponent(mediaId)}&name=${encodeURIComponent(fileName)}`;
+    cacheUploadedMediaPreview(permanentUrl, blob);
+    if (opts.onProgress) opts.onProgress(100);
+    return {
+      url: permanentUrl,
+      directUrl: permanentUrl,
+      fileId: mediaId,
+      fileName,
+      fileSize: blob.size,
+      mimeType,
+    };
+  }
+
+  const chunkCount = Math.ceil(blob.size / MEDIA_VAULT_CHUNK_BYTES);
+  let uploadedChunks = 0;
+
+  for (let i = 0; i < chunkCount; i += 2) {
+    const batchIndices = i + 1 < chunkCount ? [i, i + 1] : [i];
+    const results = await Promise.all(
+      batchIndices.map(async (idx) => {
+        const start = idx * MEDIA_VAULT_CHUNK_BYTES;
+        const end = Math.min(blob.size, start + MEDIA_VAULT_CHUNK_BYTES);
+        const b64 = await blobSliceToBase64(blob.slice(start, end));
+        const ok = await sbSetDocument(
+          `media_vault/${mediaId}/chunk_${idx}`,
+          { index: idx, data: b64 },
+          false
+        );
+        if (ok) {
+          uploadedChunks++;
+          if (opts.onProgress) {
+            const pct = Math.min(94, Math.max(22, Math.round(20 + (uploadedChunks / chunkCount) * 74)));
+            opts.onProgress(pct);
+          }
+        }
+        return ok;
+      })
+    );
+    if (results.some((ok) => !ok)) {
+      throw new Error('Media chunk upload failed');
+    }
+  }
+
+  const metaOk = await sbSetDocument(
+    `media_vault/${mediaId}`,
+    {
+      mediaId,
+      fileName,
+      mimeType,
+      fileSize: blob.size,
+      chunkCount,
+      chunkSize: MEDIA_VAULT_CHUNK_BYTES,
+      encoding: 'base64',
+      createdAt,
+    },
+    false
+  );
+  if (!metaOk) {
+    throw new Error('Media vault metadata save failed');
+  }
+
+  const permanentUrl = `/api/telegram/file?mediaId=${encodeURIComponent(mediaId)}&name=${encodeURIComponent(fileName)}`;
+  cacheUploadedMediaPreview(permanentUrl, blob);
+  if (opts.onProgress) opts.onProgress(100);
+  return {
+    url: permanentUrl,
+    directUrl: permanentUrl,
+    fileId: mediaId,
+    fileName,
+    fileSize: blob.size,
+    mimeType,
+  };
+}
+
 async function uploadViaServerProxy(
   blob: Blob,
   fileName: string,
   targetChatId: string,
   opts: UploadOptions = {}
 ): Promise<TelegramUploadResult> {
+  // Files >3.5MB exceed Vercel's 4.5MB request body limit, so upload in 512KB chunks directly to Media Vault
+  if (blob.size > SERVER_PROXY_SAFE_BYTES) {
+    return await uploadToSupabaseMediaVault(blob, fileName, opts);
+  }
+
   const defaultTimeoutMs =
-    blob.size <= 1.5 * 1024 * 1024 ? 25000 : blob.size <= 5 * 1024 * 1024 ? 45000 : 120000;
+    blob.size <= 1.5 * 1024 * 1024 ? 25000 : 45000;
   const timeoutMs = opts.timeoutMs || defaultTimeoutMs;
 
   try {
     return await uploadViaServerProxyOnce(blob, fileName, targetChatId, timeoutMs, opts);
   } catch (err: any) {
     const status = Number(err?.status || 0);
+    const retryAfter = Number(err?.retryAfter || 0);
+
+    // Brief 429 retry if Telegram asked for <= 4s
+    if (status === 429 && retryAfter > 0 && retryAfter <= 4) {
+      await new Promise((r) => setTimeout(r, retryAfter * 1000 + 250));
+      try {
+        return await uploadViaServerProxyOnce(blob, fileName, targetChatId, timeoutMs, opts);
+      } catch {}
+    }
+
     const isTransient = Boolean(err?.transient) || status === 502 || status === 504;
     if (isTransient && blob.size <= 2 * 1024 * 1024) {
       await new Promise((r) => setTimeout(r, 450));
-      return await uploadViaServerProxyOnce(blob, fileName, targetChatId, timeoutMs, opts);
+      try {
+        return await uploadViaServerProxyOnce(blob, fileName, targetChatId, timeoutMs, opts);
+      } catch {}
     }
+
+    // Automatic fallback to Cloud Media Vault when Telegram returns 429 FloodWait or server error
+    const shouldFallbackToVault =
+      status === 429 ||
+      status === 413 ||
+      status === 400 ||
+      status === 500 ||
+      status === 502 ||
+      status === 503 ||
+      status === 504 ||
+      Boolean(err?.transient);
+
+    if (shouldFallbackToVault) {
+      try {
+        return await uploadToSupabaseMediaVault(blob, fileName, opts);
+      } catch (vaultErr) {
+        console.warn('[TelegramStorage] Media vault fallback failed:', vaultErr);
+      }
+    }
+
     throw err;
   }
 }
@@ -468,12 +719,24 @@ export async function sendTelegramCommunityPost(post: {
   videoUrl?: string;
 }): Promise<void> {
   try {
+    const toAbsoluteHttpUrl = (raw?: string): string => {
+      const clean = String(raw || '').trim();
+      if (!clean || clean.startsWith('data:') || clean.startsWith('blob:')) return '';
+      if (/^https?:\/\//i.test(clean)) return clean;
+      if (clean.startsWith('/') && typeof window !== 'undefined' && /^https?:$/i.test(window.location.protocol)) {
+        return `${window.location.origin}${clean}`;
+      }
+      return '';
+    };
+
     const roleBadge = post.authorRole ? ` [${post.authorRole}]` : '';
     const categoryBadge = post.category ? `📌 <b>#${post.category.replace(/\s+/g, '_')}</b>\n` : '';
-    const mediaBadge = post.imageUrl
-      ? `\n🖼️ <a href="${post.imageUrl}">View Attached Image</a>`
-      : post.videoUrl
-      ? `\n🎥 <a href="${post.videoUrl}">Watch Attached Video</a>`
+    const absImage = toAbsoluteHttpUrl(post.imageUrl);
+    const absVideo = toAbsoluteHttpUrl(post.videoUrl);
+    const mediaBadge = absImage
+      ? `\n🖼️ <a href="${absImage}">View Attached Image</a>`
+      : absVideo
+      ? `\n🎥 <a href="${absVideo}">Watch Attached Video</a>`
       : '';
 
     const formattedMessage = `📢 <b>NSTA Community Post</b>\n👤 <b>${post.authorName}${roleBadge}</b>\n${categoryBadge}\n${post.text || '(Shared Media)'}${mediaBadge}`;

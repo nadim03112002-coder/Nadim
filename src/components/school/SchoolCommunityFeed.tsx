@@ -43,7 +43,7 @@ import {
 } from "../../school-firebase";
 import { uploadImageToImgBB } from "../../services/imgbbService";
 import { uploadToCloudinary, getOptimizedVideoUrl } from "../../services/cloudinaryService";
-import { resolveTelegramUrl } from "../../services/telegramStorageService";
+import { resolveTelegramUrl, handleTelegramImageError } from "../../services/telegramStorageService";
 import { sendSchoolPushNotification } from "../../utils/schoolPushClient";
 import { getDemoSchoolDataset, isDemoDataEnabled, removeCustomHoliday } from "./demoDataStore";
 import { useBackHandler } from "../../utils/backNavigation";
@@ -1155,6 +1155,7 @@ export const SchoolCommunityFeed: React.FC<SchoolCommunityFeedProps> = ({
                       <img
                         src={resolveTelegramUrl(post.imageUrl)}
                         alt={post.title || "School Community Photo"}
+                        onError={(e) => handleTelegramImageError(e.currentTarget, post.imageUrl)}
                         className="w-full max-h-[460px] object-contain group-hover:scale-[1.01] transition-transform"
                         loading="lazy"
                       />
@@ -1317,9 +1318,10 @@ export const SchoolCommunityFeed: React.FC<SchoolCommunityFeedProps> = ({
             <X className="w-5 h-5" />
           </button>
           <img
-            src={lightboxImage}
+            src={resolveTelegramUrl(lightboxImage)}
             alt="Full view"
             onClick={(e) => e.stopPropagation()}
+            onError={(e) => handleTelegramImageError(e.currentTarget, lightboxImage)}
             className="max-w-full max-h-[88vh] object-contain rounded-xl"
           />
         </div>

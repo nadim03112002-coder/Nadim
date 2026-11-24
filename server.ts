@@ -29,6 +29,8 @@ import {
   resolveTelegramBotToken,
   getTelegramTokenDiagnostics,
   getConfiguredTelegramStorageChatId,
+  getTelegramBotHealth,
+  noteTelegramFloodWait,
   telegramBotApiRequest,
   resolveTelegramFilePath,
   resolveTelegramStorageChatId,
@@ -46,6 +48,7 @@ import {
   fetchWebpushDuesFromSupabase,
   fetchWebpushSubsFromSupabase,
   getWebpushSubFromSupabase,
+  readMediaVaultSlice,
   supabaseServerKeepalive,
   upsertFcmTokenInSupabase,
   upsertWebpushDueInSupabase,
@@ -1663,36 +1666,8 @@ async function startServer() {
             : "Server par TELEGRAM_BOT_TOKEN set nahi hai. Settings -> Secrets me TELEGRAM_BOT_TOKEN add karein.",
       });
     }
-    try {
-      const { status: tgStatus, ok: tgOk, json: rawJson } = await telegramBotApiRequest<any>({
-        token,
-        methodPath: "getMe",
-        httpMethod: "GET",
-        timeoutMs: 10000,
-      });
-      const data = rawJson || { ok: false };
-      const configuredChatId = getConfiguredTelegramStorageChatId();
-      const discoveredChats =
-        !configuredChatId && data?.ok ? await discoverTelegramStorageChats(token) : [];
-      return res.status(tgOk ? 200 : tgStatus === 429 ? 429 : 502).json({
-        ok: Boolean(data?.ok),
-        configured: true,
-        bot: data?.result ? { id: data.result.id, username: data.result.username, first_name: data.result.first_name } : undefined,
-        hasStorageChatId: Boolean(configuredChatId || discoveredChats.length > 0),
-        storageChatConfigured: Boolean(configuredChatId),
-        discoveredChats: discoveredChats.slice(0, 5),
-        ...(data?.parameters?.retry_after ? { retryAfter: Number(data.parameters.retry_after) } : {}),
-        error: data?.description,
-      });
-    } catch (err: any) {
-      const isAbort = err?.name === "AbortError" || /abort/i.test(String(err?.message || ""));
-      return res.status(isAbort ? 504 : 502).json({
-        ok: false,
-        configured: true,
-        storageChatConfigured: Boolean(getConfiguredTelegramStorageChatId()),
-        error: isAbort ? "Telegram getMe timeout" : err?.message || "Telegram health check failed",
-      });
-    }
+    const health = await getTelegramBotHealth(token);
+    return res.status(health.status).json(health.body);
   });
 
   app.post(
@@ -1736,6 +1711,9 @@ async function startServer() {
         }),
         timeoutMs: 12000,
       });
+      if (tgStatus === 429) {
+        noteTelegramFloodWait(Number(json?.parameters?.retry_after || 10));
+      }
       return res.status(tgOk ? 200 : tgStatus === 429 ? 429 : 502).json(json || { ok: false });
     } catch (err: any) {
       const isAbort = err?.name === "AbortError" || /abort/i.test(String(err?.message || ""));
@@ -1754,13 +1732,46 @@ async function startServer() {
   });
 
   app.get("/api/telegram/file", async (req, res) => {
+    const mediaId = String(req.query?.mediaId || "").trim();
     const fileId = String(req.query?.fileId || req.query?.file_id || "").trim();
     const rawFilePath = String(req.query?.path || "").trim();
     const fileName = String(req.query?.name || "").trim();
-    const token = resolveTelegramBotToken();
 
     res.setHeader("Access-Control-Allow-Origin", "*");
     res.setHeader("Access-Control-Expose-Headers", "Content-Range, Content-Length, Accept-Ranges, Content-Type");
+
+    if (mediaId) {
+      const vaultRes = await readMediaVaultSlice({
+        mediaId,
+        rangeHeader: req.headers.range ? String(req.headers.range) : undefined,
+      });
+      if ("error" in vaultRes) {
+        res.setHeader("Cache-Control", "no-store");
+        return res.status(vaultRes.status).json({ error: vaultRes.error });
+      }
+      const contentType = detectMimeType({
+        fileName: fileName || vaultRes.fileName,
+        headerContentType: vaultRes.mimeType,
+        sampleBytes: vaultRes.buffer,
+      });
+      res.setHeader("Content-Type", contentType);
+      res.setHeader("Accept-Ranges", "bytes");
+      res.setHeader("Content-Length", String(vaultRes.buffer.length));
+      if (vaultRes.isPartial) {
+        res.setHeader("Content-Range", `bytes ${vaultRes.start}-${vaultRes.end}/${vaultRes.totalSize}`);
+      }
+      const outName = (fileName || vaultRes.fileName || "").replace(/["\r\n]/g, "");
+      if (outName) {
+        res.setHeader("Content-Disposition", `inline; filename="${outName}"`);
+      }
+      res.setHeader("Cache-Control", "public, max-age=86400, stale-while-revalidate=604800");
+      if (req.method === "HEAD") {
+        return res.status(vaultRes.isPartial ? 206 : 200).end();
+      }
+      return res.status(vaultRes.isPartial ? 206 : 200).send(vaultRes.buffer);
+    }
+
+    const token = resolveTelegramBotToken();
 
     if (!token) {
       res.setHeader("Cache-Control", "no-store");
@@ -1820,17 +1831,50 @@ async function startServer() {
         return res.status(tgRes.status || 404).json({ error: "Telegram file unavailable" });
       }
 
-      const contentType = detectMimeType({
+      let contentType = detectMimeType({
         fileName,
         filePath: resolvedPath,
         headerContentType: tgRes.headers.get("content-type"),
       });
 
+      const contentLenStr = tgRes.headers.get("content-length");
+      const contentLenNum = Number(contentLenStr || 0);
+      const needsMagicSniff =
+        req.method !== "HEAD" &&
+        contentType === "application/octet-stream" &&
+        (!contentLenNum || contentLenNum <= 3.5 * 1024 * 1024);
+
+      if (needsMagicSniff) {
+        const buf = Buffer.from(await tgRes.arrayBuffer());
+        contentType = detectMimeType({
+          fileName,
+          filePath: resolvedPath,
+          headerContentType: tgRes.headers.get("content-type"),
+          sampleBytes: buf,
+        });
+        res.status(tgRes.status);
+        res.setHeader("Content-Type", contentType);
+        res.setHeader("Accept-Ranges", tgRes.headers.get("accept-ranges") || "bytes");
+        res.setHeader("Content-Length", String(buf.length));
+        const contentRange = tgRes.headers.get("content-range");
+        if (contentRange) res.setHeader("Content-Range", contentRange);
+        if (fileName) {
+          const safeName = fileName.replace(/["\r\n]/g, "");
+          res.setHeader("Content-Disposition", `inline; filename="${safeName}"`);
+        }
+        res.setHeader(
+          "Cache-Control",
+          fileId
+            ? "public, max-age=86400, stale-while-revalidate=604800"
+            : "public, max-age=300"
+        );
+        return res.send(buf);
+      }
+
       res.status(tgRes.status);
       res.setHeader("Content-Type", contentType);
       res.setHeader("Accept-Ranges", tgRes.headers.get("accept-ranges") || "bytes");
-      const contentLen = tgRes.headers.get("content-length");
-      if (contentLen) res.setHeader("Content-Length", contentLen);
+      if (contentLenStr) res.setHeader("Content-Length", contentLenStr);
       const contentRange = tgRes.headers.get("content-range");
       if (contentRange) res.setHeader("Content-Range", contentRange);
       if (fileName) {
@@ -1843,6 +1887,13 @@ async function startServer() {
           ? "public, max-age=86400, stale-while-revalidate=604800"
           : "public, max-age=300"
       );
+
+      if (req.method === "HEAD") {
+        try {
+          await tgRes.body?.cancel();
+        } catch {}
+        return res.end();
+      }
 
       if (tgRes.body) {
         const nodeStream = Readable.fromWeb(tgRes.body as any);

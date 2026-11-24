@@ -1,5 +1,5 @@
 import { uploadToTelegramStorage, resolveTelegramUrl } from './telegramStorageService';
-import { compressImageToBlob } from './imgbbService';
+import { compressImage, compressImageToBlob } from './imgbbService';
 
 // Telegram Cloud Storage powered Media Service (Drop-in replacement for Cloudinary)
 // Provides unlimited free media hosting for Video, Audio, PDF, and Images
@@ -93,6 +93,22 @@ export const uploadToCloudinary = async (
       bytes: tgRes.fileSize || file.size,
     };
   } catch (err: any) {
+    if (targetResourceType === 'image') {
+      try {
+        const compactDataUrl = await compressImage(uploadPayload, 800, 800, 0.72, false);
+        if (compactDataUrl) {
+          if (onProgress) onProgress(100);
+          return {
+            url: compactDataUrl,
+            secure_url: compactDataUrl,
+            public_id: `inline_${Date.now()}`,
+            format: 'jpg',
+            resource_type: 'image',
+            bytes: compactDataUrl.length,
+          };
+        }
+      } catch {}
+    }
     console.error('[Media Upload via Telegram] Upload failed:', err);
     let errMsg = err?.message || 'Media upload fail ho gaya';
     if (

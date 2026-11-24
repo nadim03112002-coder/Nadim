@@ -79,7 +79,7 @@ import { applyDeduction, getTotalCredits } from '../utils/creditSystem';
 import { logScoreActivity } from '../utils/scoreSystem';
 import { saveUserToLive, auth } from '../firebase';
 import { uploadImageToImgBB } from '../services/imgbbService';
-import { uploadImageToTelegram, uploadToTelegramStorage, resolveTelegramUrl } from '../services/telegramStorageService';
+import { uploadImageToTelegram, uploadToTelegramStorage, resolveTelegramUrl, handleTelegramImageError } from '../services/telegramStorageService';
 import { uploadToCloudinary, getOptimizedVideoUrl } from '../services/cloudinaryService';
 import { ImageCropper } from './ImageCropper';
 import { ProfileCameraModal } from './ProfileCameraModal';
@@ -1883,11 +1883,11 @@ export const WhatsAppChatModal: React.FC<Props> = ({
   };
 
   const openImageLightbox = (url: string, albumUrls?: string[], initialIndex: number = 0) => {
-    const list = albumUrls && albumUrls.length > 0 ? albumUrls : [url];
-    const validIndex = Math.max(0, Math.min(initialIndex, list.length - 1));
-    setLightboxImagesList(list);
+    const resolvedList = (albumUrls && albumUrls.length > 0 ? albumUrls : [url]).map((u) => resolveTelegramUrl(u));
+    const validIndex = Math.max(0, Math.min(initialIndex, resolvedList.length - 1));
+    setLightboxImagesList(resolvedList);
     setLightboxActiveIndex(validIndex);
-    setLightboxImageUrl(list[validIndex] || url);
+    setLightboxImageUrl(resolvedList[validIndex] || resolveTelegramUrl(url));
     setLightboxZoom(1);
     setLightboxRotation(0);
     setIsLightboxFullscreen(false);
@@ -1928,15 +1928,16 @@ export const WhatsAppChatModal: React.FC<Props> = ({
   const handleDownloadImage = async (url: string) => {
     try {
       setBannerNotice('📥 Photo save ho rahi hai...');
-      if (url.startsWith('data:')) {
+      const resolvedUrl = resolveTelegramUrl(url);
+      if (resolvedUrl.startsWith('data:')) {
         const a = document.createElement('a');
-        a.href = url;
+        a.href = resolvedUrl;
         a.download = `photo_${Date.now()}.jpg`;
         document.body.appendChild(a);
         a.click();
         document.body.removeChild(a);
       } else {
-        const res = await fetch(url);
+        const res = await fetch(resolvedUrl);
         const blob = await res.blob();
         const blobUrl = URL.createObjectURL(blob);
         const a = document.createElement('a');
@@ -7101,8 +7102,9 @@ export const WhatsAppChatModal: React.FC<Props> = ({
                                       }}
                                     >
                                       <img
-                                        src={url}
+                                        src={resolveTelegramUrl(url)}
                                         alt={`Photo ${idx + 1}`}
+                                        onError={(e) => handleTelegramImageError(e.currentTarget, url)}
                                         className="w-full h-full object-cover group-hover:scale-[1.03] transition-transform"
                                         loading="lazy"
                                       />
@@ -7158,8 +7160,9 @@ export const WhatsAppChatModal: React.FC<Props> = ({
                                   </div>
                                 )}
                                 <img
-                                  src={msg.mediaUrl || msg.mediaUrls?.[0]}
+                                  src={resolveTelegramUrl(msg.mediaUrl || msg.mediaUrls?.[0] || '')}
                                   alt="Photo attachment"
+                                  onError={(e) => handleTelegramImageError(e.currentTarget, msg.mediaUrl || msg.mediaUrls?.[0])}
                                   className="w-full max-h-72 object-cover object-center group-hover:scale-[1.01] transition-transform rounded-xl"
                                   loading="lazy"
                                 />
@@ -9597,8 +9600,9 @@ export const WhatsAppChatModal: React.FC<Props> = ({
 
               {lightboxImageUrl ? (
                 <img
-                  src={lightboxImageUrl}
+                  src={resolveTelegramUrl(lightboxImageUrl)}
                   alt={`Photo ${lightboxActiveIndex + 1}`}
+                  onError={(e) => handleTelegramImageError(e.currentTarget, lightboxImageUrl)}
                   style={{
                     transform: `scale(${lightboxZoom}) rotate(${lightboxRotation}deg)`,
                     transition: 'transform 0.2s cubic-bezier(0.2, 0, 0, 1)',
@@ -9647,7 +9651,7 @@ export const WhatsAppChatModal: React.FC<Props> = ({
                           : 'opacity-50 hover:opacity-90'
                       }`}
                     >
-                      <img src={url} alt={`Thumb ${idx + 1}`} className="w-full h-full object-cover" />
+                      <img src={resolveTelegramUrl(url)} alt={`Thumb ${idx + 1}`} onError={(e) => handleTelegramImageError(e.currentTarget, url)} className="w-full h-full object-cover" />
                     </button>
                   );
                 })}
@@ -10126,8 +10130,9 @@ export const WhatsAppChatModal: React.FC<Props> = ({
                 ) : (
                   <img
                     key={currentSt.id}
-                    src={currentSt.mediaUrl}
+                    src={resolveTelegramUrl(currentSt.mediaUrl)}
                     alt="Status"
+                    onError={(e) => handleTelegramImageError(e.currentTarget, currentSt.mediaUrl)}
                     className="max-w-full max-h-[72vh] rounded-2xl object-contain"
                   />
                 )}

@@ -134,9 +134,7 @@ export async function sbQueryCollection<T = Record<string, any>>(
     if (options?.schoolId) {
       query = query.eq('school_id', options.schoolId);
     }
-    if (options?.limit && options.limit > 0) {
-      query = query.limit(options.limit);
-    }
+    query = query.order('updated_at', { ascending: false }).limit(options?.limit && options.limit > 0 ? options.limit : 2000);
 
     const { data, error } = await query;
     if (error || !Array.isArray(data)) return null;
@@ -167,9 +165,7 @@ export async function sbQueryCollectionWithIds<T = Record<string, any>>(
     if (options?.schoolId) {
       query = query.eq('school_id', options.schoolId);
     }
-    if (options?.limit && options.limit > 0) {
-      query = query.limit(options.limit);
-    }
+    query = query.order('updated_at', { ascending: false }).limit(options?.limit && options.limit > 0 ? options.limit : 2000);
 
     const { data, error } = await query;
     if (error || !Array.isArray(data)) return null;

@@ -95,6 +95,7 @@ import {
 } from "../../school-firebase";
 import { loadSchoolSettingBlob } from "../../utils/schoolCloudSync";
 import { uploadToCloudinary } from "../../services/cloudinaryService";
+import { resolveTelegramUrl, handleTelegramImageError } from "../../services/telegramStorageService";
 import { compressImageToBlob } from "../../services/imgbbService";
 import { formatMonthLabel } from "../../utils/feeFifoAllocation";
 import { getSchoolFeeDiscountSlabs, computeSlabDiscountAmount } from "../../utils/feeDiscountSlabs";
@@ -967,6 +968,7 @@ export const NstaMessengerSuite: React.FC<Props> = ({
   const recordingTimerRef = useRef<any>(null);
 
   const [fullscreenMedia, setFullscreenMedia] = useState<{ type: "IMAGE" | "VIDEO"; url: string; title?: string } | null>(null);
+  const [failedMediaIds, setFailedMediaIds] = useState<Record<string, boolean>>({});
 
   // In-App Live Viewfinder Camera
   const [showInAppCamera, setShowInAppCamera] = useState(false);
@@ -4564,25 +4566,58 @@ export const NstaMessengerSuite: React.FC<Props> = ({
                       {/* ── ATTACHMENT: PHOTO / IMAGE ── */}
                       {msg.attachmentType === "IMAGE" && msg.attachmentUrl && (
                         <div className="mb-2 relative group rounded-xl overflow-hidden border border-black/15 bg-black/10">
-                          <img
-                            src={msg.attachmentUrl}
-                            alt={msg.text || "Shared photo"}
-                            className="w-full max-h-72 object-cover rounded-xl cursor-pointer hover:opacity-95 transition"
-                            onClick={() =>
-                              setFullscreenMedia({ type: "IMAGE", url: msg.attachmentUrl!, title: msg.text })
-                            }
-                            loading="lazy"
-                          />
-                          <button
-                            type="button"
-                            onClick={() =>
-                              setFullscreenMedia({ type: "IMAGE", url: msg.attachmentUrl!, title: msg.text })
-                            }
-                            className="absolute top-2 right-2 p-1.5 rounded-lg bg-black/60 hover:bg-black/85 text-white backdrop-blur-xs transition cursor-pointer"
-                            title="Badi screen me dekhein"
-                          >
-                            <Maximize2 className="w-4 h-4" />
-                          </button>
+                          {failedMediaIds[msg.id] ? (
+                            <div className="p-3 flex items-center justify-between gap-2 bg-slate-900/70 text-white rounded-xl min-w-[210px]">
+                              <div className="flex items-center gap-2 min-w-0">
+                                <ImageIcon className="w-4 h-4 text-emerald-400 shrink-0" />
+                                <span className="text-[11px] font-bold truncate">Photo load nahi hui</span>
+                              </div>
+                              <div className="flex items-center gap-1.5 shrink-0">
+                                <button
+                                  type="button"
+                                  onClick={() => setFailedMediaIds((prev) => ({ ...prev, [msg.id]: false }))}
+                                  className="px-2 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-[10px] font-black cursor-pointer"
+                                >
+                                  Retry
+                                </button>
+                                <a
+                                  href={resolveTelegramUrl(msg.attachmentUrl)}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="px-2 py-1 rounded-lg bg-white/15 hover:bg-white/25 text-[10px] font-bold"
+                                >
+                                  Open
+                                </a>
+                              </div>
+                            </div>
+                          ) : (
+                            <>
+                              <img
+                                src={resolveTelegramUrl(msg.attachmentUrl)}
+                                alt={msg.text || "Shared photo"}
+                                className="w-full max-h-72 object-cover rounded-xl cursor-pointer hover:opacity-95 transition"
+                                onClick={() =>
+                                  setFullscreenMedia({ type: "IMAGE", url: resolveTelegramUrl(msg.attachmentUrl!), title: msg.text })
+                                }
+                                onError={(e) =>
+                                  handleTelegramImageError(e.currentTarget, msg.attachmentUrl, () =>
+                                    setFailedMediaIds((prev) => ({ ...prev, [msg.id]: true }))
+                                  )
+                                }
+                                loading="lazy"
+                              />
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setFullscreenMedia({ type: "IMAGE", url: resolveTelegramUrl(msg.attachmentUrl!), title: msg.text })
+                                }
+                                className="absolute top-2 right-2 p-1.5 rounded-lg bg-black/60 hover:bg-black/85 text-white backdrop-blur-xs transition cursor-pointer"
+                                title="Badi screen me dekhein"
+                              >
+                                <Maximize2 className="w-4 h-4" />
+                              </button>
+                            </>
+                          )}
                         </div>
                       )}
 
@@ -4590,7 +4625,7 @@ export const NstaMessengerSuite: React.FC<Props> = ({
                       {msg.attachmentType === "VIDEO" && msg.attachmentUrl && (
                         <div className="mb-2 relative rounded-xl overflow-hidden border border-black/15 bg-black">
                           <video
-                            src={msg.attachmentUrl}
+                            src={resolveTelegramUrl(msg.attachmentUrl)}
                             controls
                             playsInline
                             preload="metadata"
@@ -4603,7 +4638,7 @@ export const NstaMessengerSuite: React.FC<Props> = ({
                       {msg.attachmentType === "AUDIO" && msg.attachmentUrl && (
                         <div className="mb-2">
                           <AudioBubblePlayer
-                            url={msg.attachmentUrl}
+                            url={resolveTelegramUrl(msg.attachmentUrl)}
                             duration={msg.audioDuration}
                             isMe={isMe}
                           />
@@ -4663,7 +4698,7 @@ export const NstaMessengerSuite: React.FC<Props> = ({
                               </p>
                             </div>
                             <a
-                              href={msg.attachmentUrl}
+                              href={resolveTelegramUrl(msg.attachmentUrl)}
                               target="_blank"
                               rel="noopener noreferrer"
                               download={msg.fileName}
@@ -5759,8 +5794,9 @@ export const NstaMessengerSuite: React.FC<Props> = ({
           <div className="flex-1 flex items-center justify-center overflow-auto p-2">
             {fullscreenMedia.type === "IMAGE" ? (
               <img
-                src={fullscreenMedia.url}
+                src={resolveTelegramUrl(fullscreenMedia.url)}
                 alt={fullscreenMedia.title || "Full photo"}
+                onError={(e) => handleTelegramImageError(e.currentTarget, fullscreenMedia.url)}
                 className="max-h-[82vh] max-w-full rounded-2xl object-contain shadow-2xl"
               />
             ) : (

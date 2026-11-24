@@ -18,6 +18,7 @@ import { shouldUseDemoForSchool } from "../../school-firebase";
 import { PeriodTeachingLogModal } from "./PeriodTeachingLogModal";
 import { StudentDatewiseNotesView } from "./StudentDatewiseNotesView";
 import { PenTool } from "lucide-react";
+import { resolveTelegramUrl, handleTelegramImageError } from "../../services/telegramStorageService";
 
 interface Props {
   school: School;
@@ -663,12 +664,17 @@ export const HomeworkManager: React.FC<Props> = ({
                   {hw.attachmentUrl && (
                     <div className="p-2.5 bg-slate-50 dark:bg-slate-700/40 rounded-2xl border border-slate-200 dark:border-slate-600 flex items-center gap-3">
                       <div className="w-12 h-12 rounded-xl bg-slate-200 dark:bg-slate-600 overflow-hidden shrink-0">
-                        <img src={hw.attachmentUrl} alt="Homework Attachment" className="w-full h-full object-cover" />
+                        <img
+                          src={resolveTelegramUrl(hw.attachmentUrl)}
+                          alt="Homework Attachment"
+                          onError={(e) => handleTelegramImageError(e.currentTarget, hw.attachmentUrl)}
+                          className="w-full h-full object-cover"
+                        />
                       </div>
                       <div className="min-w-0 flex-1">
                         <p className="text-xs font-bold text-slate-800 dark:text-white truncate">Worksheet / Reference Image</p>
                         <a
-                          href={hw.attachmentUrl}
+                          href={resolveTelegramUrl(hw.attachmentUrl)}
                           target="_blank"
                           rel="noreferrer"
                           className="text-[11px] text-blue-600 dark:text-blue-400 font-bold hover:underline"

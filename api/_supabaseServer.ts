@@ -257,12 +257,17 @@ export async function upsertWebpushDueInSupabase(dueKey: string, payload: any): 
 
 // ── KV_DOCUMENTS SERVER ADAPTER ──────────────────────────────────────────────
 
-export async function getKvDocFromSupabase<T = any>(docPath: string): Promise<T | null> {
+export async function getKvDocFromSupabase<T = any>(
+  docPath: string,
+  timeoutMs = 4500
+): Promise<T | null> {
   const { path } = normalizeServerDocPath(docPath);
   if (!path) return null;
-  const res = await sbRestFetch(`kv_documents?path=eq.${encodeURIComponent(path)}&select=data&limit=1`, {
-    method: "GET",
-  });
+  const res = await sbRestFetch(
+    `kv_documents?path=eq.${encodeURIComponent(path)}&select=data&limit=1`,
+    { method: "GET" },
+    timeoutMs
+  );
   if (!res?.ok) return null;
   const rows = (await res.json().catch(() => null)) as any[];
   return Array.isArray(rows) && rows[0]?.data !== undefined ? (rows[0].data as T) : null;
@@ -271,25 +276,30 @@ export async function getKvDocFromSupabase<T = any>(docPath: string): Promise<T 
 export async function upsertKvDocInSupabase(
   docPath: string,
   payload: Record<string, any>,
-  explicitSchoolId?: string
+  explicitSchoolId?: string,
+  timeoutMs = 4500
 ): Promise<boolean> {
   const meta = normalizeServerDocPath(docPath, explicitSchoolId);
   if (!meta.path || !meta.docId) return false;
-  const res = await sbRestFetch("kv_documents?on_conflict=path", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Prefer: "resolution=merge-duplicates,return=minimal",
+  const res = await sbRestFetch(
+    "kv_documents?on_conflict=path",
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Prefer: "resolution=merge-duplicates,return=minimal",
+      },
+      body: JSON.stringify({
+        path: meta.path,
+        collection_path: meta.collectionPath,
+        doc_id: meta.docId,
+        school_id: String(payload?.schoolId || meta.schoolId || ""),
+        data: payload || {},
+        updated_at: new Date().toISOString(),
+      }),
     },
-    body: JSON.stringify({
-      path: meta.path,
-      collection_path: meta.collectionPath,
-      doc_id: meta.docId,
-      school_id: String(payload?.schoolId || meta.schoolId || ""),
-      data: payload || {},
-      updated_at: new Date().toISOString(),
-    }),
-  });
+    timeoutMs
+  );
   return Boolean(res?.ok);
 }
 
@@ -300,4 +310,226 @@ export async function patchKvDocInSupabase(
 ): Promise<boolean> {
   const existing = (await getKvDocFromSupabase<Record<string, any>>(docPath)) || {};
   return upsertKvDocInSupabase(docPath, { ...existing, ...patch }, explicitSchoolId);
+}
+
+// ── MEDIA VAULT FALLBACK STORE (Handles Telegram 429 FloodWait & >4.5MB uploads) ──
+
+const MEDIA_VAULT_CHUNK_BYTES = 512 * 1024; // 512 KB raw binary per chunk
+const MEDIA_VAULT_MAX_SINGLE_SLICE_BYTES = 3 * 1024 * 1024; // 3 MB per response slice (safe under Vercel 4.5MB limit)
+const MEDIA_VAULT_ID_RE = /^mv_[A-Za-z0-9_-]{6,80}$/;
+
+export function isValidMediaVaultId(mediaId?: string | null): boolean {
+  return Boolean(mediaId && MEDIA_VAULT_ID_RE.test(String(mediaId).trim()));
+}
+
+export interface MediaVaultMeta {
+  mediaId: string;
+  fileName: string;
+  mimeType: string;
+  fileSize: number;
+  chunkCount: number;
+  chunkSize: number;
+  encoding: "base64";
+  data?: string;
+  createdAt: string;
+}
+
+export async function saveMediaVaultToSupabase(opts: {
+  buffer: Buffer;
+  fileName: string;
+  mimeType: string;
+}): Promise<{ ok: true; mediaId: string } | { ok: false; error: string }> {
+  const mediaId = `mv_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+  const totalSize = opts.buffer.length;
+  const createdAt = new Date().toISOString();
+
+  if (totalSize <= MEDIA_VAULT_CHUNK_BYTES) {
+    const ok = await upsertKvDocInSupabase(
+      `media_vault/${mediaId}`,
+      {
+        mediaId,
+        fileName: opts.fileName,
+        mimeType: opts.mimeType,
+        fileSize: totalSize,
+        chunkCount: 1,
+        chunkSize: totalSize,
+        encoding: "base64",
+        data: opts.buffer.toString("base64"),
+        createdAt,
+      },
+      "_media",
+      15000
+    );
+    return ok ? { ok: true, mediaId } : { ok: false, error: "Media vault write failed" };
+  }
+
+  const chunkCount = Math.ceil(totalSize / MEDIA_VAULT_CHUNK_BYTES);
+  const chunkIndices = Array.from({ length: chunkCount }, (_, i) => i);
+
+  // Upload chunks in small batches of 3 to avoid saturating connections
+  for (let i = 0; i < chunkIndices.length; i += 3) {
+    const batch = chunkIndices.slice(i, i + 3);
+    const results = await Promise.all(
+      batch.map(async (idx) => {
+        const start = idx * MEDIA_VAULT_CHUNK_BYTES;
+        const end = Math.min(totalSize, start + MEDIA_VAULT_CHUNK_BYTES);
+        const sliceB64 = opts.buffer.subarray(start, end).toString("base64");
+        return upsertKvDocInSupabase(
+          `media_vault/${mediaId}/chunk_${idx}`,
+          { index: idx, data: sliceB64 },
+          "_media",
+          15000
+        );
+      })
+    );
+    if (results.some((ok) => !ok)) {
+      return { ok: false, error: "Media vault chunk upload failed" };
+    }
+  }
+
+  const metaOk = await upsertKvDocInSupabase(
+    `media_vault/${mediaId}`,
+    {
+      mediaId,
+      fileName: opts.fileName,
+      mimeType: opts.mimeType,
+      fileSize: totalSize,
+      chunkCount,
+      chunkSize: MEDIA_VAULT_CHUNK_BYTES,
+      encoding: "base64",
+      createdAt,
+    },
+    "_media",
+    15000
+  );
+
+  return metaOk ? { ok: true, mediaId } : { ok: false, error: "Media vault metadata write failed" };
+}
+
+export async function readMediaVaultSlice(opts: {
+  mediaId: string;
+  rangeHeader?: string | null;
+}): Promise<
+  | {
+      ok: true;
+      buffer: Buffer;
+      fileName: string;
+      mimeType: string;
+      totalSize: number;
+      start: number;
+      end: number;
+      isPartial: boolean;
+    }
+  | { ok: false; status: number; error: string }
+> {
+  const cleanId = String(opts.mediaId || "").trim();
+  if (!isValidMediaVaultId(cleanId)) {
+    return { ok: false, status: 400, error: "Invalid mediaId" };
+  }
+
+  const meta = await getKvDocFromSupabase<MediaVaultMeta>(`media_vault/${cleanId}`, 12000);
+  if (!meta || !Number.isFinite(Number(meta.fileSize))) {
+    return { ok: false, status: 404, error: "Media not found in vault" };
+  }
+
+  const totalSize = Number(meta.fileSize);
+  const fileName = String(meta.fileName || `${cleanId}.bin`);
+  const mimeType = String(meta.mimeType || "application/octet-stream");
+  const chunkSize = Number(meta.chunkSize || MEDIA_VAULT_CHUNK_BYTES);
+  const chunkCount = Math.max(1, Number(meta.chunkCount || 1));
+
+  if (totalSize <= 0) {
+    return {
+      ok: true,
+      buffer: Buffer.alloc(0),
+      fileName,
+      mimeType,
+      totalSize: 0,
+      start: 0,
+      end: 0,
+      isPartial: false,
+    };
+  }
+
+  let start = 0;
+  let end = totalSize - 1;
+  let isPartial = false;
+
+  const rawRange = String(opts.rangeHeader || "").trim();
+  if (rawRange.startsWith("bytes=")) {
+    const spec = rawRange.slice(6).split(",")[0].trim();
+    const [rawStart, rawEnd] = spec.split("-");
+    if (rawStart === "" && rawEnd) {
+      const suffixLen = Number(rawEnd);
+      if (Number.isFinite(suffixLen) && suffixLen > 0) {
+        start = Math.max(0, totalSize - suffixLen);
+        end = totalSize - 1;
+        isPartial = true;
+      }
+    } else {
+      const parsedStart = Number(rawStart);
+      if (Number.isFinite(parsedStart) && parsedStart >= 0 && parsedStart < totalSize) {
+        start = parsedStart;
+        const parsedEnd = rawEnd ? Number(rawEnd) : totalSize - 1;
+        end = Number.isFinite(parsedEnd) ? Math.min(totalSize - 1, Math.max(start, parsedEnd)) : totalSize - 1;
+        isPartial = true;
+      } else if (Number.isFinite(parsedStart) && parsedStart >= totalSize) {
+        return { ok: false, status: 416, error: "Requested range not satisfiable" };
+      }
+    }
+  }
+
+  // Cap single chunked response slice to 2MB so serverless responses never exceed 4.5MB limit
+  if (end - start + 1 > MEDIA_VAULT_MAX_SINGLE_SLICE_BYTES) {
+    end = start + MEDIA_VAULT_MAX_SINGLE_SLICE_BYTES - 1;
+    isPartial = true;
+  }
+
+  if (chunkCount === 1 && typeof meta.data === "string") {
+    const fullBuf = Buffer.from(meta.data, "base64");
+    const sliced = isPartial ? fullBuf.subarray(start, end + 1) : fullBuf;
+    return {
+      ok: true,
+      buffer: sliced,
+      fileName,
+      mimeType,
+      totalSize: fullBuf.length,
+      start,
+      end: isPartial ? start + sliced.length - 1 : fullBuf.length - 1,
+      isPartial,
+    };
+  }
+
+  const startChunk = Math.floor(start / chunkSize);
+  const endChunk = Math.floor(end / chunkSize);
+  const chunkIndexes = Array.from({ length: endChunk - startChunk + 1 }, (_, i) => startChunk + i);
+  const chunkDocs = await Promise.all(
+    chunkIndexes.map((c) =>
+      getKvDocFromSupabase<{ data?: string }>(`media_vault/${cleanId}/chunk_${c}`, 12000)
+    )
+  );
+  const chunkBuffers: Buffer[] = [];
+  for (let i = 0; i < chunkDocs.length; i++) {
+    const chunkDoc = chunkDocs[i];
+    if (!chunkDoc?.data) {
+      return { ok: false, status: 404, error: `Missing media chunk ${startChunk + i}` };
+    }
+    chunkBuffers.push(Buffer.from(chunkDoc.data, "base64"));
+  }
+
+  const combined = Buffer.concat(chunkBuffers);
+  const localOffset = start - startChunk * chunkSize;
+  const length = end - start + 1;
+  const sliced = combined.subarray(localOffset, localOffset + length);
+
+  return {
+    ok: true,
+    buffer: sliced,
+    fileName,
+    mimeType,
+    totalSize,
+    start,
+    end: start + sliced.length - 1,
+    isPartial,
+  };
 }

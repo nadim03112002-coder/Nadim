@@ -51,6 +51,7 @@ import { deferStudyCoins } from '../utils/studyRewards';
 import { getMcqStatements } from '../utils/mcqStructure';
 import { extractStatements } from '../utils/mcqParser';
 import { MathLessonViewer } from './MathLessonViewer';
+import { resolveTelegramUrl, handleTelegramImageError } from '../services/telegramStorageService';
 
 
 interface Props {
@@ -925,7 +926,13 @@ export const LessonView: React.FC<Props> = ({
       : (content.content || content.pdfUrl || content.videoUrl || '');
 
   const contentValue = activeContentValue;
-  const isImage = contentValue && (contentValue.startsWith('data:image') || contentValue.match(/\.(jpeg|jpg|gif|png|webp|bmp)$/i));
+  const isImage = Boolean(
+      contentValue && (
+          contentValue.startsWith('data:image') ||
+          /\.(jpeg|jpg|gif|png|webp|bmp)(\?.*)?$/i.test(contentValue) ||
+          (contentValue.includes('/api/telegram/file') && /[?&]name=[^&]*\.(jpeg|jpg|gif|png|webp|bmp)(&|$)/i.test(contentValue))
+      )
+  );
   const isHtml = content.aiHtmlContent || (contentValue && !contentValue.startsWith('http') && contentValue.includes('<'));
 
   // SCHOOL MODE FREE NOTES FIX
@@ -1566,7 +1573,8 @@ export const LessonView: React.FC<Props> = ({
           );
       }
       
-      if (isImage) {
+      if (isImage || content.type === 'NOTES_IMAGE_AI') {
+          const resolvedImgSrc = resolveTelegramUrl(contentValue || content.content);
           return (
               <div className="fixed inset-0 z-50 bg-[#111] flex flex-col" style={{ paddingTop: 'env(safe-area-inset-top)', paddingBottom: 'env(safe-area-inset-bottom)', paddingLeft: 'env(safe-area-inset-left)', paddingRight: 'env(safe-area-inset-right)' }}>
                   <header className={`bg-black/90 backdrop-blur-md text-white p-4 absolute top-0 left-0 right-0 z-10 flex items-center justify-between border-b border-white/10${isImmersive ? ' hidden' : ''}`} style={{ top: 'env(safe-area-inset-top)' }}>
@@ -1581,8 +1589,9 @@ export const LessonView: React.FC<Props> = ({
                   </header>
                   <div className="flex-1 min-h-0 overflow-auto pt-16 flex items-center justify-center" onContextMenu={preventMenu}>
                       <img
-                          src={content.content}
+                          src={resolvedImgSrc}
                           alt="Notes"
+                          onError={(e) => handleTelegramImageError(e.currentTarget, contentValue || content.content)}
                           className="max-w-full max-h-full object-contain"
                           style={{ width: '100%', height: '100%', objectFit: 'contain' }}
                           draggable={false}
@@ -1594,8 +1603,8 @@ export const LessonView: React.FC<Props> = ({
       }
   }
 
-  // 2. URL LINK / PDF NOTES (Strict HTTP check)
-  const isUrl = contentValue && (contentValue.startsWith('http://') || contentValue.startsWith('https://'));
+  // 2. URL LINK / PDF NOTES (Strict HTTP or /api/ check)
+  const isUrl = contentValue && (contentValue.startsWith('http://') || contentValue.startsWith('https://') || contentValue.startsWith('/api/'));
   if (['PDF_FREE', 'PDF_PREMIUM', 'PDF_ULTRA', 'PDF_VIEWER'].includes(content.type) || isUrl) {
       const isGoogleDriveAudio = (contentValue.includes('drive.google.com') || contentValue.includes('notebooklm.google.com')) && (content.title.toLowerCase().includes('audio') || content.title.toLowerCase().includes('podcast') || content.type.includes('AUDIO'));
 
@@ -1621,17 +1630,20 @@ export const LessonView: React.FC<Props> = ({
       }
 
       const resolvedVideoUrl = content.videoUrl || (isUrl ? contentValue : '');
+      const isExplicitNonVideoFile =
+          /\.(pdf|mp3|m4a|wav|aac|ogg|opus|jpeg|jpg|png|gif|webp|bmp)(\?.*)?$/i.test(contentValue) ||
+          (contentValue.includes('/api/telegram/file') && /[?&]name=[^&]*\.(pdf|mp3|m4a|wav|aac|ogg|opus|jpeg|jpg|png|gif|webp|bmp)(&|$)/i.test(contentValue)) ||
+          ['PDF_FREE', 'PDF_PREMIUM', 'PDF_ULTRA', 'PDF_VIEWER', 'NOTES_IMAGE_AI'].includes(content.type);
       const isVideo = Boolean(
           content.videoUrl ||
           content.type === 'VIDEO' ||
           content.type === 'VIDEO_LECTURE' ||
-          (isUrl && (
+          (!isExplicitNonVideoFile && isUrl && (
               contentValue.includes('youtube.com') ||
               contentValue.includes('youtu.be') ||
               /\.(mp4|webm|mov|m4v|mkv)(\?.*)?$/i.test(contentValue) ||
-              contentValue.includes('telegram') ||
-              contentValue.includes('/api/telegram/') ||
-              contentValue.includes('cloudinary.com')
+              (contentValue.includes('/api/telegram/file') && /[?&]name=[^&]*\.(mp4|webm|mov|m4v|mkv)(&|$)/i.test(contentValue)) ||
+              contentValue.includes('cloudinary.com/video')
           ))
       );
 

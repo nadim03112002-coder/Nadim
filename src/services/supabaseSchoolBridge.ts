@@ -92,6 +92,48 @@ const cleanPath = (raw: string): string =>
 const EMPTY_CHECK_TTL_MS = 8 * 60 * 1000;
 const checkedEmptyCollections = new Map<string, number>();
 const checkedEmptyDocs = new Map<string, number>();
+const migratedCollectionsMem = new Set<string>();
+const inflightColMigrations = new Map<string, Promise<void>>();
+
+const getMigrationMetaPath = (colPath: string) =>
+  `_migration_meta/${cleanPath(colPath).replace(/\//g, '__')}`;
+
+async function hasCollectionBackfilledFromFirestore(colPath: string): Promise<boolean> {
+  if (migratedCollectionsMem.has(colPath)) return true;
+  try {
+    if (typeof localStorage !== 'undefined' && localStorage.getItem(`nst_sb_migrated_${colPath}`) === '1') {
+      migratedCollectionsMem.add(colPath);
+      return true;
+    }
+  } catch {}
+  try {
+    const meta = await sbGetDocument<{ migratedAt?: string }>(getMigrationMetaPath(colPath));
+    if (meta?.migratedAt) {
+      migratedCollectionsMem.add(colPath);
+      try {
+        if (typeof localStorage !== 'undefined') {
+          localStorage.setItem(`nst_sb_migrated_${colPath}`, '1');
+        }
+      } catch {}
+      return true;
+    }
+  } catch {}
+  return false;
+}
+
+function markCollectionBackfilled(colPath: string, count: number) {
+  migratedCollectionsMem.add(colPath);
+  try {
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem(`nst_sb_migrated_${colPath}`, '1');
+    }
+  } catch {}
+  void sbSetDocument(
+    getMigrationMetaPath(colPath),
+    { migratedAt: new Date().toISOString(), count },
+    false
+  );
+}
 
 const markPathNonEmpty = (path: string) => {
   const parts = cleanPath(path).split('/');
@@ -286,6 +328,37 @@ export async function sbBridgeGetDocs(colRef: SbColRef): Promise<SbQuerySnap> {
     }
 
     if (Array.isArray(allRows) && allRows.length > 0) {
+      if (db && !(await hasCollectionBackfilledFromFirestore(colRef.path))) {
+        let migrationTask = inflightColMigrations.get(colRef.path);
+        if (!migrationTask) {
+          migrationTask = (async () => {
+            try {
+              const snap = await fsGetDocs(fsCollection(db, colRef.path));
+              const existingIds = new Set(allRows!.map((r) => r.id));
+              const missingRows = snap.docs
+                .map((docItem) => ({ id: docItem.id, data: docItem.data() as Record<string, any> }))
+                .filter((r) => r.id && !existingIds.has(r.id));
+              if (missingRows.length > 0) {
+                allRows!.push(...missingRows);
+                if (colRef.path === 'schools') {
+                  missingRows.forEach((r) => void sbSaveSchool(r.id, r.data, true));
+                } else if (colRef.path === 'users') {
+                  missingRows.forEach((r) => void sbSaveUser({ ...r.data, id: r.id }, true));
+                } else {
+                  await sbBatchSetDocuments(
+                    missingRows.map((r) => ({ path: `${colRef.path}/${r.id}`, data: r.data }))
+                  );
+                }
+              }
+              markCollectionBackfilled(colRef.path, allRows!.length);
+            } catch {} finally {
+              inflightColMigrations.delete(colRef.path);
+            }
+          })();
+          inflightColMigrations.set(colRef.path, migrationTask);
+        }
+        await migrationTask;
+      }
       return makeQuerySnap(matchesConstraints(allRows, colRef));
     }
   }
@@ -313,6 +386,7 @@ export async function sbBridgeGetDocs(colRef: SbColRef): Promise<SbQuerySnap> {
               fsRows.map((r) => ({ path: `${colRef.path}/${r.id}`, data: r.data }))
             );
           }
+          markCollectionBackfilled(colRef.path, fsRows.length);
         }
         return makeQuerySnap(matchesConstraints(fsRows, colRef));
       }

@@ -4,7 +4,7 @@ import { clientsClaim } from 'workbox-core';
 import { ExpirationPlugin } from 'workbox-expiration';
 import { precacheAndRoute } from 'workbox-precaching';
 import { registerRoute } from 'workbox-routing';
-import { CacheFirst, StaleWhileRevalidate } from 'workbox-strategies';
+import { CacheFirst, NetworkFirst, StaleWhileRevalidate } from 'workbox-strategies';
 
 declare const self: ServiceWorkerGlobalScope & {
   __WB_MANIFEST: Array<unknown>;
@@ -38,14 +38,44 @@ registerRoute(
   })
 );
 
-// Runtime caching for images & icons
+// Runtime caching for Telegram / Media Vault images: only cache verified 200 image/* responses
 registerRoute(
   ({ request, url }) =>
     url.origin === self.location.origin &&
+    url.pathname === '/api/telegram/file' &&
     request.destination === 'image',
+  new NetworkFirst({
+    cacheName: 'nsta-tg-images-v1',
+    networkTimeoutSeconds: 8,
+    plugins: [
+      {
+        cacheWillUpdate: async ({ response }) => {
+          if (!response || response.status !== 200) return null;
+          const ct = (response.headers.get('content-type') || '').toLowerCase();
+          return ct.startsWith('image/') ? response : null;
+        },
+      },
+      new ExpirationPlugin({
+        maxEntries: 120,
+        maxAgeSeconds: 14 * 24 * 60 * 60,
+      }),
+    ],
+  })
+);
+
+// Runtime caching for static app images & icons (never intercept /api/ endpoints)
+registerRoute(
+  ({ request, url }) =>
+    url.origin === self.location.origin &&
+    request.destination === 'image' &&
+    !url.pathname.startsWith('/api/'),
   new StaleWhileRevalidate({
     cacheName: 'nsta-images-v1',
     plugins: [
+      {
+        cacheWillUpdate: async ({ response }) =>
+          response && response.status === 200 ? response : null,
+      },
       new ExpirationPlugin({
         maxEntries: 60,
         maxAgeSeconds: 14 * 24 * 60 * 60,
