@@ -40,6 +40,7 @@ import {
   invalidateTelegramFilePathCache,
   isSafeTelegramFilePath,
   detectMimeType,
+  TELEGRAM_MAX_PLAYABLE_BYTES,
 } from "./api/_telegramProxy.js";
 import {
   deleteFcmTokenFromSupabase,
@@ -48,7 +49,11 @@ import {
   fetchWebpushDuesFromSupabase,
   fetchWebpushSubsFromSupabase,
   getWebpushSubFromSupabase,
+  isValidTelegramStageId,
+  purgeTelegramStaging,
   readMediaVaultSlice,
+  readTelegramStagingChunks,
+  saveTelegramStagingChunk,
   supabaseServerKeepalive,
   upsertFcmTokenInSupabase,
   upsertWebpushDueInSupabase,
@@ -1686,6 +1691,74 @@ async function startServer() {
       }
     }
   );
+
+  app.post(
+    "/api/telegram/stage-chunk",
+    express.raw({ type: () => true, limit: "3mb" }),
+    async (req, res) => {
+      try {
+        const uploadId = String(req.headers?.["x-upload-id"] || req.query?.uploadId || "").trim();
+        const chunkIndex = Number(req.headers?.["x-chunk-index"] ?? req.query?.chunkIndex);
+        if (!isValidTelegramStageId(uploadId)) {
+          return res.status(400).json({ ok: false, error: "Invalid uploadId" });
+        }
+        if (!Number.isInteger(chunkIndex) || chunkIndex < 0 || chunkIndex >= 40) {
+          return res.status(400).json({ ok: false, error: "Invalid chunkIndex" });
+        }
+        const parsed = await readUploadPayloadFromRequest(req);
+        if ("error" in parsed) {
+          return res.status(parsed.status).json({ ok: false, error: parsed.error });
+        }
+        const saved = await saveTelegramStagingChunk({
+          uploadId,
+          chunkIndex,
+          buffer: parsed.buffer,
+        });
+        if (!saved) {
+          return res.status(502).json({ ok: false, error: "Failed to stage Telegram upload chunk" });
+        }
+        return res.status(200).json({ ok: true, uploadId, chunkIndex, size: parsed.buffer.length });
+      } catch (err: any) {
+        return res.status(500).json({ ok: false, error: err?.message || "Stage chunk error" });
+      }
+    }
+  );
+
+  app.post("/api/telegram/stage-commit", async (req, res) => {
+    const body = req.body && typeof req.body === "object" ? req.body : {};
+    const uploadId = String(body.uploadId || "").trim();
+    const chunkCount = Number(body.chunkCount || 0);
+    if (!isValidTelegramStageId(uploadId)) {
+      return res.status(400).json({ ok: false, error: "Invalid uploadId" });
+    }
+    try {
+      const assembled = await readTelegramStagingChunks({
+        uploadId,
+        chunkCount,
+        maxBytes: TELEGRAM_MAX_PLAYABLE_BYTES,
+      });
+      if ("error" in assembled) {
+        return res.status(assembled.status).json({ ok: false, error: assembled.error });
+      }
+      const fallbackChatIds = Array.isArray(body.fallbackChatIds)
+        ? body.fallbackChatIds.map((s: any) => String(s || "").trim()).filter(Boolean)
+        : undefined;
+      const result = await uploadBufferToTelegram({
+        buffer: assembled.buffer,
+        fileName: String(body.fileName || `video_${Date.now()}.mp4`),
+        mimeType: body.mimeType ? String(body.mimeType) : undefined,
+        caption: body.caption ? String(body.caption) : undefined,
+        chatId: body.chatId ? String(body.chatId).trim() : undefined,
+        fallbackChatIds,
+        allowVaultFallback: body.allowVaultFallback !== false,
+      });
+      return res.status(result.ok ? 200 : result.status).json(result);
+    } catch (err: any) {
+      return res.status(500).json({ ok: false, error: err?.message || "Stage commit error" });
+    } finally {
+      await purgeTelegramStaging(uploadId);
+    }
+  });
 
   app.post("/api/telegram/sendMessage", async (req, res) => {
     const token = resolveTelegramBotToken();

@@ -312,6 +312,95 @@ export async function patchKvDocInSupabase(
   return upsertKvDocInSupabase(docPath, { ...existing, ...patch }, explicitSchoolId);
 }
 
+export async function deleteKvCollectionFromSupabase(
+  collectionPath: string,
+  timeoutMs = 8000
+): Promise<boolean> {
+  const cleanCol = String(collectionPath || "").trim();
+  if (!cleanCol) return false;
+  const res = await sbRestFetch(
+    `kv_documents?collection_path=eq.${encodeURIComponent(cleanCol)}`,
+    { method: "DELETE" },
+    timeoutMs
+  );
+  return Boolean(res?.ok);
+}
+
+const TG_STAGE_ID_RE = /^tgs_[A-Za-z0-9_-]{6,64}$/;
+
+export function isValidTelegramStageId(uploadId?: string | null): boolean {
+  return Boolean(uploadId && TG_STAGE_ID_RE.test(String(uploadId).trim()));
+}
+
+export async function saveTelegramStagingChunk(opts: {
+  uploadId: string;
+  chunkIndex: number;
+  buffer: Buffer;
+}): Promise<boolean> {
+  if (!isValidTelegramStageId(opts.uploadId)) return false;
+  if (!Number.isInteger(opts.chunkIndex) || opts.chunkIndex < 0 || opts.chunkIndex >= 40) return false;
+  if (!opts.buffer || opts.buffer.length === 0) return false;
+  return upsertKvDocInSupabase(
+    `tg_stage/${opts.uploadId}/chunk_${opts.chunkIndex}`,
+    {
+      index: opts.chunkIndex,
+      size: opts.buffer.length,
+      data: opts.buffer.toString("base64"),
+      createdAt: new Date().toISOString(),
+    },
+    "_tg_stage",
+    15000
+  );
+}
+
+export async function readTelegramStagingChunks(opts: {
+  uploadId: string;
+  chunkCount: number;
+  maxBytes: number;
+}): Promise<{ ok: true; buffer: Buffer } | { ok: false; status: number; error: string }> {
+  if (!isValidTelegramStageId(opts.uploadId)) {
+    return { ok: false, status: 400, error: "Invalid staging uploadId" };
+  }
+  const count = Number(opts.chunkCount);
+  if (!Number.isInteger(count) || count < 1 || count > 40) {
+    return { ok: false, status: 400, error: "Invalid chunkCount" };
+  }
+
+  const buffers: Buffer[] = new Array(count);
+  let totalBytes = 0;
+
+  for (let i = 0; i < count; i += 4) {
+    const batch = Array.from({ length: Math.min(4, count - i) }, (_, offset) => i + offset);
+    const docs = await Promise.all(
+      batch.map((idx) =>
+        getKvDocFromSupabase<{ data?: string }>(`tg_stage/${opts.uploadId}/chunk_${idx}`, 12000)
+      )
+    );
+    for (let j = 0; j < batch.length; j++) {
+      const idx = batch[j];
+      const doc = docs[j];
+      if (!doc?.data) {
+        return { ok: false, status: 404, error: `Missing staging chunk ${idx}` };
+      }
+      const buf = Buffer.from(doc.data, "base64");
+      totalBytes += buf.length;
+      if (totalBytes > opts.maxBytes) {
+        return { ok: false, status: 413, error: "File 19.5MB limit se badi hai." };
+      }
+      buffers[idx] = buf;
+    }
+  }
+
+  return { ok: true, buffer: Buffer.concat(buffers) };
+}
+
+export async function purgeTelegramStaging(uploadId: string): Promise<void> {
+  if (!isValidTelegramStageId(uploadId)) return;
+  try {
+    await deleteKvCollectionFromSupabase(`tg_stage/${uploadId}`, 8000);
+  } catch {}
+}
+
 // ── MEDIA VAULT FALLBACK STORE (Handles Telegram 429 FloodWait & >4.5MB uploads) ──
 
 const MEDIA_VAULT_CHUNK_BYTES = 512 * 1024; // 512 KB raw binary per chunk

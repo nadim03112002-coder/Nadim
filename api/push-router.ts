@@ -36,6 +36,7 @@ import {
   invalidateTelegramFilePathCache,
   isSafeTelegramFilePath,
   detectMimeType,
+  TELEGRAM_MAX_PLAYABLE_BYTES,
 } from "./_telegramProxy.js";
 import {
   deleteFcmTokenFromSupabase,
@@ -44,7 +45,11 @@ import {
   fetchWebpushDuesFromSupabase,
   fetchWebpushSubsFromSupabase,
   getWebpushSubFromSupabase,
+  isValidTelegramStageId,
+  purgeTelegramStaging,
   readMediaVaultSlice,
+  readTelegramStagingChunks,
+  saveTelegramStagingChunk,
   supabaseServerKeepalive,
   upsertFcmTokenInSupabase,
   upsertWebpushDueInSupabase,
@@ -1096,6 +1101,67 @@ export default async function handler(req: any, res: any) {
       return res.status(result.ok ? 200 : result.status).json(result);
     }
 
+    if (method === "POST" && rawPath === "telegram/stage-chunk") {
+      const uploadId = String(req.headers?.["x-upload-id"] || req.query?.uploadId || "").trim();
+      const chunkIndex = Number(req.headers?.["x-chunk-index"] ?? req.query?.chunkIndex);
+      if (!isValidTelegramStageId(uploadId)) {
+        return res.status(400).json({ ok: false, error: "Invalid uploadId" });
+      }
+      if (!Number.isInteger(chunkIndex) || chunkIndex < 0 || chunkIndex >= 40) {
+        return res.status(400).json({ ok: false, error: "Invalid chunkIndex" });
+      }
+      const parsed = await readUploadPayloadFromRequest(req);
+      if ("error" in parsed) {
+        return res.status(parsed.status).json({ ok: false, error: parsed.error });
+      }
+      if (parsed.buffer.length > Math.floor(2.6 * 1024 * 1024)) {
+        return res.status(413).json({ ok: false, error: "Chunk size too large" });
+      }
+      const saved = await saveTelegramStagingChunk({
+        uploadId,
+        chunkIndex,
+        buffer: parsed.buffer,
+      });
+      if (!saved) {
+        return res.status(502).json({ ok: false, error: "Failed to stage Telegram upload chunk" });
+      }
+      return res.status(200).json({ ok: true, uploadId, chunkIndex, size: parsed.buffer.length });
+    }
+
+    if (method === "POST" && rawPath === "telegram/stage-commit") {
+      const body = req.body && typeof req.body === "object" ? req.body : {};
+      const uploadId = String(body.uploadId || "").trim();
+      const chunkCount = Number(body.chunkCount || 0);
+      if (!isValidTelegramStageId(uploadId)) {
+        return res.status(400).json({ ok: false, error: "Invalid uploadId" });
+      }
+      try {
+        const assembled = await readTelegramStagingChunks({
+          uploadId,
+          chunkCount,
+          maxBytes: TELEGRAM_MAX_PLAYABLE_BYTES,
+        });
+        if ("error" in assembled) {
+          return res.status(assembled.status).json({ ok: false, error: assembled.error });
+        }
+        const fallbackChatIds = Array.isArray(body.fallbackChatIds)
+          ? body.fallbackChatIds.map((s: any) => String(s || "").trim()).filter(Boolean)
+          : undefined;
+        const result = await uploadBufferToTelegram({
+          buffer: assembled.buffer,
+          fileName: String(body.fileName || `video_${Date.now()}.mp4`),
+          mimeType: body.mimeType ? String(body.mimeType) : undefined,
+          caption: body.caption ? String(body.caption) : undefined,
+          chatId: body.chatId ? String(body.chatId).trim() : undefined,
+          fallbackChatIds,
+          allowVaultFallback: body.allowVaultFallback !== false,
+        });
+        return res.status(result.ok ? 200 : result.status).json(result);
+      } finally {
+        await purgeTelegramStaging(uploadId);
+      }
+    }
+
     if (method === "POST" && rawPath === "telegram/sendMessage") {
       const token = resolveTelegramBotToken();
       if (!token) {
@@ -1203,21 +1269,45 @@ export default async function handler(req: any, res: any) {
         return res.status(400).json({ error: "Missing or invalid path" });
       }
 
-      const isTooLargeForServerlessBuffer = typeof knownFileSize === "number" && knownFileSize > 3.5 * 1024 * 1024;
-      if (isTooLargeForServerlessBuffer) {
-        // Never cache ephemeral Telegram CDN redirect URLs
-        res.setHeader("Cache-Control", "no-store");
-        return res.redirect(302, `https://api.telegram.org/file/bot${token}/${filePath}`);
-      }
+      const SERVERLESS_STREAM_SLICE_BYTES = 2 * 1024 * 1024;
+      const clampRangeHeader = (rawRange: string | undefined, totalKnown?: number): string | undefined => {
+        if (rawRange && rawRange.startsWith("bytes=")) {
+          const spec = rawRange.slice(6).split(",")[0].trim();
+          const [rawStart, rawEnd] = spec.split("-");
+          if (rawStart !== "") {
+            const start = Number(rawStart);
+            if (Number.isFinite(start) && start >= 0) {
+              const maxEnd = start + SERVERLESS_STREAM_SLICE_BYTES - 1;
+              const requestedEnd = rawEnd ? Number(rawEnd) : maxEnd;
+              const boundedEnd = Number.isFinite(requestedEnd)
+                ? Math.min(requestedEnd, maxEnd)
+                : maxEnd;
+              const finalEnd =
+                typeof totalKnown === "number" && totalKnown > 0
+                  ? Math.min(totalKnown - 1, boundedEnd)
+                  : boundedEnd;
+              return `bytes=${start}-${Math.max(start, finalEnd)}`;
+            }
+          }
+          return rawRange;
+        }
+        if (typeof totalKnown === "number" && totalKnown > 3.2 * 1024 * 1024) {
+          return `bytes=0-${Math.min(totalKnown - 1, SERVERLESS_STREAM_SLICE_BYTES - 1)}`;
+        }
+        return undefined;
+      };
+
+      const incomingRange = req.headers?.range ? String(req.headers.range) : undefined;
 
       try {
-        const fetchTarget = async (targetPath: string) => {
+        const fetchTarget = async (targetPath: string, totalKnown?: number) => {
           const headers: Record<string, string> = {};
-          if (req.headers?.range) {
-            headers["Range"] = String(req.headers.range);
+          const effectiveRange = clampRangeHeader(incomingRange, totalKnown);
+          if (effectiveRange) {
+            headers["Range"] = effectiveRange;
           }
           const controller = new AbortController();
-          const timer = setTimeout(() => controller.abort(), 9000);
+          const timer = setTimeout(() => controller.abort(), 12000);
           try {
             const r = await fetch(`https://api.telegram.org/file/bot${token}/${targetPath}`, {
               headers,
@@ -1231,13 +1321,14 @@ export default async function handler(req: any, res: any) {
           }
         };
 
-        let tgFileRes = await fetchTarget(filePath);
+        let tgFileRes = await fetchTarget(filePath, knownFileSize);
         if (!tgFileRes.ok && tgFileRes.status !== 206 && fileId) {
           invalidateTelegramFilePathCache(fileId, token);
           const refreshed = await resolveTelegramFilePath(fileId, token, true);
           if (!("error" in refreshed)) {
             filePath = refreshed.filePath;
-            tgFileRes = await fetchTarget(filePath);
+            knownFileSize = refreshed.fileSize;
+            tgFileRes = await fetchTarget(filePath, knownFileSize);
           }
         }
 
@@ -1246,10 +1337,11 @@ export default async function handler(req: any, res: any) {
           return res.status(tgFileRes.status || 404).json({ error: "Telegram file unavailable" });
         }
 
+        // If Telegram ignored Range or returned >3.5MB without knownFileSize, re-fetch a safe 2MB slice
         const contentLenHeader = Number(tgFileRes.headers.get("content-length") || 0);
         if (contentLenHeader > 3.5 * 1024 * 1024) {
-          res.setHeader("Cache-Control", "no-store");
-          return res.redirect(302, `https://api.telegram.org/file/bot${token}/${filePath}`);
+          try { await tgFileRes.body?.cancel(); } catch {}
+          tgFileRes = await fetchTarget(filePath, contentLenHeader);
         }
 
         const buf = Buffer.from(await tgFileRes.arrayBuffer());

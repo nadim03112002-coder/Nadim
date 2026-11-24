@@ -133,11 +133,17 @@ const FILE_ID_RE = /^[A-Za-z0-9_=-]{8,300}$/;
 const FILE_PATH_RE = /^[A-Za-z0-9_./-]{1,300}$/;
 const CHAT_ID_RE = /^-?\d{5,20}$|^@[A-Za-z][A-Za-z0-9_]{3,63}$/;
 
-// Legacy chat IDs tied to the older bot setup; never auto-fallback to them when env is unset
-const LEGACY_CHAT_IDS = new Set(["7849468653", "-1004290996442"]);
+// Working chat cache per bot token to avoid failing on unreachable channels repeatedly
+const WORKING_CHAT_CACHE = new Map<string, { chatId: string; expiresAt: number }>();
+const WORKING_CHAT_TTL_MS = 15 * 60 * 1000;
 
 // Telegram Bot API allows sendDocument up to 50MB, but getFile strictly fails above 20MB.
 export const TELEGRAM_MAX_PLAYABLE_BYTES = Math.floor(19.5 * 1024 * 1024);
+export const TELEGRAM_SERVERLESS_DIRECT_BYTES = Math.floor(3.5 * 1024 * 1024);
+
+export function getTelegramMaxDirectUploadBytes(): number {
+  return IS_SERVERLESS ? TELEGRAM_SERVERLESS_DIRECT_BYTES : TELEGRAM_MAX_PLAYABLE_BYTES;
+}
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -252,6 +258,11 @@ export function getTelegramTokenDiagnostics(): {
 export function normalizeTelegramChatId(chatId?: string | null): string {
   const cleaned = cleanEnvValue(chatId);
   if (!cleaned) return "";
+  // Extract channel ID from links like https://t.me/boost?c=3994854940 or https://t.me/c/3994854940/1
+  const urlMatch = cleaned.match(/t\.me\/(?:boost\?(?:[^#]*&)?c=|c\/)(\d{6,16})/i);
+  if (urlMatch?.[1]) {
+    return `-100${urlMatch[1]}`;
+  }
   // Telegram channels & supergroups always start with -100; recover common typo "1003945418652" -> "-1003945418652"
   if (/^100\d{9,15}$/.test(cleaned)) {
     return `-${cleaned}`;
@@ -264,22 +275,36 @@ export function isValidTelegramChatId(chatId?: string | null): boolean {
   return Boolean(clean && CHAT_ID_RE.test(clean));
 }
 
-export function getConfiguredTelegramStorageChatId(): string {
-  const envCandidates = [
+function splitAndNormalizeChatIds(rawValues: Array<string | null | undefined>): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const raw of rawValues) {
+    const pieces = String(raw || "")
+      .split(/[\s,;]+/)
+      .map((p) => normalizeTelegramChatId(p))
+      .filter((id) => Boolean(id) && CHAT_ID_RE.test(id));
+    for (const id of pieces) {
+      if (!seen.has(id)) {
+        seen.add(id);
+        out.push(id);
+      }
+    }
+  }
+  const priority = (id: string) => (id.startsWith("-100") ? 0 : id.startsWith("-") ? 1 : 2);
+  return out.sort((a, b) => priority(a) - priority(b));
+}
+
+export function getConfiguredTelegramStorageChatIds(): string[] {
+  return splitAndNormalizeChatIds([
     process.env.TELEGRAM_STORAGE_CHAT_ID,
     process.env.TELEGRAM_CHAT_CHANNEL_ID,
-    process.env.VITE_TELEGRAM_STORAGE_CHAT_ID,
     process.env.VITE_TELEGRAM_CHAT_CHANNEL_ID,
-  ]
-    .map((raw) => normalizeTelegramChatId(raw))
-    .filter((id) => Boolean(id) && CHAT_ID_RE.test(id));
+    process.env.VITE_TELEGRAM_STORAGE_CHAT_ID,
+  ]);
+}
 
-  if (envCandidates.length === 0) return "";
-  // Prefer channel/supergroup IDs (-100...) over plain numeric IDs when multiple env vars are present
-  const channelId = envCandidates.find((id) => id.startsWith("-100"));
-  if (channelId) return channelId;
-  const negativeId = envCandidates.find((id) => id.startsWith("-"));
-  return negativeId || envCandidates[0];
+export function getConfiguredTelegramStorageChatId(): string {
+  return getConfiguredTelegramStorageChatIds()[0] || "";
 }
 
 export function isValidTelegramFileId(fileId?: string | null): boolean {
@@ -348,24 +373,52 @@ export async function discoverTelegramStorageChats(
   }
 }
 
+export async function resolveTelegramStorageChatCandidates(
+  token: string,
+  requestedChatIds?: Array<string | null | undefined>,
+  includeDiscovered = false
+): Promise<string[]> {
+  const ordered: string[] = [];
+  const seen = new Set<string>();
+  const addId = (raw?: string | null) => {
+    const id = normalizeTelegramChatId(raw);
+    if (id && CHAT_ID_RE.test(id) && !seen.has(id)) {
+      seen.add(id);
+      ordered.push(id);
+    }
+  };
+
+  const cacheKey = token ? token.slice(0, 12) : "";
+  const workingCached = cacheKey ? WORKING_CHAT_CACHE.get(cacheKey) : null;
+  if (workingCached && workingCached.expiresAt > Date.now()) {
+    addId(workingCached.chatId);
+  }
+
+  for (const id of getConfiguredTelegramStorageChatIds()) {
+    addId(id);
+  }
+
+  const clientSorted = splitAndNormalizeChatIds(requestedChatIds || []);
+  for (const id of clientSorted) {
+    addId(id);
+  }
+
+  if (includeDiscovered || ordered.length === 0) {
+    const discovered = await discoverTelegramStorageChats(token);
+    for (const c of discovered) {
+      addId(c.id);
+    }
+  }
+
+  return ordered;
+}
+
 export async function resolveTelegramStorageChatId(
   token: string,
   requestedChatId?: string | null
 ): Promise<string> {
-  const configured = getConfiguredTelegramStorageChatId();
-  if (configured) return configured;
-
-  const candidate = normalizeTelegramChatId(requestedChatId);
-  if (candidate && CHAT_ID_RE.test(candidate) && !LEGACY_CHAT_IDS.has(candidate)) {
-    return candidate;
-  }
-
-  const discovered = await discoverTelegramStorageChats(token);
-  if (discovered.length > 0) {
-    return discovered[0].id;
-  }
-
-  return "";
+  const candidates = await resolveTelegramStorageChatCandidates(token, [requestedChatId], false);
+  return candidates[0] || "";
 }
 
 export async function resolveTelegramFilePath(
@@ -459,11 +512,13 @@ export async function getTelegramBotHealth(token: string): Promise<{
   status: number;
   body: Record<string, any>;
 }> {
-  const configuredChatId = getConfiguredTelegramStorageChatId();
+  const configuredChatIds = getConfiguredTelegramStorageChatIds();
+  const configuredChatId = configuredChatIds[0] || "";
+  const maxDirectUploadBytes = getTelegramMaxDirectUploadBytes();
   const cacheKey = token.slice(0, 12);
   const cached = BOT_HEALTH_CACHE.get(cacheKey);
   if (cached && cached.expiresAt > Date.now()) {
-    const discoveredChats = !configuredChatId ? await discoverTelegramStorageChats(token) : [];
+    const discoveredChats = configuredChatIds.length === 0 ? await discoverTelegramStorageChats(token) : [];
     return {
       status: 200,
       body: {
@@ -473,6 +528,8 @@ export async function getTelegramBotHealth(token: string): Promise<{
         bot: cached.bot,
         hasStorageChatId: Boolean(configuredChatId || discoveredChats.length > 0),
         storageChatConfigured: Boolean(configuredChatId),
+        storageChatCount: configuredChatIds.length,
+        maxDirectUploadBytes,
         discoveredChats: discoveredChats.slice(0, 5),
       },
     };
@@ -529,6 +586,8 @@ export async function getTelegramBotHealth(token: string): Promise<{
           : undefined,
         hasStorageChatId: Boolean(configuredChatId || discoveredChats.length > 0),
         storageChatConfigured: Boolean(configuredChatId),
+        storageChatCount: configuredChatIds.length,
+        maxDirectUploadBytes,
         discoveredChats: discoveredChats.slice(0, 5),
         ...(data?.parameters?.retry_after ? { retryAfter: Number(data.parameters.retry_after) } : {}),
         error: data?.description,
@@ -554,6 +613,7 @@ export async function readUploadPayloadFromRequest(req: any): Promise<{
   mimeType: string;
   caption?: string;
   chatId?: string;
+  fallbackChatIds?: string[];
 } | { error: string; status: number }> {
   const headerFileName = req.headers?.["x-file-name"]
     ? decodeURIComponent(String(req.headers["x-file-name"]))
@@ -563,6 +623,12 @@ export async function readUploadPayloadFromRequest(req: any): Promise<{
     : undefined;
   const headerChatId = req.headers?.["x-chat-id"]
     ? String(req.headers["x-chat-id"]).trim()
+    : undefined;
+  const headerChatFallbacks = req.headers?.["x-chat-fallbacks"]
+    ? String(req.headers["x-chat-fallbacks"])
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean)
     : undefined;
   const headerMime = String(req.headers?.["x-mime-type"] || req.headers?.["content-type"] || "")
     .split(";")[0]
@@ -575,6 +641,7 @@ export async function readUploadPayloadFromRequest(req: any): Promise<{
       mimeType: headerMime || "application/octet-stream",
       caption: headerCaption,
       chatId: headerChatId,
+      fallbackChatIds: headerChatFallbacks,
     };
   }
 
@@ -585,6 +652,7 @@ export async function readUploadPayloadFromRequest(req: any): Promise<{
       mimeType: headerMime || "application/octet-stream",
       caption: headerCaption,
       chatId: headerChatId,
+      fallbackChatIds: headerChatFallbacks,
     };
   }
 
@@ -594,12 +662,16 @@ export async function readUploadPayloadFromRequest(req: any): Promise<{
     const mimeType = match?.[1] || String(req.body.mimeType || headerMime || "application/octet-stream");
     const b64 = match?.[2] || rawData;
     const buffer = Buffer.from(b64, "base64");
+    const bodyFallbacks = Array.isArray(req.body.fallbackChatIds)
+      ? req.body.fallbackChatIds.map((s: any) => String(s || "").trim()).filter(Boolean)
+      : headerChatFallbacks;
     return {
       buffer,
       fileName: String(req.body.fileName || headerFileName || `upload_${Date.now()}.bin`),
       mimeType,
       caption: req.body.caption ? String(req.body.caption) : headerCaption,
       chatId: req.body.chatId ? String(req.body.chatId).trim() : headerChatId,
+      fallbackChatIds: bodyFallbacks,
     };
   }
 
@@ -610,6 +682,7 @@ export async function readUploadPayloadFromRequest(req: any): Promise<{
       mimeType: headerMime || "application/octet-stream",
       caption: headerCaption,
       chatId: headerChatId,
+      fallbackChatIds: headerChatFallbacks,
     };
   }
 
@@ -651,6 +724,9 @@ export async function readUploadPayloadFromRequest(req: any): Promise<{
         mimeType,
         caption: parsed?.caption ? String(parsed.caption) : headerCaption,
         chatId: parsed?.chatId ? String(parsed.chatId).trim() : headerChatId,
+        fallbackChatIds: Array.isArray(parsed?.fallbackChatIds)
+          ? parsed.fallbackChatIds.map((s: any) => String(s || "").trim()).filter(Boolean)
+          : headerChatFallbacks,
       };
     } catch {
       return { error: "Invalid JSON upload payload", status: 400 };
@@ -663,6 +739,7 @@ export async function readUploadPayloadFromRequest(req: any): Promise<{
     mimeType: headerMime || "application/octet-stream",
     caption: headerCaption,
     chatId: headerChatId,
+    fallbackChatIds: headerChatFallbacks,
   };
 }
 
@@ -672,6 +749,8 @@ export async function uploadBufferToTelegram(opts: {
   mimeType?: string;
   caption?: string;
   chatId?: string;
+  fallbackChatIds?: string[];
+  allowVaultFallback?: boolean;
 }): Promise<
   | {
       ok: true;
@@ -680,7 +759,9 @@ export async function uploadBufferToTelegram(opts: {
       fileName: string;
       fileSize: number;
       mimeType: string;
-      storage?: "telegram" | "vault";
+      storage: "telegram" | "vault";
+      chatId?: string;
+      telegramFallbackReason?: string;
     }
   | { ok: false; status: number; error: string; retryAfter?: number }
 > {
@@ -704,7 +785,8 @@ export async function uploadBufferToTelegram(opts: {
     sampleBytes: opts.buffer,
   });
 
-  const tryVaultFallback = async (): Promise<{
+  const allowVault = opts.allowVaultFallback !== false;
+  const tryVaultFallback = async (reason: string): Promise<{
     ok: true;
     url: string;
     fileId: string;
@@ -712,7 +794,9 @@ export async function uploadBufferToTelegram(opts: {
     fileSize: number;
     mimeType: string;
     storage: "vault";
+    telegramFallbackReason: string;
   } | null> => {
+    if (!allowVault) return null;
     try {
       const saved = await saveMediaVaultToSupabase({
         buffer: opts.buffer,
@@ -729,6 +813,7 @@ export async function uploadBufferToTelegram(opts: {
           fileSize: opts.buffer.length,
           mimeType: detectedMime,
           storage: "vault",
+          telegramFallbackReason: reason,
         };
       }
     } catch {}
@@ -737,7 +822,7 @@ export async function uploadBufferToTelegram(opts: {
 
   const token = resolveTelegramBotToken();
   if (!token) {
-    const vaultRes = await tryVaultFallback();
+    const vaultRes = await tryVaultFallback("missing_telegram_bot_token");
     if (vaultRes) return vaultRes;
     return {
       ok: false,
@@ -746,24 +831,28 @@ export async function uploadBufferToTelegram(opts: {
     };
   }
 
-  const targetChatId = await resolveTelegramStorageChatId(token, opts.chatId);
-  if (!targetChatId) {
-    const vaultRes = await tryVaultFallback();
+  const requestedList = [opts.chatId, ...(opts.fallbackChatIds || [])];
+  let chatCandidates = await resolveTelegramStorageChatCandidates(token, requestedList, false);
+  if (chatCandidates.length === 0) {
+    chatCandidates = await resolveTelegramStorageChatCandidates(token, requestedList, true);
+  }
+  if (chatCandidates.length === 0) {
+    const vaultRes = await tryVaultFallback("no_storage_chat_id");
     if (vaultRes) return vaultRes;
     return {
       ok: false,
       status: 400,
       error:
-        "TELEGRAM_STORAGE_CHAT_ID set nahi hai. Apne naye channel me @LmpsschoolappBot ko Admin banakar ek test message bhejein ya Settings -> Secrets me TELEGRAM_STORAGE_CHAT_ID add karein.",
+        "TELEGRAM_STORAGE_CHAT_ID set nahi hai. Apne Telegram channel me bot ko Admin banakar ek test message bhejein ya Vercel Env Vars check karein.",
     };
   }
 
-  // If Telegram is in an active long FloodWait (>6s left), do not hammer Telegram again; route directly to Vault
+  // Wait briefly if Telegram is in an active short FloodWait (<=12s), only skip to Vault if FloodWait > 12s
   const activeFloodRemainingMs = telegramFloodWaitUntilMs - Date.now();
-  if (activeFloodRemainingMs > 6000) {
-    const vaultRes = await tryVaultFallback();
-    if (vaultRes) return vaultRes;
+  if (activeFloodRemainingMs > 12000) {
     const retrySec = Math.ceil(activeFloodRemainingMs / 1000);
+    const vaultRes = await tryVaultFallback(`flood_wait_${retrySec}s`);
+    if (vaultRes) return vaultRes;
     return {
       ok: false,
       status: 429,
@@ -772,111 +861,148 @@ export async function uploadBufferToTelegram(opts: {
     };
   }
 
-  const fields: Array<{ name: string; value: string }> = [{ name: "chat_id", value: targetChatId }];
-  if (opts.caption) {
-    fields.push({ name: "caption", value: String(opts.caption).slice(0, 1000) });
-  }
-  const multipart = buildMultipartFormPayload(fields, {
-    name: "document",
-    fileName: safeName,
-    mimeType: detectedMime,
-    buffer: opts.buffer,
-  });
+  let lastStatus = 502;
+  let lastDesc = "Telegram upload fail ho gaya.";
+  let lastRetryAfter: number | undefined;
+  let discoveredAppended = false;
 
-  const sendAttempt = async () => {
-    return enqueueTelegramSend(async () => {
-      const remaining = telegramFloodWaitUntilMs - Date.now();
-      if (remaining > 0 && remaining <= 6500) {
-        await sleep(remaining + 200);
-      }
-      return telegramBotApiRequest<any>({
-        token,
-        methodPath: "sendDocument",
-        httpMethod: "POST",
-        body: multipart.body,
-        headers: { "Content-Type": multipart.contentType },
-        timeoutMs: 22000,
-      });
+  const attemptSendToChat = async (targetChatId: string) => {
+    const fields: Array<{ name: string; value: string }> = [{ name: "chat_id", value: targetChatId }];
+    if (opts.caption) {
+      fields.push({ name: "caption", value: String(opts.caption).slice(0, 1000) });
+    }
+    const multipart = buildMultipartFormPayload(fields, {
+      name: "document",
+      fileName: safeName,
+      mimeType: detectedMime,
+      buffer: opts.buffer,
     });
-  };
 
-  try {
-    let { status, ok, json } = await sendAttempt();
+    const sendOnce = () =>
+      enqueueTelegramSend(async () => {
+        const remaining = telegramFloodWaitUntilMs - Date.now();
+        if (remaining > 0 && remaining <= 12500) {
+          await sleep(remaining + 200);
+        }
+        return telegramBotApiRequest<any>({
+          token,
+          methodPath: "sendDocument",
+          httpMethod: "POST",
+          body: multipart.body,
+          headers: { "Content-Type": multipart.contentType },
+          timeoutMs: 25000,
+        });
+      });
+
+    let { status, ok, json } = await sendOnce();
     if (status === 429) {
       const retrySec = Number(json?.parameters?.retry_after || 0);
       if (retrySec > 0) {
-        telegramFloodWaitUntilMs = Math.max(telegramFloodWaitUntilMs, Date.now() + retrySec * 1000);
+        noteTelegramFloodWait(retrySec);
       }
-      if (retrySec > 0 && retrySec <= 6) {
+      if (retrySec > 0 && retrySec <= 10) {
         await sleep(retrySec * 1000 + 250);
-        ({ status, ok, json } = await sendAttempt());
-      }
-    }
-
-    if (!ok || !json?.ok) {
-      if (status === 429) {
-        const retrySec = Number(json?.parameters?.retry_after || 0);
-        if (retrySec > 0) {
-          telegramFloodWaitUntilMs = Math.max(telegramFloodWaitUntilMs, Date.now() + retrySec * 1000);
+        ({ status, ok, json } = await sendOnce());
+        if (status === 429) {
+          noteTelegramFloodWait(Number(json?.parameters?.retry_after || 0));
         }
       }
+    }
+    return { status, ok, json };
+  };
 
-      // Seamless fallback to Supabase Media Vault whenever Telegram hits 429 FloodWait or server/channel error
-      const vaultRes = await tryVaultFallback();
-      if (vaultRes) return vaultRes;
+  try {
+    for (let idx = 0; idx < chatCandidates.length; idx++) {
+      const candidateChatId = chatCandidates[idx];
+      const { status, ok, json } = await attemptSendToChat(candidateChatId);
 
-      const rawDesc = String(json?.description || `Telegram error (${status})`);
-      let friendly = rawDesc;
-      if (/chat not found|bot is not a member|need administrator rights|have no rights/i.test(rawDesc)) {
-        friendly = `Telegram channel permission error (${rawDesc}). Ensure karein ki @LmpsschoolappBot naye channel me Admin hai aur TELEGRAM_STORAGE_CHAT_ID sahi (-100...) hai.`;
-      } else if (/unauthorized/i.test(rawDesc)) {
-        friendly = "Telegram Bot Token invalid ya revoke ho gaya hai. Kripya server TELEGRAM_BOT_TOKEN check karein.";
-      } else if (status === 429) {
-        const retrySec = Number(json?.parameters?.retry_after || 0);
-        friendly = `Telegram par bahut zyada requests aa rahi hain (429).${retrySec > 0 ? ` Kripya ${retrySec} second baad` : " Kuch second baad"} dobara try karein.`;
+      if (ok && json?.ok) {
+        const doc =
+          json.result?.document ||
+          (Array.isArray(json.result?.photo) ? json.result.photo.slice(-1)[0] : null) ||
+          json.result?.audio ||
+          json.result?.video ||
+          json.result?.voice ||
+          json.result?.animation;
+
+        const fileId = String(doc?.file_id || "").trim();
+        if (fileId) {
+          WORKING_CHAT_CACHE.set(token.slice(0, 12), {
+            chatId: candidateChatId,
+            expiresAt: Date.now() + WORKING_CHAT_TTL_MS,
+          });
+          const finalFileName = String(doc?.file_name || safeName);
+          const permanentUrl = `/api/telegram/file?fileId=${encodeURIComponent(fileId)}&name=${encodeURIComponent(finalFileName)}`;
+          return {
+            ok: true,
+            url: permanentUrl,
+            fileId,
+            fileName: finalFileName,
+            fileSize: Number(doc?.file_size || opts.buffer.length),
+            mimeType: String(doc?.mime_type || detectedMime),
+            storage: "telegram",
+            chatId: candidateChatId,
+          };
+        }
+        lastStatus = 502;
+        lastDesc = "Telegram se file_id prapt nahi hua.";
+        continue;
       }
-      return {
-        ok: false,
-        status: status === 429 ? 429 : status >= 400 ? status : 502,
-        ...(status === 429 && json?.parameters?.retry_after
-          ? { retryAfter: Number(json.parameters.retry_after) }
-          : {}),
-        error: friendly,
-      };
+
+      lastStatus = status;
+      lastDesc = String(json?.description || `Telegram error (${status})`);
+      if (status === 429 && json?.parameters?.retry_after) {
+        lastRetryAfter = Number(json.parameters.retry_after);
+      }
+
+      const isUnauthorizedToken = status === 401 || /unauthorized/i.test(lastDesc);
+      const isChatPermissionOrNotFound =
+        !isUnauthorizedToken &&
+        status !== 429 &&
+        (status === 400 ||
+          status === 403 ||
+          /chat not found|bot was kicked|bot is not a member|need administrator rights|have no rights|forbidden/i.test(
+            lastDesc
+          ));
+
+      if (isUnauthorizedToken || status === 429) {
+        break;
+      }
+
+      // If all explicit candidates fail due to chat/permission error, append auto-discovered chats once
+      if (isChatPermissionOrNotFound && idx === chatCandidates.length - 1 && !discoveredAppended) {
+        discoveredAppended = true;
+        const discovered = await discoverTelegramStorageChats(token, true);
+        for (const d of discovered) {
+          if (!chatCandidates.includes(d.id)) {
+            chatCandidates.push(d.id);
+          }
+        }
+      }
     }
 
-    const doc =
-      json.result?.document ||
-      (Array.isArray(json.result?.photo) ? json.result.photo.slice(-1)[0] : null) ||
-      json.result?.audio ||
-      json.result?.video ||
-      json.result?.voice ||
-      json.result?.animation;
-
-    const fileId = String(doc?.file_id || "").trim();
-    if (!fileId) {
-      const vaultRes = await tryVaultFallback();
-      if (vaultRes) return vaultRes;
-      return { ok: false, status: 502, error: "Telegram se file_id prapt nahi hua." };
-    }
-
-    const finalFileName = String(doc?.file_name || safeName);
-    const permanentUrl = `/api/telegram/file?fileId=${encodeURIComponent(fileId)}&name=${encodeURIComponent(finalFileName)}`;
-
-    return {
-      ok: true,
-      url: permanentUrl,
-      fileId,
-      fileName: finalFileName,
-      fileSize: Number(doc?.file_size || opts.buffer.length),
-      mimeType: String(doc?.mime_type || detectedMime),
-      storage: "telegram",
-    };
-  } catch (err: any) {
-    const vaultRes = await tryVaultFallback();
+    const vaultRes = await tryVaultFallback(`${lastStatus}:${lastDesc}`);
     if (vaultRes) return vaultRes;
 
+    let friendly = lastDesc;
+    if (/chat not found|bot is not a member|need administrator rights|have no rights/i.test(lastDesc)) {
+      friendly = `Telegram channel permission error (${lastDesc}). Ensure karein ki Bot channel me Admin hai aur TELEGRAM_STORAGE_CHAT_ID sahi (-100...) hai.`;
+    } else if (/unauthorized/i.test(lastDesc)) {
+      friendly = "Telegram Bot Token invalid ya revoke ho gaya hai. Kripya server TELEGRAM_BOT_TOKEN check karein.";
+    } else if (lastStatus === 429) {
+      friendly = `Telegram par bahut zyada requests aa rahi hain (429).${lastRetryAfter ? ` Kripya ${lastRetryAfter} second baad` : " Kuch second baad"} dobara try karein.`;
+    }
+    return {
+      ok: false,
+      status: lastStatus === 429 ? 429 : lastStatus >= 400 ? lastStatus : 502,
+      ...(lastRetryAfter ? { retryAfter: lastRetryAfter } : {}),
+      error: friendly,
+    };
+  } catch (err: any) {
     const isAbort = err?.name === "AbortError" || /abort/i.test(String(err?.message || ""));
+    const vaultRes = await tryVaultFallback(isAbort ? "telegram_timeout" : err?.message || "network_error");
+    if (vaultRes) return vaultRes;
+
     return {
       ok: false,
       status: isAbort ? 504 : 502,

@@ -1,7 +1,7 @@
 import { uploadImageToTelegram, resolveTelegramUrl, dataUrlToBlob } from './telegramStorageService';
 
 /**
- * Universal Image Upload Service powered by Telegram Cloud Storage (@nsta_vault_bot)
+ * Universal Image Upload Service powered by Telegram Cloud Storage (@PothiaAppBot)
  * Unlimited Free Cloud CDN hosting for profile photos, status updates, community posts,
  * homework attachments, and admin formulas.
  */

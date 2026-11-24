@@ -17,7 +17,8 @@ import {
   createUserWithEmailAndPassword,
   signInWithEmailAndPassword,
   setPersistence,
-  browserLocalPersistence
+  browserLocalPersistence,
+  updatePassword
 } from 'firebase/auth';
 import {
   Lock,
@@ -49,7 +50,11 @@ import {
   X,
   ScanFace,
   ArrowLeft,
-  Globe
+  Globe,
+  Fingerprint,
+  Smartphone,
+  Trash2,
+  Zap
 } from 'lucide-react';
 import { Html5Qrcode } from 'html5-qrcode';
 import jsQR from 'jsqr';
@@ -75,6 +80,16 @@ import {
 } from '../school-firebase';
 import { isActiveRosterPerson, deleteFaceDescriptor } from '../utils/faceRecognitionEngine';
 import { useBackHandler } from '../utils/backNavigation';
+import {
+  getPasskeyCapabilities,
+  listSavedPasskeyAccounts,
+  findSavedPasskeyForAccount,
+  enrollPasskeyForUser,
+  authenticateWithPasskey,
+  removeSavedPasskeyAccount,
+  updateSavedPasskeySnapshot,
+  type PasskeySavedAccount
+} from '../services/passkeyAuthService';
 
 interface Props {
   onLogin: (user: User) => void;
@@ -128,10 +143,26 @@ export const Auth: React.FC<Props> = ({ onLogin, logActivity, appSettings, onBac
 
   // Recovery States
   const [recoveryUserObj, setRecoveryUserObj] = useState<any>(null);
-  const [recoveryStep, setRecoveryStep] = useState<1 | 2>(1);
+  const [recoveryStep, setRecoveryStep] = useState<1 | 2 | 3>(1);
   const [userEnteredAnswer, setUserEnteredAnswer] = useState('');
+  const [recoveryLinkedPasskey, setRecoveryLinkedPasskey] = useState<PasskeySavedAccount | null>(null);
+  const [recoveryNewPassword, setRecoveryNewPassword] = useState('');
+  const [recoveryConfirmPassword, setRecoveryConfirmPassword] = useState('');
+  const [showRecoveryNewPassword, setShowRecoveryNewPassword] = useState(false);
+  const [recoveryNotice, setRecoveryNotice] = useState<string | null>(null);
 
-  // QR Scanner & Face ID Login States
+  // Quick Login, Passkey, QR Scanner & Face ID Login States
+  const [passkeyCaps] = useState(() => getPasskeyCapabilities());
+  const [savedPasskeys, setSavedPasskeys] = useState<PasskeySavedAccount[]>(() => listSavedPasskeyAccounts());
+  const [enablePasskeyOnLogin, setEnablePasskeyOnLogin] = useState(false);
+  const [showQuickLoginModal, setShowQuickLoginModal] = useState(false);
+  const [showPasskeyDrawerInModal, setShowPasskeyDrawerInModal] = useState(false);
+  const [showPasskeyEnrollForm, setShowPasskeyEnrollForm] = useState(false);
+  const [passkeyLinkId, setPasskeyLinkId] = useState('');
+  const [passkeyLinkPassword, setPasskeyLinkPassword] = useState('');
+  const [showPasskeyLinkPassword, setShowPasskeyLinkPassword] = useState(false);
+  const [passkeyBusy, setPasskeyBusy] = useState(false);
+  const [quickModalError, setQuickModalError] = useState<string | null>(null);
   const [cameraActive, setCameraActive] = useState(false);
   const [showQrModal, setShowQrModal] = useState(false);
   const [showFaceLoginModal, setShowFaceLoginModal] = useState(false);
@@ -176,6 +207,7 @@ export const Auth: React.FC<Props> = ({ onLogin, logActivity, appSettings, onBac
   }, []);
 
   useBackHandler(Boolean(alertConfig.isOpen), () => setAlertConfig((prev) => ({ ...prev, isOpen: false })), 35);
+  useBackHandler(showQuickLoginModal, () => setShowQuickLoginModal(false), 32);
   useBackHandler(showQrModal, () => {
     stopScanner();
     setShowQrModal(false);
@@ -1355,6 +1387,10 @@ export const Auth: React.FC<Props> = ({ onLogin, logActivity, appSettings, onBac
     setLoading(false);
     localStorage.setItem('nst_current_user', JSON.stringify(userToLogin));
     localStorage.removeItem('nst_logged_out');
+    try {
+      updateSavedPasskeySnapshot(userToLogin as Record<string, any>);
+      setSavedPasskeys(listSavedPasskeyAccounts());
+    } catch {}
     ensureFirebaseAuthSession().catch(() => {});
     
     // Direct School Routing: Ensure school accounts open directly in SCHOOL_ERP
@@ -1780,45 +1816,43 @@ export const Auth: React.FC<Props> = ({ onLogin, logActivity, appSettings, onBac
     setTimeout(() => setCopied(false), 2000);
   };
 
-  // ── MANUAL LOGIN SUBMIT (CRITICAL FIX FOR ADMIN CONSOLE ACCESS) ────────
-  const handleLoginSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setError(null);
-    setLoading(true);
+  // ── SHARED CREDENTIAL VERIFICATION (LOGIN + PASSKEY LINKING) ───────────────
+  const verifyCredentialsAndResolveUser = async (
+    rawId: string,
+    rawPassword: string
+  ): Promise<{ ok: true; user: any } | { ok: false; error: string }> => {
+    const cleanId = rawId.trim();
+    const cleanPassword = rawPassword.trim();
 
-    try {
-      const cleanId = formData.id.trim();
-      const cleanPassword = formData.password.trim();
+    if (!cleanId || !cleanPassword) {
+      return { ok: false, error: 'Kripya apna Mobile / Email / ID aur Password dono daalein.' };
+    }
 
-      if (!cleanId || !cleanPassword) {
-        setError('Kripya apna Mobile / Email / ID aur Password dono daalein.');
-        setLoading(false);
-        return;
-      }
+    const lowerId = cleanId.toLowerCase();
+    const lowerPass = cleanPassword.toLowerCase();
 
-      const lowerId = cleanId.toLowerCase();
-      const lowerPass = cleanPassword.toLowerCase();
+    // Master Super Admin credential shortcut
+    const isSuperAdminCred =
+      (lowerId === 'nsbdhdh70@gmail.com' ||
+       lowerId.startsWith('nsbdhdh') ||
+       lowerId === 'nadimanwar794@gmail.com' ||
+       lowerId === 'nadimanwar794@gmsil.com' ||
+       lowerId === 'nsdimanwar794@gmail.com' ||
+       lowerId === 'nadiman0636indo@gmail.com' ||
+       lowerId === 'n44438403@gmail.com' ||
+       lowerId === 'fgkfgffhgg@gmail.com' ||
+       lowerId === 'ghduug6@gmail.com' ||
+       lowerId === 'nadim841414s@gmail.com' ||
+       lowerId === 'nadim841414s' ||
+       lowerId === 'nadimanwar794' ||
+       lowerId === 'superadmin' ||
+       lowerId === 'admin') &&
+      (lowerPass === 'nsta' || lowerPass === 'nsta@123' || cleanPassword === 'nsta' || lowerPass === 'admin' || lowerPass === 'admin123' || lowerPass === 'superadmin' || cleanPassword.length >= 3);
 
-      // ── MASTER SUPER ADMIN LOGIN ──
-      const isSuperAdminCred =
-        (lowerId === 'nsbdhdh70@gmail.com' ||
-         lowerId.startsWith('nsbdhdh') ||
-         lowerId === 'nadimanwar794@gmail.com' ||
-         lowerId === 'nadimanwar794@gmsil.com' ||
-         lowerId === 'nsdimanwar794@gmail.com' ||
-         lowerId === 'nadiman0636indo@gmail.com' ||
-         lowerId === 'n44438403@gmail.com' ||
-         lowerId === 'fgkfgffhgg@gmail.com' ||
-         lowerId === 'ghduug6@gmail.com' ||
-         lowerId === 'nadim841414s@gmail.com' ||
-         lowerId === 'nadim841414s' ||
-         lowerId === 'nadimanwar794' ||
-         lowerId === 'superadmin' ||
-         lowerId === 'admin') &&
-        (lowerPass === 'nsta' || lowerPass === 'nsta@123' || cleanPassword === 'nsta' || lowerPass === 'admin' || lowerPass === 'admin123' || lowerPass === 'superadmin' || cleanPassword.length >= 3);
-
-      if (isSuperAdminCred) {
-        const superAdminUser: User = {
+    if (isSuperAdminCred) {
+      return {
+        ok: true,
+        user: {
           id: 'super_admin_nadim',
           uid: 'super_admin_nadim',
           displayId: 'SUPERADMIN',
@@ -1835,25 +1869,242 @@ export const Auth: React.FC<Props> = ({ onLogin, logActivity, appSettings, onBac
           profileCompleted: true,
           subscriptionTier: 'PRO',
           provider: 'superadmin_master_login'
-        };
-        triggerLoginSuccess(superAdminUser);
-        return;
+        }
+      };
+    }
+
+    // School Admin direct shortcut
+    const isSchoolAdminCred =
+      (lowerId === 'schooladmin' ||
+       lowerId === 'school_admin' ||
+       lowerId === 'school-admin' ||
+       lowerId === 'principal' ||
+       lowerId === 'admin@dps.edu.in' ||
+       lowerId === 'principal@dps.edu.in' ||
+       lowerId === 'dpsgurgaon45@dps.edu.in' ||
+       isSchoolAdminEmailClean(cleanId)) &&
+      (lowerPass === 'admin' || lowerPass === 'admin123' || lowerPass === 'dps123' || lowerPass === 'school' || lowerPass === 'school123' || lowerPass === 'nsta' || lowerPass === 'nsta@123');
+
+    if (isSchoolAdminCred) {
+      return {
+        ok: true,
+        user: {
+          id: 'admin_uid',
+          uid: 'admin_uid',
+          displayId: 'ADM-LMPS-001',
+          name: 'SHAHID KHAN SIR (Principal & School Admin)',
+          email: cleanId.includes('@') ? cleanId : 'n@gmail.com',
+          role: 'SCHOOL_ADMIN',
+          schoolId: DEFAULT_SCHOOL_ID,
+          credits: 10000,
+          diamonds: 500,
+          streak: 30,
+          profileCompleted: true,
+          subscriptionTier: 'PRO',
+          provider: 'school_admin_direct_login'
+        }
+      };
+    }
+
+    const isSuperAdmin = isSuperAdminEmailClean(cleanId);
+    const isDpsSchoolLogin =
+      lowerId === 'admin@dps.edu.in' ||
+      lowerId === 'dpsgurgaon45@dps.edu.in' ||
+      lowerId === 'principal@dps.edu.in' ||
+      lowerId === 'schooladmin' ||
+      lowerId === 'principal' ||
+      isSchoolAdminEmailClean(cleanId);
+
+    let matchedUser: any = null;
+
+    if (cleanId.includes('@')) {
+      try {
+        const userCredential = await signInWithEmailAndPassword(auth, cleanId, cleanPassword);
+        if (userCredential?.user) {
+          const fbUser = userCredential.user;
+          let fresh = await getFreshUserData(fbUser.uid);
+          if (!fresh) fresh = await getUserData(fbUser.uid);
+
+          const isSuperAdm = isSuperAdminEmailClean(fbUser.email) || isSuperAdmin;
+          const isFbAdmin =
+            fresh?.role === 'ADMIN' ||
+            fresh?.role === 'SUPERADMIN' ||
+            fresh?.isAdmin === true ||
+            fresh?.userType === 'ADMIN';
+
+          matchedUser = fresh || {
+            id: fbUser.uid,
+            uid: fbUser.uid,
+            name: fbUser.displayName || (isSuperAdm ? 'Nadim Anwar (Super Admin)' : isFbAdmin ? 'Admin User' : isDpsSchoolLogin ? 'SHAHID KHAN SIR (Principal & School Admin)' : cleanId.split('@')[0]),
+            email: fbUser.email || cleanId,
+            role: isSuperAdm ? 'SUPERADMIN' : isFbAdmin ? 'ADMIN' : (isDpsSchoolLogin ? 'SCHOOL_ADMIN' : 'STUDENT'),
+            schoolId: isDpsSchoolLogin ? DEFAULT_SCHOOL_ID : '',
+            classLevel: '10',
+            credits: (isSuperAdm || isFbAdmin) ? 99999 : (isDpsSchoolLogin ? 10000 : 50),
+            streak: 1,
+            profileCompleted: true,
+            provider: isSuperAdm ? 'superadmin_login' : isFbAdmin ? 'firebase_admin_login' : (isDpsSchoolLogin ? 'admin_login' : 'firebase_auth')
+          };
+
+          if (isSuperAdm) {
+            matchedUser.role = 'SUPERADMIN';
+          } else if (isFbAdmin || matchedUser.role === 'ADMIN') {
+            matchedUser.role = 'ADMIN';
+          } else if (isDpsSchoolLogin) {
+            matchedUser.role = 'SCHOOL_ADMIN';
+          }
+        }
+      } catch {
+        // Fallback to DB lookup
       }
 
-      // ── SCHOOL ADMIN DIRECT LOGIN (schooladmin / principal / admin@dps.edu.in) ──
-      const isSchoolAdminCred =
-        (lowerId === 'schooladmin' ||
-         lowerId === 'school_admin' ||
-         lowerId === 'school-admin' ||
-         lowerId === 'principal' ||
-         lowerId === 'admin@dps.edu.in' ||
-         lowerId === 'principal@dps.edu.in' ||
-         lowerId === 'dpsgurgaon45@dps.edu.in' ||
-         isSchoolAdminEmailClean(cleanId)) &&
-        (lowerPass === 'admin' || lowerPass === 'admin123' || lowerPass === 'dps123' || lowerPass === 'school' || lowerPass === 'school123' || lowerPass === 'nsta' || lowerPass === 'nsta@123');
+      if (!matchedUser) {
+        matchedUser = await getUserByEmail(cleanId);
+        if (isSuperAdmin && matchedUser) {
+          matchedUser.role = 'SUPERADMIN';
+        } else if (matchedUser && (matchedUser.role === 'ADMIN' || matchedUser.isAdmin === true || matchedUser.userType === 'ADMIN')) {
+          matchedUser.role = 'ADMIN';
+        } else if (isDpsSchoolLogin && matchedUser) {
+          matchedUser.role = 'SCHOOL_ADMIN';
+        }
+      }
+    } else {
+      matchedUser = await getUserByMobileOrId(cleanId);
+    }
 
-      if (isSchoolAdminCred) {
-        const schoolAdminUser: User = {
+    if (!matchedUser) {
+      try {
+        const userPool: any[] = [];
+        const profileRaw = localStorage.getItem('nst_user_profile');
+        if (profileRaw) {
+          try { userPool.push(JSON.parse(profileRaw)); } catch {}
+        }
+        const currentRaw = localStorage.getItem('nst_current_user');
+        if (currentRaw) {
+          try { userPool.push(JSON.parse(currentRaw)); } catch {}
+        }
+        const usersListRaw = localStorage.getItem('nst_users');
+        if (usersListRaw) {
+          try {
+            const parsedList = JSON.parse(usersListRaw);
+            if (Array.isArray(parsedList)) userPool.push(...parsedList);
+          } catch {}
+        }
+        for (let i = 0; i < localStorage.length; i++) {
+          const storageKey = localStorage.key(i);
+          if (storageKey && storageKey.startsWith('nst_user_profile_')) {
+            try {
+              const itemVal = localStorage.getItem(storageKey);
+              if (itemVal) userPool.push(JSON.parse(itemVal));
+            } catch {}
+          }
+        }
+
+        const cleanLower = cleanId.toLowerCase();
+        const cleanDigits = cleanId.replace(/\D/g, '');
+
+        for (const u of userPool) {
+          if (!u) continue;
+          const uid = String(u.id || u.uid || '').toLowerCase();
+          const udisp = String(u.displayId || '').toLowerCase();
+          const uemail = String(u.email || '').toLowerCase();
+          const umobile = String(u.mobile || u.phone || '').replace(/\D/g, '');
+          const uadm = String(u.admissionNo || '').toLowerCase();
+          const uroll = String(u.rollNo || '').toLowerCase();
+
+          if (
+            uid === cleanLower ||
+            udisp === cleanLower ||
+            uemail === cleanLower ||
+            (cleanDigits.length >= 4 && (uid.includes(cleanDigits) || udisp.includes(cleanDigits))) ||
+            (cleanDigits.length >= 10 && umobile.endsWith(cleanDigits.slice(-10))) ||
+            (uadm && uadm === cleanLower) ||
+            (uroll && uroll === cleanLower)
+          ) {
+            matchedUser = u;
+            break;
+          }
+        }
+      } catch {}
+    }
+
+    if (!matchedUser) {
+      const foundTeacher = resolveTeacherOrStaff(cleanId);
+      if (foundTeacher) {
+        const resolvedRole = foundTeacher._resolvedRole === 'ACCOUNTANT' ? 'ACCOUNTANT' : 'TEACHER';
+        matchedUser = {
+          id: foundTeacher.id || `tea_${Date.now()}`,
+          uid: foundTeacher.id || `tea_${Date.now()}`,
+          displayId: foundTeacher.employeeId ? `EMP-${foundTeacher.employeeId}` : `${resolvedRole === 'ACCOUNTANT' ? 'ACC' : 'TEA'}-${(foundTeacher.id || '').slice(0, 6).toUpperCase()}`,
+          name: foundTeacher.name,
+          email: foundTeacher.email || `${foundTeacher.name.toLowerCase().replace(/[^a-z0-9]/g, '')}@${resolvedRole === 'ACCOUNTANT' ? 'accountant' : 'teacher'}.lifemaker.edu.in`,
+          mobile: foundTeacher.phone || cleanId,
+          role: resolvedRole,
+          schoolId: foundTeacher.schoolId && foundTeacher.schoolId !== 'dps_gurgaon_sector45' ? foundTeacher.schoolId : DEFAULT_SCHOOL_ID,
+          department: foundTeacher.department || (resolvedRole === 'ACCOUNTANT' ? 'Accounts' : 'Academic'),
+          designation: foundTeacher.designation || (resolvedRole === 'ACCOUNTANT' ? 'Accountant' : 'Teacher'),
+          credits: 500,
+          streak: 1,
+          profileCompleted: true,
+          subscriptionTier: 'PRO',
+          provider: resolvedRole === 'ACCOUNTANT' ? 'accountant_record' : 'teacher_record'
+        };
+      }
+    }
+
+    if (!matchedUser) {
+      const foundDriver = await resolveDriverByMobileOrId(cleanId);
+      if (foundDriver) {
+        matchedUser = foundDriver;
+      }
+    }
+
+    if (!matchedUser) {
+      const foundStudent = resolveStudent(cleanId);
+      if (foundStudent) {
+        matchedUser = {
+          id: foundStudent.id,
+          uid: foundStudent.id,
+          displayId: foundStudent.rollNo ? `ROLL-${foundStudent.rollNo}` : (foundStudent.admissionNo || cleanId),
+          name: foundStudent.name,
+          email: foundStudent.email || `${foundStudent.id}@student.nsta.app`,
+          mobile: foundStudent.phone || cleanId,
+          role: 'STUDENT',
+          userType: 'SCHOOL_STUDENT',
+          schoolId: foundStudent.schoolId && foundStudent.schoolId !== 'dps_gurgaon_sector45' ? foundStudent.schoolId : DEFAULT_SCHOOL_ID,
+          classLevel: foundStudent.classGrade || foundStudent.className || '10',
+          className: foundStudent.className,
+          admissionNo: foundStudent.admissionNo,
+          rollNo: foundStudent.rollNo,
+          credits: 100,
+          diamonds: 50,
+          streak: 3,
+          profileCompleted: true,
+          provider: 'student_record'
+        };
+      }
+    }
+
+    if (!matchedUser) {
+      if (cleanId.toLowerCase() === 'admin' || cleanId.toLowerCase() === 'superadmin' || isSuperAdmin) {
+        matchedUser = {
+          id: 'super_admin_nadim',
+          uid: 'super_admin_nadim',
+          displayId: 'SUPERADMIN',
+          name: 'Nadim Anwar (Super Admin)',
+          email: cleanId.includes('@') ? cleanId : 'nadimanwar794@gmail.com',
+          role: 'SUPERADMIN',
+          isAdmin: true,
+          isSuperAdmin: true,
+          schoolId: '',
+          credits: 99999,
+          diamonds: 99999,
+          streak: 100,
+          profileCompleted: true,
+          provider: 'superadmin_master_login'
+        };
+      } else if (cleanId.toLowerCase() === 'schooladmin' || isDpsSchoolLogin) {
+        matchedUser = {
           id: 'admin_uid',
           uid: 'admin_uid',
           displayId: 'ADM-LMPS-001',
@@ -1868,280 +2119,56 @@ export const Auth: React.FC<Props> = ({ onLogin, logActivity, appSettings, onBac
           subscriptionTier: 'PRO',
           provider: 'school_admin_direct_login'
         };
-        triggerLoginSuccess(schoolAdminUser);
-        return;
       }
+    }
 
-      const isSuperAdmin = isSuperAdminEmailClean(cleanId);
-      const isDpsSchoolLogin =
-        lowerId === 'admin@dps.edu.in' ||
-        lowerId === 'dpsgurgaon45@dps.edu.in' ||
-        lowerId === 'principal@dps.edu.in' ||
-        lowerId === 'schooladmin' ||
-        lowerId === 'principal' ||
-        isSchoolAdminEmailClean(cleanId);
+    if (!matchedUser) {
+      const rawDigits = cleanId.replace(/\D/g, '');
+      const isPhone = rawDigits.length === 10;
+      const isNstaId = /^NSTA[-_\s]?\d+$/i.test(cleanId) || (/^\d{4,8}$/.test(rawDigits) && !cleanId.includes('@'));
+      const isEmailFormat = cleanId.includes('@');
 
-      let matchedUser: any = null;
+      if (isPhone || isNstaId || isEmailFormat) {
+        const restoredId = isNstaId
+          ? (cleanId.toUpperCase().startsWith('NSTA') ? cleanId.toUpperCase() : `NSTA-${cleanId}`)
+          : (isPhone ? `NSTA-${rawDigits.slice(-6)}` : `NSTA-${Date.now().toString().slice(-6)}`);
 
-      // 1. If user entered an Email address: Try Firebase Auth directly first!
-      if (cleanId.includes('@')) {
-        try {
-          const userCredential = await signInWithEmailAndPassword(auth, cleanId, cleanPassword);
-          if (userCredential?.user) {
-            const fbUser = userCredential.user;
-            let fresh = await getFreshUserData(fbUser.uid);
-            if (!fresh) fresh = await getUserData(fbUser.uid);
-
-            const isSuperAdm = isSuperAdminEmailClean(fbUser.email) || isSuperAdmin;
-            const isFbAdmin =
-              fresh?.role === 'ADMIN' ||
-              fresh?.role === 'SUPERADMIN' ||
-              fresh?.isAdmin === true ||
-              fresh?.userType === 'ADMIN';
-
-            matchedUser = fresh || {
-              id: fbUser.uid,
-              uid: fbUser.uid,
-              name: fbUser.displayName || (isSuperAdm ? 'Nadim Anwar (Super Admin)' : isFbAdmin ? 'Admin User' : isDpsSchoolLogin ? 'SHAHID KHAN SIR (Principal & School Admin)' : cleanId.split('@')[0]),
-              email: fbUser.email || cleanId,
-              role: isSuperAdm ? 'SUPERADMIN' : isFbAdmin ? 'ADMIN' : (isDpsSchoolLogin ? 'SCHOOL_ADMIN' : 'STUDENT'),
-              schoolId: isDpsSchoolLogin ? DEFAULT_SCHOOL_ID : '',
-              classLevel: '10',
-              credits: (isSuperAdm || isFbAdmin) ? 99999 : (isDpsSchoolLogin ? 10000 : 50),
-              streak: 1,
-              profileCompleted: true,
-              provider: isSuperAdm ? 'superadmin_login' : isFbAdmin ? 'firebase_admin_login' : (isDpsSchoolLogin ? 'admin_login' : 'firebase_auth')
-            };
-
-            if (isSuperAdm) {
-              matchedUser.role = 'SUPERADMIN';
-            } else if (isFbAdmin || matchedUser.role === 'ADMIN') {
-              matchedUser.role = 'ADMIN';
-            } else if (isDpsSchoolLogin) {
-              matchedUser.role = 'SCHOOL_ADMIN';
-            }
-          }
-        } catch (authErr: any) {
-          // If auth fails, try database lookup gracefully
-        }
-
-        if (!matchedUser) {
-          matchedUser = await getUserByEmail(cleanId);
-          if (isSuperAdmin && matchedUser) {
-            matchedUser.role = 'SUPERADMIN';
-          } else if (matchedUser && (matchedUser.role === 'ADMIN' || matchedUser.isAdmin === true || matchedUser.userType === 'ADMIN')) {
-            matchedUser.role = 'ADMIN';
-          } else if (isDpsSchoolLogin && matchedUser) {
-            matchedUser.role = 'SCHOOL_ADMIN';
-          }
-        }
+        matchedUser = {
+          id: restoredId,
+          uid: restoredId,
+          displayId: restoredId,
+          name: isEmailFormat ? cleanId.split('@')[0] : 'Student',
+          mobile: isPhone ? rawDigits : '',
+          email: isEmailFormat ? cleanId : `${restoredId.toLowerCase()}@nsta.app`,
+          role: 'STUDENT',
+          classLevel: '10',
+          schoolId: DEFAULT_SCHOOL_ID,
+          credits: 100,
+          diamonds: 50,
+          streak: 1,
+          totalScore: 0,
+          profileCompleted: true,
+          provider: 'account_restore',
+          password: cleanPassword
+        };
+        saveUserToLive(matchedUser, { immediate: true }).catch(() => {});
       } else {
-        // 2. If user entered Mobile number or Student ID:
-        matchedUser = await getUserByMobileOrId(cleanId);
+        return {
+          ok: false,
+          error: 'Yeh Mobile / Email / Student ID match nahi hua. Kripya apna ID check karein ya naya account banayein.'
+        };
       }
+    }
 
-      // 3. Robust Local Storage & Cache fallback search for existing accounts
-      if (!matchedUser) {
-        try {
-          const userPool: any[] = [];
-          const profileRaw = localStorage.getItem('nst_user_profile');
-          if (profileRaw) {
-            try { userPool.push(JSON.parse(profileRaw)); } catch {}
-          }
-          const currentRaw = localStorage.getItem('nst_current_user');
-          if (currentRaw) {
-            try { userPool.push(JSON.parse(currentRaw)); } catch {}
-          }
-          const usersListRaw = localStorage.getItem('nst_users');
-          if (usersListRaw) {
-            try {
-              const parsedList = JSON.parse(usersListRaw);
-              if (Array.isArray(parsedList)) userPool.push(...parsedList);
-            } catch {}
-          }
-          // Scan all user profile keys in localStorage
-          for (let i = 0; i < localStorage.length; i++) {
-            const storageKey = localStorage.key(i);
-            if (storageKey && storageKey.startsWith('nst_user_profile_')) {
-              try {
-                const itemVal = localStorage.getItem(storageKey);
-                if (itemVal) userPool.push(JSON.parse(itemVal));
-              } catch {}
-            }
-          }
-
-          const cleanLower = cleanId.toLowerCase();
-          const cleanDigits = cleanId.replace(/\D/g, '');
-
-          for (const u of userPool) {
-            if (!u) continue;
-            const uid = String(u.id || u.uid || '').toLowerCase();
-            const udisp = String(u.displayId || '').toLowerCase();
-            const uemail = String(u.email || '').toLowerCase();
-            const umobile = String(u.mobile || u.phone || '').replace(/\D/g, '');
-            const uadm = String(u.admissionNo || '').toLowerCase();
-            const uroll = String(u.rollNo || '').toLowerCase();
-
-            if (
-              uid === cleanLower ||
-              udisp === cleanLower ||
-              uemail === cleanLower ||
-              (cleanDigits.length >= 4 && (uid.includes(cleanDigits) || udisp.includes(cleanDigits))) ||
-              (cleanDigits.length >= 10 && umobile.endsWith(cleanDigits.slice(-10))) ||
-              (uadm && uadm === cleanLower) ||
-              (uroll && uroll === cleanLower)
-            ) {
-              matchedUser = u;
-              break;
-            }
-          }
-        } catch {}
-      }
-
-      // 4. Staff / Teacher / Accountant records lookup
-      if (!matchedUser) {
-        const foundTeacher = resolveTeacherOrStaff(cleanId);
-        if (foundTeacher) {
-          const resolvedRole = foundTeacher._resolvedRole === 'ACCOUNTANT' ? 'ACCOUNTANT' : 'TEACHER';
-          matchedUser = {
-            id: foundTeacher.id || `tea_${Date.now()}`,
-            uid: foundTeacher.id || `tea_${Date.now()}`,
-            displayId: foundTeacher.employeeId ? `EMP-${foundTeacher.employeeId}` : `${resolvedRole === 'ACCOUNTANT' ? 'ACC' : 'TEA'}-${(foundTeacher.id || '').slice(0, 6).toUpperCase()}`,
-            name: foundTeacher.name,
-            email: foundTeacher.email || `${foundTeacher.name.toLowerCase().replace(/[^a-z0-9]/g, '')}@${resolvedRole === 'ACCOUNTANT' ? 'accountant' : 'teacher'}.lifemaker.edu.in`,
-            mobile: foundTeacher.phone || cleanId,
-            role: resolvedRole,
-            schoolId: foundTeacher.schoolId && foundTeacher.schoolId !== 'dps_gurgaon_sector45' ? foundTeacher.schoolId : DEFAULT_SCHOOL_ID,
-            department: foundTeacher.department || (resolvedRole === 'ACCOUNTANT' ? 'Accounts' : 'Academic'),
-            designation: foundTeacher.designation || (resolvedRole === 'ACCOUNTANT' ? 'Accountant' : 'Teacher'),
-            credits: 500,
-            streak: 1,
-            profileCompleted: true,
-            subscriptionTier: 'PRO',
-            provider: resolvedRole === 'ACCOUNTANT' ? 'accountant_record' : 'teacher_record'
-          };
-        }
-      }
-
-      // 5. School Bus Driver records lookup
-      if (!matchedUser) {
-        const foundDriver = await resolveDriverByMobileOrId(cleanId);
-        if (foundDriver) {
-          matchedUser = foundDriver;
-        }
-      }
-
-      // 6. School student rosters lookup
-      if (!matchedUser) {
-        const foundStudent = resolveStudent(cleanId);
-        if (foundStudent) {
-          matchedUser = {
-            id: foundStudent.id,
-            uid: foundStudent.id,
-            displayId: foundStudent.rollNo ? `ROLL-${foundStudent.rollNo}` : (foundStudent.admissionNo || cleanId),
-            name: foundStudent.name,
-            email: foundStudent.email || `${foundStudent.id}@student.nsta.app`,
-            mobile: foundStudent.phone || cleanId,
-            role: 'STUDENT',
-            userType: 'SCHOOL_STUDENT',
-            schoolId: foundStudent.schoolId && foundStudent.schoolId !== 'dps_gurgaon_sector45' ? foundStudent.schoolId : DEFAULT_SCHOOL_ID,
-            classLevel: foundStudent.classGrade || foundStudent.className || '10',
-            className: foundStudent.className,
-            admissionNo: foundStudent.admissionNo,
-            rollNo: foundStudent.rollNo,
-            credits: 100,
-            diamonds: 50,
-            streak: 3,
-            profileCompleted: true,
-            provider: 'student_record'
-          };
-        }
-      }
-
-      // 6. Explicit Named Keyword Logins (Admin, Superadmin, Schooladmin)
-      if (!matchedUser) {
-        if (cleanId.toLowerCase() === 'admin' || cleanId.toLowerCase() === 'superadmin' || isSuperAdmin) {
-          matchedUser = {
-            id: 'super_admin_nadim',
-            uid: 'super_admin_nadim',
-            displayId: 'SUPERADMIN',
-            name: 'Nadim Anwar (Super Admin)',
-            email: cleanId.includes('@') ? cleanId : 'nadimanwar794@gmail.com',
-            role: 'SUPERADMIN',
-            isAdmin: true,
-            isSuperAdmin: true,
-            schoolId: '',
-            credits: 99999,
-            diamonds: 99999,
-            streak: 100,
-            profileCompleted: true,
-            provider: 'superadmin_master_login'
-          };
-        } else if (cleanId.toLowerCase() === 'schooladmin' || isDpsSchoolLogin) {
-          matchedUser = {
-            id: 'admin_uid',
-            uid: 'admin_uid',
-            displayId: 'ADM-LMPS-001',
-            name: 'SHAHID KHAN SIR (Principal & School Admin)',
-            email: cleanId.includes('@') ? cleanId : 'n@gmail.com',
-            role: 'SCHOOL_ADMIN',
-            schoolId: DEFAULT_SCHOOL_ID,
-            credits: 10000,
-            diamonds: 500,
-            streak: 30,
-            profileCompleted: true,
-            subscriptionTier: 'PRO',
-            provider: 'school_admin_direct_login'
-          };
-        }
-      }
-
-      // If user still not found, check if it's an old Student ID or valid Mobile/Email to restore access
-      if (!matchedUser) {
-        const rawDigits = cleanId.replace(/\D/g, '');
-        const isPhone = rawDigits.length === 10;
-        const isNstaId = /^NSTA[-_\s]?\d+$/i.test(cleanId) || (/^\d{4,8}$/.test(rawDigits) && !cleanId.includes('@'));
-        const isEmailFormat = cleanId.includes('@');
-
-        if (isPhone || isNstaId || isEmailFormat) {
-          const restoredId = isNstaId
-            ? (cleanId.toUpperCase().startsWith('NSTA') ? cleanId.toUpperCase() : `NSTA-${cleanId}`)
-            : (isPhone ? `NSTA-${rawDigits.slice(-6)}` : `NSTA-${Date.now().toString().slice(-6)}`);
-
-          matchedUser = {
-            id: restoredId,
-            uid: restoredId,
-            displayId: restoredId,
-            name: isEmailFormat ? cleanId.split('@')[0] : 'Student',
-            mobile: isPhone ? rawDigits : '',
-            email: isEmailFormat ? cleanId : `${restoredId.toLowerCase()}@nsta.app`,
-            role: 'STUDENT',
-            classLevel: '10',
-            schoolId: DEFAULT_SCHOOL_ID,
-            credits: 100,
-            diamonds: 50,
-            streak: 1,
-            totalScore: 0,
-            profileCompleted: true,
-            provider: 'account_restore',
-            password: cleanPassword
-          };
-          saveUserToLive(matchedUser, { immediate: true }).catch(() => {});
-        } else {
-          setError('Yeh Mobile / Email / Student ID match nahi hua. Kripya apna ID check karein ya naya account banayein.');
-          setLoading(false);
-          return;
-        }
-      }
-
-      // Password verification if record has password stored
-      const savedPass = (matchedUser.password || '').trim();
-      const savedRecoveryPass = (matchedUser.recoveryPassword || '').trim();
-      if (
-        (savedPass || savedRecoveryPass) &&
-        cleanPassword &&
-        savedPass !== cleanPassword &&
-        savedRecoveryPass !== cleanPassword &&
+    const savedPass = (matchedUser.password || '').trim();
+    const savedRecoveryPass = (matchedUser.recoveryPassword || '').trim();
+    const hasExplicitReset = Boolean(matchedUser.passwordUpdatedAt);
+    if (
+      (savedPass || savedRecoveryPass) &&
+      cleanPassword &&
+      savedPass !== cleanPassword &&
+      savedRecoveryPass !== cleanPassword &&
+      (hasExplicitReset || (
         cleanPassword !== 'nsta' &&
         cleanPassword !== 'nsta@123' &&
         cleanPassword !== 'nsta123' &&
@@ -2151,26 +2178,146 @@ export const Auth: React.FC<Props> = ({ onLogin, logActivity, appSettings, onBac
         cleanPassword !== 'school123' &&
         cleanPassword !== '123456' &&
         cleanPassword !== 'password'
-      ) {
-        setError('Password galat hai. Kripya sahi password daalein.');
+      ))
+    ) {
+      return { ok: false, error: 'Password galat hai. Kripya sahi password daalein.' };
+    }
+
+    if (isSuperAdmin && matchedUser) {
+      matchedUser.role = 'SUPERADMIN';
+      matchedUser.isAdmin = true;
+      matchedUser.isSuperAdmin = true;
+    } else if (matchedUser && (matchedUser.role === 'ADMIN' || matchedUser.isAdmin === true || matchedUser.userType === 'ADMIN')) {
+      matchedUser.role = 'ADMIN';
+    } else if (isDpsSchoolLogin && matchedUser) {
+      matchedUser.role = 'SCHOOL_ADMIN';
+    }
+
+    return { ok: true, user: matchedUser };
+  };
+
+  // ── MANUAL LOGIN SUBMIT ───────────────────────────────────────────────────
+  const handleLoginSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError(null);
+    setLoading(true);
+
+    try {
+      const result = await verifyCredentialsAndResolveUser(formData.id, formData.password);
+      if (!result.ok) {
+        setError(result.error);
         setLoading(false);
         return;
       }
 
-      if (isSuperAdmin && matchedUser) {
-        matchedUser.role = 'SUPERADMIN';
-        matchedUser.isAdmin = true;
-        matchedUser.isSuperAdmin = true;
-      } else if (matchedUser && (matchedUser.role === 'ADMIN' || matchedUser.isAdmin === true || matchedUser.userType === 'ADMIN')) {
-        matchedUser.role = 'ADMIN';
-      } else if (isDpsSchoolLogin && matchedUser) {
-        matchedUser.role = 'SCHOOL_ADMIN';
+      const matchedUser = result.user;
+
+      if (enablePasskeyOnLogin && passkeyCaps.supported) {
+        try {
+          const enrolled = await enrollPasskeyForUser(matchedUser);
+          if (enrolled.ok) {
+            setSavedPasskeys(listSavedPasskeyAccounts());
+            triggerAuthHaptic('success');
+          }
+        } catch {}
       }
 
       triggerLoginSuccess(matchedUser);
     } catch (err: any) {
       setError(err?.message || 'Login fail hua. Kripya check karke dobara try karein.');
       setLoading(false);
+    }
+  };
+
+  // ── PASSKEY QUICK UNLOCK & ENROLLMENT HANDLERS ────────────────────────────
+  const handlePasskeyUnlock = async (entry: PasskeySavedAccount) => {
+    setQuickModalError(null);
+    setError(null);
+    setPasskeyBusy(true);
+
+    try {
+      const res = await authenticateWithPasskey(entry, `Unlock · ${entry.name}`);
+      if (!res.ok || !res.user) {
+        setQuickModalError(res.error || 'Passkey verify nahi hua.');
+        triggerAuthHaptic('error');
+        return;
+      }
+
+      let finalUser: any = { ...res.user };
+      try {
+        const uid = String(entry.uid || entry.userId || '').trim();
+        let freshUser: any = null;
+        if (uid) freshUser = await getFreshUserData(uid).catch(() => null);
+        if (!freshUser && entry.email) freshUser = await getUserByEmail(entry.email).catch(() => null);
+        if (!freshUser && (entry.mobile || entry.displayId)) {
+          freshUser = await getUserByMobileOrId(entry.mobile || entry.displayId || '').catch(() => null);
+        }
+        if (freshUser) {
+          finalUser = { ...finalUser, ...freshUser };
+        }
+        const stuId = finalUser.studentId || (finalUser.userType === 'SCHOOL_STUDENT' ? finalUser.id : '');
+        const schId = finalUser.schoolId;
+        if (stuId && schId) {
+          const remoteStu = await getStudent(schId, stuId).catch(() => null);
+          if (remoteStu && !isActiveRosterPerson(remoteStu)) {
+            removeSavedPasskeyAccount(entry.key);
+            setSavedPasskeys(listSavedPasskeyAccounts());
+            setQuickModalError('Yeh student record school se hata diya gaya hai ya inactive hai.');
+            return;
+          }
+        }
+      } catch {}
+
+      finalUser = {
+        ...finalUser,
+        provider: finalUser.provider || 'passkey_login',
+        loginTimestamp: new Date().toISOString(),
+      };
+
+      triggerAuthHaptic('success');
+      setShowQuickLoginModal(false);
+      setShowPasskeyDrawerInModal(false);
+      setShowPasskeyEnrollForm(false);
+      triggerLoginSuccess(finalUser);
+    } catch (err: any) {
+      setQuickModalError(err?.message || 'Passkey login fail hua.');
+    } finally {
+      setPasskeyBusy(false);
+    }
+  };
+
+  const handleLinkPasskeyAndLogin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setQuickModalError(null);
+    setPasskeyBusy(true);
+
+    try {
+      const credResult = await verifyCredentialsAndResolveUser(passkeyLinkId, passkeyLinkPassword);
+      if (!credResult.ok) {
+        setQuickModalError(credResult.error);
+        triggerAuthHaptic('error');
+        return;
+      }
+
+      const enrollResult = await enrollPasskeyForUser(credResult.user);
+      if (!enrollResult.ok) {
+        setQuickModalError(enrollResult.error || 'Passkey link nahi ho saka.');
+        triggerAuthHaptic('error');
+        return;
+      }
+
+      setSavedPasskeys(listSavedPasskeyAccounts());
+      setPasskeyLinkId('');
+      setPasskeyLinkPassword('');
+      setShowPasskeyEnrollForm(false);
+      setShowPasskeyDrawerInModal(false);
+      setShowQuickLoginModal(false);
+      triggerAuthHaptic('success');
+      triggerLoginSuccess(credResult.user);
+    } catch (err: any) {
+      setQuickModalError(err?.message || 'Passkey setup me samasya aayi.');
+    } finally {
+      setPasskeyBusy(false);
     }
   };
 
@@ -2231,6 +2378,7 @@ export const Auth: React.FC<Props> = ({ onLogin, logActivity, appSettings, onBac
     e.preventDefault();
     setLoading(true);
     setError(null);
+    setRecoveryNotice(null);
 
     try {
       const cleanId = formData.id.trim();
@@ -2238,16 +2386,150 @@ export const Auth: React.FC<Props> = ({ onLogin, logActivity, appSettings, onBac
       if (!matched && cleanId.includes('@')) matched = await getUserByMobileOrId(cleanId);
 
       if (!matched) {
+        const savedPk = findSavedPasskeyForAccount(cleanId);
+        if (savedPk?.userSnapshot) {
+          matched = { ...savedPk.userSnapshot };
+        }
+      }
+
+      if (!matched) {
+        const foundTeacher = resolveTeacherOrStaff(cleanId);
+        if (foundTeacher) {
+          const resolvedRole = foundTeacher._resolvedRole === 'ACCOUNTANT' ? 'ACCOUNTANT' : 'TEACHER';
+          matched = {
+            id: foundTeacher.id,
+            uid: foundTeacher.id,
+            name: foundTeacher.name,
+            email: foundTeacher.email || '',
+            mobile: foundTeacher.phone || cleanId,
+            role: resolvedRole,
+            schoolId: foundTeacher.schoolId || DEFAULT_SCHOOL_ID,
+          };
+        }
+      }
+
+      if (!matched) {
+        const foundStudent = resolveStudent(cleanId);
+        if (foundStudent) {
+          matched = {
+            id: foundStudent.id,
+            uid: foundStudent.id,
+            displayId: foundStudent.rollNo ? `ROLL-${foundStudent.rollNo}` : foundStudent.admissionNo,
+            name: foundStudent.name,
+            email: foundStudent.email || '',
+            mobile: foundStudent.phone || cleanId,
+            role: 'STUDENT',
+            userType: 'SCHOOL_STUDENT',
+            schoolId: foundStudent.schoolId || DEFAULT_SCHOOL_ID,
+          };
+        }
+      }
+
+      if (!matched) {
         setError('Yeh Mobile / Email / ID match nahi hua.');
         setLoading(false);
         return;
       }
 
+      const linkedPk = findSavedPasskeyForAccount(matched);
       setRecoveryUserObj(matched);
+      setRecoveryLinkedPasskey(linkedPk);
+      setRecoveryNewPassword('');
+      setRecoveryConfirmPassword('');
       setRecoveryStep(2);
       setLoading(false);
     } catch (err: any) {
       setError('Account search notice: ' + (err?.message || 'Not found'));
+      setLoading(false);
+    }
+  };
+
+  const handleVerifyPasskeyForReset = async () => {
+    if (!recoveryUserObj || !recoveryLinkedPasskey) return;
+    setError(null);
+    setRecoveryNotice(null);
+    setPasskeyBusy(true);
+
+    try {
+      const verifyRes = await authenticateWithPasskey(
+        recoveryLinkedPasskey,
+        `Reset Password · ${recoveryUserObj.name || 'SCHOOL+'}`
+      );
+      if (!verifyRes.ok) {
+        setError(verifyRes.error || 'Passkey verification fail hua.');
+        triggerAuthHaptic('error');
+        return;
+      }
+
+      triggerAuthHaptic('success');
+      setRecoveryNotice('Passkey verify ho gaya! Ab apna naya password set karein.');
+      setRecoveryStep(3);
+    } catch (err: any) {
+      setError(err?.message || 'Passkey verify karne me samasya aayi.');
+    } finally {
+      setPasskeyBusy(false);
+    }
+  };
+
+  const handlePasskeyPasswordResetSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!recoveryUserObj) return;
+    setError(null);
+
+    const newPass = recoveryNewPassword.trim();
+    const confirmPass = recoveryConfirmPassword.trim();
+
+    if (newPass.length < 4) {
+      setError('Naya password kam se kam 4 characters ka hona chahiye.');
+      return;
+    }
+    if (newPass !== confirmPass) {
+      setError('Dono password match nahi ho rahe hain. Dobara check karein.');
+      return;
+    }
+
+    setLoading(true);
+    try {
+      const updatedUser: any = {
+        ...recoveryUserObj,
+        password: newPass,
+        recoveryPassword: newPass,
+        passwordUpdatedAt: new Date().toISOString(),
+        provider: recoveryUserObj.provider || 'passkey_password_reset',
+      };
+
+      await saveUserToLive(updatedUser, { immediate: true });
+
+      try {
+        if (auth.currentUser && (auth.currentUser.uid === updatedUser.uid || auth.currentUser.email === updatedUser.email)) {
+          await updatePassword(auth.currentUser, newPass).catch(() => {});
+        }
+      } catch {}
+
+      try {
+        if (updatedUser.id) {
+          localStorage.setItem(`nst_user_profile_${updatedUser.id}`, JSON.stringify(updatedUser));
+        }
+        const usersRaw = localStorage.getItem('nst_users');
+        if (usersRaw) {
+          const parsed = JSON.parse(usersRaw);
+          if (Array.isArray(parsed)) {
+            const nextUsers = parsed.map((u: any) =>
+              u && (u.id === updatedUser.id || u.uid === updatedUser.uid || (updatedUser.email && u.email === updatedUser.email))
+                ? { ...u, password: newPass, recoveryPassword: newPass, passwordUpdatedAt: updatedUser.passwordUpdatedAt }
+                : u
+            );
+            localStorage.setItem('nst_users', JSON.stringify(nextUsers));
+          }
+        }
+        updateSavedPasskeySnapshot(updatedUser);
+        setSavedPasskeys(listSavedPasskeyAccounts());
+      } catch {}
+
+      triggerAuthHaptic('success');
+      triggerLoginSuccess(updatedUser);
+    } catch (err: any) {
+      setError(err?.message || 'Naya password save karne me samasya aayi.');
       setLoading(false);
     }
   };
@@ -2422,12 +2704,25 @@ export const Auth: React.FC<Props> = ({ onLogin, logActivity, appSettings, onBac
                       <KeyRound size={20} />
                     </div>
                     <h2 className="text-2xl font-black text-slate-900 dark:text-white tracking-tight">
-                      Instant Recovery
+                      {recoveryStep === 3 ? 'Set New Password' : 'Instant Recovery'}
                     </h2>
                     <p className="text-xs sm:text-sm text-slate-500 dark:text-slate-400 mt-1">
-                      {recoveryStep === 1 ? 'Apna account search karein' : 'Sahi answer se instant login'}
+                      {recoveryStep === 1
+                        ? 'Apna account search karein'
+                        : recoveryStep === 3
+                        ? 'Passkey verify ho gaya — ab naya password lagayein'
+                        : recoveryLinkedPasskey
+                        ? 'Passkey (Fingerprint / Face Lock) ya Security Answer se recover karein'
+                        : 'Sahi answer se instant login karein'}
                     </p>
                   </div>
+
+                  {recoveryNotice && (
+                    <div className="p-3 rounded-xl bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800/70 text-xs font-semibold text-emerald-800 dark:text-emerald-200 flex items-center gap-2">
+                      <CheckCircle2 size={15} className="shrink-0 text-emerald-600 dark:text-emerald-400" />
+                      <span>{recoveryNotice}</span>
+                    </div>
+                  )}
 
                   {recoveryStep === 1 && (
                     <form onSubmit={handleFindRecoveryAccount} className="space-y-4">
@@ -2457,6 +2752,38 @@ export const Auth: React.FC<Props> = ({ onLogin, logActivity, appSettings, onBac
 
                   {recoveryStep === 2 && (
                     <div className="space-y-4">
+                      {recoveryLinkedPasskey && passkeyCaps.supported ? (
+                        <div className="p-4 rounded-2xl bg-indigo-50/70 dark:bg-indigo-950/35 border border-indigo-200/80 dark:border-indigo-800/70 space-y-3">
+                          <div className="flex items-start gap-3">
+                            <div className="w-10 h-10 rounded-xl bg-indigo-600 text-white flex items-center justify-center shrink-0">
+                              <Fingerprint size={20} />
+                            </div>
+                            <div className="min-w-0 flex-1">
+                              <h3 className="text-sm font-black text-slate-900 dark:text-white">
+                                Passkey se Naya Password Lagayein
+                              </h3>
+                              <p className="text-xs text-slate-600 dark:text-slate-300 mt-0.5">
+                                {recoveryUserObj?.name || recoveryLinkedPasskey.name} ke liye is phone par Passkey linked hai.
+                              </p>
+                            </div>
+                          </div>
+
+                          <button
+                            type="button"
+                            disabled={passkeyBusy}
+                            onClick={handleVerifyPasskeyForReset}
+                            className="w-full min-h-[46px] py-2.5 px-4 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs sm:text-sm font-black flex items-center justify-center gap-2 transition cursor-pointer active:scale-[0.98] whitespace-nowrap"
+                          >
+                            {passkeyBusy ? <Loader2 size={16} className="animate-spin" /> : <Fingerprint size={17} />}
+                            <span>{passkeyBusy ? 'Verifying Passkey...' : 'Verify Fingerprint / Face Lock'}</span>
+                          </button>
+                        </div>
+                      ) : (
+                        <p className="text-xs text-slate-500 dark:text-slate-400">
+                          Is phone par is ID ke liye Passkey link nahi hai — neeche Security Question se recover karein.
+                        </p>
+                      )}
+
                       <div className="p-3.5 rounded-xl bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800/60 text-left">
                         <span className="text-[11px] font-bold text-amber-700 dark:text-amber-300 tracking-wide block">Security Question</span>
                         <p className="text-sm font-bold text-slate-800 dark:text-slate-100 mt-1">
@@ -2489,11 +2816,73 @@ export const Auth: React.FC<Props> = ({ onLogin, logActivity, appSettings, onBac
                     </div>
                   )}
 
+                  {recoveryStep === 3 && (
+                    <form onSubmit={handlePasskeyPasswordResetSubmit} className="space-y-3.5">
+                      <div className="space-y-1.5">
+                        <label className="text-xs font-bold text-slate-700 dark:text-slate-300 block">
+                          Naya Password
+                        </label>
+                        <div className="relative flex items-center">
+                          <Lock size={17} className="absolute left-3.5 text-slate-400 dark:text-slate-500" />
+                          <input
+                            type={showRecoveryNewPassword ? 'text' : 'password'}
+                            required
+                            minLength={4}
+                            placeholder="Kam se kam 4 characters"
+                            value={recoveryNewPassword}
+                            onChange={(e) => { setRecoveryNewPassword(e.target.value); setError(null); }}
+                            className="w-full bg-slate-50/70 dark:bg-slate-950/60 border border-slate-200 dark:border-slate-800 focus:bg-white dark:focus:bg-slate-950 focus:border-indigo-500 rounded-xl pl-10 pr-11 py-3 text-sm text-slate-900 dark:text-white placeholder-slate-400 outline-none transition font-medium"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => setShowRecoveryNewPassword((v) => !v)}
+                            className="absolute right-1.5 min-w-[40px] min-h-[40px] flex items-center justify-center text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 cursor-pointer rounded-lg"
+                            aria-label={showRecoveryNewPassword ? 'Hide password' : 'Show password'}
+                          >
+                            {showRecoveryNewPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+                          </button>
+                        </div>
+                      </div>
+
+                      <div className="space-y-1.5">
+                        <label className="text-xs font-bold text-slate-700 dark:text-slate-300 block">
+                          Confirm New Password
+                        </label>
+                        <div className="relative flex items-center">
+                          <ShieldCheck size={17} className="absolute left-3.5 text-slate-400 dark:text-slate-500" />
+                          <input
+                            type={showRecoveryNewPassword ? 'text' : 'password'}
+                            required
+                            minLength={4}
+                            placeholder="Naya password dobara daalein"
+                            value={recoveryConfirmPassword}
+                            onChange={(e) => { setRecoveryConfirmPassword(e.target.value); setError(null); }}
+                            className="w-full bg-slate-50/70 dark:bg-slate-950/60 border border-slate-200 dark:border-slate-800 focus:bg-white dark:focus:bg-slate-950 focus:border-emerald-600 rounded-xl pl-10 pr-3.5 py-3 text-sm text-slate-900 dark:text-white placeholder-slate-400 outline-none transition font-medium"
+                          />
+                        </div>
+                      </div>
+
+                      <button
+                        type="submit"
+                        disabled={loading}
+                        className="w-full min-h-[46px] py-3 rounded-xl text-sm font-black tracking-wide text-white bg-emerald-600 hover:bg-emerald-700 shadow-md transition flex items-center justify-center gap-2 uppercase cursor-pointer whitespace-nowrap"
+                      >
+                        {loading ? <Loader2 size={16} className="animate-spin text-white" /> : <CheckCircle2 size={16} />}
+                        <span>SAVE PASSWORD &amp; LOGIN</span>
+                      </button>
+                    </form>
+                  )}
+
                   <p className="text-xs text-slate-500 dark:text-slate-400 text-center pt-1">
                     Wapas login par jaane ke liye:{' '}
                     <button
                       type="button"
-                      onClick={() => { setView('LOGIN'); setError(null); }}
+                      onClick={() => {
+                        setView('LOGIN');
+                        setRecoveryStep(1);
+                        setRecoveryNotice(null);
+                        setError(null);
+                      }}
                       className="font-black text-slate-900 dark:text-indigo-400 hover:underline cursor-pointer py-1"
                     >
                       Login karein
@@ -2562,23 +2951,47 @@ export const Auth: React.FC<Props> = ({ onLogin, logActivity, appSettings, onBac
                       </div>
                     </div>
 
-                    <div className="flex items-center justify-between text-xs pt-0.5">
-                      <label className="flex items-center gap-2 text-slate-600 dark:text-slate-400 cursor-pointer select-none font-medium py-1">
-                        <input
-                          type="checkbox"
-                          checked={rememberMe}
-                          onChange={(e) => setRememberMe(e.target.checked)}
-                          className="w-4 h-4 rounded border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-indigo-500 focus:ring-indigo-500"
-                        />
-                        <span>Remember me</span>
-                      </label>
-                      <button
-                        type="button"
-                        onClick={() => { triggerAuthHaptic('light'); setView('RECOVERY'); setError(null); }}
-                        className="font-black text-slate-900 dark:text-indigo-400 hover:underline cursor-pointer py-1 whitespace-nowrap"
-                      >
-                        Forgot Password?
-                      </button>
+                    <div className="space-y-1.5 pt-0.5">
+                      <div className="flex items-center justify-between text-xs">
+                        <label className="flex items-center gap-2 text-slate-600 dark:text-slate-400 cursor-pointer select-none font-medium py-1">
+                          <input
+                            type="checkbox"
+                            checked={rememberMe}
+                            onChange={(e) => setRememberMe(e.target.checked)}
+                            className="w-4 h-4 rounded border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-indigo-500 focus:ring-indigo-500"
+                          />
+                          <span>Remember me</span>
+                        </label>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            triggerAuthHaptic('light');
+                            setRecoveryStep(1);
+                            setRecoveryUserObj(null);
+                            setRecoveryLinkedPasskey(null);
+                            setRecoveryNotice(null);
+                            setRecoveryNewPassword('');
+                            setRecoveryConfirmPassword('');
+                            setView('RECOVERY');
+                            setError(null);
+                          }}
+                          className="font-black text-slate-900 dark:text-indigo-400 hover:underline cursor-pointer py-1 whitespace-nowrap"
+                        >
+                          Forgot Password?
+                        </button>
+                      </div>
+
+                      {passkeyCaps.supported && (
+                        <label className="flex items-center gap-2 text-xs text-slate-600 dark:text-slate-400 cursor-pointer select-none font-medium py-0.5">
+                          <input
+                            type="checkbox"
+                            checked={enablePasskeyOnLogin}
+                            onChange={(e) => setEnablePasskeyOnLogin(e.target.checked)}
+                            className="w-4 h-4 rounded border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-indigo-600 focus:ring-indigo-500"
+                          />
+                          <span>Save Passkey (Fingerprint / Face Lock) on this device</span>
+                        </label>
+                      )}
                     </div>
 
                     <button
@@ -2591,45 +3004,35 @@ export const Auth: React.FC<Props> = ({ onLogin, logActivity, appSettings, onBac
                       <ArrowRight size={16} />
                     </button>
 
-                    {/* ── BIOMETRIC & QR LOGIN OPTIONS ── */}
-                    <div className="space-y-2.5 pt-1 lm-enter-delay-2">
+                    {/* ── UNIFIED QUICK LOGIN TRIGGER ── */}
+                    <div className="pt-1 lm-enter-delay-2">
                       <button
                         type="button"
                         onClick={() => {
                           triggerAuthHaptic('light');
                           setError(null);
-                          setShowFaceLoginModal(true);
+                          setQuickModalError(null);
+                          setSavedPasskeys(listSavedPasskeyAccounts());
+                          setShowPasskeyDrawerInModal(false);
+                          setShowPasskeyEnrollForm(false);
+                          setShowQuickLoginModal(true);
                         }}
                         disabled={loading}
-                        className="w-full min-h-[46px] py-2.5 px-3.5 rounded-xl text-xs sm:text-sm font-bold text-slate-800 dark:text-slate-100 bg-slate-50 hover:bg-slate-100 dark:bg-slate-800/70 dark:hover:bg-slate-800 border border-slate-200/90 dark:border-slate-700/80 transition-all duration-200 flex items-center justify-between gap-2 cursor-pointer active:scale-[0.98]"
+                        className="w-full min-h-[48px] py-2.5 px-4 rounded-xl text-xs sm:text-sm font-bold text-slate-800 dark:text-slate-100 bg-slate-50 hover:bg-slate-100 dark:bg-slate-800/80 dark:hover:bg-slate-800 border border-slate-200/90 dark:border-slate-700/80 transition-all duration-200 flex items-center justify-between gap-3 cursor-pointer active:scale-[0.98]"
                       >
-                        <div className="flex items-center gap-2.5 min-w-0">
-                          <div className="w-8 h-8 rounded-lg bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-700 flex items-center justify-center shrink-0">
-                            <ScanFace size={17} className="text-slate-700 dark:text-indigo-400" />
+                        <div className="flex items-center gap-3 min-w-0">
+                          <div className="w-9 h-9 rounded-lg bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-700 flex items-center justify-center shrink-0">
+                            <Zap size={17} className="text-indigo-600 dark:text-indigo-400" />
                           </div>
-                          <span className="truncate">Face ID Login</span>
-                          <span className="text-[11px] font-semibold text-indigo-600 dark:text-indigo-300 shrink-0 whitespace-nowrap">
-                            · Instant
-                          </span>
-                        </div>
-                        <ArrowRight size={16} className="text-slate-400 dark:text-slate-500 shrink-0" />
-                      </button>
-
-                      <button
-                        type="button"
-                        onClick={() => {
-                          triggerAuthHaptic('light');
-                          setError(null);
-                          setShowQrModal(true);
-                        }}
-                        disabled={loading}
-                        className="w-full min-h-[46px] py-2.5 px-3.5 rounded-xl text-xs sm:text-sm font-bold text-slate-800 dark:text-slate-100 bg-slate-50 hover:bg-slate-100 dark:bg-slate-800/70 dark:hover:bg-slate-800 border border-slate-200/90 dark:border-slate-700/80 transition flex items-center justify-between gap-2 cursor-pointer active:scale-[0.98]"
-                      >
-                        <div className="flex items-center gap-2.5 min-w-0">
-                          <div className="w-8 h-8 rounded-lg bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-700 flex items-center justify-center shrink-0">
-                            <QrCode size={17} className="text-slate-700 dark:text-emerald-400" />
+                          <div className="text-left min-w-0">
+                            <span className="block text-sm font-extrabold text-slate-900 dark:text-white truncate">
+                              Quick Login
+                            </span>
+                            <span className="block text-[11px] font-medium text-slate-500 dark:text-slate-400 truncate">
+                              Face ID · Passkey · QR Code
+                              {savedPasskeys.length > 0 ? ` · ${savedPasskeys.length} saved` : ''}
+                            </span>
                           </div>
-                          <span className="truncate">Login with ID Card QR Code</span>
                         </div>
                         <ArrowRight size={16} className="text-slate-400 dark:text-slate-500 shrink-0" />
                       </button>
@@ -2893,6 +3296,286 @@ export const Auth: React.FC<Props> = ({ onLogin, logActivity, appSettings, onBac
             >
               Cancel
             </button>
+          </div>
+        </div>
+      )}
+
+      {/* ── UNIFIED QUICK LOGIN MODAL (FACE ID · PASSKEY · QR CODE) ── */}
+      {showQuickLoginModal && (
+        <div
+          onClick={() => !passkeyBusy && setShowQuickLoginModal(false)}
+          className="fixed inset-0 z-[99990] bg-black/60 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-4"
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="w-full sm:max-w-md rounded-t-3xl sm:rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-2xl p-5 sm:p-6 space-y-4 max-h-[88dvh] overflow-y-auto pb-[max(1.25rem,env(safe-area-inset-bottom))]"
+          >
+            <div className="w-10 h-1.5 bg-slate-300 dark:bg-slate-700 rounded-full mx-auto sm:hidden" />
+
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <h3 className="text-lg font-black text-slate-900 dark:text-white tracking-tight">
+                  Quick Login
+                </h3>
+                <p className="text-xs text-slate-500 dark:text-slate-400">
+                  Apna fast sign-in option chunein
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowQuickLoginModal(false)}
+                className="min-w-[44px] min-h-[44px] rounded-xl flex items-center justify-center text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800 dark:text-slate-400 transition cursor-pointer"
+                aria-label="Close quick login"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            {quickModalError && (
+              <div className="p-3 rounded-xl bg-rose-50 dark:bg-rose-950/50 border border-rose-200 dark:border-rose-900/70 text-xs font-semibold text-rose-700 dark:text-rose-200 flex items-start gap-2">
+                <XCircle size={15} className="shrink-0 mt-0.5 text-rose-600 dark:text-rose-400" />
+                <span>{quickModalError}</span>
+              </div>
+            )}
+
+            <div className="space-y-2.5">
+              {/* Option 1: Face ID Login */}
+              <button
+                type="button"
+                disabled={passkeyBusy}
+                onClick={() => {
+                  triggerAuthHaptic('light');
+                  setShowQuickLoginModal(false);
+                  setShowFaceLoginModal(true);
+                }}
+                className="w-full min-h-[60px] p-3.5 rounded-xl bg-slate-50 hover:bg-slate-100 dark:bg-slate-800/75 dark:hover:bg-slate-800 border border-slate-200 dark:border-slate-700/80 flex items-center justify-between gap-3 transition cursor-pointer active:scale-[0.98]"
+              >
+                <div className="flex items-center gap-3 min-w-0">
+                  <div className="w-10 h-10 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 flex items-center justify-center shrink-0">
+                    <ScanFace size={20} className="text-indigo-600 dark:text-indigo-400" />
+                  </div>
+                  <div className="text-left min-w-0">
+                    <span className="block text-sm font-black text-slate-900 dark:text-white truncate">
+                      Face ID Login
+                    </span>
+                    <span className="block text-xs text-slate-500 dark:text-slate-400 truncate">
+                      Camera AI face scan se instant login
+                    </span>
+                  </div>
+                </div>
+                <ArrowRight size={16} className="text-slate-400 shrink-0" />
+              </button>
+
+              {/* Option 2: Passkey (Fingerprint / Mobile Face Lock) */}
+              <div className="rounded-xl border border-slate-200 dark:border-slate-700/80 bg-slate-50 dark:bg-slate-800/75 overflow-hidden">
+                <button
+                  type="button"
+                  disabled={passkeyBusy}
+                  onClick={() => {
+                    triggerAuthHaptic('light');
+                    setQuickModalError(null);
+                    if (!passkeyCaps.supported) {
+                      setQuickModalError('Is device ya browser me Fingerprint / Passkey support uplabdh nahi hai.');
+                      return;
+                    }
+                    if (savedPasskeys.length === 1 && !showPasskeyDrawerInModal && !showPasskeyEnrollForm) {
+                      void handlePasskeyUnlock(savedPasskeys[0]);
+                      return;
+                    }
+                    setShowPasskeyDrawerInModal((prev) => !prev);
+                    if (savedPasskeys.length === 0) {
+                      setShowPasskeyEnrollForm(true);
+                    }
+                  }}
+                  className="w-full min-h-[60px] p-3.5 hover:bg-slate-100 dark:hover:bg-slate-800 flex items-center justify-between gap-3 transition cursor-pointer active:scale-[0.99]"
+                >
+                  <div className="flex items-center gap-3 min-w-0">
+                    <div className="w-10 h-10 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 flex items-center justify-center shrink-0">
+                      {passkeyBusy ? (
+                        <Loader2 size={20} className="animate-spin text-indigo-600 dark:text-indigo-400" />
+                      ) : (
+                        <Fingerprint size={20} className="text-indigo-600 dark:text-indigo-400" />
+                      )}
+                    </div>
+                    <div className="text-left min-w-0">
+                      <span className="block text-sm font-black text-slate-900 dark:text-white truncate">
+                        Passkey
+                      </span>
+                      <span className="block text-xs text-slate-500 dark:text-slate-400 truncate">
+                        {savedPasskeys.length === 1
+                          ? `1-Tap Unlock · ${savedPasskeys[0].name}`
+                          : savedPasskeys.length > 1
+                          ? `${savedPasskeys.length} saved accounts · Fingerprint / Face Lock`
+                          : `${passkeyCaps.label} se link karein`}
+                      </span>
+                    </div>
+                  </div>
+                  <ArrowRight size={16} className="text-slate-400 shrink-0" />
+                </button>
+
+                {passkeyCaps.supported && (
+                  <div className="px-3.5 pb-2.5 flex items-center justify-between gap-2 border-t border-slate-200/70 dark:border-slate-700/60 pt-2">
+                    <span className="text-[11px] font-medium text-slate-500 dark:text-slate-400 flex items-center gap-1.5 truncate">
+                      <Smartphone size={12} className="shrink-0" />
+                      <span>{passkeyCaps.hasAndroidBiometric ? 'Native APK Lock Ready' : 'Device Passkey Ready'}</span>
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setQuickModalError(null);
+                        setShowPasskeyDrawerInModal((prev) => !prev);
+                        if (savedPasskeys.length === 0) setShowPasskeyEnrollForm(true);
+                      }}
+                      className="text-[11px] font-bold text-indigo-600 dark:text-indigo-400 hover:underline py-1 whitespace-nowrap cursor-pointer"
+                    >
+                      {showPasskeyDrawerInModal ? 'Hide options' : savedPasskeys.length > 0 ? 'Manage / Link ID' : 'Link ID'}
+                    </button>
+                  </div>
+                )}
+
+                {showPasskeyDrawerInModal && passkeyCaps.supported && (
+                  <div className="px-3.5 pb-3.5 pt-2 border-t border-slate-200 dark:border-slate-700/70 space-y-2.5 bg-white/70 dark:bg-slate-900/60">
+                    {savedPasskeys.length > 0 && (
+                      <div className="space-y-1.5">
+                        <p className="text-[11px] font-bold text-slate-500 dark:text-slate-400">
+                          Saved accounts on this phone
+                        </p>
+                        {savedPasskeys.map((entry) => (
+                          <div
+                            key={entry.key}
+                            className="flex items-center justify-between gap-2 p-2 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800"
+                          >
+                            <button
+                              type="button"
+                              disabled={passkeyBusy}
+                              onClick={() => handlePasskeyUnlock(entry)}
+                              className="flex-1 min-w-0 min-h-[40px] flex items-center gap-2.5 text-left cursor-pointer"
+                            >
+                              <Fingerprint size={16} className="text-indigo-600 dark:text-indigo-400 shrink-0" />
+                              <div className="min-w-0">
+                                <span className="block text-xs font-bold text-slate-900 dark:text-white truncate">
+                                  {entry.name}
+                                </span>
+                                <span className="block text-[11px] text-slate-500 dark:text-slate-400 truncate">
+                                  {entry.role || 'USER'} {entry.displayId ? `· ${entry.displayId}` : ''}
+                                </span>
+                              </div>
+                            </button>
+                            <button
+                              type="button"
+                              disabled={passkeyBusy}
+                              onClick={() => {
+                                removeSavedPasskeyAccount(entry.key);
+                                const updated = listSavedPasskeyAccounts();
+                                setSavedPasskeys(updated);
+                                if (updated.length === 0) setShowPasskeyEnrollForm(true);
+                              }}
+                              className="min-w-[36px] min-h-[36px] rounded-lg flex items-center justify-center text-slate-400 hover:text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/50 transition cursor-pointer"
+                              title="Remove saved passkey"
+                              aria-label="Remove saved passkey"
+                            >
+                              <Trash2 size={14} />
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    {!showPasskeyEnrollForm ? (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setQuickModalError(null);
+                          setShowPasskeyEnrollForm(true);
+                        }}
+                        className="w-full min-h-[42px] py-2 px-3 rounded-lg border border-dashed border-slate-300 dark:border-slate-700 text-xs font-bold text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition cursor-pointer"
+                      >
+                        + Link New ID with Passkey
+                      </button>
+                    ) : (
+                      <form onSubmit={handleLinkPasskeyAndLogin} className="space-y-2.5 pt-1">
+                        <p className="text-xs font-bold text-slate-800 dark:text-slate-200">
+                          Pehli baar ID &amp; Password se verify karke Passkey link karein:
+                        </p>
+                        <input
+                          type="text"
+                          required
+                          placeholder="Mobile / Email / Student ID"
+                          value={passkeyLinkId}
+                          onChange={(e) => { setPasskeyLinkId(e.target.value); setQuickModalError(null); }}
+                          autoCapitalize="none"
+                          className="w-full px-3 py-2.5 rounded-lg bg-white dark:bg-slate-950 border border-slate-200 dark:border-slate-700 text-xs sm:text-sm text-slate-900 dark:text-white outline-none focus:border-indigo-500"
+                        />
+                        <div className="relative flex items-center">
+                          <input
+                            type={showPasskeyLinkPassword ? 'text' : 'password'}
+                            required
+                            placeholder="Password"
+                            value={passkeyLinkPassword}
+                            onChange={(e) => { setPasskeyLinkPassword(e.target.value); setQuickModalError(null); }}
+                            className="w-full px-3 pr-10 py-2.5 rounded-lg bg-white dark:bg-slate-950 border border-slate-200 dark:border-slate-700 text-xs sm:text-sm text-slate-900 dark:text-white outline-none focus:border-indigo-500"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => setShowPasskeyLinkPassword((v) => !v)}
+                            className="absolute right-1 min-w-[36px] min-h-[36px] flex items-center justify-center text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 cursor-pointer"
+                            aria-label={showPasskeyLinkPassword ? 'Hide password' : 'Show password'}
+                          >
+                            {showPasskeyLinkPassword ? <EyeOff size={15} /> : <Eye size={15} />}
+                          </button>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <button
+                            type="submit"
+                            disabled={passkeyBusy}
+                            className="flex-1 min-h-[42px] py-2 px-3 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-black flex items-center justify-center gap-1.5 transition cursor-pointer whitespace-nowrap"
+                          >
+                            {passkeyBusy ? <Loader2 size={14} className="animate-spin" /> : <Fingerprint size={15} />}
+                            <span>Verify &amp; Link Passkey</span>
+                          </button>
+                          {savedPasskeys.length > 0 && (
+                            <button
+                              type="button"
+                              onClick={() => setShowPasskeyEnrollForm(false)}
+                              className="min-h-[42px] px-3 rounded-lg bg-slate-200/80 dark:bg-slate-800 text-xs font-bold text-slate-700 dark:text-slate-200 cursor-pointer"
+                            >
+                              Cancel
+                            </button>
+                          )}
+                        </div>
+                      </form>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              {/* Option 3: QR Code Login */}
+              <button
+                type="button"
+                disabled={passkeyBusy}
+                onClick={() => {
+                  triggerAuthHaptic('light');
+                  setShowQuickLoginModal(false);
+                  setShowQrModal(true);
+                }}
+                className="w-full min-h-[60px] p-3.5 rounded-xl bg-slate-50 hover:bg-slate-100 dark:bg-slate-800/75 dark:hover:bg-slate-800 border border-slate-200 dark:border-slate-700/80 flex items-center justify-between gap-3 transition cursor-pointer active:scale-[0.98]"
+              >
+                <div className="flex items-center gap-3 min-w-0">
+                  <div className="w-10 h-10 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 flex items-center justify-center shrink-0">
+                    <QrCode size={20} className="text-emerald-600 dark:text-emerald-400" />
+                  </div>
+                  <div className="text-left min-w-0">
+                    <span className="block text-sm font-black text-slate-900 dark:text-white truncate">
+                      QR Code Login
+                    </span>
+                    <span className="block text-xs text-slate-500 dark:text-slate-400 truncate">
+                      Student, Teacher ya Driver ID Card scan karein
+                    </span>
+                  </div>
+                </div>
+                <ArrowRight size={16} className="text-slate-400 shrink-0" />
+              </button>
+            </div>
           </div>
         </div>
       )}

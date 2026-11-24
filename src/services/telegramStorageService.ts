@@ -1,6 +1,6 @@
 /**
  * Telegram Cloud Storage Service
- * Media Storage backed by @LmpsschoolappBot via secure server-side proxy.
+ * Media Storage backed by @PothiaAppBot via secure server-side proxy.
  *
  * Architecture:
  * - Browser uploads binary media to /api/telegram/upload
@@ -12,15 +12,25 @@ import { sbSetDocument } from './supabaseDbAdapter';
 
 const _env = (typeof import.meta !== 'undefined' && (import.meta as any).env) || {};
 
-export const DEFAULT_STORAGE_CHAT_ID = (_env.VITE_TELEGRAM_STORAGE_CHAT_ID || '').trim();
-export const DEFAULT_CHAT_CHANNEL_ID = (_env.VITE_TELEGRAM_CHAT_CHANNEL_ID || '').trim();
+function normalizeClientChatId(raw?: string | null): string {
+  const clean = String(raw || '').trim().replace(/^["'`]+|["'`]+$/g, '').trim();
+  if (!clean) return '';
+  const urlMatch = clean.match(/t\.me\/(?:boost\?(?:[^#]*&)?c=|c\/)(\d{6,16})/i);
+  if (urlMatch?.[1]) return `-100${urlMatch[1]}`;
+  if (/^100\d{9,15}$/.test(clean)) return `-${clean}`;
+  return clean;
+}
+
+export const DEFAULT_STORAGE_CHAT_ID = normalizeClientChatId(_env.VITE_TELEGRAM_STORAGE_CHAT_ID);
+export const DEFAULT_CHAT_CHANNEL_ID = normalizeClientChatId(_env.VITE_TELEGRAM_CHAT_CHANNEL_ID);
 export const TELEGRAM_CHAT_INVITE_LINK = 'https://t.me/+p0aIY7YWgGxhYzk1';
 const STORAGE_CHAT_KEY = 'nst_telegram_storage_chat_id';
 
 // Telegram Bot API `getFile` strictly rejects downloading/streaming any file > 20MB.
 export const TELEGRAM_MAX_FILE_SIZE_BYTES = Math.floor(19.5 * 1024 * 1024);
-// Vercel serverless functions cap request bodies at 4.5MB; files above 3.5MB use chunked Media Vault upload.
+// Vercel serverless functions cap request bodies at 4.5MB; files above 3.5MB use chunked staging -> Telegram.
 const SERVER_PROXY_SAFE_BYTES = Math.floor(3.5 * 1024 * 1024);
+const TELEGRAM_STAGE_CHUNK_BYTES = Math.floor(1.2 * 1024 * 1024);
 const MEDIA_VAULT_CHUNK_BYTES = 512 * 1024;
 
 export interface TelegramUploadResult {
@@ -30,6 +40,7 @@ export interface TelegramUploadResult {
   fileSize?: number;
   mimeType?: string;
   directUrl?: string;
+  storage?: 'telegram' | 'vault';
 }
 
 export interface UploadOptions {
@@ -41,22 +52,38 @@ export interface UploadOptions {
   onProgress?: (percent: number) => void;
 }
 
-const LEGACY_CLIENT_CHAT_IDS = new Set(['7849468653', '-1004290996442']);
-
 /**
- * Gets custom storage chat ID if explicitly configured locally
+ * Gets primary storage chat ID (local override -> channel ID -> storage chat ID)
  */
 export const getTelegramStorageChatId = (): string => {
   try {
-    const stored = (localStorage.getItem(STORAGE_CHAT_KEY) || '').trim();
-    if (stored && LEGACY_CLIENT_CHAT_IDS.has(stored)) {
-      localStorage.removeItem(STORAGE_CHAT_KEY);
-      return DEFAULT_STORAGE_CHAT_ID;
+    const stored = normalizeClientChatId(localStorage.getItem(STORAGE_CHAT_KEY));
+    if (stored) return stored;
+  } catch {}
+  return DEFAULT_CHAT_CHANNEL_ID || DEFAULT_STORAGE_CHAT_ID;
+};
+
+/**
+ * Returns ordered list of valid Telegram storage chat candidates (channel first, then DM/user chat)
+ */
+export const getTelegramChatCandidates = (explicitChatId?: string): string[] => {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  const add = (raw?: string) => {
+    const clean = normalizeClientChatId(raw);
+    if (clean && !seen.has(clean)) {
+      seen.add(clean);
+      out.push(clean);
     }
-    return stored || DEFAULT_STORAGE_CHAT_ID;
-  } catch {
-    return DEFAULT_STORAGE_CHAT_ID;
-  }
+  };
+  add(explicitChatId);
+  try {
+    add(localStorage.getItem(STORAGE_CHAT_KEY));
+  } catch {}
+  add(DEFAULT_CHAT_CHANNEL_ID);
+  add(DEFAULT_STORAGE_CHAT_ID);
+  const priority = (id: string) => (id.startsWith('-100') ? 0 : id.startsWith('-') ? 1 : 2);
+  return out.sort((a, b) => priority(a) - priority(b));
 };
 
 /**
@@ -64,8 +91,8 @@ export const getTelegramStorageChatId = (): string => {
  */
 export const setTelegramStorageChatId = (chatId: string) => {
   try {
-    const clean = String(chatId || '').trim();
-    if (clean && !LEGACY_CLIENT_CHAT_IDS.has(clean)) {
+    const clean = normalizeClientChatId(chatId);
+    if (clean) {
       localStorage.setItem(STORAGE_CHAT_KEY, clean);
     } else {
       localStorage.removeItem(STORAGE_CHAT_KEY);
@@ -237,10 +264,12 @@ async function uploadViaServerProxyOnce(
   blob: Blob,
   fileName: string,
   targetChatId: string,
+  fallbackChatIds: string[],
   timeoutMs: number,
   opts: UploadOptions = {}
 ): Promise<TelegramUploadResult> {
   const mimeType = blob.type || 'application/octet-stream';
+  const fallbacksHeader = fallbackChatIds.join(',');
 
   if (typeof XMLHttpRequest !== 'undefined') {
     return new Promise<TelegramUploadResult>((resolve, reject) => {
@@ -265,6 +294,9 @@ async function uploadViaServerProxyOnce(
         } catch {}
 
         if (xhr.status >= 200 && xhr.status < 300 && data?.ok && data?.fileId) {
+          if (data.storage === 'vault') {
+            console.warn('[TelegramStorage] Fallback vault used:', data.telegramFallbackReason || 'unknown');
+          }
           const permanentUrl = data.url || buildPermanentTelegramUrl(data.fileId, data.fileName || fileName);
           cacheUploadedMediaPreview(permanentUrl, blob);
           if (opts.onProgress) opts.onProgress(100);
@@ -275,6 +307,7 @@ async function uploadViaServerProxyOnce(
             fileName: data.fileName || fileName,
             fileSize: data.fileSize || blob.size,
             mimeType: data.mimeType || mimeType,
+            storage: data.storage || 'telegram',
           });
         } else {
           const err: any = new Error(parseServerUploadError(xhr.status, data));
@@ -303,6 +336,9 @@ async function uploadViaServerProxyOnce(
       if (targetChatId) {
         xhr.setRequestHeader('X-Chat-Id', targetChatId);
       }
+      if (fallbacksHeader) {
+        xhr.setRequestHeader('X-Chat-Fallbacks', fallbacksHeader);
+      }
       if (opts.caption) {
         xhr.setRequestHeader('X-Caption', encodeURIComponent(opts.caption));
       }
@@ -320,6 +356,7 @@ async function uploadViaServerProxyOnce(
       'X-Mime-Type': mimeType,
     };
     if (targetChatId) headers['X-Chat-Id'] = targetChatId;
+    if (fallbacksHeader) headers['X-Chat-Fallbacks'] = fallbacksHeader;
     if (opts.caption) headers['X-Caption'] = encodeURIComponent(opts.caption);
 
     const res = await fetch('/api/telegram/upload', {
@@ -343,6 +380,9 @@ async function uploadViaServerProxyOnce(
       throw err;
     }
 
+    if (data.storage === 'vault') {
+      console.warn('[TelegramStorage] Fallback vault used:', data.telegramFallbackReason || 'unknown');
+    }
     const permanentUrl = data.url || buildPermanentTelegramUrl(data.fileId, data.fileName || fileName);
     cacheUploadedMediaPreview(permanentUrl, blob);
     if (opts.onProgress) opts.onProgress(100);
@@ -354,6 +394,7 @@ async function uploadViaServerProxyOnce(
       fileName: data.fileName || fileName,
       fileSize: data.fileSize || blob.size,
       mimeType: data.mimeType || mimeType,
+      storage: data.storage || 'telegram',
     };
   } catch (err) {
     clearTimeout(timeoutId);
@@ -479,15 +520,115 @@ async function uploadToSupabaseMediaVault(
   };
 }
 
+/**
+ * Uploads large files (3.5MB - 19.5MB) in <=1.2MB chunks to /api/telegram/stage-chunk
+ * and commits them directly to Telegram via /api/telegram/stage-commit (staging chunks are purged right away).
+ */
+async function uploadViaChunkedTelegramStaging(
+  blob: Blob,
+  fileName: string,
+  targetChatId: string,
+  fallbackChatIds: string[],
+  opts: UploadOptions = {}
+): Promise<TelegramUploadResult> {
+  const mimeType = blob.type || 'application/octet-stream';
+  const uploadId = `tgs_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+  const chunkCount = Math.ceil(blob.size / TELEGRAM_STAGE_CHUNK_BYTES);
+  let uploaded = 0;
+
+  if (opts.onProgress) opts.onProgress(12);
+
+  for (let i = 0; i < chunkCount; i += 2) {
+    const batch = i + 1 < chunkCount ? [i, i + 1] : [i];
+    await Promise.all(
+      batch.map(async (idx) => {
+        const start = idx * TELEGRAM_STAGE_CHUNK_BYTES;
+        const end = Math.min(blob.size, start + TELEGRAM_STAGE_CHUNK_BYTES);
+        const slice = blob.slice(start, end);
+        const res = await fetch('/api/telegram/stage-chunk', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/octet-stream',
+            'X-Upload-Id': uploadId,
+            'X-Chunk-Index': String(idx),
+            'X-Total-Chunks': String(chunkCount),
+          },
+          body: slice,
+        });
+        if (!res.ok) {
+          const errData = await res.json().catch(() => null);
+          const err: any = new Error(errData?.error || `Chunk ${idx + 1} upload fail (${res.status})`);
+          err.status = res.status;
+          throw err;
+        }
+        uploaded++;
+        if (opts.onProgress) {
+          const pct = Math.min(84, Math.max(15, Math.round(12 + (uploaded / chunkCount) * 72)));
+          opts.onProgress(pct);
+        }
+      })
+    );
+  }
+
+  if (opts.onProgress) opts.onProgress(88);
+
+  const commitRes = await fetch('/api/telegram/stage-commit', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      uploadId,
+      chunkCount,
+      fileName,
+      mimeType,
+      caption: opts.caption,
+      chatId: targetChatId || undefined,
+      fallbackChatIds,
+      allowVaultFallback: true,
+    }),
+  });
+
+  const data = await commitRes.json().catch(() => null);
+  if (!commitRes.ok || !data?.ok || !data?.fileId) {
+    const err: any = new Error(parseServerUploadError(commitRes.status, data));
+    err.status = commitRes.status;
+    if (data?.retryAfter) err.retryAfter = Number(data.retryAfter);
+    throw err;
+  }
+
+  if (data.storage === 'vault') {
+    console.warn('[TelegramStorage] Chunk commit used fallback vault:', data.telegramFallbackReason || 'unknown');
+  }
+
+  const permanentUrl = data.url || buildPermanentTelegramUrl(data.fileId, data.fileName || fileName);
+  cacheUploadedMediaPreview(permanentUrl, blob);
+  if (opts.onProgress) opts.onProgress(100);
+
+  return {
+    url: permanentUrl,
+    directUrl: permanentUrl,
+    fileId: data.fileId,
+    fileName: data.fileName || fileName,
+    fileSize: data.fileSize || blob.size,
+    mimeType: data.mimeType || mimeType,
+    storage: data.storage || 'telegram',
+  };
+}
+
 async function uploadViaServerProxy(
   blob: Blob,
   fileName: string,
   targetChatId: string,
+  fallbackChatIds: string[],
   opts: UploadOptions = {}
 ): Promise<TelegramUploadResult> {
-  // Files >3.5MB exceed Vercel's 4.5MB request body limit, so upload in 512KB chunks directly to Media Vault
+  // Files > 3.5MB bypass Vercel's 4.5MB body cap by staging <=1.2MB chunks -> assembling on server -> saving to Telegram Cloud
   if (blob.size > SERVER_PROXY_SAFE_BYTES) {
-    return await uploadToSupabaseMediaVault(blob, fileName, opts);
+    try {
+      return await uploadViaChunkedTelegramStaging(blob, fileName, targetChatId, fallbackChatIds, opts);
+    } catch (stageErr) {
+      console.warn('[TelegramStorage] Chunked Telegram staging failed, trying Vault fallback:', stageErr);
+      return await uploadToSupabaseMediaVault(blob, fileName, opts);
+    }
   }
 
   const defaultTimeoutMs =
@@ -495,16 +636,16 @@ async function uploadViaServerProxy(
   const timeoutMs = opts.timeoutMs || defaultTimeoutMs;
 
   try {
-    return await uploadViaServerProxyOnce(blob, fileName, targetChatId, timeoutMs, opts);
+    return await uploadViaServerProxyOnce(blob, fileName, targetChatId, fallbackChatIds, timeoutMs, opts);
   } catch (err: any) {
     const status = Number(err?.status || 0);
     const retryAfter = Number(err?.retryAfter || 0);
 
-    // Brief 429 retry if Telegram asked for <= 4s
-    if (status === 429 && retryAfter > 0 && retryAfter <= 4) {
+    // Brief 429 retry if Telegram asked for <= 8s
+    if (status === 429 && retryAfter > 0 && retryAfter <= 8) {
       await new Promise((r) => setTimeout(r, retryAfter * 1000 + 250));
       try {
-        return await uploadViaServerProxyOnce(blob, fileName, targetChatId, timeoutMs, opts);
+        return await uploadViaServerProxyOnce(blob, fileName, targetChatId, fallbackChatIds, timeoutMs, opts);
       } catch {}
     }
 
@@ -512,15 +653,14 @@ async function uploadViaServerProxy(
     if (isTransient && blob.size <= 2 * 1024 * 1024) {
       await new Promise((r) => setTimeout(r, 450));
       try {
-        return await uploadViaServerProxyOnce(blob, fileName, targetChatId, timeoutMs, opts);
+        return await uploadViaServerProxyOnce(blob, fileName, targetChatId, fallbackChatIds, timeoutMs, opts);
       } catch {}
     }
 
-    // Automatic fallback to Cloud Media Vault when Telegram returns 429 FloodWait or server error
+    // Emergency 1% resilience fallback to Cloud Media Vault when Telegram server proxy is unreachable
     const shouldFallbackToVault =
       status === 429 ||
       status === 413 ||
-      status === 400 ||
       status === 500 ||
       status === 502 ||
       status === 503 ||
@@ -547,6 +687,7 @@ export async function checkTelegramStorageHealth(): Promise<{
   message: string;
   botUsername?: string;
   hasStorageChatId?: boolean;
+  maxDirectUploadBytes?: number;
   discoveredChats?: Array<{ id: string; title: string; type: string }>;
 }> {
   try {
@@ -567,6 +708,7 @@ export async function checkTelegramStorageHealth(): Promise<{
         : data?.error || `Bot offline (${res.status})`,
       botUsername: data?.bot?.username,
       hasStorageChatId: Boolean(data?.hasStorageChatId),
+      maxDirectUploadBytes: data?.maxDirectUploadBytes,
       discoveredChats: Array.isArray(data?.discoveredChats) ? data.discoveredChats : [],
     };
   } catch (err: any) {
@@ -575,14 +717,15 @@ export async function checkTelegramStorageHealth(): Promise<{
 }
 
 /**
- * Primary universal upload function: Uploads any media or file via /api/telegram/upload.
+ * Primary universal upload function: Uploads any media or file via /api/telegram/upload (or chunked Telegram staging for >3.5MB).
  */
 export async function uploadToTelegramStorage(
   fileInput: File | Blob | string,
   options?: UploadOptions | string
 ): Promise<TelegramUploadResult> {
   const opts: UploadOptions = typeof options === 'string' ? { caption: options } : options || {};
-  const targetChatId = (opts.chatId || getTelegramStorageChatId()).trim();
+  const chatCandidates = getTelegramChatCandidates(opts.chatId);
+  const targetChatId = chatCandidates[0] || '';
 
   let blob: Blob;
   let fileName = opts.fileName || 'file';
@@ -614,7 +757,7 @@ export async function uploadToTelegramStorage(
     );
   }
 
-  return await uploadViaServerProxy(blob, fileName, targetChatId, opts);
+  return await uploadViaServerProxy(blob, fileName, targetChatId, chatCandidates, opts);
 }
 
 /**
