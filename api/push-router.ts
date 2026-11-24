@@ -18,6 +18,7 @@ import {
 } from "./_schoolBranding.js";
 import {
   resolveTelegramBotToken,
+  getTelegramTokenDiagnostics,
   resolveTelegramFilePath,
   resolveTelegramStorageChatId,
   discoverTelegramStorageChats,
@@ -1059,16 +1060,25 @@ export default async function handler(req: any, res: any) {
     if (method === "GET" && rawPath === "telegram/health") {
       const token = resolveTelegramBotToken();
       if (!token) {
+        const diag = getTelegramTokenDiagnostics();
         return res.status(503).json({
           ok: false,
           configured: false,
-          error: "Server par TELEGRAM_BOT_TOKEN set nahi hai. Vercel Environment Variables me TELEGRAM_BOT_TOKEN add karein.",
+          envPresent: diag.envPresent,
+          reason: diag.reason,
+          error:
+            diag.reason === "invalid_token_format"
+              ? "TELEGRAM_BOT_TOKEN format galat hai (expected 123456789:AAH...). Vercel me BotFather token bina extra text ke dalein aur Redeploy karein."
+              : "Server par TELEGRAM_BOT_TOKEN set nahi hai. Vercel Environment Variables me Production ke liye TELEGRAM_BOT_TOKEN add karke Redeploy karein.",
         });
       }
       const r = await fetch(`https://api.telegram.org/bot${token}/getMe`);
       const data = (await r.json().catch(() => ({ ok: false }))) as any;
       const configuredChatId = String(
-        process.env.TELEGRAM_STORAGE_CHAT_ID || process.env.TELEGRAM_CHAT_CHANNEL_ID || ""
+        process.env.TELEGRAM_STORAGE_CHAT_ID ||
+          process.env.TELEGRAM_CHAT_CHANNEL_ID ||
+          process.env.VITE_TELEGRAM_STORAGE_CHAT_ID ||
+          ""
       ).trim();
       const discoveredChats =
         !configuredChatId && data?.ok ? await discoverTelegramStorageChats(token) : [];

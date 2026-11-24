@@ -22,6 +22,7 @@ import {
 } from "./api/_schoolBranding.js";
 import {
   resolveTelegramBotToken,
+  getTelegramTokenDiagnostics,
   resolveTelegramFilePath,
   resolveTelegramStorageChatId,
   discoverTelegramStorageChats,
@@ -1642,17 +1643,26 @@ async function startServer() {
   app.get("/api/telegram/health", async (_req, res) => {
     const token = resolveTelegramBotToken();
     if (!token) {
+      const diag = getTelegramTokenDiagnostics();
       return res.status(503).json({
         ok: false,
         configured: false,
-        error: "Server par TELEGRAM_BOT_TOKEN set nahi hai. Settings -> Secrets me TELEGRAM_BOT_TOKEN add karein.",
+        envPresent: diag.envPresent,
+        reason: diag.reason,
+        error:
+          diag.reason === "invalid_token_format"
+            ? "TELEGRAM_BOT_TOKEN format galat hai (expected 123456789:AAH...)."
+            : "Server par TELEGRAM_BOT_TOKEN set nahi hai. Settings -> Secrets me TELEGRAM_BOT_TOKEN add karein.",
       });
     }
     try {
       const r = await fetch(`https://api.telegram.org/bot${token}/getMe`);
       const data = (await r.json().catch(() => ({ ok: false }))) as any;
       const configuredChatId = String(
-        process.env.TELEGRAM_STORAGE_CHAT_ID || process.env.TELEGRAM_CHAT_CHANNEL_ID || ""
+        process.env.TELEGRAM_STORAGE_CHAT_ID ||
+          process.env.TELEGRAM_CHAT_CHANNEL_ID ||
+          process.env.VITE_TELEGRAM_STORAGE_CHAT_ID ||
+          ""
       ).trim();
       const discoveredChats =
         !configuredChatId && data?.ok ? await discoverTelegramStorageChats(token) : [];

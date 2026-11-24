@@ -20,12 +20,46 @@ export const TELEGRAM_MAX_PLAYABLE_BYTES = Math.floor(19.5 * 1024 * 1024);
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
+function cleanEnvValue(raw?: string | null): string {
+  return String(raw || "")
+    .trim()
+    .replace(/^["'`]+|["'`]+$/g, "")
+    .trim();
+}
+
 export function resolveTelegramBotToken(): string {
-  const envToken = String(process.env.TELEGRAM_BOT_TOKEN || "").trim();
-  if (envToken && BOT_TOKEN_RE.test(envToken)) {
-    return envToken;
+  const candidates = [
+    process.env.TELEGRAM_BOT_TOKEN,
+    process.env.TELEGRAM_TOKEN,
+    process.env.BOT_TOKEN,
+    process.env.VITE_TELEGRAM_BOT_TOKEN,
+  ];
+  for (const raw of candidates) {
+    const cleaned = cleanEnvValue(raw).replace(/^bot(?=\d+:)/i, "");
+    if (cleaned && BOT_TOKEN_RE.test(cleaned)) {
+      return cleaned;
+    }
   }
   return "";
+}
+
+export function getTelegramTokenDiagnostics(): {
+  envPresent: boolean;
+  reason: "ok" | "missing_in_runtime_env" | "invalid_token_format";
+} {
+  if (resolveTelegramBotToken()) {
+    return { envPresent: true, reason: "ok" };
+  }
+  const hasAnyRaw = [
+    process.env.TELEGRAM_BOT_TOKEN,
+    process.env.TELEGRAM_TOKEN,
+    process.env.BOT_TOKEN,
+    process.env.VITE_TELEGRAM_BOT_TOKEN,
+  ].some((v) => Boolean(cleanEnvValue(v)));
+  return {
+    envPresent: hasAnyRaw,
+    reason: hasAnyRaw ? "invalid_token_format" : "missing_in_runtime_env",
+  };
 }
 
 export function isValidTelegramChatId(chatId?: string | null): boolean {
@@ -106,13 +140,18 @@ export async function resolveTelegramStorageChatId(
   token: string,
   requestedChatId?: string | null
 ): Promise<string> {
-  const envStorage = String(process.env.TELEGRAM_STORAGE_CHAT_ID || "").trim();
-  if (isValidTelegramChatId(envStorage)) return envStorage;
+  const envCandidates = [
+    process.env.TELEGRAM_STORAGE_CHAT_ID,
+    process.env.TELEGRAM_CHAT_CHANNEL_ID,
+    process.env.VITE_TELEGRAM_STORAGE_CHAT_ID,
+    process.env.VITE_TELEGRAM_CHAT_CHANNEL_ID,
+  ];
+  for (const raw of envCandidates) {
+    const cleaned = cleanEnvValue(raw);
+    if (isValidTelegramChatId(cleaned)) return cleaned;
+  }
 
-  const envChannel = String(process.env.TELEGRAM_CHAT_CHANNEL_ID || "").trim();
-  if (isValidTelegramChatId(envChannel)) return envChannel;
-
-  const candidate = String(requestedChatId || "").trim();
+  const candidate = cleanEnvValue(requestedChatId);
   if (isValidTelegramChatId(candidate) && !LEGACY_CHAT_IDS.has(candidate)) {
     return candidate;
   }
