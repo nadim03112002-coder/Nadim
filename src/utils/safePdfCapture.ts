@@ -4,6 +4,7 @@ import { jsPDF } from "jspdf";
 
 export interface SafeCanvasOptions {
   widthPx?: number;
+  heightPx?: number;
   scale?: number;
   backgroundColor?: string;
   selector?: string;
@@ -30,6 +31,7 @@ export async function renderHtmlToCanvasSafe(
   options: SafeCanvasOptions = {}
 ): Promise<HTMLCanvasElement> {
   const widthPx = options.widthPx || 794;
+  const baseMinHeight = options.heightPx || (widthPx > 900 ? 794 : 1122);
   const scale = options.scale || 2;
   const bgColor = options.backgroundColor || "#ffffff";
 
@@ -39,7 +41,7 @@ export async function renderHtmlToCanvasSafe(
   iframe.style.left = "-100000px";
   iframe.style.top = "0";
   iframe.style.width = `${widthPx}px`;
-  iframe.style.height = "1123px";
+  iframe.style.height = `${baseMinHeight}px`;
   iframe.style.border = "none";
   iframe.style.opacity = "1";
   iframe.style.visibility = "visible";
@@ -62,10 +64,13 @@ export async function renderHtmlToCanvasSafe(
     <meta charset="utf-8" />
     <style>
       * { box-sizing: border-box; }
+      ${sanitizedCss}
       html, body {
-        margin: 0;
-        padding: 0;
-        width: ${widthPx}px;
+        margin: 0 !important;
+        padding: 0 !important;
+        width: ${widthPx}px !important;
+        min-width: ${widthPx}px !important;
+        max-width: ${widthPx}px !important;
         background-color: ${bgColor};
         color: #0f172a;
         font-family: Arial, Helvetica, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Noto Sans Devanagari", sans-serif;
@@ -73,7 +78,6 @@ export async function renderHtmlToCanvasSafe(
         -webkit-print-color-adjust: exact;
         print-color-adjust: exact;
       }
-      ${sanitizedCss}
     </style>
   </head>
   <body style="background-color: ${bgColor}; margin: 0; padding: 0; width: ${widthPx}px;">
@@ -110,9 +114,9 @@ export async function renderHtmlToCanvasSafe(
     const measuredHeight = Math.max(
       targetNode?.scrollHeight || 0,
       iframeDoc.body?.scrollHeight || 0,
-      1123
+      baseMinHeight
     );
-    iframe.style.height = `${measuredHeight + 24}px`;
+    iframe.style.height = `${measuredHeight + 16}px`;
 
     await new Promise<void>((resolve) => {
       requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
@@ -121,7 +125,7 @@ export async function renderHtmlToCanvasSafe(
     const canvas = await html2canvas(targetNode, {
       scale,
       useCORS: true,
-      allowTaint: true,
+      allowTaint: false,
       backgroundColor: bgColor,
       logging: false,
       x: 0,
@@ -129,7 +133,7 @@ export async function renderHtmlToCanvasSafe(
       scrollX: 0,
       scrollY: 0,
       windowWidth: widthPx,
-      windowHeight: measuredHeight + 24,
+      windowHeight: measuredHeight + 16,
       onclone: (clonedDoc) => {
         // Strict safety: sanitize any foreign stylesheets in cloned document
         const styles = Array.from(clonedDoc.querySelectorAll("style, link[rel='stylesheet']"));

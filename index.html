@@ -13,7 +13,7 @@
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <meta name="apple-mobile-web-app-title" content="SCHOOL+" />
-    <link rel="apple-touch-icon" sizes="180x180" href="/icons/apple-touch-icon.png?v=3" />
+    <link rel="apple-touch-icon" sizes="180x180" href="/icons/apple-touch-icon.png?v=4" />
     <title>SCHOOL+ – Official School Portal &amp; ERP</title>
     <meta name="description" content="SCHOOL+ Official Digital Campus — Online Admission, Fee Passbook, Live Attendance, Exam Results &amp; Smart Learning." />
     <meta name="robots" content="index, follow" />
@@ -27,8 +27,9 @@
     <meta name="twitter:description" content="SCHOOL+ Official Digital Campus — Online Admission, Fee Passbook, Live Attendance, Exam Results &amp; Smart Learning." />
     <meta name="twitter:image" content="/opengraph.jpg" />
     <link rel="manifest" href="/api/manifest" />
-    <link rel="icon" type="image/png" sizes="192x192" href="/icons/icon-192.png?v=3" />
-    <link rel="icon" type="image/png" sizes="512x512" href="/icons/icon-512.png?v=3" />
+    <link rel="icon" type="image/png" sizes="512x512" href="/icons/icon-512.png?v=4" />
+    <link rel="icon" type="image/png" sizes="192x192" href="/icons/icon-512.png?v=4" />
+    <link rel="preload" as="image" href="/branding/schoolplus-splash-logo.png?v=7" />
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@500;700&family=Playfair+Display:ital,wght@0,600;0,700;0,800;1,600&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet" media="print" onload="this.media='all'">
@@ -96,21 +97,21 @@
         color: #e2e8f0;
         font-family: 'Plus Jakarta Sans', Inter, system-ui, sans-serif;
         user-select: none;
-        background: radial-gradient(circle at 50% 24%, #172554 0%, #090d26 48%, #020617 100%);
+        background: radial-gradient(circle at 50% 28%, #172554 0%, #090d26 50%, #020617 100%);
         background-color: #020617;
       }
       #pre-react-splash::before {
         content: "";
         position: absolute;
-        top: 24%;
+        top: 34%;
         left: 50%;
-        width: 28rem;
-        height: 20rem;
+        width: 26rem;
+        height: 18rem;
         border-radius: 999px;
         pointer-events: none;
         transform: translate(-50%, -50%);
-        background: radial-gradient(circle, rgba(56, 189, 248, .18) 0%, rgba(245, 158, 11, .14) 45%, transparent 70%);
-        filter: blur(55px);
+        background: radial-gradient(circle, rgba(226, 232, 240, .08) 0%, rgba(251, 191, 36, .05) 45%, transparent 72%);
+        filter: blur(52px);
       }
       .pre-react-splash-brand,
       .pre-react-splash-footer {
@@ -233,29 +234,19 @@
     </div>
     <div id="pre-react-splash" aria-hidden="true">
       <div class="pre-react-splash-brand">
-        <div class="pre-react-wordmark" aria-label="SCHOOL+">
-          <span class="pre-react-char">S</span>
-          <span class="pre-react-char">C</span>
-          <span class="pre-react-char">H</span>
-          <span class="pre-react-char">O</span>
-          <span class="pre-react-char">O</span>
-          <span class="pre-react-char">L</span>
-          <span class="pre-react-plus">+</span>
-        </div>
-        <p class="pre-react-splash-subtitle">Smart School ERP · Learn · Grow</p>
         <img
-          src="/branding/schoolplus-splash-logo.png"
+          class="pre-react-splash-logo"
+          src="/branding/schoolplus-splash-logo.png?v=7"
           alt="SCHOOL+"
-          style="width:124px;height:124px;margin-top:20px;border-radius:26px;object-fit:contain;box-shadow:0 14px 34px rgba(245,158,11,0.22);"
+          width="512"
+          height="512"
+          style="width:min(78vw,46dvh,512px);height:min(78vw,46dvh,512px);object-fit:contain;background:transparent;filter:drop-shadow(0 20px 48px rgba(56,189,248,0.26));"
         />
+        <p class="pre-react-splash-subtitle" style="margin-top:16px;color:#7dd3fc;">Smart School ERP · Learn · Grow</p>
       </div>
       <div class="pre-react-splash-footer">
         <div class="pre-react-bar-track"><div class="pre-react-bar-fill"></div></div>
-        <div class="pre-react-splash-starting">
-          <span class="pre-react-splash-dot"></span>
-          <span>Starting SCHOOL+...</span>
-        </div>
-        <span class="pre-react-splash-version">SCHOOL+</span>
+        <span class="pre-react-splash-version" style="letter-spacing:0.22em;color:#cbd5e1;">DEVELOPED BY NADIM ANWAR</span>
       </div>
     </div>
     <script>

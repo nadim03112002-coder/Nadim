@@ -43,7 +43,7 @@ export const ModernAudioPlayer: React.FC<ModernAudioPlayerProps> = ({
   title = 'Audio Lecture',
   subtitle,
   mediaId,
-  appLogo = '/nsta-logo.png',
+  appLogo = '/icons/icon-512.png?v=4',
   appName = 'NSTA ACADEMY',
   user,
   isAdmin = false,

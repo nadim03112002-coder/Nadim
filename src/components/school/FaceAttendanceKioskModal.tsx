@@ -1183,7 +1183,9 @@ export const FaceAttendanceKioskModal: React.FC<FaceAttendanceKioskModalProps> =
 
   // Manual Attendance Mark (Safe: Records attendance WITHOUT touching biometric descriptors)
   const handleManualMark = (st: any) => {
-    handleMarkAttendanceSuccess({
+    setShowManualSearch(false);
+    setManualSearchQuery("");
+    void handleMarkAttendanceSuccess({
       studentId: st.id,
       name: st.name,
       rollNo: st.rollNo,
@@ -1192,10 +1194,6 @@ export const FaceAttendanceKioskModal: React.FC<FaceAttendanceKioskModalProps> =
       photoUrl: st.photoUrl,
       similarityPercent: 100
     });
-    setCooldownToast(`✅ ${st.name} की हाजिरी (मैनुअल) दर्ज हो गई!`);
-    setTimeout(() => setCooldownToast(null), 3000);
-    setShowManualSearch(false);
-    setManualSearchQuery("");
   };
 
   // Live Camera Detection Animation Loop (Stable across 2+ hour sessions; uses refs so loop never tears down)

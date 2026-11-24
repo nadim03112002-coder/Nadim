@@ -256,7 +256,7 @@ export const DraggableNstaLogoFab: React.FC<DraggableNstaLogoFabProps> = ({
 
   const officialLogo = (appLogo && !appLogo.includes('placeholder'))
     ? appLogo
-    : '/branding/nsta-logo.svg';
+    : '/icons/icon-512.png?v=4';
 
   const [isModalActive, setIsModalActive] = useState(false);
 
@@ -329,7 +329,7 @@ export const DraggableNstaLogoFab: React.FC<DraggableNstaLogoFabProps> = ({
                 const target = e.currentTarget as HTMLImageElement;
                 if (!target.dataset.triedFallback) {
                   target.dataset.triedFallback = '1';
-                  target.src = '/branding/nsta-logo.png';
+                  target.src = '/icons/icon-512.png?v=4';
                 } else {
                   setImgError(true);
                 }

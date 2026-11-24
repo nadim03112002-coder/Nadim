@@ -60,7 +60,13 @@ import {
   Contact as ContactIcon,
   Navigation,
   Square,
-  RefreshCw
+  RefreshCw,
+  Video,
+  PhoneCall,
+  PhoneMissed,
+  PhoneIncoming,
+  PhoneOutgoing,
+  Eye
 } from "lucide-react";
 import type {
   School,
@@ -91,9 +97,10 @@ import {
   getStudentDailyTeacherQueryCount,
   autoSendFeeSlipToSchoolDesk,
   generateId,
-  isStudentInClass
+  isStudentInClass,
+  getCanonicalStudentPairKey
 } from "../../school-firebase";
-import { loadSchoolSettingBlob } from "../../utils/schoolCloudSync";
+import { loadSchoolSettingBlob, saveSchoolSettingBlob } from "../../utils/schoolCloudSync";
 import { uploadToCloudinary } from "../../services/cloudinaryService";
 import { resolveTelegramUrl, handleTelegramImageError } from "../../services/telegramStorageService";
 import { compressImageToBlob } from "../../services/imgbbService";
@@ -105,6 +112,16 @@ import { OfficialFeeReceiptModal } from "./OfficialFeeReceiptModal";
 import { SchoolWelcomeModal } from "./SchoolWelcomeModal";
 import { SchoolBirthdayModal } from "./SchoolBirthdayModal";
 import { NstaStatusStudio } from "./NstaStatusStudio";
+import { NstaCallPortalHost } from "./NstaCallModal";
+import {
+  startDirectCall,
+  startOrJoinGroupCall,
+  useNstaCallState,
+  fetchRecentCallSessions,
+  type StoredCallSessionRecord,
+  type CallIdentity,
+  type CallType,
+} from "../../services/nstaCallService";
 
 interface Props {
   school: School;
@@ -358,9 +375,15 @@ export const NstaMessengerSuite: React.FC<Props> = ({
   const [requestedOpenStatusId, setRequestedOpenStatusId] = useState<string | null>(null);
   const homeSearchInputRef = useRef<HTMLInputElement>(null);
   const [homeSearchQuery, setHomeSearchQuery] = useState("");
-  const [homeFilter, setHomeFilter] = useState<"ALL" | "UNREAD" | "GROUPS" | "TEACHERS">("ALL");
+  const [homeFilter, setHomeFilter] = useState<"ALL" | "UNREAD" | "GROUPS" | "TEACHERS" | "FRIENDS" | "MONITOR" | "CALLS">("ALL");
+  const [callHistoryFilter, setCallHistoryFilter] = useState<"ALL" | "OUTGOING" | "INCOMING" | "MISSED">("ALL");
+  const [recentCallSessions, setRecentCallSessions] = useState<StoredCallSessionRecord[]>([]);
+  const [isLoadingCallHistory, setIsLoadingCallHistory] = useState<boolean>(false);
   const [allSchoolMsgs, setAllSchoolMsgs] = useState<NstaMessage[]>([]);
   const [statuses, setStatuses] = useState<NstaSchoolStatus[]>([]);
+  const [friendChatEnabled, setFriendChatEnabled] = useState<boolean>(true);
+  const [selectedFriendId, setSelectedFriendId] = useState<string>("");
+  const [selectedMonitorPairKey, setSelectedMonitorPairKey] = useState<string>("");
 
   useEffect(() => {
     if (isHomeSearchOpen) {
@@ -368,7 +391,7 @@ export const NstaMessengerSuite: React.FC<Props> = ({
     }
   }, [isHomeSearchOpen]);
 
-  const [activeTab, setActiveTab] = useState<"class" | "school" | "teacher">(() => {
+  const [activeTab, setActiveTab] = useState<"class" | "school" | "teacher" | "friend">(() => {
     if (typeof window !== "undefined") {
       try {
         const sp = new URLSearchParams(window.location.search);
@@ -376,11 +399,58 @@ export const NstaMessengerSuite: React.FC<Props> = ({
         const thread = sp.get("thread");
         if (subTab === "school" || thread === "desk") return "school";
         if (subTab === "teacher") return "teacher";
+        if (subTab === "friend") return "friend";
         if (subTab === "class") return "class";
       } catch {}
     }
     return "school";
   });
+
+  useEffect(() => {
+    let active = true;
+    const sid = school?.id;
+    if (!sid) return;
+    const loadSetting = () => {
+      loadSchoolSettingBlob<boolean>(
+        sid,
+        "nsta_friend_chat_enabled",
+        `nst_friend_chat_enabled_${sid}`,
+        true
+      )
+        .then((val) => {
+          if (active && typeof val === "boolean") setFriendChatEnabled(val);
+        })
+        .catch(() => {});
+    };
+    loadSetting();
+    window.addEventListener("nsta-friend-chat-setting-updated", loadSetting);
+    return () => {
+      active = false;
+      window.removeEventListener("nsta-friend-chat-setting-updated", loadSetting);
+    };
+  }, [school?.id]);
+
+  const handleToggleFriendChatEnabled = async () => {
+    if (currentUserRole !== "ADMIN" || !school?.id) return;
+    const nextVal = !friendChatEnabled;
+    setFriendChatEnabled(nextVal);
+    try {
+      await saveSchoolSettingBlob(
+        school.id,
+        "nsta_friend_chat_enabled",
+        `nst_friend_chat_enabled_${school.id}`,
+        nextVal
+      );
+      window.dispatchEvent(new CustomEvent("nsta-friend-chat-setting-updated"));
+      toast.success(
+        nextVal
+          ? "Classmates Chat & Call chalu kar diya gaya (Admin Monitor ON)."
+          : "Classmates Chat & Call Admin dwara band kar diya gaya."
+      );
+    } catch {
+      toast.error("Setting save nahi ho saki.");
+    }
+  };
 
   const safeClasses = useMemo(() => (Array.isArray(classes) ? classes.filter(Boolean) : []), [classes]);
   const safeStudents = useMemo(() => (Array.isArray(students) ? students.filter(Boolean) : []), [students]);
@@ -575,11 +645,28 @@ export const NstaMessengerSuite: React.FC<Props> = ({
     const handleOpenThreadEvent = (e: any) => {
       const detail = e?.detail;
       if (!detail) return;
-      if (detail.threadType === "class" || detail.threadType === "school" || detail.threadType === "teacher") {
+      const rawType = String(detail.threadType || "").toUpperCase();
+      if (rawType === "STUDENT_CHAT" || detail.threadType === "friend") {
+        setActiveTab("friend");
+        if (detail.studentId) {
+          const ownId = student?.id || currentUserId;
+          const parts = String(detail.studentId).split("__").filter(Boolean);
+          if (currentUserRole === "ADMIN") {
+            setSelectedMonitorPairKey(String(detail.studentId));
+          } else if (parts.length === 2) {
+            const other = parts.find((id) => id !== ownId);
+            if (other) setSelectedFriendId(other);
+          } else if (detail.studentId !== ownId) {
+            setSelectedFriendId(String(detail.studentId));
+          }
+        }
+      } else if (detail.threadType === "class" || detail.threadType === "school" || detail.threadType === "teacher") {
         setActiveTab(detail.threadType);
       }
       if (detail.classId) setSelectedClassId(detail.classId);
-      if (detail.studentId) setSelectedStudentId(detail.studentId);
+      if (detail.studentId && rawType !== "STUDENT_CHAT" && detail.threadType !== "friend") {
+        setSelectedStudentId(detail.studentId);
+      }
       if (detail.teacherId) {
         setSelectedTeacherId(detail.teacherId);
         setIsTeacherChatOpen(true);
@@ -588,7 +675,7 @@ export const NstaMessengerSuite: React.FC<Props> = ({
     };
     window.addEventListener("nsta-messenger-open-thread", handleOpenThreadEvent);
     return () => window.removeEventListener("nsta-messenger-open-thread", handleOpenThreadEvent);
-  }, []);
+  }, [currentUserId, currentUserRole, student?.id]);
 
 
 
@@ -678,7 +765,7 @@ export const NstaMessengerSuite: React.FC<Props> = ({
   // Execute Forward single message
   const handleExecuteForward = async () => {
     if (!forwardModalMsg) return;
-    const targetType = forwardTarget.threadType === "class"
+    const targetType: NstaThreadType = forwardTarget.threadType === "class"
       ? "CLASS_GROUP"
       : forwardTarget.threadType === "school"
       ? "SCHOOL_DESK"
@@ -1450,10 +1537,311 @@ export const NstaMessengerSuite: React.FC<Props> = ({
   const isTeacherDirectoryView =
     activeTab === "teacher" && !isTeacherChatOpen && currentUserRole !== "TEACHER";
 
+  // ── NSTA Voice & Video Call State + Thread Launchers ─────────────────────
+  const callState = useNstaCallState();
+  const classRoomCallKey = `class_${activeClass?.id || "general"}`;
+  const activeClassCall = callState.activeGroupCalls[classRoomCallKey];
+
+  useEffect(() => {
+    let active = true;
+    const sid = school?.id;
+    if (!sid) {
+      setRecentCallSessions([]);
+      return;
+    }
+    const loadSessions = async () => {
+      if (homeFilter === "CALLS") setIsLoadingCallHistory(true);
+      try {
+        const list = await fetchRecentCallSessions(sid);
+        if (active) setRecentCallSessions(list);
+      } finally {
+        if (active) setIsLoadingCallHistory(false);
+      }
+    };
+    void loadSessions();
+    const handleUpdated = () => {
+      void loadSessions();
+    };
+    window.addEventListener("nsta-call-history-updated", handleUpdated);
+    return () => {
+      active = false;
+      window.removeEventListener("nsta-call-history-updated", handleUpdated);
+    };
+  }, [school?.id, homeFilter, callState.phase]);
+
+  const callIdentity = useMemo<CallIdentity | null>(() => {
+    if (!school?.id || !currentUserId) return null;
+    return {
+      schoolId: school.id,
+      schoolName: school.name,
+      userId: currentUserId,
+      userName:
+        currentUserName ||
+        (currentUserRole === "ADMIN"
+          ? "School Admin"
+          : currentUserRole === "TEACHER"
+          ? "Teacher"
+          : "Student"),
+      userRole: currentUserRole,
+      userPhoto: currentSenderPhoto || undefined,
+      classId: student?.classId || activeClass?.id,
+      className: student?.className || activeClass?.name,
+      studentId: student?.id,
+      teacherId: teacher?.id,
+    };
+  }, [
+    school?.id,
+    school?.name,
+    currentUserId,
+    currentUserName,
+    currentUserRole,
+    currentSenderPhoto,
+    student?.classId,
+    student?.className,
+    student?.id,
+    activeClass?.id,
+    activeClass?.name,
+    teacher?.id,
+  ]);
+
+  // Friend (Classmate) & Admin Monitor Pair Resolution
+  const activeFriend = useMemo(() => {
+    if (currentUserRole !== "STUDENT") return null;
+    const ownId = student?.id || currentUserId;
+    return (
+      safeStudents.find((s) => s.id === selectedFriendId && s.id !== ownId) ||
+      classStudents.find((s) => s.id !== ownId) ||
+      null
+    );
+  }, [currentUserRole, safeStudents, classStudents, selectedFriendId, student?.id, currentUserId]);
+
+  const activeFriendPairKey = useMemo(() => {
+    if (currentUserRole === "ADMIN") return selectedMonitorPairKey || "";
+    if (currentUserRole === "STUDENT" && activeFriend?.id) {
+      return getCanonicalStudentPairKey(student?.id || currentUserId, activeFriend.id);
+    }
+    return "";
+  }, [currentUserRole, selectedMonitorPairKey, activeFriend?.id, student?.id, currentUserId]);
+
+  const activeMonitorPairInfo = useMemo(() => {
+    if (!activeFriendPairKey) return null;
+    const parts = activeFriendPairKey.split("__").filter(Boolean);
+    const idA = parts[0] || "";
+    const idB = parts[1] || "";
+    const sA = safeStudents.find((s) => s.id === idA);
+    const sB = safeStudents.find((s) => s.id === idB);
+    const pairMsgs = (allSchoolMsgs || []).filter(
+      (m) => m?.threadType === "STUDENT_CHAT" && m.studentId === activeFriendPairKey
+    );
+    const resolveName = (id: string, fallbackObj?: SchoolStudent) => {
+      if (fallbackObj?.name) return fallbackObj.name;
+      const hit = pairMsgs.find((m) => m.senderId === id || m.peerStudentId === id);
+      if (hit?.senderId === id && hit.senderName) return hit.senderName;
+      if (hit?.peerStudentId === id && hit.peerStudentName) return hit.peerStudentName;
+      return "Student";
+    };
+    const nameA = resolveName(idA, sA);
+    const nameB = idB ? resolveName(idB, sB) : "Classmate";
+    const clsLabel = sA?.className || sB?.className || pairMsgs[0]?.className || "Classmate Chat";
+    return {
+      pairKey: activeFriendPairKey,
+      idA,
+      idB,
+      nameA,
+      nameB,
+      studentA: sA,
+      studentB: sB,
+      title: `${nameA} ↔ ${nameB}`,
+      className: clsLabel,
+    };
+  }, [activeFriendPairKey, safeStudents, allSchoolMsgs]);
+
+  const canStartHeaderCall = useMemo(() => {
+    if (activeTab === "class") {
+      return currentUserRole === "ADMIN" || currentUserRole === "TEACHER";
+    }
+    if (activeTab === "teacher") {
+      if (isTeacherDirectoryView) return false;
+      if (currentUserRole === "TEACHER") {
+        return selectedStudentId === "STAFF_ADMIN" || Boolean(activeStudent?.id);
+      }
+      return Boolean(activeTeacher?.id);
+    }
+    if (activeTab === "school") {
+      if (currentUserRole === "STUDENT") return true;
+      return currentUserRole === "ADMIN" && Boolean(selectedStudentId && selectedStudentId !== "all" && activeStudent?.id);
+    }
+    if (activeTab === "friend") {
+      return currentUserRole === "STUDENT" && friendChatEnabled && Boolean(activeFriend?.id);
+    }
+    return false;
+  }, [
+    activeTab,
+    currentUserRole,
+    isTeacherDirectoryView,
+    selectedStudentId,
+    activeStudent?.id,
+    activeTeacher?.id,
+    friendChatEnabled,
+    activeFriend?.id,
+  ]);
+
+  const handleLaunchThreadCall = async (callType: CallType) => {
+    if (callState.phase !== "idle") {
+      toast.info("Pehle chal rahi call ko end karein.");
+      return;
+    }
+    try {
+      if (activeTab === "class") {
+        const targetIds = classStudents.map((s) => String(s.id)).filter(Boolean);
+        await startOrJoinGroupCall({
+          roomKey: classRoomCallKey,
+          roomTitle: `${activeClass?.name || "Class Group"}${activeClass?.section ? ` (${activeClass.section})` : ""}`,
+          callType,
+          asHost: currentUserRole === "ADMIN" || currentUserRole === "TEACHER",
+          classId: activeClass?.id,
+          className: activeClass?.name,
+          targetStudentIds: targetIds,
+          threadContext: {
+            threadType: "CLASS_GROUP",
+            classId: activeClass?.id || "general",
+            className: activeClass?.name,
+          },
+        });
+        return;
+      }
+
+      if (activeTab === "friend") {
+        if (!friendChatEnabled) {
+          toast.error("School Admin ne abhi Classmate Call band kar rakha hai.");
+          return;
+        }
+        if (currentUserRole === "STUDENT" && activeFriend?.id) {
+          const ownId = student?.id || currentUserId;
+          const ownName = currentUserName || student?.name || "Student";
+          const pairKey = getCanonicalStudentPairKey(ownId, activeFriend.id);
+          await startDirectCall({
+            callType,
+            targetIds: [activeFriend.id],
+            targetName: activeFriend.name,
+            targetSubtitle: `${activeFriend.className || activeClass?.name || "Classmate"} · Friend Call`,
+            targetAvatar: activeFriend.photoUrl,
+            threadContext: {
+              threadType: "STUDENT_CHAT",
+              classId: activeClass?.id || activeFriend.classId,
+              className: activeFriend.className || activeClass?.name,
+              studentId: pairKey,
+              studentName: `${ownName} ↔ ${activeFriend.name}`,
+              peerStudentId: activeFriend.id,
+              peerStudentName: activeFriend.name,
+            },
+          });
+          return;
+        }
+      }
+
+      if (activeTab === "teacher") {
+        if (currentUserRole === "TEACHER") {
+          if (selectedStudentId === "STAFF_ADMIN") {
+            await startDirectCall({
+              callType,
+              targetIds: ["STAFF_ADMIN", "school_admin", "accountant_admin"],
+              targetName: "School Administration",
+              targetSubtitle: school?.name || "Principal & Management Desk",
+              targetAvatar: school?.logoUrl,
+              threadContext: {
+                threadType: "TEACHER_CHAT",
+                studentId: "STAFF_ADMIN",
+                studentName: "School Administration",
+                teacherId: teacher?.id || currentUserId,
+                teacherName: currentUserName,
+              },
+            });
+            return;
+          }
+          if (activeStudent?.id) {
+            await startDirectCall({
+              callType,
+              targetIds: [activeStudent.id],
+              targetName: activeStudent.name,
+              targetSubtitle: `${activeStudent.className || "Student"} · Doubt Chat`,
+              targetAvatar: activeStudent.photoUrl,
+              threadContext: {
+                threadType: "TEACHER_CHAT",
+                studentId: activeStudent.id,
+                studentName: activeStudent.name,
+                teacherId: teacher?.id || currentUserId,
+                teacherName: currentUserName,
+              },
+            });
+            return;
+          }
+        } else if (activeTeacher?.id) {
+          await startDirectCall({
+            callType,
+            targetIds: [activeTeacher.id],
+            targetName: activeTeacher.name,
+            targetSubtitle: activeTeacher.subject || activeTeacher.designation || "Teacher",
+            targetAvatar: activeTeacher.photoUrl,
+            threadContext: {
+              threadType: "TEACHER_CHAT",
+              studentId: currentUserRole === "ADMIN" ? "STAFF_ADMIN" : (student?.id || currentUserId),
+              studentName: currentUserRole === "ADMIN" ? "School Administration" : currentUserName,
+              teacherId: activeTeacher.id,
+              teacherName: activeTeacher.name,
+            },
+          });
+          return;
+        }
+      }
+
+      if (activeTab === "school") {
+        if (currentUserRole === "ADMIN" && activeStudent?.id) {
+          await startDirectCall({
+            callType,
+            targetIds: [activeStudent.id],
+            targetName: activeStudent.name,
+            targetSubtitle: `${activeStudent.className || "Student"} · School Desk`,
+            targetAvatar: activeStudent.photoUrl,
+            threadContext: {
+              threadType: "SCHOOL_DESK",
+              studentId: activeStudent.id,
+              studentName: activeStudent.name,
+            },
+          });
+          return;
+        }
+        if (currentUserRole === "STUDENT") {
+          await startDirectCall({
+            callType,
+            targetIds: ["STAFF_ADMIN", "school_admin", "accountant_admin"],
+            targetName: school?.name || "School Official Desk",
+            targetSubtitle: "Principal / School Office",
+            targetAvatar: school?.logoUrl,
+            threadContext: {
+              threadType: "SCHOOL_DESK",
+              studentId: student?.id || currentUserId,
+              studentName: currentUserName,
+            },
+          });
+          return;
+        }
+      }
+    } catch (err: any) {
+      toast.error(err?.message || "Call start karne me samasya aayi. Mic/Camera permission check karein.");
+    }
+  };
+
   // Instant 0ms thread messages derived directly from shared school subscription (no duplicate listeners)
   const messages = useMemo(() => {
     const targetThreadType: NstaThreadType =
-      activeTab === "class" ? "CLASS_GROUP" : activeTab === "school" ? "SCHOOL_DESK" : "TEACHER_CHAT";
+      activeTab === "class"
+        ? "CLASS_GROUP"
+        : activeTab === "school"
+        ? "SCHOOL_DESK"
+        : activeTab === "friend"
+        ? "STUDENT_CHAT"
+        : "TEACHER_CHAT";
     const filterClassId = activeTab === "class" ? (activeClass?.id || "general") : undefined;
     const filterClassName = activeTab === "class" ? activeClass?.name : undefined;
     const filterStudentId =
@@ -1461,6 +1849,8 @@ export const NstaMessengerSuite: React.FC<Props> = ({
         ? currentUserRole === "ADMIN" && (!selectedStudentId || selectedStudentId === "all")
           ? undefined
           : activeStudent?.id || "general"
+        : activeTab === "friend"
+        ? activeFriendPairKey || "__none__"
         : activeTab === "teacher"
         ? currentUserRole === "ADMIN"
           ? "STAFF_ADMIN"
@@ -1490,6 +1880,8 @@ export const NstaMessengerSuite: React.FC<Props> = ({
       } else if (targetThreadType === "TEACHER_CHAT") {
         if (filterStudentId && m.studentId && m.studentId !== filterStudentId) return false;
         if (filterTeacherId && m.teacherId && m.teacherId !== filterTeacherId) return false;
+      } else if (targetThreadType === "STUDENT_CHAT") {
+        if (!filterStudentId || m.studentId !== filterStudentId) return false;
       }
       return true;
     });
@@ -1500,6 +1892,7 @@ export const NstaMessengerSuite: React.FC<Props> = ({
     activeClass?.name,
     activeStudent?.id,
     activeTeacher?.id,
+    activeFriendPairKey,
     selectedStudentId,
     isTeacherDirectoryView,
     currentUserRole,
@@ -1514,7 +1907,9 @@ export const NstaMessengerSuite: React.FC<Props> = ({
       typeof window !== "undefined" && window.innerWidth < 1024 && mobileView === "home";
     const isBrowsingTeacherRoster =
       activeTab === "teacher" && !isTeacherChatOpen && currentUserRole !== "TEACHER";
-    if (isNarrowMobileHome || isBrowsingTeacherRoster || !messages || messages.length === 0 || !currentUserId) return;
+    // Silent Admin Monitoring: Admin viewing Student<->Student chats does not alter students' read receipts
+    const isSilentAdminMonitor = currentUserRole === "ADMIN" && activeTab === "friend";
+    if (isNarrowMobileHome || isBrowsingTeacherRoster || isSilentAdminMonitor || !messages || messages.length === 0 || !currentUserId) return;
     const unreadIncoming = messages.filter(
       (m) =>
         m &&
@@ -1562,7 +1957,7 @@ export const NstaMessengerSuite: React.FC<Props> = ({
   }, [selectedMsgs, currentUserRole, currentUserId, currentUserName, teacher]);
 
   // Reset scroll window & snap instantaneously on thread change (zero Firebase listener rebuild)
-  const activeThreadKey = `${school?.id || "default"}_${activeTab}_${activeTab === "class" ? activeClass?.id || "" : ""}_${activeTab === "school" ? (currentUserRole === "ADMIN" && (!selectedStudentId || selectedStudentId === "all") ? "all" : activeStudent?.id || "") : activeTab === "teacher" ? (currentUserRole === "ADMIN" ? "STAFF_ADMIN" : activeStudent?.id || "") : ""}_${activeTab === "teacher" && !isTeacherDirectoryView ? activeTeacher?.id || "" : ""}`;
+  const activeThreadKey = `${school?.id || "default"}_${activeTab}_${activeTab === "class" ? activeClass?.id || "" : ""}_${activeTab === "school" ? (currentUserRole === "ADMIN" && (!selectedStudentId || selectedStudentId === "all") ? "all" : activeStudent?.id || "") : activeTab === "friend" ? activeFriendPairKey || "" : activeTab === "teacher" ? (currentUserRole === "ADMIN" ? "STAFF_ADMIN" : activeStudent?.id || "") : ""}_${activeTab === "teacher" && !isTeacherDirectoryView ? activeTeacher?.id || "" : ""}`;
 
   useEffect(() => {
     if (currentThreadKeyRef.current !== activeThreadKey) {
@@ -1634,7 +2029,7 @@ export const NstaMessengerSuite: React.FC<Props> = ({
   // Build role-scoped WhatsApp-style Unified Chat List
   type UnifiedChatItem = {
     key: string;
-    tab: "school" | "class" | "teacher";
+    tab: "school" | "class" | "teacher" | "friend";
     title: string;
     subtitle: string;
     avatarText: string;
@@ -1643,6 +2038,9 @@ export const NstaMessengerSuite: React.FC<Props> = ({
     pinned?: boolean;
     classId?: string;
     studentId?: string;
+    friendStudentId?: string;
+    monitorPairKey?: string;
+    isMonitorItem?: boolean;
     teacherId?: string;
     lastMessageText: string;
     lastTimestamp: string;
@@ -1657,6 +2055,7 @@ export const NstaMessengerSuite: React.FC<Props> = ({
     const teacherByTeacher = new Map<string, NstaMessage[]>();
     const teacherByStudent = new Map<string, NstaMessage[]>();
     const teacherAdminBucket: NstaMessage[] = [];
+    const friendByPair = new Map<string, NstaMessage[]>();
 
     const pushMap = (map: Map<string, NstaMessage[]>, k: string, m: NstaMessage) => {
       const arr = map.get(k);
@@ -1675,10 +2074,12 @@ export const NstaMessengerSuite: React.FC<Props> = ({
         if (m.teacherId) pushMap(teacherByTeacher, m.teacherId, m);
         if (m.studentId) pushMap(teacherByStudent, m.studentId, m);
         if (m.studentId === "STAFF_ADMIN") teacherAdminBucket.push(m);
+      } else if (m.threadType === "STUDENT_CHAT" && m.studentId) {
+        pushMap(friendByPair, m.studentId, m);
       }
     }
 
-    const summarize = (threadMsgs: NstaMessage[], fallbackText: string) => {
+    const summarize = (threadMsgs: NstaMessage[], fallbackText: string, includeSenderPrefix = false) => {
       const last = threadMsgs.length > 0 ? threadMsgs[threadMsgs.length - 1] : null;
       let unreadCount = 0;
       for (let i = 0; i < threadMsgs.length; i++) {
@@ -1687,7 +2088,7 @@ export const NstaMessengerSuite: React.FC<Props> = ({
           unreadCount++;
         }
       }
-      const preview = last
+      const rawPreview = last
         ? last.deletedForEveryone
           ? "🚫 Message deleted"
           : last.feeSlip
@@ -1698,6 +2099,10 @@ export const NstaMessengerSuite: React.FC<Props> = ({
             ).toLocaleString("en-IN")}`
           : last.text || (last.attachmentType ? `📎 ${last.attachmentType}` : "Message")
         : fallbackText;
+      const preview =
+        includeSenderPrefix && last?.senderName && !last.deletedForEveryone
+          ? `${last.senderName}: ${rawPreview}`
+          : rawPreview;
       return {
         lastMessageText: preview,
         lastTimestamp: last?.createdAt || "",
@@ -1777,6 +2182,31 @@ export const NstaMessengerSuite: React.FC<Props> = ({
           ...tSummary,
         });
       });
+
+      // 4. Classmates / Friends (1-on-1 Chat & Call — Admin Monitored)
+      classStudents.forEach((mate) => {
+        if (!mate?.id || mate.id === ownStudentId) return;
+        const pairKey = getCanonicalStudentPairKey(ownStudentId, mate.id);
+        const fMsgs = friendByPair.get(pairKey) || [];
+        if (!friendChatEnabled && fMsgs.length === 0) return;
+        const fSummary = summarize(
+          fMsgs,
+          `${mate.className || activeClass.name} · Classmate Chat & Call`
+        );
+        items.push({
+          key: `friend_${mate.id}`,
+          tab: "friend",
+          title: mate.name,
+          subtitle: `${mate.className || activeClass.name}${mate.rollNo ? ` · Roll #${mate.rollNo}` : ""} · Classmate`,
+          avatarText: mate.name?.slice(0, 2).toUpperCase() || "FR",
+          avatarUrl: mate.photoUrl,
+          avatarBg: "bg-cyan-600",
+          classId: activeClass.id,
+          studentId: pairKey,
+          friendStudentId: mate.id,
+          ...fSummary,
+        });
+      });
     } else if (currentUserRole === "ADMIN") {
       // 1. School Official Desk (All Students)
       const deskSummary = summarize(schoolDeskBucket, "Broadcast circulars, attendance & slips");
@@ -1843,6 +2273,54 @@ export const NstaMessengerSuite: React.FC<Props> = ({
           avatarBg: "bg-indigo-600",
           studentId: v.id,
           ...vSummary,
+        });
+      });
+
+      // 5. Student-to-Student Live Monitor (All friend pairs who chatted or called)
+      const allPairKeys = new Set<string>(Array.from(friendByPair.keys()));
+      for (const rec of recentCallSessions || []) {
+        if (rec?.threadContext?.threadType === "STUDENT_CHAT" && rec.threadContext.studentId) {
+          allPairKeys.add(rec.threadContext.studentId);
+        }
+      }
+      allPairKeys.forEach((pairKey) => {
+        const pMsgs = friendByPair.get(pairKey) || [];
+        const parts = pairKey.split("__").filter(Boolean);
+        const idA = parts[0] || "";
+        const idB = parts[1] || "";
+        const sA = safeStudents.find((s) => s.id === idA);
+        const sB = safeStudents.find((s) => s.id === idB);
+        const findName = (id: string, fallbackObj?: SchoolStudent) => {
+          if (fallbackObj?.name) return fallbackObj.name;
+          const hit = pMsgs.find((m) => m.senderId === id || m.peerStudentId === id);
+          if (hit?.senderId === id && hit.senderName) return hit.senderName;
+          if (hit?.peerStudentId === id && hit.peerStudentName) return hit.peerStudentName;
+          return "Student";
+        };
+        const nameA = findName(idA, sA);
+        const nameB = idB ? findName(idB, sB) : "Classmate";
+        const clsLabel = sA?.className || sB?.className || pMsgs[0]?.className || "Classmate";
+        const lastCallRec = recentCallSessions.find(
+          (r) => r?.threadContext?.threadType === "STUDENT_CHAT" && r.threadContext.studentId === pairKey
+        );
+        const fallbackPreview = lastCallRec
+          ? `📞 ${lastCallRec.callerName} → ${lastCallRec.targetName || nameB} (${lastCallRec.callType})`
+          : "Student-to-Student Monitor";
+        const pSummary = summarize(pMsgs, fallbackPreview, true);
+        items.push({
+          key: `monitor_${pairKey}`,
+          tab: "friend",
+          title: `${nameA} ↔ ${nameB}`,
+          subtitle: `👁️ Monitor · ${clsLabel} · ${pMsgs.length} msgs`,
+          avatarText: "👁️",
+          avatarBg: "bg-amber-600",
+          classId: sA?.classId || sB?.classId || pMsgs[0]?.classId,
+          studentId: pairKey,
+          monitorPairKey: pairKey,
+          isMonitorItem: true,
+          lastMessageText: pSummary.lastMessageText,
+          lastTimestamp: pSummary.lastTimestamp || lastCallRec?.createdAt || "",
+          unreadCount: pSummary.unreadCount,
         });
       });
     } else {
@@ -1914,6 +2392,7 @@ export const NstaMessengerSuite: React.FC<Props> = ({
     });
   }, [
     allSchoolMsgs,
+    recentCallSessions,
     currentUserId,
     currentUserRole,
     student?.id,
@@ -1923,6 +2402,8 @@ export const NstaMessengerSuite: React.FC<Props> = ({
     activeClass.id,
     activeClass.name,
     activeClass.section,
+    classStudents,
+    friendChatEnabled,
     safeClasses,
     safeTeachers,
     studentVisibleTeachers,
@@ -1933,11 +2414,18 @@ export const NstaMessengerSuite: React.FC<Props> = ({
   const homeChatsList = useMemo(() => {
     return unifiedConversations.filter((c) => {
       if (homeFilter === "UNREAD" && c.unreadCount === 0) return false;
-      if (homeFilter === "GROUPS" && c.tab === "teacher") return false;
+      if (homeFilter === "GROUPS" && c.tab !== "school" && c.tab !== "class") return false;
       if (homeFilter === "TEACHERS" && c.tab !== "teacher") return false;
+      if (homeFilter === "FRIENDS" && c.tab !== "friend") return false;
+      if (homeFilter === "MONITOR" && !c.isMonitorItem) return false;
       return true;
     });
   }, [unifiedConversations, homeFilter]);
+
+  const monitorPairsCount = useMemo(
+    () => unifiedConversations.filter((c) => c.isMonitorItem).length,
+    [unifiedConversations]
+  );
 
   const searchMatchedChats = useMemo(() => {
     const q = homeSearchQuery.trim().toLowerCase();
@@ -1974,19 +2462,810 @@ export const NstaMessengerSuite: React.FC<Props> = ({
     if (item.tab === "class" && item.classId) {
       setSelectedClassId(item.classId);
     }
-    if (item.studentId) {
-      setSelectedStudentId(item.studentId);
-    } else if (item.tab === "school" && currentUserRole === "ADMIN") {
-      setSelectedStudentId("all");
-    }
-    if (item.teacherId) {
-      setSelectedTeacherId(item.teacherId);
+    if (item.tab === "friend") {
+      if (item.monitorPairKey) {
+        setSelectedMonitorPairKey(item.monitorPairKey);
+      } else if (item.studentId && currentUserRole === "ADMIN") {
+        setSelectedMonitorPairKey(item.studentId);
+      }
+      if (item.friendStudentId) {
+        setSelectedFriendId(item.friendStudentId);
+      }
+    } else {
+      if (item.studentId) {
+        setSelectedStudentId(item.studentId);
+      } else if (item.tab === "school" && currentUserRole === "ADMIN") {
+        setSelectedStudentId("all");
+      }
+      if (item.teacherId) {
+        setSelectedTeacherId(item.teacherId);
+      }
     }
     setActiveTab(item.tab);
     setIsTeacherChatOpen(true);
     setMobileView("chat");
     isUserScrolledUpRef.current = false;
     setShowScrollBottomBtn(false);
+  };
+
+  // ── Role-Scoped Call History Feed (Messages + Supabase call_sessions) ──────
+  type CallHistoryEntry = {
+    id: string;
+    callId: string;
+    callType: CallType;
+    mode: "direct" | "group";
+    direction: "outgoing" | "incoming" | "group" | "monitor";
+    status: "completed" | "missed" | "rejected" | "ended" | "ringing";
+    durationSec: number;
+    participants?: number;
+    createdAt: string;
+    threadType: NstaThreadType;
+    classId?: string;
+    className?: string;
+    studentId?: string;
+    friendStudentId?: string;
+    teacherId?: string;
+    peerName: string;
+    peerSubtitle: string;
+    peerAvatarUrl?: string;
+    peerAvatarText: string;
+    peerAvatarBg: string;
+    canCallBack: boolean;
+    roomKey?: string;
+  };
+
+  const formatHistoryDuration = (sec?: number): string => {
+    const s = Math.max(0, Math.floor(sec || 0));
+    if (s <= 0) return "";
+    if (s < 60) return `${s}s`;
+    const m = Math.floor(s / 60);
+    const rem = s % 60;
+    return rem > 0 ? `${m}m ${rem}s` : `${m}m`;
+  };
+
+  const callHistoryEntries = useMemo<CallHistoryEntry[]>(() => {
+    const selfIds = new Set<string>(
+      [currentUserId, student?.id, teacher?.id].filter((v): v is string => Boolean(v))
+    );
+    if (currentUserRole === "ADMIN") {
+      selfIds.add("STAFF_ADMIN");
+      selfIds.add("school_admin");
+      selfIds.add("accountant_admin");
+    }
+
+    const findStudent = (id?: string) => (id ? safeStudents.find((s) => s.id === id) : undefined);
+    const findTeacher = (id?: string) => (id ? safeTeachers.find((t) => t.id === id) : undefined);
+    const findClass = (id?: string, name?: string) =>
+      safeClasses.find(
+        (c) =>
+          (id && c.id === id) ||
+          (name && c.name?.toLowerCase() === String(name).toLowerCase())
+      );
+
+    const resolvePeerInfo = (params: {
+      threadType: NstaThreadType;
+      mode: "direct" | "group";
+      callerId?: string;
+      callerName?: string;
+      callerAvatar?: string;
+      targetId?: string;
+      targetName?: string;
+      targetAvatar?: string;
+      classId?: string;
+      className?: string;
+      studentId?: string;
+      studentName?: string;
+      teacherId?: string;
+      teacherName?: string;
+      roomTitle?: string;
+      targetIds?: string[];
+    }): {
+      visible: boolean;
+      direction: "outgoing" | "incoming" | "group" | "monitor";
+      peerName: string;
+      peerSubtitle: string;
+      peerAvatarUrl?: string;
+      peerAvatarText: string;
+      peerAvatarBg: string;
+      canCallBack: boolean;
+      friendStudentId?: string;
+    } => {
+      const callerIsSelf = Boolean(params.callerId && selfIds.has(params.callerId));
+      const targets = [
+        ...(Array.isArray(params.targetIds) ? params.targetIds : []),
+        ...(params.targetId ? [params.targetId] : []),
+      ];
+      const targetIsSelf = targets.some((id) => selfIds.has(id));
+
+      if (params.threadType === "CLASS_GROUP" || params.mode === "group") {
+        const cls = findClass(params.classId, params.className);
+        if (currentUserRole === "STUDENT") {
+          const matchesMyClass =
+            !params.classId ||
+            params.classId === "all" ||
+            params.classId === "general" ||
+            isStudentInClass(
+              { classId: activeClass?.id, className: activeClass?.name } as any,
+              params.classId,
+              params.className
+            );
+          if (!matchesMyClass) {
+            return {
+              visible: false,
+              direction: "group",
+              peerName: "",
+              peerSubtitle: "",
+              peerAvatarText: "CL",
+              peerAvatarBg: "bg-emerald-600",
+              canCallBack: false,
+            };
+          }
+        }
+        const labelName =
+          params.roomTitle ||
+          (cls ? `${cls.name}${cls.section ? ` (${cls.section})` : ""}` : params.className || "Class Group");
+        const roomKey = `class_${cls?.id || params.classId || "general"}`;
+        const isRoomLive = Boolean(callState.activeGroupCalls[roomKey]);
+        return {
+          visible: true,
+          direction: callerIsSelf ? "outgoing" : "group",
+          peerName: labelName,
+          peerSubtitle: params.callerName ? `Class Group Call · ${params.callerName}` : "Class Group Call",
+          peerAvatarText: labelName.slice(0, 2).toUpperCase() || "CL",
+          peerAvatarBg: "bg-emerald-600",
+          canCallBack: currentUserRole === "ADMIN" || currentUserRole === "TEACHER" || isRoomLive,
+        };
+      }
+
+      if (params.threadType === "SCHOOL_DESK") {
+        const ownStudentId = student?.id || currentUserId;
+        if (currentUserRole === "TEACHER") {
+          return {
+            visible: false,
+            direction: "incoming",
+            peerName: "",
+            peerSubtitle: "",
+            peerAvatarText: "SC",
+            peerAvatarBg: "bg-blue-600",
+            canCallBack: false,
+          };
+        }
+        if (currentUserRole === "STUDENT") {
+          const matchesMe =
+            callerIsSelf ||
+            targetIsSelf ||
+            !params.studentId ||
+            params.studentId === ownStudentId ||
+            params.studentId === "all" ||
+            params.studentId === "general";
+          if (!matchesMe) {
+            return {
+              visible: false,
+              direction: "incoming",
+              peerName: "",
+              peerSubtitle: "",
+              peerAvatarText: "SC",
+              peerAvatarBg: "bg-blue-600",
+              canCallBack: false,
+            };
+          }
+          return {
+            visible: true,
+            direction: callerIsSelf ? "outgoing" : "incoming",
+            peerName: school?.name || "School Official Desk",
+            peerSubtitle: "Principal / School Office",
+            peerAvatarUrl: school?.logoUrl,
+            peerAvatarText: "🏫",
+            peerAvatarBg: "bg-blue-600",
+            canCallBack: true,
+          };
+        }
+        // ADMIN on SCHOOL_DESK
+        const stId = params.studentId && params.studentId !== "all" && params.studentId !== "general" ? params.studentId : params.targetId;
+        const matchedStudent = findStudent(stId);
+        const peerDisplayName =
+          callerIsSelf
+            ? matchedStudent?.name || params.targetName || params.studentName || "Student Desk"
+            : params.callerName || matchedStudent?.name || params.studentName || "Student";
+        return {
+          visible: true,
+          direction: callerIsSelf ? "outgoing" : "incoming",
+          peerName: peerDisplayName,
+          peerSubtitle: matchedStudent?.className
+            ? `${matchedStudent.className} · School Desk`
+            : "School Official Desk",
+          peerAvatarUrl: callerIsSelf
+            ? matchedStudent?.photoUrl || params.targetAvatar
+            : params.callerAvatar || matchedStudent?.photoUrl,
+          peerAvatarText: peerDisplayName.slice(0, 2).toUpperCase() || "ST",
+          peerAvatarBg: "bg-blue-600",
+          canCallBack: Boolean(matchedStudent?.id || (stId && stId !== "all" && stId !== "general")),
+        };
+      }
+
+      if (params.threadType === "STUDENT_CHAT") {
+        const pairParts = String(params.studentId || "")
+          .split("__")
+          .filter(Boolean);
+        if (currentUserRole === "TEACHER") {
+          return {
+            visible: false,
+            direction: "incoming",
+            peerName: "",
+            peerSubtitle: "",
+            peerAvatarText: "FR",
+            peerAvatarBg: "bg-cyan-600",
+            canCallBack: false,
+          };
+        }
+        if (currentUserRole === "ADMIN") {
+          const idA = pairParts[0] || params.callerId || "";
+          const idB = pairParts[1] || params.targetId || "";
+          const sA = findStudent(idA);
+          const sB = findStudent(idB);
+          const callerObj = params.callerId ? findStudent(params.callerId) : undefined;
+          const targetObj = params.targetId ? findStudent(params.targetId) : undefined;
+          const callerLabel = callerObj?.name || params.callerName || sA?.name || "Student";
+          const targetLabel = targetObj?.name || params.targetName || sB?.name || "Classmate";
+          const clsLabel =
+            callerObj?.className ||
+            targetObj?.className ||
+            sA?.className ||
+            sB?.className ||
+            params.className ||
+            "Classmates";
+          return {
+            visible: true,
+            direction: "monitor",
+            peerName: `${callerLabel} → ${targetLabel}`,
+            peerSubtitle: `👁️ Monitor · ${clsLabel} · Student Call`,
+            peerAvatarUrl: callerObj?.photoUrl || params.callerAvatar,
+            peerAvatarText: "👁️",
+            peerAvatarBg: "bg-amber-600",
+            canCallBack: false,
+          };
+        }
+        // STUDENT on STUDENT_CHAT
+        const ownStudentId = student?.id || currentUserId;
+        const involvesMe =
+          callerIsSelf ||
+          targetIsSelf ||
+          pairParts.includes(ownStudentId) ||
+          params.studentId === ownStudentId;
+        if (!involvesMe) {
+          return {
+            visible: false,
+            direction: "incoming",
+            peerName: "",
+            peerSubtitle: "",
+            peerAvatarText: "FR",
+            peerAvatarBg: "bg-cyan-600",
+            canCallBack: false,
+          };
+        }
+        const friendId =
+          pairParts.find((id) => !selfIds.has(id) && id !== ownStudentId) ||
+          (callerIsSelf
+            ? params.targetId && !selfIds.has(params.targetId)
+              ? params.targetId
+              : undefined
+            : params.callerId && !selfIds.has(params.callerId)
+            ? params.callerId
+            : undefined);
+        const matchedFriend = findStudent(friendId);
+        const friendName =
+          matchedFriend?.name ||
+          (callerIsSelf ? params.targetName : params.callerName) ||
+          "Classmate";
+        return {
+          visible: true,
+          direction: callerIsSelf ? "outgoing" : "incoming",
+          peerName: friendName,
+          peerSubtitle: matchedFriend?.className
+            ? `${matchedFriend.className} · Friend Call`
+            : "Classmate · Friend Call",
+          peerAvatarUrl:
+            matchedFriend?.photoUrl || (callerIsSelf ? params.targetAvatar : params.callerAvatar),
+          peerAvatarText: friendName.slice(0, 2).toUpperCase() || "FR",
+          peerAvatarBg: "bg-cyan-600",
+          canCallBack: friendChatEnabled && Boolean(matchedFriend?.id || friendId),
+          friendStudentId: matchedFriend?.id || friendId,
+        };
+      }
+
+      // TEACHER_CHAT
+      const matchedTeacher = findTeacher(params.teacherId || (!callerIsSelf ? params.callerId : params.targetId));
+      const matchedStudent =
+        params.studentId && params.studentId !== "STAFF_ADMIN" ? findStudent(params.studentId) : undefined;
+
+      if (currentUserRole === "STUDENT") {
+        const ownStudentId = student?.id || currentUserId;
+        const involvesMe =
+          callerIsSelf ||
+          targetIsSelf ||
+          params.studentId === ownStudentId;
+        if (!involvesMe || params.studentId === "STAFF_ADMIN") {
+          return {
+            visible: false,
+            direction: "incoming",
+            peerName: "",
+            peerSubtitle: "",
+            peerAvatarText: "TC",
+            peerAvatarBg: "bg-purple-600",
+            canCallBack: false,
+          };
+        }
+        const name = matchedTeacher?.name || (callerIsSelf ? params.targetName : params.callerName) || params.teacherName || "Subject Teacher";
+        return {
+          visible: true,
+          direction: callerIsSelf ? "outgoing" : "incoming",
+          peerName: name,
+          peerSubtitle: matchedTeacher?.designation || "Teacher · Direct Call",
+          peerAvatarUrl: matchedTeacher?.photoUrl || (callerIsSelf ? params.targetAvatar : params.callerAvatar),
+          peerAvatarText: name.slice(0, 2).toUpperCase() || "TC",
+          peerAvatarBg: "bg-purple-600",
+          canCallBack: Boolean(matchedTeacher?.id || params.teacherId),
+        };
+      }
+
+      if (currentUserRole === "TEACHER") {
+        const myTeacherId = teacher?.id || currentUserId;
+        const involvesMe =
+          callerIsSelf ||
+          targetIsSelf ||
+          params.teacherId === myTeacherId;
+        if (!involvesMe) {
+          return {
+            visible: false,
+            direction: "incoming",
+            peerName: "",
+            peerSubtitle: "",
+            peerAvatarText: "ST",
+            peerAvatarBg: "bg-purple-600",
+            canCallBack: false,
+          };
+        }
+        if (params.studentId === "STAFF_ADMIN") {
+          return {
+            visible: true,
+            direction: callerIsSelf ? "outgoing" : "incoming",
+            peerName: "School Administration",
+            peerSubtitle: "Principal / Staff Desk",
+            peerAvatarUrl: school?.logoUrl,
+            peerAvatarText: "🏫",
+            peerAvatarBg: "bg-blue-600",
+            canCallBack: true,
+          };
+        }
+        const name = matchedStudent?.name || (callerIsSelf ? params.targetName : params.callerName) || params.studentName || "Student";
+        return {
+          visible: true,
+          direction: callerIsSelf ? "outgoing" : "incoming",
+          peerName: name,
+          peerSubtitle: matchedStudent?.className ? `${matchedStudent.className} · Doubt Call` : "Student Doubt Call",
+          peerAvatarUrl: matchedStudent?.photoUrl || (callerIsSelf ? params.targetAvatar : params.callerAvatar),
+          peerAvatarText: name.slice(0, 2).toUpperCase() || "ST",
+          peerAvatarBg: "bg-purple-600",
+          canCallBack: Boolean(matchedStudent?.id || params.studentId),
+        };
+      }
+
+      // ADMIN on TEACHER_CHAT: show staff calls between Admin & Teachers
+      const isAdminStaffCall =
+        params.studentId === "STAFF_ADMIN" || callerIsSelf || targetIsSelf;
+      if (!isAdminStaffCall) {
+        return {
+          visible: false,
+          direction: "incoming",
+          peerName: "",
+          peerSubtitle: "",
+          peerAvatarText: "TC",
+          peerAvatarBg: "bg-purple-600",
+          canCallBack: false,
+        };
+      }
+      const name = matchedTeacher?.name || (callerIsSelf ? params.targetName : params.callerName) || params.teacherName || "Teacher";
+      return {
+        visible: true,
+        direction: callerIsSelf ? "outgoing" : "incoming",
+        peerName: name,
+        peerSubtitle: `${matchedTeacher?.designation || "Teacher"} · Staff Call`,
+        peerAvatarUrl: matchedTeacher?.photoUrl || (callerIsSelf ? params.targetAvatar : params.callerAvatar),
+        peerAvatarText: name.slice(0, 2).toUpperCase() || "TC",
+        peerAvatarBg: "bg-purple-600",
+        canCallBack: Boolean(matchedTeacher?.id || params.teacherId),
+      };
+    };
+
+    const byCallId = new Map<string, CallHistoryEntry>();
+
+    // 1. Call log messages from real-time allSchoolMsgs
+    for (const m of allSchoolMsgs || []) {
+      if (!m || m.attachmentType !== "CALL" || !m.callData) continue;
+      if (Array.isArray(m.deletedFor) && m.deletedFor.includes(currentUserId)) continue;
+      const cd = m.callData;
+      const cid = cd.callId || m.id;
+      const info = resolvePeerInfo({
+        threadType: m.threadType,
+        mode: cd.mode || "direct",
+        callerId: m.senderId,
+        callerName: m.senderName,
+        callerAvatar: m.senderPhoto,
+        targetId: cd.targetId,
+        targetName: cd.targetName,
+        targetAvatar: cd.targetAvatar,
+        classId: m.classId,
+        className: m.className,
+        studentId: m.studentId,
+        studentName: m.studentName,
+        teacherId: m.teacherId,
+        teacherName: m.teacherName,
+      });
+      if (!info.visible) continue;
+
+      byCallId.set(cid, {
+        id: m.id,
+        callId: cid,
+        callType: cd.callType || "voice",
+        mode: cd.mode || "direct",
+        direction: info.direction,
+        status: cd.status || "ended",
+        durationSec: cd.durationSec || 0,
+        participants: cd.participants,
+        createdAt: m.createdAt || "",
+        threadType: m.threadType,
+        classId: m.classId,
+        className: m.className,
+        studentId: m.studentId,
+        friendStudentId: info.friendStudentId,
+        teacherId: m.teacherId,
+        peerName: info.peerName,
+        peerSubtitle: info.peerSubtitle,
+        peerAvatarUrl: info.peerAvatarUrl,
+        peerAvatarText: info.peerAvatarText,
+        peerAvatarBg: info.peerAvatarBg,
+        canCallBack: info.canCallBack,
+        roomKey: m.threadType === "CLASS_GROUP" ? `class_${m.classId || "general"}` : undefined,
+      });
+    }
+
+    // 2. Merge Supabase call_sessions (catches calls without a chat log or enriches duration)
+    for (const rec of recentCallSessions || []) {
+      if (!rec || !rec.callId) continue;
+      const existing = byCallId.get(rec.callId);
+      if (existing) {
+        if ((rec.durationSec || 0) > existing.durationSec) {
+          existing.durationSec = rec.durationSec || existing.durationSec;
+          if (existing.durationSec > 0 && existing.status === "ended") {
+            existing.status = "completed";
+          }
+        }
+        if (!existing.peerAvatarUrl && rec.targetAvatar && existing.direction === "outgoing") {
+          existing.peerAvatarUrl = rec.targetAvatar;
+        }
+        continue;
+      }
+
+      const ctx = rec.threadContext;
+      const threadType: NstaThreadType =
+        ctx?.threadType || (rec.mode === "group" ? "CLASS_GROUP" : "TEACHER_CHAT");
+      const rawStatus = String(rec.status || "ended").toLowerCase();
+      const normalizedStatus: CallHistoryEntry["status"] =
+        rawStatus === "missed" || rawStatus === "unanswered"
+          ? "missed"
+          : rawStatus === "rejected"
+          ? "rejected"
+          : (rec.durationSec || 0) > 0 || rawStatus === "connected"
+          ? "completed"
+          : rawStatus === "ringing"
+          ? "ringing"
+          : "ended";
+
+      const resolvedCtxStudentId =
+        ctx?.studentId ||
+        (threadType === "STUDENT_CHAT" && rec.callerId && rec.targetIds?.[0]
+          ? getCanonicalStudentPairKey(rec.callerId, rec.targetIds[0])
+          : undefined);
+
+      const info = resolvePeerInfo({
+        threadType,
+        mode: rec.mode || "direct",
+        callerId: rec.callerId,
+        callerName: rec.callerName,
+        callerAvatar: rec.callerAvatar,
+        targetId: rec.targetIds?.[0],
+        targetName: rec.targetName,
+        targetAvatar: rec.targetAvatar,
+        classId: ctx?.classId || rec.classId,
+        className: ctx?.className || rec.className,
+        studentId: resolvedCtxStudentId,
+        studentName: ctx?.studentName,
+        teacherId: ctx?.teacherId,
+        teacherName: ctx?.teacherName,
+        roomTitle: rec.roomTitle,
+        targetIds: rec.targetIds,
+      });
+      if (!info.visible) continue;
+
+      byCallId.set(rec.callId, {
+        id: rec.callId,
+        callId: rec.callId,
+        callType: rec.callType || "voice",
+        mode: rec.mode || "direct",
+        direction: info.direction,
+        status: normalizedStatus,
+        durationSec: rec.durationSec || 0,
+        participants: rec.participants,
+        createdAt: rec.createdAt || rec.endedAt || "",
+        threadType,
+        classId: ctx?.classId || rec.classId,
+        className: ctx?.className || rec.className,
+        studentId: resolvedCtxStudentId || rec.targetIds?.[0],
+        friendStudentId: info.friendStudentId,
+        teacherId: ctx?.teacherId,
+        peerName: info.peerName,
+        peerSubtitle: info.peerSubtitle,
+        peerAvatarUrl: info.peerAvatarUrl,
+        peerAvatarText: info.peerAvatarText,
+        peerAvatarBg: info.peerAvatarBg,
+        canCallBack: info.canCallBack,
+        roomKey: threadType === "CLASS_GROUP" ? `class_${ctx?.classId || rec.classId || "general"}` : undefined,
+      });
+    }
+
+    return Array.from(byCallId.values()).sort((a, b) =>
+      (b.createdAt || "").localeCompare(a.createdAt || "")
+    );
+  }, [
+    allSchoolMsgs,
+    recentCallSessions,
+    currentUserId,
+    currentUserRole,
+    student?.id,
+    teacher?.id,
+    activeClass?.id,
+    activeClass?.name,
+    safeStudents,
+    safeTeachers,
+    safeClasses,
+    school?.name,
+    school?.logoUrl,
+    callState.activeGroupCalls,
+    friendChatEnabled,
+  ]);
+
+  const filteredCallHistory = useMemo(() => {
+    const q = homeSearchQuery.trim().toLowerCase();
+    return callHistoryEntries.filter((entry) => {
+      if (callHistoryFilter === "OUTGOING" && entry.direction !== "outgoing") return false;
+      if (
+        callHistoryFilter === "INCOMING" &&
+        entry.direction !== "incoming" &&
+        entry.direction !== "group"
+      ) {
+        return false;
+      }
+      if (
+        callHistoryFilter === "MISSED" &&
+        entry.status !== "missed" &&
+        entry.status !== "rejected"
+      ) {
+        return false;
+      }
+      if (!q) return true;
+      return (
+        entry.peerName.toLowerCase().includes(q) ||
+        entry.peerSubtitle.toLowerCase().includes(q) ||
+        entry.status.toLowerCase().includes(q)
+      );
+    });
+  }, [callHistoryEntries, callHistoryFilter, homeSearchQuery]);
+
+  const handleOpenCallThread = (entry: CallHistoryEntry) => {
+    const tab: "school" | "class" | "teacher" | "friend" =
+      entry.threadType === "CLASS_GROUP"
+        ? "class"
+        : entry.threadType === "SCHOOL_DESK"
+        ? "school"
+        : entry.threadType === "STUDENT_CHAT"
+        ? "friend"
+        : "teacher";
+    handleOpenUnifiedChat({
+      key: entry.id,
+      tab,
+      title: entry.peerName,
+      subtitle: entry.peerSubtitle,
+      avatarText: entry.peerAvatarText,
+      avatarUrl: entry.peerAvatarUrl,
+      avatarBg: entry.peerAvatarBg,
+      classId: entry.classId,
+      studentId: entry.studentId,
+      friendStudentId: entry.friendStudentId,
+      monitorPairKey: entry.threadType === "STUDENT_CHAT" ? entry.studentId : undefined,
+      teacherId: entry.teacherId,
+      lastMessageText: "",
+      lastTimestamp: entry.createdAt,
+      unreadCount: 0,
+    });
+  };
+
+  const handleCallFromHistory = async (entry: CallHistoryEntry, callType: CallType) => {
+    if (callState.phase !== "idle") {
+      toast.info("Pehle chal rahi call ko end karein.");
+      return;
+    }
+    try {
+      if (entry.threadType === "CLASS_GROUP" || entry.mode === "group") {
+        const cls = safeClasses.find(
+          (c) =>
+            (entry.classId && c.id === entry.classId) ||
+            (entry.className && c.name?.toLowerCase() === entry.className.toLowerCase())
+        );
+        const resolvedClassId = cls?.id || entry.classId || activeClass?.id || "general";
+        const resolvedClassName = cls?.name || entry.className || activeClass?.name || "Class Group";
+        const targetIds = safeStudents
+          .filter((s) => s && isStudentInClass(s, resolvedClassId, resolvedClassName))
+          .map((s) => String(s.id))
+          .filter(Boolean);
+        await startOrJoinGroupCall({
+          roomKey: `class_${resolvedClassId}`,
+          roomTitle: cls ? `${cls.name}${cls.section ? ` (${cls.section})` : ""}` : resolvedClassName,
+          callType,
+          asHost: currentUserRole === "ADMIN" || currentUserRole === "TEACHER",
+          classId: resolvedClassId,
+          className: resolvedClassName,
+          targetStudentIds: targetIds,
+          threadContext: {
+            threadType: "CLASS_GROUP",
+            classId: resolvedClassId,
+            className: resolvedClassName,
+          },
+        });
+        return;
+      }
+
+      if (entry.threadType === "SCHOOL_DESK") {
+        if (currentUserRole === "STUDENT") {
+          await startDirectCall({
+            callType,
+            targetIds: ["STAFF_ADMIN", "school_admin", "accountant_admin"],
+            targetName: school?.name || "School Official Desk",
+            targetSubtitle: "Principal / School Office",
+            targetAvatar: school?.logoUrl,
+            threadContext: {
+              threadType: "SCHOOL_DESK",
+              studentId: student?.id || currentUserId,
+              studentName: currentUserName,
+            },
+          });
+          return;
+        }
+        const targetStudent = entry.studentId
+          ? safeStudents.find((s) => s.id === entry.studentId)
+          : undefined;
+        const stId = targetStudent?.id || entry.studentId;
+        if (!stId || stId === "all" || stId === "general") {
+          toast.info("Student select karke call karein.");
+          return;
+        }
+        await startDirectCall({
+          callType,
+          targetIds: [stId],
+          targetName: targetStudent?.name || entry.peerName,
+          targetSubtitle: `${targetStudent?.className || "Student"} · School Desk`,
+          targetAvatar: targetStudent?.photoUrl || entry.peerAvatarUrl,
+          threadContext: {
+            threadType: "SCHOOL_DESK",
+            studentId: stId,
+            studentName: targetStudent?.name || entry.peerName,
+          },
+        });
+        return;
+      }
+
+      // TEACHER_CHAT direct call
+      if (currentUserRole === "TEACHER") {
+        if (entry.studentId === "STAFF_ADMIN") {
+          await startDirectCall({
+            callType,
+            targetIds: ["STAFF_ADMIN", "school_admin", "accountant_admin"],
+            targetName: "School Administration",
+            targetSubtitle: school?.name || "Principal & Management Desk",
+            targetAvatar: school?.logoUrl,
+            threadContext: {
+              threadType: "TEACHER_CHAT",
+              studentId: "STAFF_ADMIN",
+              studentName: "School Administration",
+              teacherId: teacher?.id || currentUserId,
+              teacherName: currentUserName,
+            },
+          });
+          return;
+        }
+        const st = entry.studentId ? safeStudents.find((s) => s.id === entry.studentId) : undefined;
+        const stId = st?.id || entry.studentId;
+        if (!stId) {
+          toast.error("Student details nahi mile.");
+          return;
+        }
+        await startDirectCall({
+          callType,
+          targetIds: [stId],
+          targetName: st?.name || entry.peerName,
+          targetSubtitle: `${st?.className || "Student"} · Doubt Chat`,
+          targetAvatar: st?.photoUrl || entry.peerAvatarUrl,
+          threadContext: {
+            threadType: "TEACHER_CHAT",
+            studentId: stId,
+            studentName: st?.name || entry.peerName,
+            teacherId: teacher?.id || currentUserId,
+            teacherName: currentUserName,
+          },
+        });
+        return;
+      }
+
+      if (entry.threadType === "STUDENT_CHAT") {
+        if (!friendChatEnabled) {
+          toast.error("School Admin ne abhi Classmate Call band kar rakha hai.");
+          return;
+        }
+        const ownId = student?.id || currentUserId;
+        const friendId =
+          entry.friendStudentId ||
+          String(entry.studentId || "")
+            .split("__")
+            .find((id) => id && id !== ownId);
+        const mate = friendId ? safeStudents.find((s) => s.id === friendId) : undefined;
+        const resolvedId = mate?.id || friendId;
+        if (!resolvedId) {
+          toast.error("Classmate details nahi mile.");
+          return;
+        }
+        const pairKey = getCanonicalStudentPairKey(ownId, resolvedId);
+        await startDirectCall({
+          callType,
+          targetIds: [resolvedId],
+          targetName: mate?.name || entry.peerName,
+          targetSubtitle: `${mate?.className || activeClass?.name || "Classmate"} · Friend Call`,
+          targetAvatar: mate?.photoUrl || entry.peerAvatarUrl,
+          threadContext: {
+            threadType: "STUDENT_CHAT",
+            classId: mate?.classId || entry.classId || activeClass?.id,
+            className: mate?.className || entry.className || activeClass?.name,
+            studentId: pairKey,
+            studentName: `${currentUserName} ↔ ${mate?.name || entry.peerName}`,
+            peerStudentId: resolvedId,
+            peerStudentName: mate?.name || entry.peerName,
+          },
+        });
+        return;
+      }
+
+      // ADMIN or STUDENT calling Teacher
+      const tch = entry.teacherId ? safeTeachers.find((t) => t.id === entry.teacherId) : undefined;
+      const tId = tch?.id || entry.teacherId;
+      if (!tId) {
+        toast.error("Teacher details nahi mile.");
+        return;
+      }
+      await startDirectCall({
+        callType,
+        targetIds: [tId],
+        targetName: tch?.name || entry.peerName,
+        targetSubtitle: tch?.designation || "Teacher",
+        targetAvatar: tch?.photoUrl || entry.peerAvatarUrl,
+        threadContext: {
+          threadType: "TEACHER_CHAT",
+          studentId: currentUserRole === "ADMIN" ? "STAFF_ADMIN" : (student?.id || currentUserId),
+          studentName: currentUserRole === "ADMIN" ? "School Administration" : currentUserName,
+          teacherId: tId,
+          teacherName: tch?.name || entry.peerName,
+        },
+      });
+    } catch (err: any) {
+      toast.error(err?.message || "Call start karne me samasya aayi. Mic/Camera permission check karein.");
+    }
   };
 
   const formatChatTimeLabel = (iso?: string): string => {
@@ -2022,6 +3301,7 @@ export const NstaMessengerSuite: React.FC<Props> = ({
       const isClassGroup = msg.threadType === "CLASS_GROUP";
       const isSchoolDesk = msg.threadType === "SCHOOL_DESK";
       const isTeacherChat = msg.threadType === "TEACHER_CHAT";
+      const isStudentChat = msg.threadType === "STUDENT_CHAT";
 
       const senderTitle = msg.senderName || (msg.senderRole === "ADMIN" ? "School Admin" : msg.senderRole === "TEACHER" ? "Teacher" : "Student");
       const classLabel = msg.className || activeClass?.name || "Class Group";
@@ -2029,6 +3309,8 @@ export const NstaMessengerSuite: React.FC<Props> = ({
         ? `👥 ${senderTitle} (${classLabel})`
         : isSchoolDesk
         ? `🏫 ${school?.name || "School"} • Official Notice`
+        : isStudentChat
+        ? `💬 ${senderTitle} (Friend)`
         : `💬 ${senderTitle}`;
       const title = overrideTitle || defaultTitle;
       const body = overrideBody || msg.text || "Naya sandesh aaya hai";
@@ -2198,10 +3480,162 @@ export const NstaMessengerSuite: React.FC<Props> = ({
             urgent: true,
           });
         }
+      } else if (isStudentChat) {
+        if (msg.senderRole === "ADMIN") {
+          const pairIds = String(msg.studentId || "")
+            .split("__")
+            .map((id) => id.trim())
+            .filter((id) => Boolean(id) && !senderIdSet.has(id));
+          if (pairIds.length > 0) {
+            void sendSchoolPushNotification({
+              schoolId: msg.schoolId,
+              studentIds: pairIds,
+              senderId: primarySenderId,
+              senderIds: resolvedSenderIds,
+              senderName: senderTitle,
+              title: `🏫 Admin Notice • Friend Chat`,
+              body,
+              type: "NSTA_MESSAGE",
+              threadType: "STUDENT_CHAT",
+              voiceSpeak: false,
+              icon: senderPhoto,
+              senderPhoto,
+              url: `/?schoolPortal=1&schoolTab=messenger&subTab=friend`,
+              urgent: true,
+            });
+          }
+        } else {
+          const peerId =
+            String(msg.peerStudentId || "").trim() ||
+            String(msg.studentId || "")
+              .split("__")
+              .map((id) => id.trim())
+              .find((id) => Boolean(id) && !senderIdSet.has(id));
+          if (peerId && !senderIdSet.has(peerId)) {
+            void sendSchoolPushNotification({
+              schoolId: msg.schoolId,
+              studentIds: [peerId],
+              senderId: primarySenderId,
+              senderIds: resolvedSenderIds,
+              senderName: senderTitle,
+              title,
+              body,
+              type: "NSTA_MESSAGE",
+              threadType: "STUDENT_CHAT",
+              voiceSpeak: false,
+              icon: senderPhoto,
+              senderPhoto,
+              url: `/?schoolPortal=1&schoolTab=messenger&subTab=friend`,
+              urgent: true,
+            });
+          }
+        }
       }
     } catch (e) {
       console.warn("[NstaMessenger] dispatchMessengerPush error:", e);
     }
+  };
+
+  // Shared Active-Thread Permission & Payload Helper
+  const ensureCanSendInActiveThread = (): boolean => {
+    if (currentUserRole === "STUDENT") {
+      if (activeTab === "class") {
+        toast.error("Class Group me keval Teachers aur School Admin hi sandesh bhej sakte hain.");
+        return false;
+      }
+      if (activeTab === "school") {
+        toast.error("School Desk par keval School Admin hi official sandesh bhej sakte hain.");
+        return false;
+      }
+      if (activeTab === "friend") {
+        if (!friendChatEnabled) {
+          toast.error("School Admin ne abhi Classmate Chat band kar rakha hai.");
+          return false;
+        }
+        if (!activeFriend?.id || !activeFriendPairKey) {
+          toast.error("Kripya pehle kisi classmate ko select karein.");
+          return false;
+        }
+      }
+    }
+    if (activeTab === "school" && currentUserRole !== "ADMIN") {
+      toast.error("School Desk par keval School Admin hi sandesh bhej sakte hain.");
+      return false;
+    }
+    if (activeTab === "friend" && currentUserRole === "ADMIN" && !activeFriendPairKey) {
+      toast.error("Monitor karne ke liye pehle koi student chat select karein.");
+      return false;
+    }
+    if (activeTab === "friend" && currentUserRole === "TEACHER") {
+      toast.error("Student-to-Student chat keval Students aur School Admin monitor ke liye hai.");
+      return false;
+    }
+    return true;
+  };
+
+  const getActiveThreadPayloadFields = (): Pick<
+    NstaMessage,
+    | "threadType"
+    | "classId"
+    | "className"
+    | "studentId"
+    | "studentName"
+    | "teacherId"
+    | "teacherName"
+    | "peerStudentId"
+    | "peerStudentName"
+  > => {
+    if (activeTab === "class") {
+      return {
+        threadType: "CLASS_GROUP",
+        classId: activeClass?.id || "general",
+        className: activeClass?.name,
+      };
+    }
+    if (activeTab === "school") {
+      const isSchoolDeskBroadcast = !selectedStudentId || selectedStudentId === "all";
+      return {
+        threadType: "SCHOOL_DESK",
+        studentId: isSchoolDeskBroadcast ? undefined : activeStudent?.id || undefined,
+        studentName: isSchoolDeskBroadcast
+          ? "Sabhi Chhatra (All Students)"
+          : activeStudent?.name || undefined,
+      };
+    }
+    if (activeTab === "friend") {
+      if (currentUserRole === "ADMIN" && activeMonitorPairInfo) {
+        return {
+          threadType: "STUDENT_CHAT",
+          classId:
+            activeMonitorPairInfo.studentA?.classId ||
+            activeMonitorPairInfo.studentB?.classId ||
+            undefined,
+          className: activeMonitorPairInfo.className,
+          studentId: activeMonitorPairInfo.pairKey,
+          studentName: activeMonitorPairInfo.title,
+        };
+      }
+      const ownName = currentUserName || student?.name || "Student";
+      return {
+        threadType: "STUDENT_CHAT",
+        classId: activeClass?.id || activeFriend?.classId,
+        className: activeFriend?.className || activeClass?.name,
+        studentId: activeFriendPairKey || undefined,
+        studentName: activeFriend ? `${ownName} ↔ ${activeFriend.name}` : undefined,
+        peerStudentId: activeFriend?.id || undefined,
+        peerStudentName: activeFriend?.name || undefined,
+      };
+    }
+    return {
+      threadType: "TEACHER_CHAT",
+      studentId: currentUserRole === "ADMIN" ? "STAFF_ADMIN" : activeStudent?.id || undefined,
+      studentName:
+        currentUserRole === "ADMIN"
+          ? "School Administration (Principal)"
+          : activeStudent?.name || undefined,
+      teacherId: activeTeacher?.id || undefined,
+      teacherName: activeTeacher?.name || undefined,
+    };
   };
 
   // Handle Send Text Message
@@ -2209,53 +3643,14 @@ export const NstaMessengerSuite: React.FC<Props> = ({
     if (e) e.preventDefault();
     const cleanText = inputText.trim();
     if (!cleanText || isSending) return;
-
-    // Permission check for Class Group & School Desk
-    if (currentUserRole === "STUDENT") {
-      if (activeTab === "class") {
-        toast.error("Class Group me keval Teachers aur School Admin hi sandesh bhej sakte hain.");
-        return;
-      }
-      if (activeTab === "school") {
-        toast.error("School Desk par keval School Admin hi official sandesh bhej sakte hain.");
-        return;
-      }
-    }
-
-    if (activeTab === "school" && currentUserRole !== "ADMIN") {
-      toast.error("School Desk par keval School Admin hi sandesh bhej sakte hain.");
-      return;
-    }
+    if (!ensureCanSendInActiveThread()) return;
 
     setIsSending(true);
-
-    const targetThreadType: NstaThreadType =
-      activeTab === "class" ? "CLASS_GROUP" : activeTab === "school" ? "SCHOOL_DESK" : "TEACHER_CHAT";
-
-    const isSchoolDeskBroadcast = activeTab === "school" && (!selectedStudentId || selectedStudentId === "all");
-
-    const targetStudentId = activeTab === "class"
-      ? undefined
-      : isSchoolDeskBroadcast
-      ? undefined
-      : (activeTab === "teacher" && currentUserRole === "ADMIN" ? "STAFF_ADMIN" : (activeStudent?.id || undefined));
-
-    const targetStudentName = activeTab === "class"
-      ? undefined
-      : isSchoolDeskBroadcast
-      ? "Sabhi Chhatra (All Students)"
-      : (activeTab === "teacher" && currentUserRole === "ADMIN" ? "School Administration (Principal)" : (activeStudent?.name || undefined));
 
     const newMsg: NstaMessage = {
       id: generateId("msg"),
       schoolId: school?.id || "default",
-      threadType: targetThreadType,
-      classId: activeTab === "class" ? (activeClass?.id || "general") : undefined,
-      className: activeTab === "class" ? activeClass?.name : undefined,
-      studentId: targetStudentId,
-      studentName: targetStudentName,
-      teacherId: activeTab === "teacher" ? (activeTeacher?.id || undefined) : undefined,
-      teacherName: activeTab === "teacher" ? (activeTeacher?.name || undefined) : undefined,
+      ...getActiveThreadPayloadFields(),
       senderId: currentUserId || "user",
       senderName: currentUserName || (currentUserRole === "ADMIN" ? "School Admin" : currentUserRole === "TEACHER" ? "Teacher" : "Student"),
       senderRole: currentUserRole,
@@ -2447,16 +3842,7 @@ export const NstaMessengerSuite: React.FC<Props> = ({
   // 3. Send Photo Message
   const handleSendImage = async () => {
     if (!selectedImageFile || isUploadingMedia) return;
-
-    if (currentUserRole === "STUDENT" && activeTab !== "teacher") {
-      toast.error("Keval Teachers aur School Admin hi is tab me media bhej sakte hain.");
-      return;
-    }
-
-    if (activeTab === "school" && currentUserRole !== "ADMIN") {
-      toast.error("School Desk par keval School Admin hi photo bhej sakte hain.");
-      return;
-    }
+    if (!ensureCanSendInActiveThread()) return;
 
     setIsUploadingMedia(true);
     setMediaUploadProgress(15);
@@ -2480,21 +3866,10 @@ export const NstaMessengerSuite: React.FC<Props> = ({
         throw new Error("Telegram storage se photo URL prapt nahi hua.");
       }
 
-      const targetThreadType: NstaThreadType =
-        activeTab === "class" ? "CLASS_GROUP" : activeTab === "school" ? "SCHOOL_DESK" : "TEACHER_CHAT";
-
-      const isSchoolDeskBroadcast = activeTab === "school" && (!selectedStudentId || selectedStudentId === "all");
-
       const newMsg: NstaMessage = {
         id: generateId("msg"),
         schoolId: school?.id || "default",
-        threadType: targetThreadType,
-        classId: activeTab === "class" ? (activeClass?.id || "general") : undefined,
-        className: activeTab === "class" ? activeClass?.name : undefined,
-        studentId: activeTab === "class" ? undefined : (isSchoolDeskBroadcast ? undefined : (activeStudent?.id || undefined)),
-        studentName: activeTab === "class" ? undefined : (isSchoolDeskBroadcast ? "Sabhi Chhatra (All Students)" : (activeStudent?.name || undefined)),
-        teacherId: activeTab === "teacher" ? (activeTeacher?.id || undefined) : undefined,
-        teacherName: activeTab === "teacher" ? (activeTeacher?.name || undefined) : undefined,
+        ...getActiveThreadPayloadFields(),
         senderId: currentUserId || "user",
         senderName: currentUserName || (currentUserRole === "ADMIN" ? "School Admin" : currentUserRole === "TEACHER" ? "Teacher" : "Student"),
         senderRole: currentUserRole,
@@ -2529,16 +3904,7 @@ export const NstaMessengerSuite: React.FC<Props> = ({
   // 4. Send Video Message
   const handleSendVideo = async () => {
     if (!selectedVideoFile || isUploadingMedia) return;
-
-    if (currentUserRole === "STUDENT" && activeTab !== "teacher") {
-      toast.error("Keval Teachers aur School Admin hi is tab me media bhej sakte hain.");
-      return;
-    }
-
-    if (activeTab === "school" && currentUserRole !== "ADMIN") {
-      toast.error("School Desk par keval School Admin hi video bhej sakte hain.");
-      return;
-    }
+    if (!ensureCanSendInActiveThread()) return;
 
     setIsUploadingMedia(true);
     setMediaUploadProgress(10);
@@ -2549,21 +3915,10 @@ export const NstaMessengerSuite: React.FC<Props> = ({
       });
       const uploadedUrl = res?.secure_url || res?.url;
 
-      const targetThreadType: NstaThreadType =
-        activeTab === "class" ? "CLASS_GROUP" : activeTab === "school" ? "SCHOOL_DESK" : "TEACHER_CHAT";
-
-      const isSchoolDeskBroadcast = activeTab === "school" && (!selectedStudentId || selectedStudentId === "all");
-
       const newMsg: NstaMessage = {
         id: generateId("msg"),
         schoolId: school?.id || "default",
-        threadType: targetThreadType,
-        classId: activeTab === "class" ? (activeClass?.id || "general") : undefined,
-        className: activeTab === "class" ? activeClass?.name : undefined,
-        studentId: activeTab === "class" ? undefined : (isSchoolDeskBroadcast ? undefined : (activeStudent?.id || undefined)),
-        studentName: activeTab === "class" ? undefined : (isSchoolDeskBroadcast ? "Sabhi Chhatra (All Students)" : (activeStudent?.name || undefined)),
-        teacherId: activeTab === "teacher" ? (activeTeacher?.id || undefined) : undefined,
-        teacherName: activeTab === "teacher" ? (activeTeacher?.name || undefined) : undefined,
+        ...getActiveThreadPayloadFields(),
         senderId: currentUserId || "user",
         senderName: currentUserName || (currentUserRole === "ADMIN" ? "School Admin" : currentUserRole === "TEACHER" ? "Teacher" : "Student"),
         senderRole: currentUserRole,
@@ -2596,15 +3951,7 @@ export const NstaMessengerSuite: React.FC<Props> = ({
     const file = e.target.files?.[0];
     if (!file) return;
 
-    if (currentUserRole === "STUDENT" && activeTab !== "teacher") {
-      toast.error("Keval Teachers aur School Admin hi is tab me documents/files bhej sakte hain.");
-      return;
-    }
-
-    if (activeTab === "school" && currentUserRole !== "ADMIN") {
-      toast.error("School Desk par keval School Admin hi files bhej sakte hain.");
-      return;
-    }
+    if (!ensureCanSendInActiveThread()) return;
 
     if (file.size > 75 * 1024 * 1024) {
       toast.error("File ka size 75MB se kam hona chahiye.");
@@ -2629,20 +3976,10 @@ export const NstaMessengerSuite: React.FC<Props> = ({
       else if (ext === "zip" || ext === "rar" || ext === "7z" || ext === "tar" || ext === "gz") determinedType = "ZIP";
       else if (ext === "html" || ext === "htm") determinedType = "FILE";
 
-      const targetThreadType: NstaThreadType =
-        activeTab === "class" ? "CLASS_GROUP" : activeTab === "school" ? "SCHOOL_DESK" : "TEACHER_CHAT";
-      const isSchoolDeskBroadcast = activeTab === "school" && (!selectedStudentId || selectedStudentId === "all");
-
       const newMsg: NstaMessage = {
         id: generateId("msg"),
         schoolId: school?.id || "default",
-        threadType: targetThreadType,
-        classId: activeTab === "class" ? (activeClass?.id || "general") : undefined,
-        className: activeTab === "class" ? activeClass?.name : undefined,
-        studentId: activeTab === "class" ? undefined : (isSchoolDeskBroadcast ? undefined : (activeStudent?.id || undefined)),
-        studentName: activeTab === "class" ? undefined : (isSchoolDeskBroadcast ? "Sabhi Chhatra (All Students)" : (activeStudent?.name || undefined)),
-        teacherId: activeTab === "teacher" ? (activeTeacher?.id || undefined) : undefined,
-        teacherName: activeTab === "teacher" ? (activeTeacher?.name || undefined) : undefined,
+        ...getActiveThreadPayloadFields(),
         senderId: currentUserId || "user",
         senderName: currentUserName || (currentUserRole === "ADMIN" ? "School Admin" : currentUserRole === "TEACHER" ? "Teacher" : "Student"),
         senderRole: currentUserRole,
@@ -2689,20 +4026,10 @@ export const NstaMessengerSuite: React.FC<Props> = ({
         throw new Error("Telegram storage se voice note URL prapt nahi hua.");
       }
 
-      const targetThreadType: NstaThreadType =
-        activeTab === "class" ? "CLASS_GROUP" : activeTab === "school" ? "SCHOOL_DESK" : "TEACHER_CHAT";
-      const isSchoolDeskBroadcast = activeTab === "school" && (!selectedStudentId || selectedStudentId === "all");
-
       const newMsg: NstaMessage = {
         id: generateId("msg"),
         schoolId: school?.id || "default",
-        threadType: targetThreadType,
-        classId: activeTab === "class" ? (activeClass?.id || "general") : undefined,
-        className: activeTab === "class" ? activeClass?.name : undefined,
-        studentId: activeTab === "class" ? undefined : (isSchoolDeskBroadcast ? undefined : (activeStudent?.id || undefined)),
-        studentName: activeTab === "class" ? undefined : (isSchoolDeskBroadcast ? "Sabhi Chhatra (All Students)" : (activeStudent?.name || undefined)),
-        teacherId: activeTab === "teacher" ? (activeTeacher?.id || undefined) : undefined,
-        teacherName: activeTab === "teacher" ? (activeTeacher?.name || undefined) : undefined,
+        ...getActiveThreadPayloadFields(),
         senderId: currentUserId || "user",
         senderName: currentUserName || (currentUserRole === "ADMIN" ? "School Admin" : currentUserRole === "TEACHER" ? "Teacher" : "Student"),
         senderRole: currentUserRole,
@@ -2729,16 +4056,7 @@ export const NstaMessengerSuite: React.FC<Props> = ({
   };
 
   const handleStartVoiceRecording = async () => {
-
-    if (currentUserRole === "STUDENT" && activeTab !== "teacher") {
-      toast.error("Keval Teachers aur School Admin hi is tab me voice note bhej sakte hain.");
-      return;
-    }
-
-    if (activeTab === "school" && currentUserRole !== "ADMIN") {
-      toast.error("School Desk par keval School Admin hi voice note bhej sakte hain.");
-      return;
-    }
+    if (!ensureCanSendInActiveThread()) return;
 
     // Reset any previous recording state
     handleCancelVoiceRecording();
@@ -2816,15 +4134,7 @@ export const NstaMessengerSuite: React.FC<Props> = ({
     const file = e.target.files?.[0];
     if (!file) return;
 
-    if (currentUserRole === "STUDENT" && activeTab !== "teacher") {
-      toast.error("Keval Teachers aur School Admin hi is tab me voice note bhej sakte hain.");
-      return;
-    }
-
-    if (activeTab === "school" && currentUserRole !== "ADMIN") {
-      toast.error("School Desk par keval School Admin hi voice note bhej sakte hain.");
-      return;
-    }
+    if (!ensureCanSendInActiveThread()) return;
 
     setIsSending(true);
     setToastNotification("🎙️ Audio note upload ho raha hai...");
@@ -2836,20 +4146,10 @@ export const NstaMessengerSuite: React.FC<Props> = ({
         throw new Error("Telegram storage se audio URL prapt nahi hua.");
       }
 
-      const targetThreadType: NstaThreadType =
-        activeTab === "class" ? "CLASS_GROUP" : activeTab === "school" ? "SCHOOL_DESK" : "TEACHER_CHAT";
-      const isSchoolDeskBroadcast = activeTab === "school" && (!selectedStudentId || selectedStudentId === "all");
-
       const newMsg: NstaMessage = {
         id: generateId("msg"),
         schoolId: school?.id || "default",
-        threadType: targetThreadType,
-        classId: activeTab === "class" ? (activeClass?.id || "general") : undefined,
-        className: activeTab === "class" ? activeClass?.name : undefined,
-        studentId: activeTab === "class" ? undefined : (isSchoolDeskBroadcast ? undefined : (activeStudent?.id || undefined)),
-        studentName: activeTab === "class" ? undefined : (isSchoolDeskBroadcast ? "Sabhi Chhatra (All Students)" : (activeStudent?.name || undefined)),
-        teacherId: activeTab === "teacher" ? (activeTeacher?.id || undefined) : undefined,
-        teacherName: activeTab === "teacher" ? (activeTeacher?.name || undefined) : undefined,
+        ...getActiveThreadPayloadFields(),
         senderId: currentUserId || "user",
         senderName: currentUserName || (currentUserRole === "ADMIN" ? "School Admin" : currentUserRole === "TEACHER" ? "Teacher" : "Student"),
         senderRole: currentUserRole,
@@ -3012,29 +4312,12 @@ export const NstaMessengerSuite: React.FC<Props> = ({
     photoUrl?: string;
   }) => {
 
-    if (currentUserRole === "STUDENT" && activeTab !== "teacher") {
-      toast.error("Class group me keval Teachers aur School Admin hi contact bhej sakte hain.");
-      return;
-    }
-    if (activeTab === "school" && currentUserRole !== "ADMIN") {
-      toast.error("School Desk par keval School Admin hi contact bhej sakte hain.");
-      return;
-    }
-
-    const targetThreadType: NstaThreadType =
-      activeTab === "class" ? "CLASS_GROUP" : activeTab === "school" ? "SCHOOL_DESK" : "TEACHER_CHAT";
-    const isSchoolDeskBroadcast = activeTab === "school" && (!selectedStudentId || selectedStudentId === "all");
+    if (!ensureCanSendInActiveThread()) return;
 
     const newMsg: NstaMessage = {
       id: generateId("msg"),
       schoolId: school?.id || "default",
-      threadType: targetThreadType,
-      classId: activeTab === "class" ? (activeClass?.id || "general") : undefined,
-      className: activeTab === "class" ? activeClass?.name : undefined,
-      studentId: activeTab === "class" ? undefined : (isSchoolDeskBroadcast ? undefined : (activeStudent?.id || undefined)),
-      studentName: activeTab === "class" ? undefined : (isSchoolDeskBroadcast ? "Sabhi Chhatra (All Students)" : (activeStudent?.name || undefined)),
-      teacherId: activeTab === "teacher" ? (activeTeacher?.id || undefined) : undefined,
-      teacherName: activeTab === "teacher" ? (activeTeacher?.name || undefined) : undefined,
+      ...getActiveThreadPayloadFields(),
       senderId: currentUserId || "user",
       senderName: currentUserName || (currentUserRole === "ADMIN" ? "School Admin" : currentUserRole === "TEACHER" ? "Teacher" : "Student"),
       senderRole: currentUserRole,
@@ -3061,30 +4344,12 @@ export const NstaMessengerSuite: React.FC<Props> = ({
 
   // 9. Location Sharing Handler
   const handleSendLocation = async (locName: string, locAddress: string, lat: number, lng: number) => {
-
-    if (currentUserRole === "STUDENT" && activeTab !== "teacher") {
-      toast.error("Class group me keval Teachers aur Admin location bhej sakte hain.");
-      return;
-    }
-    if (activeTab === "school" && currentUserRole !== "ADMIN") {
-      toast.error("School Desk par keval School Admin hi location bhej sakte hain.");
-      return;
-    }
-
-    const targetThreadType: NstaThreadType =
-      activeTab === "class" ? "CLASS_GROUP" : activeTab === "school" ? "SCHOOL_DESK" : "TEACHER_CHAT";
-    const isSchoolDeskBroadcast = activeTab === "school" && (!selectedStudentId || selectedStudentId === "all");
+    if (!ensureCanSendInActiveThread()) return;
 
     const newMsg: NstaMessage = {
       id: generateId("msg"),
       schoolId: school?.id || "default",
-      threadType: targetThreadType,
-      classId: activeTab === "class" ? (activeClass?.id || "general") : undefined,
-      className: activeTab === "class" ? activeClass?.name : undefined,
-      studentId: activeTab === "class" ? undefined : (isSchoolDeskBroadcast ? undefined : (activeStudent?.id || undefined)),
-      studentName: activeTab === "class" ? undefined : (isSchoolDeskBroadcast ? "Sabhi Chhatra (All Students)" : (activeStudent?.name || undefined)),
-      teacherId: activeTab === "teacher" ? (activeTeacher?.id || undefined) : undefined,
-      teacherName: activeTab === "teacher" ? (activeTeacher?.name || undefined) : undefined,
+      ...getActiveThreadPayloadFields(),
       senderId: currentUserId || "user",
       senderName: currentUserName || (currentUserRole === "ADMIN" ? "School Admin" : currentUserRole === "TEACHER" ? "Teacher" : "Student"),
       senderRole: currentUserRole,
@@ -3111,14 +4376,20 @@ export const NstaMessengerSuite: React.FC<Props> = ({
   // Strictly filter messages by active tab threadType and matching IDs
   const filteredMessages = useMemo(() => {
     const targetThreadType: NstaThreadType =
-      activeTab === "class" ? "CLASS_GROUP" : activeTab === "school" ? "SCHOOL_DESK" : "TEACHER_CHAT";
+      activeTab === "class"
+        ? "CLASS_GROUP"
+        : activeTab === "school"
+        ? "SCHOOL_DESK"
+        : activeTab === "friend"
+        ? "STUDENT_CHAT"
+        : "TEACHER_CHAT";
 
     const threadFiltered = messages.filter(m => {
       if (!m || !m.threadType) return false;
       // 0. Filter out messages deleted for current user (Delete for me)
       if (Array.isArray(m.deletedFor) && m.deletedFor.includes(currentUserId)) return false;
 
-      // 1. Strict threadType match: ensures class, school and teacher never bleed
+      // 1. Strict threadType match: ensures class, school, teacher and friend never bleed
       if (m.threadType !== targetThreadType) return false;
 
       // 2. Class Group matching
@@ -3155,6 +4426,11 @@ export const NstaMessengerSuite: React.FC<Props> = ({
         if (activeTeacher?.id && m.teacherId && m.teacherId !== activeTeacher.id) return false;
       }
 
+      // 5. Friend / Student Monitor matching
+      if (targetThreadType === "STUDENT_CHAT") {
+        if (!activeFriendPairKey || m.studentId !== activeFriendPairKey) return false;
+      }
+
       return true;
     });
 
@@ -3165,7 +4441,7 @@ export const NstaMessengerSuite: React.FC<Props> = ({
       (m.senderName || "").toLowerCase().includes(q) ||
       (m.feeSlip?.monthLabel || "").toLowerCase().includes(q)
     );
-  }, [messages, searchQuery, activeTab, activeClass?.id, activeStudent?.id, activeTeacher?.id, currentUserRole, selectedStudentId]);
+  }, [messages, searchQuery, activeTab, activeClass?.id, activeStudent?.id, activeTeacher?.id, activeFriendPairKey, currentUserRole, selectedStudentId]);
 
   const filteredTeachersList = useMemo(() => {
     const sourceList = currentUserRole === "STUDENT" ? studentVisibleTeachers : safeTeachers;
@@ -3327,135 +4603,392 @@ export const NstaMessengerSuite: React.FC<Props> = ({
                 { id: "UNREAD", label: "Unread" },
                 { id: "GROUPS", label: "School & Class" },
                 { id: "TEACHERS", label: currentUserRole === "TEACHER" ? "Doubts" : "Teachers" },
+                ...(currentUserRole === "STUDENT"
+                  ? ([{ id: "FRIENDS", label: "Friends" }] as const)
+                  : []),
+                ...(currentUserRole === "ADMIN"
+                  ? ([
+                      {
+                        id: "MONITOR",
+                        label:
+                          monitorPairsCount > 0
+                            ? `Student Monitor (${monitorPairsCount})`
+                            : "Student Monitor",
+                      },
+                    ] as const)
+                  : []),
+                { id: "CALLS", label: "Call History" },
               ] as const
             ).map((f) => (
               <button
                 key={f.id}
                 type="button"
                 onClick={() => setHomeFilter(f.id)}
-                className={`px-3 py-1.5 rounded-lg text-xs font-bold whitespace-nowrap shrink-0 cursor-pointer transition ${
+                className={`px-3 py-1.5 rounded-lg text-xs font-bold whitespace-nowrap shrink-0 cursor-pointer transition inline-flex items-center gap-1.5 ${
                   homeFilter === f.id
-                    ? "bg-emerald-600 text-white"
+                    ? f.id === "MONITOR"
+                      ? "bg-amber-600 text-white"
+                      : "bg-emerald-600 text-white"
                     : "bg-slate-900 text-slate-400 hover:text-white border border-slate-800"
                 }`}
               >
-                {f.label}
+                {f.id === "CALLS" && <PhoneCall className="w-3.5 h-3.5 shrink-0" />}
+                {f.id === "MONITOR" && <Eye className="w-3.5 h-3.5 shrink-0" />}
+                {f.id === "FRIENDS" && <Users className="w-3.5 h-3.5 shrink-0" />}
+                <span>{f.label}</span>
               </button>
             ))}
           </div>
         </div>
 
-        {/* Unified Chat List (plus Matching Statuses when Searching) */}
+        {/* Unified Chat List OR Call History View */}
         <div className="flex-1 overflow-y-auto divide-y divide-slate-800/70">
-          {isHomeSearchOpen && searchMatchedStatuses.length > 0 && (
-            <div className="px-3 py-2 bg-slate-900/40 space-y-1.5">
-              <p className="text-[11px] font-bold text-emerald-400 uppercase tracking-wider">
-                Matching 24h Statuses ({searchMatchedStatuses.length})
-              </p>
-              {searchMatchedStatuses.slice(0, 4).map((st) => (
-                <button
-                  key={st.id}
-                  type="button"
-                  onClick={() => setRequestedOpenStatusId(st.id)}
-                  className="w-full p-2 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-800 flex items-center justify-between gap-2 text-left cursor-pointer"
-                >
-                  <div className="min-w-0 flex-1">
-                    <p className="text-xs font-bold text-white truncate">
-                      {st.title || st.caption || st.authorName}
-                    </p>
-                    <p className="text-[11px] text-slate-400 truncate">
-                      {st.authorName} {st.isEventVideo ? "· 🎉 Event Video" : "· Status"}
-                    </p>
-                  </div>
-                  <ChevronRight className="w-4 h-4 text-slate-500 shrink-0" />
-                </button>
-              ))}
-            </div>
-          )}
-
-          {(() => {
-            const displayChats =
-              isHomeSearchOpen && homeSearchQuery.trim() ? searchMatchedChats : homeChatsList;
-
-            if (displayChats.length === 0) {
-              return (
-                <div className="py-12 px-4 text-center text-xs text-slate-500 space-y-1">
-                  <p className="font-bold text-slate-300">Koi chat nahi mila</p>
-                  <p>Filter ya search badalkar dekhein.</p>
+          {homeFilter === "CALLS" ? (
+            <>
+              <div className="px-3 py-2 bg-slate-900/40 flex items-center justify-between gap-2">
+                <div className="flex items-center gap-1 overflow-x-auto no-scrollbar">
+                  {(
+                    [
+                      { id: "ALL", label: "All" },
+                      { id: "OUTGOING", label: "Outgoing" },
+                      { id: "INCOMING", label: "Incoming" },
+                      { id: "MISSED", label: "Missed" },
+                    ] as const
+                  ).map((sub) => (
+                    <button
+                      key={sub.id}
+                      type="button"
+                      onClick={() => setCallHistoryFilter(sub.id)}
+                      className={`px-2.5 py-1 rounded-md text-[11px] font-bold whitespace-nowrap cursor-pointer transition ${
+                        callHistoryFilter === sub.id
+                          ? "bg-emerald-600/20 text-emerald-400 border border-emerald-500/40"
+                          : "bg-slate-900 text-slate-400 hover:text-white border border-slate-800"
+                      }`}
+                    >
+                      {sub.label}
+                    </button>
+                  ))}
                 </div>
-              );
-            }
+                <span className="text-[11px] font-mono text-slate-500 shrink-0">
+                  {filteredCallHistory.length} {filteredCallHistory.length === 1 ? "Call" : "Calls"}
+                </span>
+              </div>
 
-            return displayChats.map((item) => {
-              const isActive =
-                activeTab === item.tab &&
-                (item.tab === "class"
-                  ? item.classId === activeClass?.id
-                  : item.tab === "school"
-                  ? (item.studentId || "all") === (selectedStudentId || "all")
-                  : item.teacherId === activeTeacher?.id &&
-                    (!item.studentId || item.studentId === selectedStudentId));
-
-              return (
-                <button
-                  key={item.key}
-                  type="button"
-                  onClick={() => handleOpenUnifiedChat(item)}
-                  className={`w-full min-h-[70px] px-3.5 py-3 flex items-center gap-3 text-left transition cursor-pointer ${
-                    isActive
-                      ? "bg-emerald-600/15 lg:bg-slate-900 border-r-2 border-emerald-500"
-                      : "hover:bg-slate-900/70"
-                  }`}
-                >
-                  <div
-                    className={`w-12 h-12 rounded-full ${item.avatarBg} text-white flex items-center justify-center font-extrabold text-sm shrink-0 overflow-hidden border border-white/10`}
-                  >
-                    {item.avatarUrl ? (
-                      <img
-                        src={item.avatarUrl}
-                        alt={item.title}
-                        referrerPolicy="no-referrer"
-                        className="w-full h-full object-cover"
-                      />
-                    ) : (
-                      <span>{item.avatarText}</span>
-                    )}
+              {isLoadingCallHistory && filteredCallHistory.length === 0 ? (
+                <div className="py-12 px-4 flex flex-col items-center justify-center gap-2 text-xs text-slate-400">
+                  <Loader2 className="w-5 h-5 animate-spin text-emerald-500" />
+                  <span>Call history load ho rahi hai...</span>
+                </div>
+              ) : filteredCallHistory.length === 0 ? (
+                <div className="py-12 px-4 text-center text-xs text-slate-500 space-y-1.5">
+                  <div className="w-11 h-11 rounded-full bg-slate-900 border border-slate-800 flex items-center justify-center mx-auto mb-2">
+                    <PhoneCall className="w-5 h-5 text-slate-400" />
                   </div>
+                  <p className="font-bold text-slate-300">Abhi koi call history nahi hai</p>
+                  <p>
+                    {homeSearchQuery.trim()
+                      ? "Search query se koi call record match nahi hua."
+                      : "Kisi bhi Teacher, Student ya Class me Voice/Video call karne par yahan list dikhegi."}
+                  </p>
+                </div>
+              ) : (
+                filteredCallHistory.map((entry) => {
+                  const isMissedOrRejected = entry.status === "missed" || entry.status === "rejected";
+                  const durLabel = formatHistoryDuration(entry.durationSec);
+                  const directionText =
+                    entry.direction === "outgoing"
+                      ? "Outgoing"
+                      : entry.direction === "group"
+                      ? "Class Call"
+                      : entry.direction === "monitor"
+                      ? "Student Call"
+                      : "Incoming";
+                  const statusText =
+                    entry.status === "rejected"
+                      ? "Declined"
+                      : entry.status === "missed"
+                      ? entry.direction === "outgoing"
+                        ? "No Answer"
+                        : "Missed Call"
+                      : entry.status === "ringing"
+                      ? "Ringing / Live"
+                      : durLabel || "Ended";
 
-                  <div className="flex-1 min-w-0 space-y-0.5">
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="text-sm font-bold text-white truncate">
-                        {item.title}
-                      </span>
-                      <span
-                        className={`text-[11px] font-mono tabular-nums shrink-0 ${
-                          item.unreadCount > 0 ? "text-emerald-400 font-bold" : "text-slate-500"
-                        }`}
+                  return (
+                    <div
+                      key={entry.id}
+                      onClick={() => handleOpenCallThread(entry)}
+                      role="button"
+                      tabIndex={0}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" || e.key === " ") {
+                          e.preventDefault();
+                          handleOpenCallThread(entry);
+                        }
+                      }}
+                      className="w-full min-h-[70px] px-3.5 py-3 flex items-center gap-3 text-left transition cursor-pointer hover:bg-slate-900/70"
+                    >
+                      <div
+                        className={`relative w-12 h-12 rounded-full ${entry.peerAvatarBg} text-white flex items-center justify-center font-extrabold text-sm shrink-0 border border-white/10`}
                       >
-                        {formatChatTimeLabel(item.lastTimestamp)}
-                      </span>
-                    </div>
-
-                    <div className="flex items-center justify-between gap-2">
-                      <p className="text-xs text-slate-400 truncate">
-                        {item.lastMessageText}
-                      </p>
-                      {item.unreadCount > 0 && (
-                        <span className="min-w-[20px] h-5 px-1.5 rounded-full bg-emerald-500 text-slate-950 text-[11px] font-black font-mono tabular-nums flex items-center justify-center shrink-0">
-                          {item.unreadCount > 99 ? "99+" : item.unreadCount}
+                        {entry.peerAvatarUrl ? (
+                          <img
+                            src={entry.peerAvatarUrl}
+                            alt={entry.peerName}
+                            referrerPolicy="no-referrer"
+                            className="w-full h-full object-cover rounded-full"
+                          />
+                        ) : (
+                          <span>{entry.peerAvatarText}</span>
+                        )}
+                        <span
+                          className={`absolute -bottom-0.5 -right-0.5 w-5 h-5 rounded-full flex items-center justify-center border-2 border-slate-950 ${
+                            isMissedOrRejected
+                              ? "bg-rose-500 text-white"
+                              : "bg-emerald-600 text-white"
+                          }`}
+                        >
+                          {entry.callType === "video" ? (
+                            <Video className="w-2.5 h-2.5" />
+                          ) : (
+                            <Phone className="w-2.5 h-2.5" />
+                          )}
                         </span>
+                      </div>
+
+                      <div className="flex-1 min-w-0 space-y-0.5">
+                        <div className="flex items-center justify-between gap-2">
+                          <span
+                            className={`text-sm font-bold truncate ${
+                              isMissedOrRejected ? "text-rose-400" : "text-white"
+                            }`}
+                          >
+                            {entry.peerName}
+                          </span>
+                          <span className="text-[11px] font-mono tabular-nums text-slate-500 shrink-0">
+                            {formatChatTimeLabel(entry.createdAt)}
+                          </span>
+                        </div>
+
+                        <div className="flex items-center gap-1.5 text-xs truncate">
+                          {isMissedOrRejected ? (
+                            <PhoneMissed className="w-3.5 h-3.5 text-rose-400 shrink-0" />
+                          ) : entry.direction === "monitor" ? (
+                            <Eye className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                          ) : entry.direction === "outgoing" ? (
+                            <PhoneOutgoing className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                          ) : (
+                            <PhoneIncoming className="w-3.5 h-3.5 text-sky-400 shrink-0" />
+                          )}
+                          <span
+                            className={`truncate font-medium ${
+                              isMissedOrRejected ? "text-rose-400" : "text-slate-300"
+                            }`}
+                          >
+                            {directionText} · {statusText}
+                          </span>
+                        </div>
+
+                        <p className="text-[11px] text-slate-500 truncate">{entry.peerSubtitle}</p>
+                      </div>
+
+                      {entry.canCallBack && (
+                        <div
+                          className="flex items-center gap-1 shrink-0"
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          <button
+                            type="button"
+                            onClick={() => void handleCallFromHistory(entry, "voice")}
+                            className="w-9 h-9 rounded-full bg-slate-900 hover:bg-emerald-600/20 text-emerald-400 border border-slate-800 flex items-center justify-center transition cursor-pointer"
+                            title="Voice Call Again"
+                          >
+                            <Phone className="w-4 h-4" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => void handleCallFromHistory(entry, "video")}
+                            className="w-9 h-9 rounded-full bg-slate-900 hover:bg-emerald-600/20 text-emerald-400 border border-slate-800 flex items-center justify-center transition cursor-pointer"
+                            title="Video Call Again"
+                          >
+                            <Video className="w-4 h-4" />
+                          </button>
+                        </div>
                       )}
                     </div>
+                  );
+                })
+              )}
+            </>
+          ) : (
+            <>
+              {isHomeSearchOpen && searchMatchedStatuses.length > 0 && (
+                <div className="px-3 py-2 bg-slate-900/40 space-y-1.5">
+                  <p className="text-[11px] font-bold text-emerald-400 uppercase tracking-wider">
+                    Matching 24h Statuses ({searchMatchedStatuses.length})
+                  </p>
+                  {searchMatchedStatuses.slice(0, 4).map((st) => (
+                    <button
+                      key={st.id}
+                      type="button"
+                      onClick={() => setRequestedOpenStatusId(st.id)}
+                      className="w-full p-2 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-800 flex items-center justify-between gap-2 text-left cursor-pointer"
+                    >
+                      <div className="min-w-0 flex-1">
+                        <p className="text-xs font-bold text-white truncate">
+                          {st.title || st.caption || st.authorName}
+                        </p>
+                        <p className="text-[11px] text-slate-400 truncate">
+                          {st.authorName} {st.isEventVideo ? "· 🎉 Event Video" : "· Status"}
+                        </p>
+                      </div>
+                      <ChevronRight className="w-4 h-4 text-slate-500 shrink-0" />
+                    </button>
+                  ))}
+                </div>
+              )}
 
-                    <p className="text-[11px] text-slate-500 truncate">
-                      {item.subtitle}
-                      {item.pinned ? " · Pinned" : ""}
+              {currentUserRole === "ADMIN" && homeFilter === "MONITOR" && (
+                <div className="px-3.5 py-2.5 bg-amber-950/35 border-b border-amber-500/25 flex items-center justify-between gap-2">
+                  <div className="min-w-0">
+                    <p className="text-xs font-extrabold text-amber-200 flex items-center gap-1.5">
+                      <Eye className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                      <span>Classmate Chat &amp; Call Monitor</span>
+                    </p>
+                    <p className="text-[11px] text-slate-400 truncate">
+                      {friendChatEnabled
+                        ? "Students aapas me chat/call kar sakte hain (Admin live dekh sakte hain)"
+                        : "Classmate chat aur call abhi Admin dwara band hai"}
                     </p>
                   </div>
-                </button>
-              );
-            });
-          })()}
+                  <button
+                    type="button"
+                    onClick={() => void handleToggleFriendChatEnabled()}
+                    className={`px-2.5 py-1 rounded-lg text-[11px] font-black border shrink-0 cursor-pointer transition ${
+                      friendChatEnabled
+                        ? "bg-emerald-600/20 text-emerald-300 border-emerald-500/40 hover:bg-emerald-600/30"
+                        : "bg-rose-600/20 text-rose-300 border-rose-500/40 hover:bg-rose-600/30"
+                    }`}
+                  >
+                    {friendChatEnabled ? "ON" : "OFF"}
+                  </button>
+                </div>
+              )}
+
+              {(() => {
+                const displayChats =
+                  isHomeSearchOpen && homeSearchQuery.trim() ? searchMatchedChats : homeChatsList;
+
+                if (displayChats.length === 0) {
+                  return (
+                    <div className="py-12 px-4 text-center text-xs text-slate-500 space-y-1.5">
+                      {homeFilter === "MONITOR" ? (
+                        <>
+                          <div className="w-11 h-11 rounded-full bg-amber-500/10 border border-amber-500/30 flex items-center justify-center mx-auto mb-2">
+                            <Eye className="w-5 h-5 text-amber-400" />
+                          </div>
+                          <p className="font-bold text-slate-300">
+                            Abhi kisi student ke beech friend chat ya call nahi hua hai
+                          </p>
+                          <p>
+                            Jaise hi do classmates aapas me chat ya voice/video call karenge, unki live conversation aur call record yahan dikhega.
+                          </p>
+                        </>
+                      ) : homeFilter === "FRIENDS" ? (
+                        <>
+                          <p className="font-bold text-slate-300">Koi classmate chat uplabdh nahi hai</p>
+                          <p>
+                            {friendChatEnabled
+                              ? "Aapki class me jab classmates registered honge toh yahan list dikhegi."
+                              : "School Admin ne abhi Classmate Chat & Call band kar rakha hai."}
+                          </p>
+                        </>
+                      ) : (
+                        <>
+                          <p className="font-bold text-slate-300">Koi chat nahi mila</p>
+                          <p>Filter ya search badalkar dekhein.</p>
+                        </>
+                      )}
+                    </div>
+                  );
+                }
+
+                return displayChats.map((item) => {
+                  const isActive =
+                    activeTab === item.tab &&
+                    (item.tab === "class"
+                      ? item.classId === activeClass?.id
+                      : item.tab === "school"
+                      ? (item.studentId || "all") === (selectedStudentId || "all")
+                      : item.tab === "friend"
+                      ? currentUserRole === "ADMIN"
+                        ? item.monitorPairKey === selectedMonitorPairKey
+                        : item.friendStudentId === activeFriend?.id
+                      : item.teacherId === activeTeacher?.id &&
+                        (!item.studentId || item.studentId === selectedStudentId));
+
+                  return (
+                    <button
+                      key={item.key}
+                      type="button"
+                      onClick={() => handleOpenUnifiedChat(item)}
+                      className={`w-full min-h-[70px] px-3.5 py-3 flex items-center gap-3 text-left transition cursor-pointer ${
+                        isActive
+                          ? "bg-emerald-600/15 lg:bg-slate-900 border-r-2 border-emerald-500"
+                          : "hover:bg-slate-900/70"
+                      }`}
+                    >
+                      <div
+                        className={`w-12 h-12 rounded-full ${item.avatarBg} text-white flex items-center justify-center font-extrabold text-sm shrink-0 overflow-hidden border border-white/10`}
+                      >
+                        {item.avatarUrl ? (
+                          <img
+                            src={item.avatarUrl}
+                            alt={item.title}
+                            referrerPolicy="no-referrer"
+                            className="w-full h-full object-cover"
+                          />
+                        ) : (
+                          <span>{item.avatarText}</span>
+                        )}
+                      </div>
+
+                      <div className="flex-1 min-w-0 space-y-0.5">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-sm font-bold text-white truncate">
+                            {item.title}
+                          </span>
+                          <span
+                            className={`text-[11px] font-mono tabular-nums shrink-0 ${
+                              item.unreadCount > 0 ? "text-emerald-400 font-bold" : "text-slate-500"
+                            }`}
+                          >
+                            {formatChatTimeLabel(item.lastTimestamp)}
+                          </span>
+                        </div>
+
+                        <div className="flex items-center justify-between gap-2">
+                          <p className="text-xs text-slate-400 truncate">
+                            {item.lastMessageText}
+                          </p>
+                          {item.unreadCount > 0 && (
+                            <span className="min-w-[20px] h-5 px-1.5 rounded-full bg-emerald-500 text-slate-950 text-[11px] font-black font-mono tabular-nums flex items-center justify-center shrink-0">
+                              {item.unreadCount > 99 ? "99+" : item.unreadCount}
+                            </span>
+                          )}
+                        </div>
+
+                        <p className="text-[11px] text-slate-500 truncate">
+                          {item.subtitle}
+                          {item.pinned ? " · Pinned" : ""}
+                        </p>
+                      </div>
+                    </button>
+                  );
+                });
+              })()}
+            </>
+          )}
         </div>
       </aside>
 
@@ -3600,6 +5133,10 @@ export const NstaMessengerSuite: React.FC<Props> = ({
                   ? "bg-gradient-to-tr from-emerald-600 to-teal-500 text-white cursor-pointer"
                   : activeTab === "school"
                   ? "bg-gradient-to-tr from-blue-600 to-indigo-500 text-white"
+                  : activeTab === "friend"
+                  ? currentUserRole === "ADMIN"
+                    ? "bg-gradient-to-tr from-amber-600 to-orange-500 text-white"
+                    : "bg-gradient-to-tr from-cyan-600 to-teal-500 text-white"
                   : "bg-gradient-to-tr from-purple-600 to-pink-500 text-white"
               }`}
               title={activeTab === "class" ? "Group Info & Members" : ""}
@@ -3611,6 +5148,19 @@ export const NstaMessengerSuite: React.FC<Props> = ({
                   <img src={school.logoUrl} alt={school.name} referrerPolicy="no-referrer" className="w-full h-full object-cover" />
                 ) : (
                   "🏫"
+                )
+              ) : activeTab === "friend" ? (
+                currentUserRole === "ADMIN" ? (
+                  <Eye className="w-5 h-5" />
+                ) : activeFriend?.photoUrl ? (
+                  <img
+                    src={activeFriend.photoUrl}
+                    alt={activeFriend.name}
+                    referrerPolicy="no-referrer"
+                    className="w-full h-full object-cover"
+                  />
+                ) : (
+                  activeFriend?.name?.slice(0, 2).toUpperCase() || "FR"
                 )
               ) : activeTeacher?.photoUrl && currentUserRole !== "TEACHER" ? (
                 <img
@@ -3637,6 +5187,10 @@ export const NstaMessengerSuite: React.FC<Props> = ({
                   ? currentUserRole === "ADMIN" && selectedStudentId && selectedStudentId !== "all"
                     ? activeStudent?.name || "School Desk"
                     : "School Official Desk"
+                  : activeTab === "friend"
+                  ? currentUserRole === "ADMIN"
+                    ? activeMonitorPairInfo?.title || "Student Chat Monitor"
+                    : activeFriend?.name || "Classmate Chat"
                   : currentUserRole === "TEACHER"
                   ? selectedStudentId === "STAFF_ADMIN"
                     ? "School Administration"
@@ -3648,6 +5202,10 @@ export const NstaMessengerSuite: React.FC<Props> = ({
                   ? `${classStudents.length} Students · Tap for members`
                   : activeTab === "school"
                   ? `${school?.name || "Official Desk"} · 7d Auto-Delete`
+                  : activeTab === "friend"
+                  ? currentUserRole === "ADMIN"
+                    ? `👁️ Live Student Monitor · ${activeMonitorPairInfo?.className || "Classmates"} · Silent View`
+                    : `${activeFriend?.className || activeClass?.name || "Classmate"} · Admin Monitored`
                   : currentUserRole === "TEACHER"
                   ? selectedStudentId === "STAFF_ADMIN"
                     ? "Principal & Management Desk"
@@ -3661,8 +5219,46 @@ export const NstaMessengerSuite: React.FC<Props> = ({
             </div>
           </div>
 
-          {/* Right: Compact Action Buttons + More Menu */}
+          {/* Right: Compact Call + Action Buttons + More Menu */}
           <div className="flex items-center gap-1.5 shrink-0">
+            {currentUserRole === "ADMIN" && activeTab === "friend" && (
+              <button
+                type="button"
+                onClick={() => void handleToggleFriendChatEnabled()}
+                className={`min-h-[36px] px-2.5 rounded-xl border text-[11px] font-black flex items-center gap-1 cursor-pointer transition ${
+                  friendChatEnabled
+                    ? "bg-emerald-600/20 text-emerald-300 border-emerald-500/40 hover:bg-emerald-600/30"
+                    : "bg-rose-600/20 text-rose-300 border-rose-500/40 hover:bg-rose-600/30"
+                }`}
+                title="Classmate Chat & Call ON/OFF karein"
+              >
+                <Eye className="w-3.5 h-3.5" />
+                <span className="hidden sm:inline">Friend Chat:</span>
+                <span>{friendChatEnabled ? "ON" : "OFF"}</span>
+              </button>
+            )}
+
+            {canStartHeaderCall && (
+              <>
+                <button
+                  type="button"
+                  onClick={() => void handleLaunchThreadCall("voice")}
+                  className="min-h-[38px] min-w-[38px] rounded-xl bg-slate-800 hover:bg-emerald-600/20 text-emerald-400 border border-emerald-500/30 flex items-center justify-center cursor-pointer transition active:scale-95"
+                  title={activeTab === "class" ? "Start Class Audio Call" : "Voice Call"}
+                >
+                  <Phone className="w-4 h-4" />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void handleLaunchThreadCall("video")}
+                  className="min-h-[38px] min-w-[38px] rounded-xl bg-slate-800 hover:bg-sky-600/20 text-sky-400 border border-sky-500/30 flex items-center justify-center cursor-pointer transition active:scale-95"
+                  title={activeTab === "class" ? "Start Class Video Call" : "Video Call"}
+                >
+                  <Video className="w-4 h-4" />
+                </button>
+              </>
+            )}
+
             <button
               type="button"
               onClick={toggleVoiceAnnounce}
@@ -3834,6 +5430,68 @@ export const NstaMessengerSuite: React.FC<Props> = ({
           </div>
         )}
 
+      {/* ── ADMIN LIVE STUDENT MONITOR BAR ──────────────────────────────── */}
+      {selectedMessageIds.length === 0 &&
+        currentUserRole === "ADMIN" &&
+        activeTab === "friend" && (
+          <div className="bg-amber-950/60 border-b border-amber-500/30 px-3 py-2 flex items-center justify-between gap-2 shrink-0 z-10">
+            <div className="flex items-center gap-2 min-w-0">
+              <Eye className="w-4 h-4 text-amber-400 shrink-0" />
+              <p className="text-[11px] font-bold text-amber-200 truncate">
+                Live Admin Monitor: {activeMonitorPairInfo?.title || "Student Pair"} · Read receipts silent rahengi
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => void handleToggleFriendChatEnabled()}
+              className={`px-2.5 py-1 rounded-lg text-[11px] font-black border shrink-0 cursor-pointer transition ${
+                friendChatEnabled
+                  ? "bg-emerald-600/20 text-emerald-300 border-emerald-500/40"
+                  : "bg-rose-600/20 text-rose-300 border-rose-500/40"
+              }`}
+            >
+              {friendChatEnabled ? "Chat/Call ON" : "Chat/Call OFF"}
+            </button>
+          </div>
+        )}
+
+      {/* ── ACTIVE CLASS GROUP LIVE CALL JOIN BAR ─────────────────────────── */}
+      {activeTab === "class" && activeClassCall && callState.phase === "idle" && (
+        <div className="bg-emerald-950/90 border-b border-emerald-500/35 px-3 py-2 flex items-center justify-between gap-2 shrink-0 z-10">
+          <div className="flex items-center gap-2.5 min-w-0">
+            <div className="w-9 h-9 rounded-xl bg-emerald-500/20 border border-emerald-400/40 text-emerald-300 flex items-center justify-center shrink-0">
+              {activeClassCall.callType === "video" ? <Video className="w-4 h-4" /> : <PhoneCall className="w-4 h-4" />}
+            </div>
+            <div className="min-w-0">
+              <p className="text-xs font-extrabold text-white truncate">
+                {activeClassCall.callType === "video" ? "Class Video Call Live" : "Class Audio Call Live"}
+              </p>
+              <p className="text-[11px] text-emerald-300 truncate">
+                Host: {activeClassCall.hostName} · {activeClassCall.participantCount || 1} Joined
+              </p>
+            </div>
+          </div>
+          <div className="flex items-center gap-1.5 shrink-0">
+            <button
+              type="button"
+              onClick={() => void handleLaunchThreadCall("voice")}
+              className="min-h-[36px] px-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold flex items-center gap-1 cursor-pointer transition"
+            >
+              <Phone className="w-3.5 h-3.5" />
+              <span>Audio</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => void handleLaunchThreadCall("video")}
+              className="min-h-[36px] px-2.5 rounded-xl bg-sky-600 hover:bg-sky-500 text-white text-xs font-bold flex items-center gap-1 cursor-pointer transition"
+            >
+              <Video className="w-3.5 h-3.5" />
+              <span>Video</span>
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* ── CHAT MESSAGE BODY OR DIRECT TEACHERS ROSTER ─────────────── */}
       {isTeacherDirectoryView ? (
         <div className="flex-1 overflow-y-auto p-3 sm:p-6 bg-slate-950">
@@ -3972,6 +5630,10 @@ export const NstaMessengerSuite: React.FC<Props> = ({
               ? "Official Class Notice & Announcements Group"
               : activeTab === "school"
               ? "Direct Communication Desk • Admissions, Fees & Official Alerts"
+              : activeTab === "friend"
+              ? currentUserRole === "ADMIN"
+                ? "👁️ Live Admin Monitor · Students ki read receipts nahi badlengi"
+                : "Classmate Chat & Call · School Admin Safety Monitoring Active"
               : "Teacher-Student 1-to-1 Direct Chat · Unlimited Messages"}
           </div>
         </div>
@@ -3986,18 +5648,34 @@ export const NstaMessengerSuite: React.FC<Props> = ({
                   : "bg-slate-900/90 border border-slate-800 text-white"
               }`}
             >
-              {activeTab === "class" ? "📢" : activeTab === "school" ? "🏫" : "💡"}
+              {activeTab === "class"
+                ? "📢"
+                : activeTab === "school"
+                ? "🏫"
+                : activeTab === "friend"
+                ? currentUserRole === "ADMIN"
+                  ? "👁️"
+                  : "💬"
+                : "💡"}
             </div>
             <p className={`font-bold text-sm ${activeWallpaper.isLight ? "text-slate-900 font-extrabold" : "text-slate-300"}`}>
               {activeTab === "class"
                 ? "Is class group me abhi koi naya message nahi hai."
                 : activeTab === "school"
                 ? "School desk par abhi koi active message nahi hai."
+                : activeTab === "friend"
+                ? currentUserRole === "ADMIN"
+                  ? "In students ke beech abhi koi chat message nahi hai (ya keval voice/video call hui hai)."
+                  : `${activeFriend?.name || "Apne classmate"} se baat karne ke liye message likhein ya call karein.`
                 : "Apne teacher se baat karne ke liye neeche sandesh likhein."}
             </p>
             <p className={`text-xs max-w-sm mx-auto ${activeWallpaper.isLight ? "text-slate-600 font-medium" : "text-slate-500"}`}>
               {activeTab === "class" && "Jab bhi Teacher ya Admin circular ya homework bhejenge, yahan turant dikhega."}
               {activeTab === "school" && "Website Contact Admissions Office ke messages aur A6 fee slips yahan turant aayenge."}
+              {activeTab === "friend" &&
+                (currentUserRole === "ADMIN"
+                  ? "Aap upar se Call History me call log dekh sakte hain ya yahan dono students ko Admin Notice bhej sakte hain."
+                  : "Is chat ke sabhi messages aur Voice/Video calls School Admin ke live monitor me surakshit rahte hain.")}
               {activeTab === "teacher" && "Seedhe 1-on-1 message bhejkar academic doubts aur updates poochh sakte hain."}
             </p>
           </div>
@@ -4798,8 +6476,72 @@ export const NstaMessengerSuite: React.FC<Props> = ({
                         </div>
                       )}
 
+                      {/* ── ATTACHMENT: CALL LOG CARD ── */}
+                      {msg.attachmentType === "CALL" && msg.callData && (
+                        <div
+                          className={`p-3 rounded-2xl border ${
+                            isMe
+                              ? activeWallpaper.isLight
+                                ? "bg-emerald-900/15 border-emerald-600/30 text-slate-900"
+                                : "bg-black/35 border-emerald-500/30 text-white"
+                              : activeWallpaper.isLight
+                              ? "bg-slate-100 border-slate-300 text-slate-900"
+                              : "bg-black/35 border-white/15 text-white"
+                          } min-w-[210px] sm:min-w-[250px] max-w-xs mb-1.5 flex items-center justify-between gap-3`}
+                        >
+                          <div className="flex items-center gap-2.5 min-w-0">
+                            <div
+                              className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 border ${
+                                msg.callData.status === "missed" || msg.callData.status === "rejected"
+                                  ? "bg-rose-500/20 text-rose-400 border-rose-500/30"
+                                  : "bg-emerald-500/20 text-emerald-400 border-emerald-500/30"
+                              }`}
+                            >
+                              {msg.callData.status === "missed" || msg.callData.status === "rejected" ? (
+                                <PhoneMissed className="w-5 h-5" />
+                              ) : msg.callData.callType === "video" ? (
+                                <Video className="w-5 h-5" />
+                              ) : (
+                                <PhoneCall className="w-5 h-5" />
+                              )}
+                            </div>
+                            <div className="min-w-0">
+                              <p className="text-xs font-extrabold truncate">
+                                {msg.callData.mode === "group"
+                                  ? "Class Group Call"
+                                  : msg.callData.callType === "video"
+                                  ? "Video Call"
+                                  : "Voice Call"}
+                              </p>
+                              <p className="text-[11px] opacity-80 font-mono tabular-nums truncate">
+                                {msg.callData.status === "missed"
+                                  ? "Missed Call"
+                                  : msg.callData.status === "rejected"
+                                  ? "Declined"
+                                  : msg.callData.durationSec
+                                  ? `${Math.floor(msg.callData.durationSec / 60)}:${String(msg.callData.durationSec % 60).padStart(2, "0")}`
+                                  : "Ended"}
+                              </p>
+                            </div>
+                          </div>
+                          {canStartHeaderCall && (
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                void handleLaunchThreadCall(msg.callData!.callType);
+                              }}
+                              className="min-h-[36px] min-w-[36px] rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white flex items-center justify-center shrink-0 cursor-pointer transition active:scale-95"
+                              title="Call Again"
+                            >
+                              {msg.callData.callType === "video" ? <Video className="w-4 h-4" /> : <Phone className="w-4 h-4" />}
+                            </button>
+                          )}
+                        </div>
+                      )}
+
                       {/* Normal text */}
-                      {msg.text && (
+                      {msg.text && msg.attachmentType !== "CALL" && (
                         <p className="text-xs sm:text-sm whitespace-pre-wrap leading-relaxed break-words font-medium">
                           {msg.text}
                         </p>
@@ -4950,6 +6692,13 @@ export const NstaMessengerSuite: React.FC<Props> = ({
               Keval School Admin hi is School Desk par official sandesh bhej sakte hain.
             </span>
           </div>
+        ) : activeTab === "friend" && currentUserRole === "STUDENT" && !friendChatEnabled ? (
+          <div className="flex items-center justify-center gap-2 p-2.5 rounded-2xl bg-slate-950/80 border border-rose-500/30 text-rose-300 text-xs">
+            <Lock className="w-4 h-4 text-rose-400 shrink-0" />
+            <span>
+              School Admin ne abhi Classmate Chat &amp; Call temporarily band kar rakha hai.
+            </span>
+          </div>
         ) : (
           /* 3. Standard Interactive WhatsApp Input */
           <form onSubmit={handleSendMessage} className="space-y-1.5">
@@ -4962,6 +6711,19 @@ export const NstaMessengerSuite: React.FC<Props> = ({
                 </span>
                 <span className="font-mono bg-emerald-500/15 px-2 py-0.5 rounded-full border border-emerald-500/30 text-emerald-300">
                   Unlimited Messages
+                </span>
+              </div>
+            )}
+
+            {activeTab === "friend" && (
+              <div className="flex items-center justify-between text-[11px] px-1 font-semibold">
+                <span className={currentUserRole === "ADMIN" ? "text-amber-300" : "text-cyan-300"}>
+                  {currentUserRole === "ADMIN"
+                    ? `👁️ Monitoring ${activeMonitorPairInfo?.title || "Students"} · Notice Mode`
+                    : `Friend: ${activeFriend?.name || "Classmate"} · Voice & Video Ready`}
+                </span>
+                <span className="font-mono bg-amber-500/15 px-2 py-0.5 rounded-full border border-amber-500/30 text-amber-300">
+                  Admin Monitored
                 </span>
               </div>
             )}
@@ -5251,6 +7013,10 @@ export const NstaMessengerSuite: React.FC<Props> = ({
                       ? "Class group me official notice ya sandesh likhein..."
                       : activeTab === "school"
                       ? "School desk ke liye sandesh ya enquiry likhein..."
+                      : activeTab === "friend"
+                      ? currentUserRole === "ADMIN"
+                        ? "Dono students ko Admin Notice / Warning likhein..."
+                        : "Apne classmate ko sandesh likhein..."
                       : "Teacher ko sandesh ya doubt likhein..."
                   }
                   className="flex-1 px-3.5 sm:px-4 py-2 sm:py-2.5 rounded-2xl bg-slate-800 border border-slate-700 text-white placeholder-slate-400 text-xs sm:text-sm focus:outline-none focus:border-emerald-500 transition min-w-0"
@@ -6358,6 +8124,9 @@ export const NstaMessengerSuite: React.FC<Props> = ({
         birthdayData={selectedBirthdayData}
         onOpenSchoolDesk={() => setActiveTab("school")}
       />
+
+      {/* ── LIVE VOICE & VIDEO CALL OVERLAY ── */}
+      <NstaCallPortalHost identity={callIdentity} />
       </div>
     </div>
   );

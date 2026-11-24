@@ -45,7 +45,7 @@ export const NstaQuickWheelModal: React.FC<NstaQuickWheelModalProps> = ({
   mistakeCount = 0,
   activeEventsCount = 0,
   appName = 'NSTA',
-  appLogo = '/branding/nsta-logo.svg',
+  appLogo = '/icons/icon-512.png?v=4',
   themePrimary = '#6366f1',
 }) => {
   const [rotation, setRotation] = useState<number>(0);
@@ -361,11 +361,11 @@ export const NstaQuickWheelModal: React.FC<NstaQuickWheelModalProps> = ({
           title={appName || 'NSTA'}
         >
           <img
-            src={appLogo || '/branding/nsta-logo.svg'}
+            src={appLogo || '/icons/icon-512.png?v=4'}
             alt={`${appName || 'NSTA'} Official Logo`}
             className="w-full h-full object-cover select-none pointer-events-none scale-110 transition-transform"
             onError={(e) => {
-              (e.currentTarget as HTMLImageElement).src = '/branding/nsta-logo.png';
+              (e.currentTarget as HTMLImageElement).src = '/icons/icon-512.png?v=4';
             }}
           />
         </div>

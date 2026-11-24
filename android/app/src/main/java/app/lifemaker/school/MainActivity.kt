@@ -430,9 +430,19 @@ class MainActivity : AppCompatActivity() {
                 val scheme = uri.scheme?.lowercase(Locale.US) ?: return false
                 val host = uri.host?.lowercase(Locale.US) ?: ""
 
-                if ((scheme == "https" || scheme == "http") && trustedInternalHosts.any { host == it || host.endsWith(".$it") }) {
+                val path = uri.path ?: ""
+                val wantsChrome =
+                    path.startsWith("/api/print-document") ||
+                    uri.getQueryParameter("openInChrome") == "1"
+
+                if ((scheme == "https" || scheme == "http") && !wantsChrome && trustedInternalHosts.any { host == it || host.endsWith(".$it") }) {
                     webAppBridge.isTrustedHostActive = host == "lmps27.vercel.app"
                     return false
+                }
+
+                if (wantsChrome) {
+                    openUrlInChromeBrowser(uri.toString())
+                    return true
                 }
 
                 // External URLs (tel:, mailto:, WhatsApp, external websites) open safely via OS Intent
@@ -463,7 +473,14 @@ class MainActivity : AppCompatActivity() {
                         (function() {
                           if (!window.__lmNativeBridgePatched && window.LifeMakerAndroid) {
                             window.__lmNativeBridgePatched = true;
-                            if (typeof window.LifeMakerAndroid.printCurrentPage === 'function') {
+                            if (typeof window.LifeMakerAndroid.printCurrentPageWithOptions === 'function') {
+                              window.print = function() {
+                                window.LifeMakerAndroid.printCurrentPageWithOptions(
+                                  window.__lmNextPrintOrientation || 'portrait',
+                                  window.__lmNextPrintTitle || document.title || ''
+                                );
+                              };
+                            } else if (typeof window.LifeMakerAndroid.printCurrentPage === 'function') {
                               window.print = function() { window.LifeMakerAndroid.printCurrentPage(); };
                             }
                             if (!navigator.share && typeof window.LifeMakerAndroid.shareText === 'function') {
@@ -749,12 +766,51 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    fun printWebView() {
+    fun openUrlInChromeBrowser(rawUrl: String) {
+        val trimmed = rawUrl.trim()
+        if (trimmed.isEmpty()) return
+        val resolved = if (trimmed.startsWith("/")) {
+            "${BuildConfig.APP_BASE_URL.trimEnd('/')}$trimmed"
+        } else {
+            trimmed
+        }
+        val uri = try { Uri.parse(resolved) } catch (_: Exception) { return }
+        val scheme = uri.scheme?.lowercase(Locale.US) ?: ""
+        if (scheme != "https" && scheme != "http") return
+        try {
+            val chromeIntent = Intent(Intent.ACTION_VIEW, uri).apply {
+                setPackage("com.android.chrome")
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            startActivity(chromeIntent)
+        } catch (_: Exception) {
+            try {
+                startActivity(Intent(Intent.ACTION_VIEW, uri).apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                })
+            } catch (_: Exception) {
+                Toast.makeText(this, "Chrome / Browser unavailable", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
+    fun printWebView(orientation: String? = null, customJobName: String? = null) {
         try {
             val printManager = getSystemService(Context.PRINT_SERVICE) as? PrintManager ?: return
-            val jobName = "${getString(R.string.app_name)} Document"
+            val jobName = customJobName?.trim()?.takeIf { it.isNotEmpty() }
+                ?: "${getString(R.string.app_name)} Document"
             val adapter = webView.createPrintDocumentAdapter(jobName)
-            printManager.print(jobName, adapter, PrintAttributes.Builder().build())
+            val isLandscape = orientation?.equals("landscape", ignoreCase = true) == true
+            val mediaSize = if (isLandscape) {
+                PrintAttributes.MediaSize.ISO_A4.asLandscape()
+            } else {
+                PrintAttributes.MediaSize.ISO_A4.asPortrait()
+            }
+            val attrs = PrintAttributes.Builder()
+                .setMediaSize(mediaSize)
+                .setColorMode(PrintAttributes.COLOR_MODE_COLOR)
+                .build()
+            printManager.print(jobName, adapter, attrs)
         } catch (_: Exception) {}
     }
 

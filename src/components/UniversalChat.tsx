@@ -734,7 +734,7 @@ export const UniversalChat: React.FC<Props> = ({ user, onClose, isAdmin, targetU
                                 title={isBottomNavVisible ? "Bottom navigation chhipayein" : "Bottom navigation dikhayein"}
                             >
                                 <img
-                                    src={appLogo || '/branding/nsta-logo.svg'}
+                                    src={appLogo || '/icons/icon-512.png?v=4'}
                                     alt={appName || "NSTA"}
                                     className="w-5 h-5 rounded-md object-contain"
                                     onError={(e) => {

@@ -132,6 +132,7 @@ import { SchoolClassChannelView } from "./SchoolClassChannelView";
 const NstaMessengerSuite = React.lazy(() => import("./NstaMessengerSuite").then(m => ({ default: m.NstaMessengerSuite })));
 import { SchoolWelcomeModal } from "./SchoolWelcomeModal";
 import { SchoolBirthdayModal } from "./SchoolBirthdayModal";
+import { NstaCallPortalHost } from "./NstaCallModal";
 const StudentSchoolStore = React.lazy(() => import("./StudentSchoolStore").then(m => ({ default: m.StudentSchoolStore })));
 const StudentQuestionBankView = React.lazy(() => import("./StudentQuestionBankView").then(m => ({ default: m.StudentQuestionBankView })));
 import { AccountRecoveryCard } from "./AccountRecoveryCard";
@@ -7496,6 +7497,23 @@ export const StudentSchoolPanel: React.FC<Props> = ({
           />
         </Suspense>
       )}
+      <NstaCallPortalHost
+        identity={
+          schoolId
+            ? {
+                schoolId,
+                schoolName: schoolDisplayName,
+                userId: activeStudent?.id || studentId || "std_current",
+                userName: activeStudent?.name || studentName || "Student",
+                userRole: "STUDENT",
+                userPhoto: activeStudent?.photoUrl || resolvedSchoolLogo,
+                classId: activeStudent?.classId,
+                className: activeStudent?.className,
+                studentId: activeStudent?.id || studentId,
+              }
+            : null
+        }
+      />
     </div>
   );
 };

@@ -113,7 +113,7 @@ export const RevisionHubScreen: React.FC<Props> = ({
     ? appLogo
     : (settings?.appLogo && !settings.appLogo.includes('placeholder'))
       ? settings.appLogo
-      : '/branding/nsta-logo.svg';
+      : '/icons/icon-512.png?v=4';
 
   const handleToggleNavBars = () => {
     try { hapticMedium(); } catch (_) {}

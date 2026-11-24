@@ -2161,7 +2161,7 @@ export interface BusLiveLocation {
 }
 
 // ── 6. NSTA MESSENGER SUITE (WhatsApp-Style 3-Screen Architecture) ──
-export type NstaThreadType = "CLASS_GROUP" | "SCHOOL_DESK" | "TEACHER_CHAT";
+export type NstaThreadType = "CLASS_GROUP" | "SCHOOL_DESK" | "TEACHER_CHAT" | "STUDENT_CHAT";
 
 export interface NstaFeeSlipData {
   type: "A6_DEMAND_SLIP" | "FEE_RECEIPT";
@@ -2227,8 +2227,10 @@ export interface NstaMessage {
   threadType: NstaThreadType;
   classId?: string;       // For CLASS_GROUP
   className?: string;     // Human-readable class name for resilient matching
-  studentId?: string;     // For SCHOOL_DESK & TEACHER_CHAT
+  studentId?: string;     // For SCHOOL_DESK, TEACHER_CHAT & canonical pair key for STUDENT_CHAT
   studentName?: string;
+  peerStudentId?: string; // Target student ID for STUDENT_CHAT
+  peerStudentName?: string;
   teacherId?: string;     // For TEACHER_CHAT
   teacherName?: string;
   senderId: string;
@@ -2237,7 +2239,19 @@ export interface NstaMessage {
   senderPhoto?: string;   // ID Card / DP photo URL of the sender
   text: string;
   attachmentUrl?: string;
-  attachmentType?: "IMAGE" | "VIDEO" | "PDF" | "NOTICE" | "AUDIO" | "DOCUMENT" | "ZIP" | "FILE" | "CONTACT" | "LOCATION" | "WELCOME" | "BIRTHDAY";
+  attachmentType?: "IMAGE" | "VIDEO" | "PDF" | "NOTICE" | "AUDIO" | "DOCUMENT" | "ZIP" | "FILE" | "CONTACT" | "LOCATION" | "WELCOME" | "BIRTHDAY" | "CALL";
+  callData?: {
+    callId?: string;
+    callType: "voice" | "video";
+    mode: "direct" | "group";
+    status: "completed" | "missed" | "rejected" | "ended";
+    durationSec?: number;
+    participants?: number;
+    startedByName?: string;
+    targetId?: string;
+    targetName?: string;
+    targetAvatar?: string;
+  };
   welcomeData?: NstaWelcomeData;
   birthdayData?: NstaBirthdayData;
   fileName?: string;

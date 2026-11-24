@@ -5,14 +5,16 @@ import { getSchoolCacheSync, getSchoolLogoSync } from "./schoolIndexedDb";
  */
 export function isAppLogo(url?: string | null): boolean {
   if (!url || typeof url !== "string") return false;
-  const lower = url.trim().toLowerCase();
+  const lower = url.trim().toLowerCase().split("?")[0].split("#")[0];
   return (
     lower.includes("nsta-logo") ||
     lower.includes("nsta_logo") ||
     lower.includes("branding/nsta") ||
+    lower.includes("schoolplus-splash-logo") ||
     lower.includes("favicon.svg") ||
     lower.endsWith("/icons/icon-192.png") ||
     lower.endsWith("/icons/icon-512.png") ||
+    lower.endsWith("/icons/icon-maskable-512.png") ||
     lower.endsWith("/icon-192.png") ||
     lower.endsWith("/icon-512.png") ||
     lower.endsWith("/apple-touch-icon.png") ||

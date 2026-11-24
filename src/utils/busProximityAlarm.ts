@@ -101,7 +101,7 @@ export function checkAndTriggerBusProximity(
               .then((reg) =>
                 reg.showNotification(title, {
                   body,
-                  icon: "/icons/icon-192.png?v=3",
+                  icon: "/icons/icon-512.png?v=4",
                   badge: "/icons/badge-monochrome.png?v=4",
                   tag: `bus-proximity-${stopName}`,
                   data: { url: "/" },
@@ -109,11 +109,11 @@ export function checkAndTriggerBusProximity(
               )
               .catch(() => {
                 try {
-                  new Notification(title, { body, icon: "/icons/icon-192.png?v=3" });
+                  new Notification(title, { body, icon: "/icons/icon-512.png?v=4" });
                 } catch {}
               });
           } else {
-            new Notification(title, { body, icon: "/icons/icon-192.png?v=3" });
+            new Notification(title, { body, icon: "/icons/icon-512.png?v=4" });
           }
         } catch {}
       }

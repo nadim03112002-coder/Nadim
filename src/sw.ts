@@ -112,7 +112,7 @@ const showNstaNotification = (payload: NstaPushPayload) => {
   };
 
   const rawIcon = notification.icon || data.icon || data.senderPhoto;
-  const icon = toAbsoluteUrl((rawIcon && !rawIcon.endsWith('.svg')) ? rawIcon : '/icons/icon-192.png?v=3');
+  const icon = toAbsoluteUrl((rawIcon && !rawIcon.endsWith('.svg')) ? rawIcon : '/icons/icon-512.png?v=4');
   const badge = toAbsoluteUrl('/icons/badge-monochrome.png?v=4');
 
   // Unique tag per notification with renotify=true ensures Android OS plays sound & pops banner every time
@@ -186,7 +186,9 @@ self.addEventListener('notificationclick', (event) => {
     notifData.voiceSpeak === '0' ||
     String(notifData.voiceSpeak || '').toLowerCase() === 'false' ||
     notifData.threadType === 'TEACHER_CHAT' ||
-    String(targetUrl).includes('subTab=teacher');
+    notifData.threadType === 'STUDENT_CHAT' ||
+    String(targetUrl).includes('subTab=teacher') ||
+    String(targetUrl).includes('subTab=friend');
 
   let openTargetUrl = targetUrl;
   try {

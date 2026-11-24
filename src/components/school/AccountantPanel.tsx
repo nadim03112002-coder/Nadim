@@ -122,6 +122,7 @@ import {
   getSavedSchoolLogo
 } from "./feeReceiptUtils";
 import { useBackHandler } from "../../utils/backNavigation";
+import { NstaCallPortalHost } from "./NstaCallModal";
 
 interface Props {
   schoolId: string;
@@ -3448,6 +3449,18 @@ export const AccountantPanel: React.FC<Props> = ({
             </form>
           </div>
         </div>
+      )}
+      {school?.id && (
+        <NstaCallPortalHost
+          identity={{
+            schoolId: school.id,
+            schoolName: school.name,
+            userId: accountantId || "accountant_admin",
+            userName: activeAccountant?.name || "School Accountant",
+            userRole: "ADMIN",
+            userPhoto: school.logoUrl,
+          }}
+        />
       )}
     </div>
   );

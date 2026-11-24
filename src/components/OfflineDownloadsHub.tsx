@@ -43,7 +43,7 @@ export const OfflineDownloadsHub: React.FC<OfflineDownloadsHubProps> = ({
   onClose,
   user,
   isAdmin = false,
-  appLogo = '/nsta-logo.png',
+  appLogo = '/icons/icon-512.png?v=4',
   appName = 'NSTA ACADEMY',
   onUpgradeClick,
 }) => {

@@ -1129,7 +1129,7 @@ export const ModernVideoPlayer: React.FC<ModernVideoPlayerProps> = ({
               }}
             >
               <img
-                src={appLogo || '/branding/nsta-logo.png'}
+                src={appLogo || '/icons/icon-512.png?v=4'}
                 alt={appName || 'NSTA'}
                 className="w-4 h-4 object-contain rounded-full shadow-sm shrink-0"
                 onError={(e) => {

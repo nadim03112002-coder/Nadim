@@ -12,7 +12,7 @@ interface PlayerWatermarkProps {
 }
 
 export const PlayerWatermark: React.FC<PlayerWatermarkProps> = ({
-  appLogo = '/branding/nsta-logo.png',
+  appLogo = '/icons/icon-512.png?v=4',
   appName = 'NSTA',
   position = 'top-right',
   opacity = 0.8,
@@ -55,7 +55,7 @@ export const PlayerWatermark: React.FC<PlayerWatermarkProps> = ({
       }}
     >
       <img
-        src={appLogo || '/branding/nsta-logo.png'}
+        src={appLogo || '/icons/icon-512.png?v=4'}
         alt={appName}
         className="w-4 h-4 object-contain rounded-full shadow-sm shrink-0"
         onError={(e) => {

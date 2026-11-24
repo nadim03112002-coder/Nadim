@@ -90,7 +90,7 @@ function lazyWithRetry<T extends React.ComponentType<any>>(
     }
     console.error(`[lazyWithRetry] All attempts failed for ${moduleName}:`, lastError);
     const FailureFallback: React.FC<any> = () => (
-      <div className="min-h-[50vh] flex flex-col items-center justify-center p-8 bg-slate-950 text-slate-100 text-center">
+      <div className="flex-1 min-h-screen min-h-[100dvh] w-full flex flex-col items-center justify-center p-8 bg-slate-950 text-slate-100 text-center">
         <div className="w-14 h-14 rounded-2xl bg-amber-500/10 border border-amber-500/20 flex items-center justify-center text-2xl mb-4 text-amber-400">
           ⚠️
         </div>
@@ -153,7 +153,7 @@ class PanelErrorBoundary extends React.Component<PanelErrorBoundaryProps, PanelE
   render() {
     if (this.state.hasError) {
       return (
-        <div className="min-h-[50vh] flex flex-col items-center justify-center p-8 bg-slate-950 text-slate-100 text-center">
+        <div className="flex-1 min-h-screen min-h-[100dvh] w-full flex flex-col items-center justify-center p-8 bg-slate-950 text-slate-100 text-center">
           <div className="w-14 h-14 rounded-2xl bg-amber-500/10 border border-amber-500/20 flex items-center justify-center text-2xl mb-4 text-amber-400">
             ⚠️
           </div>
@@ -237,15 +237,40 @@ const isSchoolAdminEmail = (emailStr?: string | null): boolean => {
   );
 };
 
-const PanelLoadingFallback = ({ title }: { title: string }) => (
-  <div className="min-h-[60vh] flex flex-col items-center justify-center p-8 bg-slate-950 text-slate-100">
-    <div className="w-12 h-12 rounded-2xl bg-emerald-600/10 border border-emerald-500/20 flex items-center justify-center mb-4">
-      <Loader2 className="w-6 h-6 animate-spin text-emerald-400" />
+const PanelLoadingFallback = ({
+  title,
+  theme = "current",
+}: {
+  title: string;
+  theme?: "current" | "white" | "black";
+}) => {
+  const isWhite = theme === "white";
+  const bgClass = isWhite
+    ? "bg-[#eef2f7] text-slate-900"
+    : theme === "black"
+    ? "bg-black text-slate-100"
+    : "bg-[#08142c] text-slate-100";
+  return (
+    <div className={`flex-1 min-h-full w-full flex flex-col items-center justify-center p-6 sm:p-8 text-center ${bgClass}`}>
+      <img
+        src="/branding/schoolplus-splash-logo.png?v=7"
+        alt="SCHOOL+"
+        width={512}
+        height={512}
+        className="w-[min(86vw,512px)] aspect-square object-contain bg-transparent mb-5 drop-shadow-[0_18px_38px_rgba(0,0,0,0.65)]"
+      />
+      <div className="flex items-center justify-center gap-2 mb-1">
+        <Loader2 className={`w-4 h-4 animate-spin ${isWhite ? "text-emerald-600" : "text-emerald-400"}`} />
+        <h3 className={`text-sm sm:text-base font-semibold ${isWhite ? "text-slate-900" : "text-slate-100"}`}>
+          Loading {title}...
+        </h3>
+      </div>
+      <p className={`text-xs ${isWhite ? "text-slate-500" : "text-slate-400"}`}>
+        Synchronizing school data
+      </p>
     </div>
-    <h3 className="text-base font-semibold text-slate-100 mb-1">Loading {title}...</h3>
-    <p className="text-xs text-slate-400">Synchronizing school data</p>
-  </div>
-);
+  );
+};
 
 export const SchoolEcosystem: React.FC<Props> = ({
   uid,
@@ -722,8 +747,11 @@ export const SchoolEcosystem: React.FC<Props> = ({
           data.voiceSpeak === "0" ||
           String(data.voiceSpeak || "").toLowerCase() === "false" ||
           String(data.threadType || "").toUpperCase() === "TEACHER_CHAT" ||
+          String(data.threadType || "").toUpperCase() === "STUDENT_CHAT" ||
           String(data.notifType || "").toUpperCase() === "TEACHER_CHAT" ||
-          String(data.url || "").includes("subTab=teacher");
+          String(data.notifType || "").toUpperCase() === "STUDENT_CHAT" ||
+          String(data.url || "").includes("subTab=teacher") ||
+          String(data.url || "").includes("subTab=friend");
         if (!suppressVoice && (data.title || data.body)) {
           speakNotification(data.title || "स्कूल सूचना", data.body || "", {
             dedupeKey: data.id || `tap_${data.title || ""}_${data.body || ""}`,
@@ -758,14 +786,24 @@ export const SchoolEcosystem: React.FC<Props> = ({
           data.notifType === "NSTA_MESSENGER" ||
           data.notifType === "CLASS_GROUP" ||
           data.notifType === "SCHOOL_DESK" ||
-          data.notifType === "TEACHER_CHAT"
+          data.notifType === "TEACHER_CHAT" ||
+          data.notifType === "STUDENT_CHAT" ||
+          data.notifType === "CALL_INCOMING"
         ) {
           setRequestedTab("channel");
           if (typeof window !== "undefined") {
             window.dispatchEvent(
               new CustomEvent("nsta-messenger-open-thread", {
                 detail: {
-                  threadType: data.threadType || (data.notifType === "SCHOOL_DESK" ? "school" : data.notifType === "TEACHER_CHAT" ? "teacher" : "class"),
+                  threadType:
+                    data.threadType ||
+                    (data.notifType === "SCHOOL_DESK"
+                      ? "school"
+                      : data.notifType === "TEACHER_CHAT"
+                      ? "teacher"
+                      : data.notifType === "STUDENT_CHAT"
+                      ? "friend"
+                      : "class"),
                   classId: data.classId,
                   teacherId: data.teacherId,
                   studentId: data.studentId
@@ -1272,10 +1310,19 @@ export const SchoolEcosystem: React.FC<Props> = ({
 
   if (loading) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-slate-950 text-slate-100">
-        <div className="text-center">
-          <Loader2 className="w-10 h-10 animate-spin text-emerald-500 mx-auto mb-3" />
-          <p className="text-slate-400 text-sm font-medium">Verifying school credentials...</p>
+      <div className={`min-h-screen min-h-[100dvh] w-full flex items-center justify-center p-6 ${shellThemeClass}`}>
+        <div className="text-center flex flex-col items-center">
+          <img
+            src="/branding/schoolplus-splash-logo.png?v=7"
+            alt="SCHOOL+"
+            width={512}
+            height={512}
+            className="w-[min(86vw,512px)] aspect-square object-contain bg-transparent mb-5 drop-shadow-[0_18px_38px_rgba(0,0,0,0.65)]"
+          />
+          <div className="flex items-center justify-center gap-2">
+            <Loader2 className={`w-4 h-4 animate-spin ${erpTheme === "white" ? "text-emerald-600" : "text-emerald-500"}`} />
+            <p className={`text-sm font-medium ${erpTheme === "white" ? "text-slate-600" : "text-slate-400"}`}>Verifying school credentials...</p>
+          </div>
         </div>
       </div>
     );
@@ -1285,15 +1332,17 @@ export const SchoolEcosystem: React.FC<Props> = ({
   const isSuperAdminUser = isSuperAdmin || rawRole === "SUPERADMIN" || isSuperAdminEmail(effectiveEmail);
   if (isSuperAdminUser || (canManageMultiSchools && showSuperAdminHub)) {
     return (
-      <PanelErrorBoundary fallbackTitle="Super Admin Panel">
-        <Suspense fallback={<PanelLoadingFallback title="Super Admin Panel" />}>
-          <SuperAdminPanel
-            adminUid={uid}
-            onBack={showSuperAdminHub ? () => setShowSuperAdminHub(false) : (onOpenAdminDashboard || onBack)}
-            onLogout={onLogout}
-          />
-        </Suspense>
-      </PanelErrorBoundary>
+      <div className={`min-h-screen min-h-[100dvh] w-full flex flex-col ${shellThemeClass}`}>
+        <PanelErrorBoundary fallbackTitle="Super Admin Panel">
+          <Suspense fallback={<PanelLoadingFallback title="Super Admin Panel" theme={erpTheme} />}>
+            <SuperAdminPanel
+              adminUid={uid}
+              onBack={showSuperAdminHub ? () => setShowSuperAdminHub(false) : (onOpenAdminDashboard || onBack)}
+              onLogout={onLogout}
+            />
+          </Suspense>
+        </PanelErrorBoundary>
+      </div>
     );
   }
 
@@ -1320,7 +1369,7 @@ export const SchoolEcosystem: React.FC<Props> = ({
             </button>
           </div>
           <PanelErrorBoundary fallbackTitle="Student Portal (Preview)">
-            <Suspense fallback={<PanelLoadingFallback title="Student Portal" />}>
+            <Suspense fallback={<PanelLoadingFallback title="Student Portal" theme={erpTheme} />}>
               <StudentSchoolPanel
                 schoolId={effectiveSchoolId}
                 studentId={profile?.studentRef || user?.studentId || uid}
@@ -1339,7 +1388,7 @@ export const SchoolEcosystem: React.FC<Props> = ({
 
     if (adminPreviewRole === "TEACHER") {
       return (
-        <div className={`min-h-screen flex flex-col ${shellThemeClass}`}>
+        <div className={`min-h-screen min-h-[100dvh] w-full flex flex-col ${shellThemeClass}`}>
           <div className={`sticky top-0 z-50 px-4 py-2 border-b backdrop-blur-md flex items-center justify-between ${
             erpTheme === "white"
               ? "bg-purple-50/95 border-purple-200 text-purple-900"
@@ -1358,7 +1407,7 @@ export const SchoolEcosystem: React.FC<Props> = ({
             </button>
           </div>
           <PanelErrorBoundary fallbackTitle="Teacher Portal (Preview)">
-            <Suspense fallback={<PanelLoadingFallback title="Teacher Portal" />}>
+            <Suspense fallback={<PanelLoadingFallback title="Teacher Portal" theme={erpTheme} />}>
               <TeacherPanel
                 schoolId={effectiveSchoolId}
                 teacherId={profile?.teacherRef || uid}
@@ -1374,7 +1423,7 @@ export const SchoolEcosystem: React.FC<Props> = ({
 
     if (adminPreviewRole === "ACCOUNTANT") {
       return (
-        <div className={`min-h-screen flex flex-col ${shellThemeClass}`}>
+        <div className={`min-h-screen min-h-[100dvh] w-full flex flex-col ${shellThemeClass}`}>
           <div className={`sticky top-0 z-50 px-4 py-2 border-b backdrop-blur-md flex items-center justify-between ${
             erpTheme === "white"
               ? "bg-amber-50/95 border-amber-200 text-amber-900"
@@ -1393,7 +1442,7 @@ export const SchoolEcosystem: React.FC<Props> = ({
             </button>
           </div>
           <PanelErrorBoundary fallbackTitle="Accountant Portal (Preview)">
-            <Suspense fallback={<PanelLoadingFallback title="Accountant Portal" />}>
+            <Suspense fallback={<PanelLoadingFallback title="Accountant Portal" theme={erpTheme} />}>
               <AccountantPanel
                 schoolId={effectiveSchoolId}
                 onBack={() => setAdminPreviewRole("ADMIN")}
@@ -1422,9 +1471,9 @@ export const SchoolEcosystem: React.FC<Props> = ({
     // If Super Admin has opened the hub, or no school is selected, or no schools exist:
     if (isSuperAdmin && (showSuperAdminHub || !effectiveSchoolId || allSchools.length === 0)) {
       return (
-        <div className={`min-h-screen flex flex-col ${shellThemeClass}`}>
+        <div className={`min-h-screen min-h-[100dvh] w-full flex flex-col ${shellThemeClass}`}>
           <PanelErrorBoundary fallbackTitle="Super Admin Panel">
-            <Suspense fallback={<PanelLoadingFallback title="Super Admin Panel" />}>
+            <Suspense fallback={<PanelLoadingFallback title="Super Admin Panel" theme={erpTheme} />}>
               <SuperAdminPanel
                 adminUid={uid}
                 onBack={() => {
@@ -1447,7 +1496,7 @@ export const SchoolEcosystem: React.FC<Props> = ({
 
     // Default: Render SchoolAdminPanel with multi-school switcher & preview switchers
     return (
-      <div className={`min-h-screen flex flex-col ${shellThemeClass}`}>
+      <div className={`min-h-screen min-h-[100dvh] w-full flex flex-col ${shellThemeClass}`}>
         {/* Top Multi-School Switcher Bar - only shown if multi-schools available */}
         {canManageMultiSchools && (
           <div className={`px-4 py-2 border-b flex items-center justify-between text-xs flex-wrap gap-2 ${
@@ -1537,7 +1586,7 @@ export const SchoolEcosystem: React.FC<Props> = ({
         )}
 
         <PanelErrorBoundary fallbackTitle="School Admin ERP">
-          <Suspense fallback={<PanelLoadingFallback title="School Admin ERP" />}>
+          <Suspense fallback={<PanelLoadingFallback title="School Admin ERP" theme={erpTheme} />}>
             <SchoolAdminPanel
               key={effectiveSchoolId}
               schoolId={effectiveSchoolId}
@@ -1574,8 +1623,8 @@ export const SchoolEcosystem: React.FC<Props> = ({
       : (shouldUseDemoForSchool(currentSchool.id) ? (schoolClasses.length > 0 ? schoolClasses : (demoData?.classes || [])) : []);
 
     return (
-      <div className={`min-h-screen flex flex-col ${shellThemeClass}`}>
-        <Suspense fallback={<PanelLoadingFallback title="Online Admission Form" />}>
+      <div className={`min-h-screen min-h-[100dvh] w-full flex flex-col ${shellThemeClass}`}>
+        <Suspense fallback={<PanelLoadingFallback title="Online Admission Form" theme={erpTheme} />}>
           <OnlineAdmissionManager
             school={currentSchool as any}
             classes={activeClasses}
@@ -1908,10 +1957,10 @@ export const SchoolEcosystem: React.FC<Props> = ({
 
     if (activeDualDesk === "ACCOUNTANT" && (isAccountantRole || dualRoleMatch.hasAccountant)) {
       return (
-        <div className={`min-h-screen flex flex-col ${shellThemeClass}`}>
+        <div className={`min-h-screen min-h-[100dvh] w-full flex flex-col ${shellThemeClass}`}>
           {renderDualPortalSwitcherBar()}
           <PanelErrorBoundary fallbackTitle="Accountant Portal">
-            <Suspense fallback={<PanelLoadingFallback title="Accountant Portal" />}>
+            <Suspense fallback={<PanelLoadingFallback title="Accountant Portal" theme={erpTheme} />}>
               <AccountantPanel
                 schoolId={effectiveSchoolId}
                 accountantId={dualRoleMatch.accountantRec?.id || uid}
@@ -1925,10 +1974,10 @@ export const SchoolEcosystem: React.FC<Props> = ({
     }
 
     return (
-      <div className={`min-h-screen flex flex-col ${shellThemeClass}`}>
+      <div className={`min-h-screen min-h-[100dvh] w-full flex flex-col ${shellThemeClass}`}>
         {renderDualPortalSwitcherBar()}
         <PanelErrorBoundary fallbackTitle="Teacher Portal">
-          <Suspense fallback={<PanelLoadingFallback title="Teacher Portal" />}>
+          <Suspense fallback={<PanelLoadingFallback title="Teacher Portal" theme={erpTheme} />}>
             <TeacherPanel
               schoolId={effectiveSchoolId}
               teacherId={dualRoleMatch.teacherRec?.id || linkedEntity?.id || profile?.teacherRef || uid}
@@ -1950,9 +1999,9 @@ export const SchoolEcosystem: React.FC<Props> = ({
   };
 
   return (
-    <div className={`min-h-screen flex flex-col ${shellThemeClass}`}>
+    <div className={`min-h-screen min-h-[100dvh] w-full flex flex-col ${shellThemeClass}`}>
       <PanelErrorBoundary fallbackTitle="Student Portal">
-        <Suspense fallback={<PanelLoadingFallback title="Student Portal" />}>
+        <Suspense fallback={<PanelLoadingFallback title="Student Portal" theme={erpTheme} />}>
           <StudentSchoolPanel
             key={getStudentLinkKey(linkedEntity, defaultSchoolId) || "active-student"}
             uid={uid}

@@ -45,11 +45,11 @@ export default defineConfig(async ({ command }) => {
           start_url: '/',
           scope: '/',
           icons: [
-            { src: '/icons/icon-192.png?v=3', sizes: '192x192', type: 'image/png', purpose: 'any' },
-            { src: '/icons/icon-512.png?v=3', sizes: '512x512', type: 'image/png', purpose: 'any' },
-            { src: '/icons/icon-maskable-512.png?v=3', sizes: '512x512', type: 'image/png', purpose: 'maskable' },
+            { src: '/icons/icon-192.png?v=4', sizes: '192x192', type: 'image/png', purpose: 'any' },
+            { src: '/icons/icon-512.png?v=4', sizes: '512x512', type: 'image/png', purpose: 'any' },
+            { src: '/icons/icon-maskable-512.png?v=4', sizes: '512x512', type: 'image/png', purpose: 'maskable' },
             { src: '/icons/badge-monochrome.png?v=4', sizes: '192x192', type: 'image/png', purpose: 'monochrome' },
-            { src: '/icons/apple-touch-icon.png?v=3', sizes: '180x180', type: 'image/png', purpose: 'any' },
+            { src: '/icons/apple-touch-icon.png?v=4', sizes: '180x180', type: 'image/png', purpose: 'any' },
           ],
         },
         injectManifest: {
@@ -60,6 +60,7 @@ export default defineConfig(async ({ command }) => {
             'branding/schoolplus-splash-logo.png',
             'branding/nsta-logo.png',
             'icons/icon-192.png',
+            'icons/icon-512.png',
             'assets/index-*.{js,css}',
             'assets/vendor-react-*.js',
           ],

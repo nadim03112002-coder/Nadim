@@ -963,7 +963,7 @@ export const MathLessonViewer: React.FC<Props> = ({
         <DraggableNstaLogoFab
           isActive={isImmersive}
           onToggle={toggleImmersive}
-          appLogo={appLogo || '/branding/nsta-logo.svg'}
+          appLogo={appLogo || '/icons/icon-512.png?v=4'}
           appName={appName || 'NSTA'}
           title={isImmersive ? 'बॉटम व टॉप बार दिखाएं • Screen pe move kar sakte hain' : 'बॉटम व टॉप बार छुपाएं • Screen pe move kar sakte hain'}
           defaultPosition={{

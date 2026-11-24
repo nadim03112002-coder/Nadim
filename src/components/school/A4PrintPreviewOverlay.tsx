@@ -1,10 +1,14 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { ArrowLeft, Download, Info, Loader2, Printer, X } from "lucide-react";
+import { ArrowLeft, Download, ExternalLink, Info, Loader2, Printer, X } from "lucide-react";
 import { toast } from "sonner";
 import {
+  isNativeAndroidWebView,
   isRunningInsideIframe,
+  mountA4PrintPortal,
   mountAndPrintA4Sync,
+  openA4PrintInChrome,
   scopeCssToContainer,
+  unmountA4PrintPortal,
 } from "../../utils/a4PrintHelper";
 
 interface Props {
@@ -31,7 +35,9 @@ export const A4PrintPreviewOverlay: React.FC<Props> = ({
   const stageContainerRef = useRef<HTMLDivElement | null>(null);
   const [scale, setScale] = useState<number>(1);
   const [downloadingPdf, setDownloadingPdf] = useState<boolean>(false);
+  const [openingChrome, setOpeningChrome] = useState<boolean>(false);
   const insideIframe = useMemo(() => (isOpen ? isRunningInsideIframe() : false), [isOpen]);
+  const inNativeApk = useMemo(() => (isOpen ? isNativeAndroidWebView() : false), [isOpen]);
   const isLandscape = orientation === "landscape";
   const pageWidthPx = isLandscape ? 1122 : 794;
   const pageHeightPx = isLandscape ? 794 : 1122;
@@ -40,6 +46,18 @@ export const A4PrintPreviewOverlay: React.FC<Props> = ({
     () => (isOpen && scopedCss ? scopeCssToContainer(scopedCss, ".lmps-a4-preview-stage") : ""),
     [isOpen, scopedCss]
   );
+
+  // Keep the clean A4 print portal mounted the entire time the preview dialog is open
+  // so Ctrl+P / browser Share->Print / APK Print never captures the app UI.
+  useEffect(() => {
+    if (!isOpen || !pagesHtml || pagesHtml.length === 0) return;
+    const { previousTitle } = mountA4PrintPortal(pagesHtml, scopedCss, docTitle, orientation, {
+      managedByOverlay: true,
+    });
+    return () => {
+      unmountA4PrintPortal(previousTitle);
+    };
+  }, [isOpen, pagesHtml, scopedCss, docTitle, orientation]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -76,14 +94,35 @@ export const A4PrintPreviewOverlay: React.FC<Props> = ({
 
   const handlePrintNowSync = () => {
     try {
-      const res = mountAndPrintA4Sync(pagesHtml, scopedCss, docTitle, orientation);
-      if (res.insideIframe) {
-        toast.info(
-          "अगर Print डायलॉग Preview बॉक्स में न खुले, तो ऊपर दिया Download PDF बटन दबाएँ या App Link सीधे Chrome में खोलें।"
-        );
+      const res = mountAndPrintA4Sync(pagesHtml, scopedCss, docTitle, orientation, {
+        managedByOverlay: true,
+        preferChromeTabInIframe: true,
+      });
+      if (res.openedChromeTab) {
+        toast.success("Chrome में साफ Print / Save as PDF टैब खुल रहा है!");
       }
     } catch (err: any) {
       toast.error("Print शुरू करने में त्रुटि: " + (err?.message || "पुनः प्रयास करें"));
+    }
+  };
+
+  const handleOpenInChrome = async () => {
+    setOpeningChrome(true);
+    try {
+      const res = await openA4PrintInChrome(pagesHtml, scopedCss, docTitle, orientation);
+      if (res.opened) {
+        toast.success(
+          res.mode === "android_chrome"
+            ? "Google Chrome में पेपर खुल रहा है — वहाँ Print या Save as PDF करें!"
+            : "नए Chrome टैब में साफ पेपर खुल गया है — Print या Save as PDF करें!"
+        );
+      } else {
+        toast.error("Chrome टैब खोलने में समस्या आई। कृपया Save PDF का उपयोग करें।");
+      }
+    } catch (err: any) {
+      toast.error("Chrome Print त्रुटि: " + (err?.message || "पुनः प्रयास करें"));
+    } finally {
+      setOpeningChrome(false);
     }
   };
 
@@ -92,7 +131,9 @@ export const A4PrintPreviewOverlay: React.FC<Props> = ({
     setDownloadingPdf(true);
     try {
       await onDownloadPdfFallback();
-      toast.success("A4 PDF डाउनलोड हो गया!");
+      toast.success(
+        isLandscape ? "A4 Landscape Booklet PDF डाउनलोड हो गया!" : "A4 PDF डाउनलोड हो गया!"
+      );
     } catch (err: any) {
       toast.error("PDF बनाने में त्रुटि: " + (err?.message || "पुनः प्रयास करें"));
     } finally {
@@ -102,7 +143,7 @@ export const A4PrintPreviewOverlay: React.FC<Props> = ({
 
   return (
     <div
-      className="fixed inset-0 z-[100] bg-slate-200 dark:bg-slate-950 flex flex-col"
+      className="no-print fixed inset-0 z-[100] bg-slate-200 dark:bg-slate-950 flex flex-col"
       role="dialog"
       aria-modal="true"
       aria-label="A4 Print Preview"
@@ -110,7 +151,7 @@ export const A4PrintPreviewOverlay: React.FC<Props> = ({
       {compiledPreviewCss && <style>{compiledPreviewCss}</style>}
 
       {/* Top Action Header */}
-      <div className="bg-[#070D19] text-white px-3 sm:px-5 py-3 border-b border-slate-800 flex flex-wrap items-center justify-between gap-2.5 shrink-0">
+      <div className="no-print bg-[#070D19] text-white px-3 sm:px-5 py-3 border-b border-slate-800 flex flex-wrap items-center justify-between gap-2.5 shrink-0">
         <div className="flex items-center gap-2.5 min-w-0">
           <button
             type="button"
@@ -136,14 +177,28 @@ export const A4PrintPreviewOverlay: React.FC<Props> = ({
           </div>
         </div>
 
-        <div className="flex items-center gap-2 w-full sm:w-auto justify-end">
+        <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto justify-end">
           <button
             type="button"
             onClick={handlePrintNowSync}
-            className="flex-1 sm:flex-initial h-9 px-4 rounded-xl bg-amber-400 hover:bg-amber-300 text-slate-950 text-xs font-black inline-flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap"
+            className="flex-1 sm:flex-initial h-9 px-3.5 rounded-xl bg-amber-400 hover:bg-amber-300 text-slate-950 text-xs font-black inline-flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap"
           >
             <Printer className="w-4 h-4 shrink-0" />
             <span>{isLandscape ? "Print Booklet (A4 Landscape)" : "Print Now (A4)"}</span>
+          </button>
+
+          <button
+            type="button"
+            disabled={openingChrome}
+            onClick={() => void handleOpenInChrome()}
+            className="flex-1 sm:flex-initial h-9 px-3.5 rounded-xl bg-sky-500 hover:bg-sky-400 text-slate-950 text-xs font-black inline-flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-60 whitespace-nowrap"
+          >
+            {openingChrome ? (
+              <Loader2 className="w-4 h-4 animate-spin shrink-0" />
+            ) : (
+              <ExternalLink className="w-4 h-4 shrink-0" />
+            )}
+            <span>Open in Chrome (Vector PDF)</span>
           </button>
 
           {onDownloadPdfFallback && (
@@ -174,26 +229,25 @@ export const A4PrintPreviewOverlay: React.FC<Props> = ({
       </div>
 
       {isLandscape && (
-        <div className="bg-sky-50 dark:bg-sky-950/60 border-b border-sky-200 dark:border-sky-800 px-3 sm:px-5 py-2 text-[11px] text-sky-950 dark:text-sky-100 flex items-center gap-2 shrink-0">
+        <div className="no-print bg-sky-50 dark:bg-sky-950/60 border-b border-sky-200 dark:border-sky-800 px-3 sm:px-5 py-2 text-[11px] text-sky-950 dark:text-sky-100 flex items-center gap-2 shrink-0">
           <Info className="w-3.5 h-3.5 text-sky-600 shrink-0" />
           <span>
-            <strong>Landscape Print Tip:</strong> Printer/Phone में{" "}
-            <strong>Paper Size: ISO A4</strong> + <strong>Orientation: Landscape</strong> +{" "}
-            <strong>Double-Sided (Short Edge)</strong> चुनें। 1–2 पेज पेपर में बीच से{" "}
-            <strong>काटकर (✂) 2 कॉपी</strong> मिलेंगी, और 3–4 पेज पेपर में बीच से{" "}
-            <strong>मोड़ने पर 4-पेज बुकलेट</strong> बनेगी! (सीधे तैयार PDF के लिए{" "}
-            <strong>Save Booklet PDF</strong> दबाएँ)
+            <strong>Landscape Print Tip:</strong> Printer/Chrome में{" "}
+            <strong>Paper Size: ISO A4</strong> + <strong>Layout: Landscape</strong> चुनें।
+            बेहतरीन Vector Text PDF के लिए <strong>Open in Chrome (Vector PDF)</strong> दबाकर Chrome से{" "}
+            <strong>Save as PDF (Landscape)</strong> करें!
           </span>
         </div>
       )}
 
-      {insideIframe && (
-        <div className="bg-amber-50 dark:bg-amber-950/60 border-b border-amber-200 dark:border-amber-800 px-3 sm:px-5 py-2 text-[11px] text-amber-950 dark:text-amber-100 flex items-center gap-2 shrink-0">
+      {(insideIframe || inNativeApk) && (
+        <div className="no-print bg-amber-50 dark:bg-amber-950/60 border-b border-amber-200 dark:border-amber-800 px-3 sm:px-5 py-2 text-[11px] text-amber-950 dark:text-amber-100 flex items-center gap-2 shrink-0">
           <Info className="w-3.5 h-3.5 text-amber-600 shrink-0" />
           <span>
-            <strong>Print Tip:</strong> अगर Preview बॉक्स में Chrome Print dialog न खुले, तो{" "}
-            <strong>Save A4 PDF</strong> दबाएँ या App Link को अलग Chrome tab में खोलकर{" "}
-            <strong>Print Now (A4)</strong> दबाएँ।
+            <strong>Chrome Vector Print:</strong>{" "}
+            {inNativeApk
+              ? "अगर सीधे Print में Orientation या Layout समस्या आए, तो Open in Chrome (Vector PDF) दबाएँ — यह पेपर को सीधे Google Chrome में खोलेगा।"
+              : "Preview बॉक्स में Chrome Print के लिए Print Now या Open in Chrome (Vector PDF) दबाएँ — यह साफ पेज सीधे Chrome टैब में खोलेगा।"}
           </span>
         </div>
       )}
@@ -213,13 +267,14 @@ export const A4PrintPreviewOverlay: React.FC<Props> = ({
               className="overflow-hidden shadow-xl border border-slate-300 bg-white"
               style={{
                 width: `${Math.round(pageWidthPx * scale)}px`,
-                minHeight: `${Math.round(pageHeightPx * scale)}px`,
+                height: `${Math.round(pageHeightPx * scale)}px`,
               }}
             >
               <div
                 className="lmps-a4-preview-stage origin-top-left bg-white text-slate-900"
                 style={{
                   width: `${pageWidthPx}px`,
+                  height: `${pageHeightPx}px`,
                   transform: `scale(${scale})`,
                   transformOrigin: "top left",
                 }}

@@ -1,7 +1,7 @@
 // IIC×NSTA Smart School Ecosystem — Supabase-First + Firebase Hybrid CRUD Helpers
 import { runTransaction } from "firebase/firestore";
 import { ref, set, get, onValue, update, remove, runTransaction as rtdbRunTransaction } from "firebase/database";
-import { db, rtdb } from "./firebase";
+import { db, rtdb, ensureFirebaseAuthSession } from "./firebase";
 import {
   sbCol as col,
   sbDoc as d,
@@ -3548,6 +3548,7 @@ export const saveAttendance = async (record: AttendanceRecord) => {
 
   if (!firestoreOk && rtdb) {
     try {
+      await ensureFirebaseAuthSession().catch(() => null);
       await withTimeout(set(ref(rtdb, `schools/${record.schoolId}/attendance/${id}`), sanitized), 3000);
       rtdbOk = true;
     } catch (e) {
@@ -3557,7 +3558,11 @@ export const saveAttendance = async (record: AttendanceRecord) => {
   }
 
   if (!firestoreOk && !rtdbOk) {
-    throw new Error(lastError?.message || "Cloud attendance write failed (both Firestore & RTDB unreachable).");
+    const rawMsg = String(lastError?.message || "");
+    if (/permission[_-]?denied/i.test(rawMsg)) {
+      throw new Error("क्लाउड सेव अनुमति (Permission) त्रुटि — कृपया ऐप रीफ्रेश या री-लॉगिन करके दोबारा प्रयास करें।");
+    }
+    throw new Error(rawMsg || "Cloud attendance write failed (both Firestore & RTDB unreachable).");
   }
   touchSchoolSyncVersion(record.schoolId, "attendance");
 };
@@ -4102,6 +4107,7 @@ export const markStudentQrAttendance = async (params: {
       }
     }
     if (!txOutcome && db) {
+      await ensureFirebaseAuthSession().catch(() => null);
       try {
         const { doc: fsDocRef } = await import("firebase/firestore");
         txOutcome = await withTimeout(
@@ -4127,6 +4133,7 @@ export const markStudentQrAttendance = async (params: {
 
     // RTDB atomic fallback if Firestore failed (e.g. permission-denied for School PIN login) or unavailable
     if (!txOutcome && rtdb) {
+      await ensureFirebaseAuthSession().catch(() => null);
       let latestOutcome: TxOutcome | null = null;
       const rtdbAttRef = ref(rtdb, `schools/${params.schoolId}/attendance/${docId}`);
       await withTimeout(
@@ -4166,11 +4173,15 @@ export const markStudentQrAttendance = async (params: {
     return txOutcome.result;
   } catch (err: any) {
     console.error("[school-firebase] markStudentQrAttendance atomic transaction error:", err);
+    const rawMsg = String(err?.message || "");
+    const isPermErr = /permission[_-]?denied/i.test(rawMsg);
     return {
       success: false,
       action: "in",
       cloudSaved: false,
-      message: err?.message || "क्लाउड डेटाबेस सेव असफल रहा। कृपया नेटवर्क जांच कर पुनः प्रयास करें।"
+      message: isPermErr
+        ? "क्लाउड सेव अनुमति (Permission) त्रुटि — कृपया ऐप रीफ्रेश या री-लॉगिन करके दोबारा प्रयास करें।"
+        : rawMsg || "क्लाउड डेटाबेस सेव असफल रहा। कृपया नेटवर्क जांच कर पुनः प्रयास करें।"
     };
   }
 };
@@ -4512,12 +4523,12 @@ export const markStaffAttendanceAtomic = async (params: {
     hour12: true,
   });
 
-  if (!rtdb) {
+  if (!db && !rtdb) {
     return {
       success: false,
       cloudSaved: false,
       action: "in",
-      message: "Firebase RTDB उपलब्ध नहीं है। क्लाउड सेविंग के बिना शिक्षक की हाजिरी दर्ज नहीं की जा सकती।",
+      message: "Firebase उपलब्ध नहीं है। क्लाउड सेविंग के बिना शिक्षक की हाजिरी दर्ज नहीं की जा सकती।",
     };
   }
 
@@ -4541,8 +4552,7 @@ export const markStaffAttendanceAtomic = async (params: {
   const nowMinutes = now.getHours() * 60 + now.getMinutes();
   const isPastCutoff = nowMinutes > cutoffMinutes;
 
-  const dayRef = ref(rtdb, `school_staff_attendance/${params.schoolId}/${date}`);
-  let rejectedOutcome: {
+  type StaffTxRejection = {
     success: boolean;
     alreadyMarked?: boolean;
     tooEarlyForOut?: boolean;
@@ -4551,235 +4561,326 @@ export const markStaffAttendanceAtomic = async (params: {
     outTime?: string;
     stayDuration?: string;
     message: string;
-  } | null = null;
+  };
 
-  try {
-    const txRes = await withTimeout(
-      rtdbRunTransaction(dayRef, (currentData: any) => {
-        const dayObj: StaffDailyAttendanceRecord = currentData && typeof currentData === "object"
-          ? {
-              schoolId: currentData.schoolId || params.schoolId,
-              date: currentData.date || date,
-              records: currentData.records && typeof currentData.records === "object" ? { ...currentData.records } : {},
-            }
-          : { schoolId: params.schoolId, date, records: {} };
+  type StaffTxCompute =
+    | { committed: false; rejection: StaffTxRejection }
+    | { committed: true; dayObj: StaffDailyAttendanceRecord };
 
-        const existingRec = dayObj.records[params.staffId];
-
-        let action: "in" | "out" =
-          params.scanMode === "out"
-            ? "out"
-            : params.scanMode === "in"
-            ? "in"
-            : (params.currentShiftMode || "in");
-
-        if (params.scanMode === "auto") {
-          if (!existingRec?.inTime) {
-            action = "in";
-          } else if (!existingRec?.outTime) {
-            if (nowMinutes >= outStartMinutes) {
-              action = "out";
-            } else {
-              rejectedOutcome = {
-                success: true,
-                alreadyMarked: true,
-                tooEarlyForOut: true,
-                action: "in",
-                inTime: existingRec.inTime,
-                outTime: existingRec.outTime,
-                stayDuration: existingRec.stayDuration,
-                message: `⏳ शिक्षक ${params.staffName} का IN पहले से दर्ज है (${existingRec.inTime})। ऑटो OUT ${outStart12h} के बाद लगेगा (तुरंत OUT के लिए 'OUT' मोड चुनें)।`,
-              };
-              return;
-            }
-          } else {
-            action = "out";
+  const computeStaffOutcome = (currentData: any): StaffTxCompute => {
+    const dayObj: StaffDailyAttendanceRecord =
+      currentData && typeof currentData === "object"
+        ? {
+            schoolId: currentData.schoolId || params.schoolId,
+            date: currentData.date || date,
+            records:
+              currentData.records && typeof currentData.records === "object"
+                ? { ...currentData.records }
+                : {},
           }
-        }
+        : { schoolId: params.schoolId, date, records: {} };
 
-        if (action === "in") {
-          if (existingRec?.inTime) {
-            rejectedOutcome = {
+    const existingRec = dayObj.records[params.staffId];
+
+    let action: "in" | "out" =
+      params.scanMode === "out"
+        ? "out"
+        : params.scanMode === "in"
+        ? "in"
+        : (params.currentShiftMode || "in");
+
+    if (params.scanMode === "auto") {
+      if (!existingRec?.inTime) {
+        action = "in";
+      } else if (!existingRec?.outTime) {
+        if (nowMinutes >= outStartMinutes) {
+          action = "out";
+        } else {
+          return {
+            committed: false,
+            rejection: {
               success: true,
               alreadyMarked: true,
+              tooEarlyForOut: true,
               action: "in",
               inTime: existingRec.inTime,
               outTime: existingRec.outTime,
               stayDuration: existingRec.stayDuration,
-              message: `शिक्षक ${params.staffName} का आगमन (IN) पहले से दर्ज है (${existingRec.inTime})।`,
-            };
-            return; // Abort transaction cleanly
-          }
-        } else {
-          if (!existingRec?.inTime) {
-            rejectedOutcome = {
-              success: false,
-              alreadyMarked: false,
-              action: "out",
-              message: `⚠️ शिक्षक ${params.staffName} का आज आगमन (IN) दर्ज नहीं है। प्रस्थान (OUT) से पहले आगमन (IN) आवश्यक है।`,
-            };
-            return;
-          }
-
-          if (existingRec?.outTime) {
-            rejectedOutcome = {
-              success: true,
-              alreadyMarked: true,
-              action: "out",
-              inTime: existingRec.inTime,
-              outTime: existingRec.outTime,
-              stayDuration: existingRec.stayDuration,
-              message: `शिक्षक ${params.staffName} का प्रस्थान (OUT) पहले से दर्ज है (${existingRec.outTime})।`,
-            };
-            return;
-          }
-
-          let elapsedMinutes: number | null = null;
-          if (typeof existingRec.inTimestamp === "number" && Number.isFinite(existingRec.inTimestamp)) {
-            elapsedMinutes = Math.floor((nowMs - existingRec.inTimestamp) / 60000);
-          } else if (existingRec.inTime) {
-            try {
-              const inParts = existingRec.inTime.match(/(\d+):(\d+)(?::(\d+))?\s*(AM|PM)?/i);
-              if (inParts) {
-                let h = parseInt(inParts[1], 10);
-                const m = parseInt(inParts[2], 10);
-                const meridiem = (inParts[4] || "").toUpperCase();
-                if (meridiem === "PM" && h < 12) h += 12;
-                if (meridiem === "AM" && h === 12) h = 0;
-                const inDate = new Date();
-                inDate.setHours(h, m, 0, 0);
-                elapsedMinutes = Math.floor((nowMs - inDate.getTime()) / 60000);
-              }
-            } catch {}
-          }
-
-          const requiredMinGap = params.scanMode === "out" ? 1 : 30;
-          if (elapsedMinutes !== null && elapsedMinutes >= 0 && elapsedMinutes < requiredMinGap) {
-            rejectedOutcome = {
-              success: false,
-              alreadyMarked: true,
-              tooEarlyForOut: true,
-              action: "out",
-              inTime: existingRec.inTime,
-              message: `⚠️ शिक्षक ${params.staffName} का आगमन अभी दर्ज हुआ है (${existingRec.inTime})। प्रस्थान ${requiredMinGap} मिनट बाद ही मान्य होगा (शेष: ${requiredMinGap - elapsedMinutes} मिनट)।`,
-            };
-            return;
-          }
+              message: `⏳ शिक्षक ${params.staffName} का IN पहले से दर्ज है (${existingRec.inTime})। ऑटो OUT ${outStart12h} के बाद लगेगा (तुरंत OUT के लिए 'OUT' मोड चुनें)।`,
+            },
+          };
         }
-
-        const inTime = action === "in" ? timeFormatted : existingRec!.inTime!;
-        const inTimestamp = action === "in" ? nowMs : existingRec?.inTimestamp;
-        const outTime = action === "out" ? timeFormatted : existingRec?.outTime;
-        const outTimestamp = action === "out" ? nowMs : existingRec?.outTimestamp;
-        const stayDuration =
-          action === "out"
-            ? calculateStayDuration(inTime, outTime, inTimestamp, outTimestamp)
-            : existingRec?.stayDuration;
-
-        const entryIsLate =
-          action === "in"
-            ? Boolean(isPastCutoff)
-            : Boolean(existingRec?.status === "late" || (existingRec as any)?.isLate);
-        const entryStatus = entryIsLate ? "late" : "present";
-
-        dayObj.records[params.staffId] = sanitizeForFirestore({
-          id: params.staffId,
-          name: params.staffName,
-          role: params.role || "TEACHER",
-          employeeId: params.employeeId || "Faculty",
-          present: true,
-          status: entryStatus,
-          isLate: entryIsLate,
-          inTime,
-          outTime,
-          inTimestamp,
-          outTimestamp,
-          stayDuration,
-          scanType: action,
-        });
-
-        rejectedOutcome = null;
-        return dayObj;
-      }),
-      5000
-    );
-
-    if (rejectedOutcome) {
-      const rej: {
-        success: boolean;
-        alreadyMarked?: boolean;
-        tooEarlyForOut?: boolean;
-        action: "in" | "out";
-        inTime?: string;
-        outTime?: string;
-        stayDuration?: string;
-        message: string;
-      } = rejectedOutcome;
-      return {
-        ...rej,
-        cloudSaved: Boolean(rej.alreadyMarked && !rej.tooEarlyForOut),
-      };
+      } else {
+        action = "out";
+      }
     }
 
-    if (!txRes.committed || !txRes.snapshot.exists()) {
-      return {
-        success: false,
-        cloudSaved: false,
-        action: "in",
-        message: "शिक्षक की हाजिरी क्लाउड पर कमिट नहीं हो पाई। कृपया पुनः प्रयास करें।",
-      };
+    if (action === "in") {
+      if (existingRec?.inTime) {
+        return {
+          committed: false,
+          rejection: {
+            success: true,
+            alreadyMarked: true,
+            action: "in",
+            inTime: existingRec.inTime,
+            outTime: existingRec.outTime,
+            stayDuration: existingRec.stayDuration,
+            message: `शिक्षक ${params.staffName} का आगमन (IN) पहले से दर्ज है (${existingRec.inTime})।`,
+          },
+        };
+      }
+    } else {
+      if (!existingRec?.inTime) {
+        return {
+          committed: false,
+          rejection: {
+            success: false,
+            alreadyMarked: false,
+            action: "out",
+            message: `⚠️ शिक्षक ${params.staffName} का आज आगमन (IN) दर्ज नहीं है। प्रस्थान (OUT) से पहले आगमन (IN) आवश्यक है।`,
+          },
+        };
+      }
+
+      if (existingRec?.outTime) {
+        return {
+          committed: false,
+          rejection: {
+            success: true,
+            alreadyMarked: true,
+            action: "out",
+            inTime: existingRec.inTime,
+            outTime: existingRec.outTime,
+            stayDuration: existingRec.stayDuration,
+            message: `शिक्षक ${params.staffName} का प्रस्थान (OUT) पहले से दर्ज है (${existingRec.outTime})।`,
+          },
+        };
+      }
+
+      let elapsedMinutes: number | null = null;
+      if (typeof existingRec.inTimestamp === "number" && Number.isFinite(existingRec.inTimestamp)) {
+        elapsedMinutes = Math.floor((nowMs - existingRec.inTimestamp) / 60000);
+      } else if (existingRec.inTime) {
+        try {
+          const inParts = existingRec.inTime.match(/(\d+):(\d+)(?::(\d+))?\s*(AM|PM)?/i);
+          if (inParts) {
+            let h = parseInt(inParts[1], 10);
+            const m = parseInt(inParts[2], 10);
+            const meridiem = (inParts[4] || "").toUpperCase();
+            if (meridiem === "PM" && h < 12) h += 12;
+            if (meridiem === "AM" && h === 12) h = 0;
+            const inDate = new Date();
+            inDate.setHours(h, m, 0, 0);
+            elapsedMinutes = Math.floor((nowMs - inDate.getTime()) / 60000);
+          }
+        } catch {}
+      }
+
+      const requiredMinGap = params.scanMode === "out" ? 1 : 30;
+      if (elapsedMinutes !== null && elapsedMinutes >= 0 && elapsedMinutes < requiredMinGap) {
+        return {
+          committed: false,
+          rejection: {
+            success: false,
+            alreadyMarked: true,
+            tooEarlyForOut: true,
+            action: "out",
+            inTime: existingRec.inTime,
+            message: `⚠️ शिक्षक ${params.staffName} का आगमन अभी दर्ज हुआ है (${existingRec.inTime})। प्रस्थान ${requiredMinGap} मिनट बाद ही मान्य होगा (शेष: ${requiredMinGap - elapsedMinutes} मिनट)।`,
+          },
+        };
+      }
     }
 
-    const committedDay = txRes.snapshot.val() as StaffDailyAttendanceRecord;
-    const savedEntry = committedDay.records?.[params.staffId];
+    const inTime = action === "in" ? timeFormatted : existingRec!.inTime!;
+    const inTimestamp = action === "in" ? nowMs : existingRec?.inTimestamp;
+    const outTime = action === "out" ? timeFormatted : existingRec?.outTime;
+    const outTimestamp = action === "out" ? nowMs : existingRec?.outTimestamp;
+    const stayDuration =
+      action === "out"
+        ? calculateStayDuration(inTime, outTime, inTimestamp, outTimestamp)
+        : existingRec?.stayDuration;
 
-    // Update IndexedDB cache & broadcast event ONLY after cloud transaction commits
-    try {
-      const staffAttKey = `nst_staff_daily_att_${params.schoolId}_${date}`;
-      setSchoolCacheSync(staffAttKey, committedDay);
-      markSchoolCacheFresh(staffAttKey);
-      touchSchoolSyncVersion(params.schoolId, "staff_attendance");
-    } catch {}
-    if (typeof window !== "undefined") {
-      window.dispatchEvent(new CustomEvent("staff-daily-attendance-updated", { detail: committedDay }));
-    }
-    if (db) {
-      void setDoc(
-        d(`schools/${params.schoolId}/staff_attendance/${date}`),
-        sanitizeForFirestore(committedDay)
-      ).catch(() => {});
-    }
+    const entryIsLate =
+      action === "in"
+        ? Boolean(isPastCutoff)
+        : Boolean(existingRec?.status === "late" || (existingRec as any)?.isLate);
+    const entryStatus = entryIsLate ? "late" : "present";
 
-    const finalAction = (savedEntry?.scanType || "in") as "in" | "out";
-    const finalIsLate = Boolean((savedEntry as any)?.isLate || savedEntry?.status === "late");
+    dayObj.records[params.staffId] = sanitizeForFirestore({
+      id: params.staffId,
+      name: params.staffName,
+      role: params.role || "TEACHER",
+      employeeId: params.employeeId || "Faculty",
+      present: true,
+      status: entryStatus,
+      isLate: entryIsLate,
+      inTime,
+      outTime,
+      inTimestamp,
+      outTimestamp,
+      stayDuration,
+      scanType: action,
+    });
+
     return {
-      success: true,
-      cloudSaved: true,
-      action: finalAction,
-      isLate: finalIsLate,
-      alreadyMarked: false,
-      inTime: savedEntry?.inTime,
-      outTime: savedEntry?.outTime,
-      inTimestamp: savedEntry?.inTimestamp,
-      outTimestamp: savedEntry?.outTimestamp,
-      stayDuration: savedEntry?.stayDuration,
-      message:
-        finalAction === "in"
-          ? finalIsLate
-            ? `⚠️ शिक्षक ${params.staffName} का आगमन (Late) दर्ज हुआ (${savedEntry?.inTime})।`
-            : `शिक्षक ${params.staffName} का आगमन (IN) दर्ज हुआ (${savedEntry?.inTime})।`
-          : `शिक्षक ${params.staffName} का प्रस्थान (OUT) दर्ज हुआ (${savedEntry?.outTime})।`,
-      record: committedDay,
+      committed: true,
+      dayObj: sanitizeForFirestore(dayObj),
     };
-  } catch (err: any) {
-    console.error("[school-firebase] markStaffAttendanceAtomic error:", err);
+  };
+
+  const docRef = d(`schools/${params.schoolId}/staff_attendance/${date}`);
+  const dayRef = rtdb ? ref(rtdb, `school_staff_attendance/${params.schoolId}/${date}`) : null;
+  let committedDay: StaffDailyAttendanceRecord | null = null;
+  let rejectedOutcome: StaffTxRejection | null = null;
+  let lastCloudError: any = null;
+
+  // 1. SUPABASE FIRST (Works seamlessly regardless of Firebase anonymous auth restrictions)
+  try {
+    if (await isSupabaseSchemaReady().catch(() => false)) {
+      const snap = await withTimeout(getDoc(docRef), 3000);
+      let existingData: any = snap && snap.exists() ? snap.data() : null;
+      if (!existingData) {
+        const localFallback = getStaffDailyAttendance(params.schoolId, date);
+        if (localFallback && Object.keys(localFallback.records || {}).length > 0) {
+          existingData = localFallback;
+        }
+      }
+      const outcome = computeStaffOutcome(existingData);
+      if ('rejection' in outcome) {
+        rejectedOutcome = outcome.rejection;
+      } else {
+        await withTimeout(setDoc(docRef, outcome.dayObj, { merge: false }), 3500);
+        committedDay = outcome.dayObj;
+      }
+    }
+  } catch (sbErr) {
+    lastCloudError = sbErr;
+    console.warn("[school-firebase] markStaffAttendanceAtomic Supabase path fallback:", sbErr);
+  }
+
+  // 2. FIREBASE RTDB TRANSACTION FALLBACK (Ensure Firebase Auth session first)
+  if (!committedDay && !rejectedOutcome && dayRef) {
+    await ensureFirebaseAuthSession().catch(() => null);
+    try {
+      let rtdbRej: StaffTxRejection | null = null;
+      const txRes = await withTimeout(
+        rtdbRunTransaction(dayRef, (currentData: any) => {
+          const outcome = computeStaffOutcome(currentData);
+          if ('rejection' in outcome) {
+            rtdbRej = outcome.rejection;
+            return;
+          }
+          rtdbRej = null;
+          return outcome.dayObj;
+        }),
+        4500
+      );
+      if (rtdbRej) {
+        rejectedOutcome = rtdbRej;
+      } else if (txRes.committed && txRes.snapshot.exists()) {
+        committedDay = txRes.snapshot.val() as StaffDailyAttendanceRecord;
+      }
+    } catch (rtdbErr) {
+      lastCloudError = rtdbErr;
+      console.warn("[school-firebase] markStaffAttendanceAtomic RTDB fallback failed:", rtdbErr);
+    }
+  }
+
+  // 3. FIRESTORE TRANSACTION FALLBACK
+  if (!committedDay && !rejectedOutcome && db) {
+    await ensureFirebaseAuthSession().catch(() => null);
+    try {
+      const { doc: fsDocRef } = await import("firebase/firestore");
+      const fsRef = fsDocRef(db, `schools/${params.schoolId}/staff_attendance/${date}`);
+      let fsRej: StaffTxRejection | null = null;
+      const fsCommitted = await withTimeout(
+        runTransaction(db, async (transaction) => {
+          const snap = await transaction.get(fsRef);
+          const existing = snap.exists() ? snap.data() : null;
+          const outcome = computeStaffOutcome(existing);
+          if ('rejection' in outcome) {
+            fsRej = outcome.rejection;
+            return null;
+          }
+          fsRej = null;
+          transaction.set(fsRef, outcome.dayObj);
+          return outcome.dayObj;
+        }),
+        4500
+      );
+      if (fsRej) {
+        rejectedOutcome = fsRej;
+      } else if (fsCommitted) {
+        committedDay = fsCommitted;
+      }
+    } catch (fsErr) {
+      lastCloudError = fsErr;
+      console.warn("[school-firebase] markStaffAttendanceAtomic Firestore fallback failed:", fsErr);
+    }
+  }
+
+  if (rejectedOutcome) {
+    return {
+      ...rejectedOutcome,
+      cloudSaved: Boolean(rejectedOutcome.alreadyMarked && !rejectedOutcome.tooEarlyForOut),
+    };
+  }
+
+  if (!committedDay) {
+    const rawMsg = String(lastCloudError?.message || "");
+    const isPermErr = /permission[_-]?denied/i.test(rawMsg);
     return {
       success: false,
       cloudSaved: false,
       action: "in",
-      message: err?.message || "शिक्षक की हाजिरी क्लाउड सेव असफल रही। कृपया दोबारा प्रयास करें।",
+      message: isPermErr
+        ? "क्लाउड सेव अनुमति (Permission) त्रुटि — कृपया ऐप रीफ्रेश या री-लॉगिन करके दोबारा प्रयास करें।"
+        : rawMsg || "शिक्षक की हाजिरी क्लाउड पर सेव नहीं हो पाई। कृपया दोबारा प्रयास करें।",
     };
   }
+
+  const savedEntry = committedDay.records?.[params.staffId];
+
+  // Update IndexedDB cache & broadcast event ONLY after cloud save commits
+  try {
+    const staffAttKey = `nst_staff_daily_att_${params.schoolId}_${date}`;
+    setSchoolCacheSync(staffAttKey, committedDay);
+    markSchoolCacheFresh(staffAttKey);
+    touchSchoolSyncVersion(params.schoolId, "staff_attendance");
+  } catch {}
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new CustomEvent("staff-daily-attendance-updated", { detail: committedDay }));
+  }
+  if (dayRef) {
+    void set(dayRef, committedDay).catch(() => {});
+  }
+  if (db) {
+    void setDoc(docRef, committedDay).catch(() => {});
+  }
+
+  const finalAction = (savedEntry?.scanType || "in") as "in" | "out";
+  const finalIsLate = Boolean((savedEntry as any)?.isLate || savedEntry?.status === "late");
+  return {
+    success: true,
+    cloudSaved: true,
+    action: finalAction,
+    isLate: finalIsLate,
+    alreadyMarked: false,
+    inTime: savedEntry?.inTime,
+    outTime: savedEntry?.outTime,
+    inTimestamp: savedEntry?.inTimestamp,
+    outTimestamp: savedEntry?.outTimestamp,
+    stayDuration: savedEntry?.stayDuration,
+    message:
+      finalAction === "in"
+        ? finalIsLate
+          ? `⚠️ शिक्षक ${params.staffName} का आगमन (Late) दर्ज हुआ (${savedEntry?.inTime})।`
+          : `शिक्षक ${params.staffName} का आगमन (IN) दर्ज हुआ (${savedEntry?.inTime})।`
+        : `शिक्षक ${params.staffName} का प्रस्थान (OUT) दर्ज हुआ (${savedEntry?.outTime})।`,
+    record: committedDay,
+  };
 };
 
 export const saveSchoolLiveLocation = async (
@@ -8662,6 +8763,13 @@ export const deleteClassLecture = async (schoolId: string, lectureId: string): P
 };
 
 // ── NSTA MESSENGER SUITE API ──
+export const getCanonicalStudentPairKey = (id1?: string, id2?: string): string => {
+  const a = String(id1 || "").trim();
+  const b = String(id2 || "").trim();
+  if (!a || !b) return a || b || "pair";
+  return a.localeCompare(b) <= 0 ? `${a}__${b}` : `${b}__${a}`;
+};
+
 export const getNstaThreadKey = (
   threadType: NstaThreadType,
   classId?: string,
@@ -8671,6 +8779,7 @@ export const getNstaThreadKey = (
   if (threadType === "CLASS_GROUP") return `class_${classId || "general"}`;
   if (threadType === "SCHOOL_DESK") return `school_${studentId || "all"}`;
   if (threadType === "TEACHER_CHAT") return `teacher_${studentId || "std"}_${teacherId || "tch"}`;
+  if (threadType === "STUDENT_CHAT") return `friend_${studentId || "pair"}`;
   return "general";
 };
 
@@ -9151,6 +9260,10 @@ export const subscribeToNstaMessages = (
         if (filter.threadType === "TEACHER_CHAT") {
           if (filter.studentId && m.studentId && m.studentId !== filter.studentId) return false;
           if (filter.teacherId && m.teacherId && m.teacherId !== filter.teacherId) return false;
+        }
+
+        if (filter.threadType === "STUDENT_CHAT") {
+          if (filter.studentId && m.studentId && m.studentId !== filter.studentId) return false;
         }
 
         return true;

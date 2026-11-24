@@ -44,7 +44,7 @@ export const ModernPdfViewer: React.FC<ModernPdfViewerProps> = ({
   title = 'Study PDF Notes',
   subtitle,
   mediaId,
-  appLogo = '/nsta-logo.png',
+  appLogo = '/icons/icon-512.png?v=4',
   appName = 'NSTA ACADEMY',
   user,
   isAdmin = false,

@@ -411,19 +411,22 @@ export async function resolveSchoolBranding(opts: {
 
   const icon192Url = hasCustomLogo
     ? `/api/school-asset?type=icon${assetQueryBase}&size=192`
-    : `/icons/icon-192.png?v=3`;
+    : `/icons/icon-192.png?v=4`;
   const icon512Url = hasCustomLogo
     ? `/api/school-asset?type=icon${assetQueryBase}&size=512`
-    : `/icons/icon-512.png?v=3`;
+    : `/icons/icon-512.png?v=4`;
   const appleTouchIconUrl = hasCustomLogo
     ? `/api/school-asset?type=icon${assetQueryBase}&size=180`
-    : `/icons/apple-touch-icon.png?v=3`;
+    : `/icons/apple-touch-icon.png?v=4`;
 
-  const splashLogoUrl = hasCustomLogo
-    ? needsServerProxy(resolved.logoUrl!)
-      ? `/api/school-asset?type=icon${assetQueryBase}&size=512`
-      : resolved.logoUrl!
-    : `/icons/icon-512.png?v=3`;
+  const isRootDefaultApp = !matchedByQuery;
+
+  const splashLogoUrl =
+    !isRootDefaultApp && hasCustomLogo
+      ? needsServerProxy(resolved.logoUrl!)
+        ? `/api/school-asset?type=icon${assetQueryBase}&size=512`
+        : resolved.logoUrl!
+      : `/branding/schoolplus-splash-logo.png?v=7`;
   const splashSubtitle = truncateText(
     resolved.tagline || resolved.address || "Official School Portal & Digital Campus",
     72
@@ -437,7 +440,6 @@ export async function resolveSchoolBranding(opts: {
   const canonicalUrl = `${origin}${cleanPath}${querySuffix}`;
   const manifestHref = `/api/manifest${querySuffix}`;
 
-  const isRootDefaultApp = !matchedByQuery;
   const displayBrandName = isRootDefaultApp ? "SCHOOL+" : schoolName;
   const displayShortName = isRootDefaultApp ? "SCHOOL+" : shortName;
   const displayTitle =
@@ -484,7 +486,7 @@ export function buildSchoolWebManifest(branding: ResolvedSchoolBranding) {
   // Only include maskable/monochrome fallback icons when using local padded assets
   if (!branding.icon512Url.startsWith("/api/school-asset")) {
     icons.push(
-      { src: "/icons/icon-maskable-512.png?v=3", sizes: "512x512", type: "image/png", purpose: "maskable" },
+      { src: "/icons/icon-maskable-512.png?v=4", sizes: "512x512", type: "image/png", purpose: "maskable" },
       { src: "/icons/badge-monochrome.png?v=4", sizes: "192x192", type: "image/png", purpose: "monochrome" }
     );
   }
@@ -755,6 +757,6 @@ export async function resolveSchoolAssetPayload(opts: {
   }
 
   return {
-    redirectUrl: assetType === "og" ? "/opengraph.jpg" : "/icons/icon-512.png?v=3",
+    redirectUrl: assetType === "og" ? "/opengraph.jpg" : "/icons/icon-512.png?v=4",
   };
 }

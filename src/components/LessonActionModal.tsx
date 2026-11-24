@@ -33,10 +33,16 @@ export const LessonActionModal: React.FC<Props> = ({ chapter, onClose, onSelect,
 
                     <div className="w-16 h-16 bg-white rounded-2xl mx-auto shadow-lg flex items-center justify-center mb-3 transform rotate-3 overflow-hidden">
                         <img
-                            src={logoUrl || "/icon-192.png"}
+                            src={logoUrl || "/icons/icon-512.png?v=4"}
                             alt="App"
                             className="w-full h-full object-cover"
-                            onError={(e) => (e.currentTarget.src = 'https://cdn-icons-png.flaticon.com/512/3426/3426653.png')}
+                            onError={(e) => {
+                                const img = e.currentTarget as HTMLImageElement;
+                                if (!img.dataset.fallbackApplied) {
+                                    img.dataset.fallbackApplied = '1';
+                                    img.src = '/icons/icon-512.png?v=4';
+                                }
+                            }}
                         />
                     </div>
                     <h2 className="text-white font-black text-lg tracking-tight leading-tight">{appName || 'NSTA'}</h2>

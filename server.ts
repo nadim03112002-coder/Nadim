@@ -59,6 +59,12 @@ import {
   upsertWebpushDueInSupabase,
   upsertWebpushSubInSupabase,
 } from "./api/_supabaseServer.js";
+import {
+  buildCleanStandalonePrintDocument,
+  getStoredPrintDocument,
+  parsePrintPayloadBody,
+  storePrintDocument,
+} from "./api/_printDocument.js";
 
 // Prevent transient socket resets (e.g. pre-warmer closing connections early)
 // or background async errors from terminating the dev/prod server process.
@@ -351,7 +357,7 @@ async function dispatchFcmToUsers(
         type: String(payload.type || "DEFAULT"),
         threadType: String(payload.threadType || ""),
         url: String(payload.url || "/"),
-        icon: String(payload.icon || "/icons/icon-192.png?v=3"),
+        icon: String(payload.icon || "/icons/icon-512.png?v=4"),
         senderId: String(payload.senderId || ""),
         senderDeviceId: String(payload.senderDeviceId || ""),
         studentId: String(target.studentId || ""),
@@ -393,7 +399,7 @@ async function dispatchFcmToUsers(
               notification: {
                 title: payload.title,
                 body: payload.body,
-                icon: payload.icon || "/icons/icon-192.png?v=3",
+                icon: payload.icon || "/icons/icon-512.png?v=4",
                 badge: "/icons/badge-monochrome.png?v=4",
                 requireInteraction: true,
                 silent: false,
@@ -755,7 +761,7 @@ async function dispatchWebPush(
   }
 ): Promise<boolean> {
   try {
-    const effectiveIcon = payload.icon || payload.senderPhoto || "/icons/icon-192.png?v=3";
+    const effectiveIcon = payload.icon || payload.senderPhoto || "/icons/icon-512.png?v=4";
     const suppressVoice =
       payload.voiceSpeak === false ||
       payload.voiceSpeak === "0" ||
@@ -885,6 +891,63 @@ async function startServer() {
       },
     })
   );
+  app.use(express.urlencoded({ extended: true, limit: "5mb" }));
+
+  app.post("/api/print-document", async (req, res) => {
+    try {
+      const payload = parsePrintPayloadBody(req.body);
+      if (!payload) {
+        return res.status(400).json({ ok: false, error: "Invalid print document payload" });
+      }
+      const isDirectHtmlForm =
+        String(req.headers["content-type"] || "").toLowerCase().includes("application/x-www-form-urlencoded") ||
+        String(req.query?.direct || "") === "1";
+
+      if (isDirectHtmlForm) {
+        const built = buildCleanStandalonePrintDocument(payload);
+        res.setHeader("Content-Type", "text/html; charset=utf-8");
+        res.setHeader("Cache-Control", "no-store");
+        res.setHeader("X-Content-Type-Options", "nosniff");
+        res.setHeader(
+          "Content-Security-Policy",
+          `default-src 'self' https: data:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' https: data: blob:; script-src 'nonce-${built.nonce}';`
+        );
+        return res.status(200).send(built.html);
+      }
+
+      const { id } = await storePrintDocument(payload);
+      return res.status(200).json({
+        ok: true,
+        id,
+        url: `/api/print-document?id=${encodeURIComponent(id)}&openInChrome=1`,
+      });
+    } catch (err: any) {
+      return res.status(500).json({ ok: false, error: err?.message || "Failed to prepare print document" });
+    }
+  });
+
+  app.get("/api/print-document", async (req, res) => {
+    try {
+      const id = String(req.query?.id || "").trim();
+      const doc = await getStoredPrintDocument(id);
+      if (!doc) {
+        return res
+          .status(404)
+          .setHeader("Content-Type", "text/html; charset=utf-8")
+          .send("<!DOCTYPE html><html><body style='font-family:sans-serif;padding:32px;text-align:center;'><h2>Print Session Expired</h2><p>कृपया App में वापस जाकर दोबारा Print / Open in Chrome बटन दबाएँ।</p></body></html>");
+      }
+      res.setHeader("Content-Type", "text/html; charset=utf-8");
+      res.setHeader("Cache-Control", "no-store");
+      res.setHeader("X-Content-Type-Options", "nosniff");
+      res.setHeader(
+        "Content-Security-Policy",
+        `default-src 'self' https: data:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' https: data: blob:; script-src 'nonce-${doc.nonce}';`
+      );
+      return res.status(200).send(doc.html);
+    } catch (err: any) {
+      return res.status(500).json({ ok: false, error: err?.message || "Failed to load print document" });
+    }
+  });
 
   // 1. Public VAPID key for browser PushManager.subscribe()
   app.get("/api/supabase-keepalive", async (_req, res) => {
@@ -1276,7 +1339,7 @@ async function startServer() {
 
       let delivered = 0;
       let matchedDevices = 0;
-      const effectiveIcon = icon || senderPhoto || "/icons/icon-192.png?v=3";
+      const effectiveIcon = icon || senderPhoto || "/icons/icon-512.png?v=4";
 
       for (const record of subscriptionsMap.values()) {
         // Strictly avoid echoing push notifications back to the sender's own device or user identity
@@ -1993,7 +2056,7 @@ async function startServer() {
     amount: number;
     monthLabel: string;
     receiptNo: string;
-    purpose?: "fee_payment" | "store_order";
+    purpose?: "admission_fee" | "fee_payment" | "store_order";
   }) => {
     const isStore = info.purpose === "store_order";
     const title = isStore
@@ -2027,6 +2090,55 @@ async function startServer() {
       { schoolId: info.schoolId }
     );
   };
+
+  app.get("/api/webrtc/ice-servers", async (_req, res) => {
+    const stunServers = [
+      { urls: "stun:stun.l.google.com:19302" },
+      { urls: "stun:stun1.l.google.com:19302" },
+      { urls: "stun:stun.cloudflare.com:3478" },
+    ];
+    const iceServers: any[] = [...stunServers];
+    let hasTurn = false;
+
+    const meteredDomain = String(process.env.METERED_DOMAIN || "").trim().replace(/^https?:\/\//i, "").replace(/\/+$/, "");
+    const meteredApiKey = String(process.env.METERED_API_KEY || "").trim();
+    if (meteredDomain && meteredApiKey) {
+      try {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 3500);
+        const turnRes = await fetch(
+          `https://${meteredDomain}/api/v1/turn/credentials?apiKey=${encodeURIComponent(meteredApiKey)}`,
+          { signal: controller.signal }
+        );
+        clearTimeout(timer);
+        if (turnRes.ok) {
+          const list = await turnRes.json();
+          if (Array.isArray(list) && list.length > 0) {
+            iceServers.push(...list);
+            hasTurn = true;
+          }
+        }
+      } catch {}
+    }
+
+    const customTurnUrls = String(process.env.TURN_URLS || process.env.TURN_URL || "")
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    const customTurnUser = String(process.env.TURN_USERNAME || "").trim();
+    const customTurnCred = String(process.env.TURN_CREDENTIAL || "").trim();
+    if (customTurnUrls.length > 0) {
+      iceServers.push({
+        urls: customTurnUrls.length === 1 ? customTurnUrls[0] : customTurnUrls,
+        ...(customTurnUser ? { username: customTurnUser } : {}),
+        ...(customTurnCred ? { credential: customTurnCred } : {}),
+      });
+      hasTurn = true;
+    }
+
+    res.setHeader("Cache-Control", "private, max-age=300");
+    return res.json({ ok: true, iceServers, hasTurn });
+  });
 
   app.get("/api/razorpay/config", async (req, res) => {
     try {
@@ -2233,7 +2345,7 @@ async function startServer() {
       res.setHeader("Cache-Control", "public, max-age=3600, stale-while-revalidate=86400");
       return res.status(200).send(asset.buffer);
     } catch (err: any) {
-      return res.redirect(302, "/icons/icon-512.png?v=3");
+      return res.redirect(302, "/icons/icon-512.png?v=4");
     }
   });
 

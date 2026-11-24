@@ -314,8 +314,8 @@ export async function sendSchoolPushNotification(payload: {
   allowSelf?: boolean;
   title: string;
   body: string;
-  type?: "MONTHLY_FEE" | "FEE_RECEIPT" | "SCHOOL_NOTICE" | "SCHOOL_HOLIDAY" | "HOMEWORK" | "DEFAULT" | "NSTA_MESSAGE";
-  threadType?: "CLASS_GROUP" | "SCHOOL_DESK" | "TEACHER_CHAT";
+  type?: "MONTHLY_FEE" | "FEE_RECEIPT" | "SCHOOL_NOTICE" | "SCHOOL_HOLIDAY" | "HOMEWORK" | "DEFAULT" | "NSTA_MESSAGE" | "CALL_INCOMING";
+  threadType?: "CLASS_GROUP" | "SCHOOL_DESK" | "TEACHER_CHAT" | "STUDENT_CHAT";
   voiceSpeak?: boolean;
   url?: string;
   urgent?: boolean;
@@ -379,7 +379,9 @@ export async function sendSchoolPushNotification(payload: {
   const shouldVoiceSpeak =
     payload.voiceSpeak !== false &&
     resolvedThreadType !== "TEACHER_CHAT" &&
-    !String(payload.url || "").includes("subTab=teacher");
+    resolvedThreadType !== "STUDENT_CHAT" &&
+    !String(payload.url || "").includes("subTab=teacher") &&
+    !String(payload.url || "").includes("subTab=friend");
 
   // 1. Dual-write to RTDB for instantaneous in-app & background SW wake up
   try {

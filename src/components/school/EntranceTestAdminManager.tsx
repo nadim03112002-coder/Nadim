@@ -449,6 +449,11 @@ export const EntranceTestAdminManager: React.FC<Props> = ({
             mode,
           });
 
+      const resolvedOrientation: "portrait" | "landscape" =
+        "orientation" in bundle && bundle.orientation === "landscape"
+          ? "landscape"
+          : "portrait";
+
       setPrintPreviewData({
         title: isMixed
           ? `${mixedOfflinePaper.classLabel} (${mixedOfflinePaper.setId}) · Mixed Offline`
@@ -456,11 +461,17 @@ export const EntranceTestAdminManager: React.FC<Props> = ({
         pagesHtml: bundle.pagesHtml,
         fullCss: bundle.fullCss,
         docTitle: bundle.docTitle,
+        orientation: resolvedOrientation,
         mode,
         isMixed,
       });
 
-      mountAndPrintA4Sync(bundle.pagesHtml, bundle.fullCss, bundle.docTitle);
+      mountAndPrintA4Sync(
+        bundle.pagesHtml,
+        bundle.fullCss,
+        bundle.docTitle,
+        resolvedOrientation
+      );
     } catch (err: any) {
       toast.error("A4 Print में त्रुटि: " + (err?.message || "पुनः प्रयास करें"));
     }

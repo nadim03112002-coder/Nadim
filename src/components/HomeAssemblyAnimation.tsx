@@ -75,7 +75,7 @@ export const HomeAssemblyAnimation: React.FC<HomeAssemblyAnimationProps> = ({
 
   const officialLogo = (settings?.appLogo && !settings.appLogo.includes('placeholder'))
     ? settings.appLogo
-    : '/branding/nsta-logo.svg';
+    : '/icons/icon-512.png?v=4';
 
   const studentDisplayName = user?.name || user?.displayName || 'Nadim Anwar';
 

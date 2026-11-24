@@ -1,9 +1,9 @@
 // @ts-nocheck
 import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { Volume2, VolumeX, Sparkles, Globe, LayoutGrid } from 'lucide-react';
+import { Volume2, VolumeX, Globe, LayoutGrid, Sparkles } from 'lucide-react';
 import { getOptimizedVideoUrl } from '../services/cloudinaryService';
 import { DEFAULT_LIFE_MAKER_SCHOOL, getLocalSchools } from '../school-firebase';
-import { getSavedSchoolLogo } from '../utils/schoolLogoUtils';
+import { getSavedSchoolLogo, isAppLogo } from '../utils/schoolLogoUtils';
 
 export type SplashTransitionMode = 'boot' | 'to_app' | 'to_website';
 
@@ -30,7 +30,11 @@ interface AppLoadingScreenProps {
   schoolAddress?: string;
 }
 
-const BRAND_LETTERS = ['S', 'C', 'H', 'O', 'O', 'L'] as const;
+const CREDIT_PREFIX = 'DEVELOPED BY'.split('');
+const CREDIT_AUTHOR = 'NADIM ANWAR'.split('');
+
+const BOOT_TOTAL_MS = 3000;
+const SWITCH_TOTAL_MS = 1800;
 
 export const AppLoadingScreen: React.FC<AppLoadingScreenProps> = ({
   onComplete,
@@ -49,8 +53,11 @@ export const AppLoadingScreen: React.FC<AppLoadingScreenProps> = ({
   const [progress, setProgress] = useState(0);
   const [isExiting, setIsExiting] = useState(false);
 
+  const isBootMode = transitionMode === 'boot';
+  const totalDuration = isBootMode ? BOOT_TOTAL_MS : SWITCH_TOTAL_MS;
+
   const resolvedVideoUrl = (() => {
-    if (transitionMode !== 'boot') return '';
+    if (!isBootMode) return '';
     if (loadingScreenVideoUrl && loadingScreenVideoUrl.trim()) return loadingScreenVideoUrl.trim();
     try {
       const enabled = localStorage.getItem('nst_loading_screen_video_enabled');
@@ -62,7 +69,6 @@ export const AppLoadingScreen: React.FC<AppLoadingScreenProps> = ({
   })();
   const hasActiveVideo = Boolean(resolvedVideoUrl && !videoFailed);
 
-  // Optional active school chip shown subtly below the SCHOOL+ brand lockup
   const resolvedSchool = useMemo(() => {
     try {
       const cached = getLocalSchools();
@@ -89,11 +95,10 @@ export const AppLoadingScreen: React.FC<AppLoadingScreenProps> = ({
       return progress < 55 ? 'Switching to SCHOOL+ App...' : 'Opening Smart Portal...';
     }
     if (transitionMode === 'to_website') {
-      return progress < 55 ? 'Switching to Campus Website...' : 'Loading Public Showcase...';
+      return progress < 55 ? 'Switching to Campus Website...' : 'Opening Campus Website...';
     }
-    if (progress < 30) return 'Starting SCHOOL+...';
-    if (progress < 65) return 'Connecting Digital Campus...';
-    if (progress < 92) return 'Syncing Classes, Attendance & Fees...';
+    if (progress < 45) return 'Starting SCHOOL+...';
+    if (progress < 80) return 'Loading Smart Portal...';
     return 'Welcome to SCHOOL+';
   }, [transitionMode, progress]);
 
@@ -106,138 +111,101 @@ export const AppLoadingScreen: React.FC<AppLoadingScreenProps> = ({
     setProgress(0);
     setIsExiting(false);
 
-    const totalDuration = transitionMode === 'boot' ? 420 : 320;
-    const intervalMs = 18;
-    const steps = Math.max(1, Math.round(totalDuration / intervalMs));
-    let currentStep = 0;
-    let exitTimer: ReturnType<typeof setTimeout> | null = null;
-    let doneTimer: ReturnType<typeof setTimeout> | null = null;
+    const fadeOutLead = 180;
+    const startTime = performance.now();
+    let rafId = 0;
+    let finished = false;
 
-    const timer = setInterval(() => {
-      currentStep += 1;
-      const pct = Math.min(Math.round((currentStep / steps) * 100), 100);
+    const tick = (now: number) => {
+      const elapsed = now - startTime;
+      const pct = Math.min(Math.round((elapsed / totalDuration) * 100), 100);
       setProgress(pct);
 
-      if (currentStep >= steps) {
-        clearInterval(timer);
-        if (!isPreview) {
-          exitTimer = setTimeout(() => setIsExiting(true), 20);
-          doneTimer = setTimeout(() => onCompleteRef.current(), 110);
+      if (!isPreview && !finished) {
+        if (elapsed >= totalDuration - fadeOutLead) {
+          setIsExiting(true);
+        }
+        if (elapsed >= totalDuration) {
+          finished = true;
+          onCompleteRef.current();
+          return;
         }
       }
-    }, intervalMs);
 
-    return () => {
-      clearInterval(timer);
-      if (exitTimer) clearTimeout(exitTimer);
-      if (doneTimer) clearTimeout(doneTimer);
+      if (elapsed < totalDuration) {
+        rafId = requestAnimationFrame(tick);
+      }
     };
-  }, [isPreview, transitionMode]);
+
+    rafId = requestAnimationFrame(tick);
+    return () => {
+      if (rafId) cancelAnimationFrame(rafId);
+    };
+  }, [isPreview, totalDuration]);
 
   const ModeIcon = transitionMode === 'to_website' ? Globe : transitionMode === 'to_app' ? LayoutGrid : Sparkles;
+  const hasCustomSchoolAvatar =
+    Boolean(resolvedSchool.name) &&
+    Boolean(resolvedSchool.logoUrl) &&
+    !isAppLogo(resolvedSchool.logoUrl) &&
+    !logoImgFailed;
 
   return (
     <div
-      className={`fixed inset-0 z-[99999] w-screen h-screen min-h-[100dvh] flex flex-col items-center justify-between px-6 py-10 select-none overflow-hidden font-sans transition-all duration-200 ${
-        isExiting ? 'opacity-0 scale-[1.02]' : 'opacity-100 scale-100'
+      className={`fixed inset-0 z-[99999] w-screen h-screen min-h-[100dvh] flex flex-col items-center justify-between px-5 py-6 sm:py-8 select-none overflow-hidden font-sans transition-all duration-200 ${
+        isExiting ? 'opacity-0 scale-[1.015]' : 'opacity-100 scale-100'
       }`}
       style={{
-        background: 'radial-gradient(circle at 50% 24%, #172554 0%, #090d26 48%, #020617 100%)',
+        background: 'radial-gradient(circle at 50% 28%, #172554 0%, #090d26 50%, #020617 100%)',
       }}
     >
       <style>{`
-        @keyframes spLetterDrop {
+        @keyframes spLogoReveal {
+          0% { opacity: 0.45; transform: scale(0.92); }
+          100% { opacity: 1; transform: scale(1); }
+        }
+        @keyframes spCreditLetterIn {
           0% {
             opacity: 0;
-            transform: translateY(28px) scale(0.76);
-            filter: blur(6px);
-          }
-          65% {
-            opacity: 1;
-            transform: translateY(-4px) scale(1.06);
-            filter: blur(0px);
+            transform: translateY(8px) scale(0.86);
           }
           100% {
             opacity: 1;
             transform: translateY(0) scale(1);
-            filter: blur(0px);
           }
         }
-        @keyframes spPlusPop {
-          0% {
-            opacity: 0;
-            transform: scale(0.2) rotate(-75deg);
-          }
-          65% {
-            opacity: 1;
-            transform: scale(1.22) rotate(8deg);
-          }
-          100% {
-            opacity: 1;
-            transform: scale(1) rotate(0deg);
-          }
-        }
-        @keyframes spPlusGlow {
-          0%, 100% {
-            box-shadow: 0 0 18px rgba(251, 191, 36, 0.55), 0 0 42px rgba(245, 158, 11, 0.28);
-          }
-          50% {
-            box-shadow: 0 0 28px rgba(251, 191, 36, 0.9), 0 0 60px rgba(56, 189, 248, 0.4);
-          }
-        }
-        @keyframes spUnderlineExpand {
-          0% {
-            opacity: 0;
-            transform: scaleX(0);
-          }
-          100% {
-            opacity: 1;
-            transform: scaleX(1);
-          }
-        }
-        @keyframes spSweep {
-          0% { transform: translateX(-140%) skewX(-18deg); }
-          100% { transform: translateX(260%) skewX(-18deg); }
-        }
-        @keyframes spSubFade {
-          0% { opacity: 0; transform: translateY(10px); }
-          100% { opacity: 1; transform: translateY(0); }
+        @keyframes spCreditHairline {
+          0% { opacity: 0; transform: scaleX(0); }
+          100% { opacity: 1; transform: scaleX(1); }
         }
       `}</style>
 
-      {/* Ambient Backdrop Glows */}
+      {/* Ambient Royal Navy & Amber Glows */}
       <div
-        className="absolute top-[22%] left-1/2 -translate-x-1/2 w-[500px] h-[340px] rounded-full pointer-events-none"
+        className="absolute top-[28%] left-1/2 -translate-x-1/2 w-[480px] h-[340px] rounded-full pointer-events-none"
         style={{
           background:
-            'radial-gradient(circle, rgba(56, 189, 248, 0.16) 0%, rgba(245, 158, 11, 0.14) 45%, transparent 72%)',
-          filter: 'blur(65px)',
-        }}
-      />
-      <div
-        className="absolute -bottom-20 left-1/2 -translate-x-1/2 w-[420px] h-[240px] rounded-full pointer-events-none"
-        style={{
-          background: 'radial-gradient(circle, rgba(99, 102, 241, 0.25) 0%, transparent 72%)',
+            'radial-gradient(circle, rgba(56, 189, 248, 0.16) 0%, rgba(245, 158, 11, 0.12) 45%, transparent 72%)',
           filter: 'blur(65px)',
         }}
       />
 
-      {/* Top Mode Pill */}
-      <div className="relative z-10 flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-white/5 border border-sky-400/25 backdrop-blur-md">
+      {/* Top Clean Mode Label */}
+      <div className="relative z-10 flex items-center gap-2 text-[11px] font-extrabold tracking-[0.2em] uppercase text-sky-200/90">
         <ModeIcon className="w-3.5 h-3.5 text-amber-300" />
-        <span className="text-[11px] font-extrabold tracking-[0.16em] uppercase text-sky-200">
+        <span>
           {transitionMode === 'to_website'
             ? 'Campus Website'
             : transitionMode === 'to_app'
             ? 'SCHOOL+ App'
-            : 'Official Digital Campus'}
+            : 'SCHOOL+ Official'}
         </span>
       </div>
 
-      {/* Center Animated SCHOOL+ Lockup */}
-      <div className="relative z-10 w-full max-w-lg my-auto flex flex-col items-center text-center">
+      {/* Center Official 512x512 Transparent Emblem + Progress */}
+      <div className="relative z-10 w-full max-w-xl my-auto flex flex-col items-center text-center">
         {hasActiveVideo && (
-          <div className="relative w-full max-w-[320px] aspect-video rounded-2xl overflow-hidden border-2 border-amber-400/40 shadow-[0_0_32px_rgba(245,158,11,0.28)] bg-black mb-6">
+          <div className="relative w-full max-w-[300px] aspect-video rounded-2xl overflow-hidden border-2 border-amber-400/40 shadow-[0_0_32px_rgba(245,158,11,0.28)] bg-black mb-4">
             <video
               src={getOptimizedVideoUrl(resolvedVideoUrl)}
               autoPlay
@@ -258,101 +226,55 @@ export const AppLoadingScreen: React.FC<AppLoadingScreenProps> = ({
           </div>
         )}
 
-        {/* Staggered Letter-by-Letter SCHOOL+ Wordmark */}
-        <div className="relative inline-flex items-center justify-center px-4 py-2 overflow-visible">
-          <div className="flex items-center gap-1 sm:gap-1.5">
-            {BRAND_LETTERS.map((char, idx) => (
-              <span
-                key={`${char}-${idx}`}
-                className="inline-block text-[2.6rem] sm:text-6xl font-black tracking-tight text-transparent bg-clip-text bg-gradient-to-b from-white via-slate-100 to-sky-300"
-                style={{
-                  opacity: 0,
-                  animation: `spLetterDrop 0.42s cubic-bezier(0.22, 1, 0.36, 1) ${idx * 55}ms forwards`,
-                }}
-              >
-                {char}
-              </span>
-            ))}
-
-            {/* Animated '+' Badge */}
-            <span
-              className="ml-1 inline-flex items-center justify-center w-10 h-10 sm:w-13 sm:h-13 rounded-2xl bg-gradient-to-br from-amber-300 via-amber-400 to-orange-500 text-slate-950 text-3xl sm:text-5xl font-black leading-none border border-amber-200/80 shadow-[0_0_20px_rgba(251,191,36,0.45)]"
-              style={{
-                opacity: 0,
-                animation: `spPlusPop 0.48s cubic-bezier(0.34, 1.56, 0.64, 1) ${
-                  BRAND_LETTERS.length * 55 + 40
-                }ms forwards`,
-              }}
-            >
-              +
-            </span>
+        {/* 512x512 Transparent-Corner SCHOOL+ Logo (Zero White Corners) */}
+        {!hasActiveVideo && (
+          <div
+            className="mb-3 sm:mb-4 flex items-center justify-center"
+            style={{
+              animation: 'spLogoReveal 0.35s cubic-bezier(0.22, 1, 0.36, 1) forwards',
+            }}
+          >
+            <img
+              src="/branding/schoolplus-splash-logo.png?v=7"
+              alt="SCHOOL+ Logo"
+              width={512}
+              height={512}
+              loading="eager"
+              decoding="sync"
+              className="w-[min(78vw,46dvh,512px)] h-[min(78vw,46dvh,512px)] sm:w-[min(48dvh,512px)] sm:h-[min(48dvh,512px)] object-contain bg-transparent drop-shadow-[0_20px_48px_rgba(56,189,248,0.26)]"
+            />
           </div>
-        </div>
+        )}
 
         {/* Glowing Accent Bar */}
-        <div
-          className="mt-1.5 h-[3px] w-40 sm:w-52 rounded-full bg-gradient-to-r from-transparent via-amber-400 to-transparent origin-center"
-          style={{
-            opacity: 0,
-            animation: `spUnderlineExpand 0.45s ease-out ${BRAND_LETTERS.length * 55 + 80}ms forwards`,
-          }}
-        />
+        <div className="h-[2.5px] w-44 sm:w-56 rounded-full bg-gradient-to-r from-transparent via-amber-400 to-transparent" />
 
-        <p
-          className="mt-2.5 text-[11px] sm:text-xs font-extrabold tracking-[0.22em] uppercase text-sky-300/95"
-          style={{
-            opacity: 0,
-            animation: `spSubFade 0.4s ease-out ${BRAND_LETTERS.length * 55 + 140}ms forwards`,
-          }}
-        >
+        <p className="mt-2.5 text-[11px] sm:text-xs font-extrabold tracking-[0.24em] uppercase text-sky-300/95">
           Smart School ERP · Learn · Grow
         </p>
 
-        {/* Navy-Gold SCHOOL+ Emblem Below Animated Wordmark */}
-        <div
-          className="mt-5 flex items-center justify-center"
-          style={{
-            opacity: 0,
-            animation: `spSubFade 0.45s ease-out ${BRAND_LETTERS.length * 55 + 160}ms forwards`,
-          }}
-        >
-          <img
-            src="/branding/schoolplus-splash-logo.png"
-            alt="SCHOOL+ Logo"
-            className="w-28 h-28 sm:w-36 sm:h-36 rounded-[26px] object-contain drop-shadow-[0_14px_32px_rgba(245,158,11,0.28)]"
-          />
-        </div>
-
-        {/* Subtle Active School Context Pill */}
+        {/* Clean Unboxed Active School Line */}
         {resolvedSchool.name && (
-          <div
-            className="mt-5 inline-flex items-center gap-2 px-3 py-1.5 rounded-xl bg-white/[0.06] border border-white/10 backdrop-blur-sm max-w-xs"
-            style={{
-              opacity: 0,
-              animation: `spSubFade 0.4s ease-out ${BRAND_LETTERS.length * 55 + 200}ms forwards`,
-            }}
-          >
-            {resolvedSchool.logoUrl && !logoImgFailed && (
+          <div className="mt-3 flex items-center justify-center gap-2 text-xs font-bold text-slate-200/90 max-w-xs">
+            {hasCustomSchoolAvatar && (
               <img
                 src={resolvedSchool.logoUrl}
                 alt={resolvedSchool.name}
                 onError={() => setLogoImgFailed(true)}
-                className="w-5 h-5 rounded-md object-contain bg-white/95 p-0.5 shrink-0"
+                className="w-5 h-5 rounded object-contain shrink-0"
               />
             )}
-            <span className="text-[11px] font-bold text-slate-200 truncate">
-              {resolvedSchool.name}
-            </span>
+            <span className="truncate">{resolvedSchool.name}</span>
           </div>
         )}
 
         {/* Smooth Progress Indicator */}
-        <div className="w-full max-w-[260px] mt-7 flex flex-col items-center gap-2">
+        <div className="w-full max-w-[260px] mt-5 flex flex-col items-center gap-1.5">
           <div className="text-xs font-semibold text-slate-300">{statusText}</div>
           <div className="w-full flex items-center gap-2.5">
             <div className="flex-1 h-1.5 bg-slate-900/90 rounded-full border border-white/10 overflow-hidden">
               <div
-                className="h-full rounded-full bg-gradient-to-r from-sky-400 via-amber-300 to-amber-500 shadow-[0_0_12px_rgba(251,191,36,0.7)] transition-all duration-75"
+                className="h-full rounded-full bg-gradient-to-r from-sky-400 via-amber-300 to-amber-500 shadow-[0_0_12px_rgba(251,191,36,0.65)] transition-[width] duration-75"
                 style={{ width: `${progress}%` }}
               />
             </div>
@@ -382,16 +304,56 @@ export const AppLoadingScreen: React.FC<AppLoadingScreenProps> = ({
         </div>
       )}
 
-      {/* Bottom Brand Footer */}
-      <div className="relative z-10 flex flex-col items-center gap-1 text-center">
-        <div className="flex items-center gap-2 text-xs font-bold text-slate-300">
-          <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse" />
-          <span>SCHOOL+ Android &amp; Campus Engine</span>
+      {/* Bottom Premium Signature — Strictly on App Open ('boot'), 2s Letter-by-Letter + 1s Hold */}
+      {isBootMode ? (
+        <div className="relative z-10 flex flex-col items-center text-center pt-2">
+          <div
+            className="w-20 h-[1px] mb-2.5 bg-gradient-to-r from-transparent via-amber-400/75 to-transparent origin-center"
+            style={{
+              opacity: 0,
+              animation: 'spCreditHairline 320ms ease-out 180ms forwards',
+            }}
+          />
+          <div className="flex items-center justify-center text-[10px] font-bold tracking-[0.38em] uppercase text-slate-400">
+            {CREDIT_PREFIX.map((ch, idx) => (
+              <span
+                key={`cp-${idx}`}
+                className="inline-block"
+                style={{
+                  width: ch === ' ' ? '0.45em' : undefined,
+                  opacity: 0,
+                  animation: `spCreditLetterIn 220ms ease-out ${240 + idx * 52}ms forwards`,
+                }}
+              >
+                {ch === ' ' ? '\u00A0' : ch}
+              </span>
+            ))}
+          </div>
+          <div className="mt-1 flex items-center justify-center text-sm sm:text-base font-black tracking-[0.26em] uppercase">
+            {CREDIT_AUTHOR.map((ch, idx) => (
+              <span
+                key={`ca-${idx}`}
+                className={`inline-block ${
+                  idx < 5
+                    ? 'text-slate-100 drop-shadow-[0_2px_10px_rgba(255,255,255,0.22)]'
+                    : 'text-amber-300 drop-shadow-[0_2px_12px_rgba(251,191,36,0.35)]'
+                }`}
+                style={{
+                  width: ch === ' ' ? '0.45em' : undefined,
+                  opacity: 0,
+                  animation: `spCreditLetterIn 240ms cubic-bezier(0.22, 1, 0.36, 1) ${920 + idx * 92}ms forwards`,
+                }}
+              >
+                {ch === ' ' ? '\u00A0' : ch}
+              </span>
+            ))}
+          </div>
         </div>
-        <div className="text-[10px] font-semibold tracking-wider uppercase text-slate-500">
+      ) : (
+        <div className="relative z-10 text-[10px] font-semibold tracking-[0.24em] uppercase text-slate-500">
           Admissions · Attendance · Fees · Results
         </div>
-      </div>
+      )}
     </div>
   );
 };

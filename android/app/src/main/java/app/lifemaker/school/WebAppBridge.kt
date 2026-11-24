@@ -62,6 +62,12 @@ class WebAppBridge(private val activity: MainActivity) {
     }
 
     @JavascriptInterface
+    fun getPersistentDeviceId(): String {
+        if (!isTrustedHostActive) return ""
+        return AppPrefs.getPersistentHardwareDeviceId(activity.applicationContext)
+    }
+
+    @JavascriptInterface
     fun isVoiceGuardEnabled(): Boolean {
         if (!isTrustedHostActive) return false
         return AppPrefs.isVoiceGuardEnabled(activity.applicationContext)
@@ -156,6 +162,24 @@ class WebAppBridge(private val activity: MainActivity) {
         if (!isTrustedHostActive) return
         activity.runOnUiThread {
             activity.printWebView()
+        }
+    }
+
+    @JavascriptInterface
+    fun printCurrentPageWithOptions(orientation: String?, jobName: String?) {
+        if (!isTrustedHostActive) return
+        activity.runOnUiThread {
+            activity.printWebView(orientation, jobName)
+        }
+    }
+
+    @JavascriptInterface
+    fun openInChrome(url: String?) {
+        if (!isTrustedHostActive) return
+        val target = url?.trim().orEmpty()
+        if (target.isEmpty()) return
+        activity.runOnUiThread {
+            activity.openUrlInChromeBrowser(target)
         }
     }
 

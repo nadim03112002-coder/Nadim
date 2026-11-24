@@ -1038,7 +1038,14 @@ export const PublicSchoolWebsite: React.FC<Props> = ({
 
   if (!school) {
     return (
-      <div className="min-h-screen bg-[#070D19] flex flex-col items-center justify-center p-4 text-white">
+      <div className="min-h-screen min-h-[100dvh] w-full bg-[#070D19] flex flex-col items-center justify-center p-6 text-white text-center">
+        <img
+          src="/branding/schoolplus-splash-logo.png?v=7"
+          alt="SCHOOL+"
+          width={512}
+          height={512}
+          className="w-[min(86vw,512px)] aspect-square object-contain bg-transparent mb-5 drop-shadow-[0_18px_38px_rgba(0,0,0,0.65)]"
+        />
         <p className="text-sm font-semibold text-slate-300">Loading School Website...</p>
         {onBack && (
           <button

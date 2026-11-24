@@ -64,7 +64,7 @@ function lazyWithRetry<T extends React.ComponentType<any>>(
     } catch {}
     // Return a self-contained fallback screen instead of throwing to avoid crashing the whole root app
     const FailureFallback: React.FC<any> = (props) => (
-      <div className="flex-1 min-h-[50vh] flex flex-col items-center justify-center p-6 text-center text-slate-100">
+      <div className="flex-1 min-h-screen min-h-[100dvh] w-full bg-slate-950 flex flex-col items-center justify-center p-6 text-center text-slate-100">
         <div className="w-14 h-14 rounded-2xl bg-amber-500/10 border border-amber-500/20 flex items-center justify-center text-2xl mb-4 text-amber-400">
           ⚠️
         </div>
@@ -750,8 +750,17 @@ export function App() {
 
   const [bootSplashMode, setBootSplashMode] = useState<'boot' | 'to_app' | 'to_website'>('boot');
   const [bootSplashKey, setBootSplashKey] = useState<number>(1);
-  // #pre-react-splash in index.html already covers the initial bundle load; do not block mounted UI with a second boot splash
-  const [showBootSplash, setShowBootSplash] = useState<boolean>(false);
+  // Play the 5-second 3D boot splash on app launch (excluding standalone verification / driver console)
+  const [showBootSplash, setShowBootSplash] = useState<boolean>(() => {
+    try {
+      const path = (window.location.pathname || '').toLowerCase();
+      const params = new URLSearchParams(window.location.search);
+      if (path.startsWith('/verify') || params.get('driverConsole') === '1' || params.get('driver') === '1') {
+        return false;
+      }
+    } catch {}
+    return true;
+  });
 
   const triggerSplash = (mode: 'boot' | 'to_app' | 'to_website') => {
     setBootSplashMode(mode);
@@ -1314,6 +1323,7 @@ export function App() {
           onOpenAccount={handleOpenAccountSection}
           onSwitchToPortal={() => {
             setShowPublicWebsite(false);
+            triggerSplash('to_app');
             navigateToPath('/', { clearSearch: true });
           }}
           onOpenAdmission={() => {
@@ -1322,12 +1332,21 @@ export function App() {
             navigateToPath('/admission', { clearSearch: true });
           }}
         />
-        <div className="flex-1">
+        <div className="flex-1 flex flex-col">
           <Suspense
             fallback={
-              <div className="min-h-[70vh] bg-slate-900 flex flex-col items-center justify-center p-8 text-center text-white">
-                <Loader2 className="w-8 h-8 animate-spin text-emerald-400 mb-3" />
-                <p className="text-sm font-bold">Verifying Official Document...</p>
+              <div className="flex-1 min-h-full w-full bg-slate-900 flex flex-col items-center justify-center p-8 text-center text-white">
+                <img
+                  src="/branding/schoolplus-splash-logo.png?v=7"
+                  alt="SCHOOL+"
+                  width={512}
+                  height={512}
+                  className="w-[min(86vw,512px)] aspect-square object-contain bg-transparent mb-5 drop-shadow-[0_16px_36px_rgba(0,0,0,0.65)]"
+                />
+                <div className="flex items-center gap-2 text-sm font-bold">
+                  <Loader2 className="w-4 h-4 animate-spin text-emerald-400" />
+                  <span>Verifying Official Document...</span>
+                </div>
               </div>
             }
           >
@@ -1385,9 +1404,18 @@ export function App() {
         )}
         <Suspense
           fallback={
-            <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center p-8 text-center text-white">
-              <Loader2 className="w-8 h-8 animate-spin text-amber-400 mb-3" />
-              <p className="text-sm font-bold">Loading Driver GPS Dashboard...</p>
+            <div className="min-h-screen min-h-[100dvh] w-full bg-slate-950 flex flex-col items-center justify-center p-8 text-center text-white">
+              <img
+                src="/branding/schoolplus-splash-logo.png?v=7"
+                alt="SCHOOL+"
+                width={512}
+                height={512}
+                className="w-[min(86vw,512px)] aspect-square object-contain bg-transparent mb-5 drop-shadow-[0_16px_36px_rgba(0,0,0,0.65)]"
+              />
+              <div className="flex items-center gap-2 text-sm font-bold">
+                <Loader2 className="w-4 h-4 animate-spin text-amber-400" />
+                <span>Loading Driver GPS Dashboard...</span>
+              </div>
             </div>
           }
         >
@@ -1427,7 +1455,7 @@ export function App() {
     const resolvedSplashLogo =
       getSavedSchoolLogo(userSchool?.logoUrl, userSchool?.id) ||
       userSchool?.logoUrl ||
-      '/icons/icon-512.png?v=3';
+      '/branding/schoolplus-splash-logo.png?v=7';
 
     return (
       <AppLoadingScreen
@@ -1451,33 +1479,44 @@ export function App() {
   };
 
   const renderSchoolLoader = (subtitle: string, lightBg = false) => {
-    const fallbackLogo =
-      getSavedSchoolLogo(activePublicSchool?.logoUrl, activePublicSchool?.id) ||
-      activePublicSchool?.logoUrl ||
-      '/icons/icon-512.png?v=3';
-    const fallbackName = activePublicSchool?.name || 'SCHOOL+';
+    const customSchoolLogo = getSavedSchoolLogo(activePublicSchool?.logoUrl, activePublicSchool?.id);
+    const showFullAppLogo = !customSchoolLogo;
+    const fallbackLogo = customSchoolLogo || '/branding/schoolplus-splash-logo.png?v=7';
+    const fallbackName = customSchoolLogo ? (activePublicSchool?.name || 'SCHOOL+') : 'SCHOOL+';
     return (
       <div
-        className={`flex-1 flex flex-col items-center justify-center p-8 text-center min-h-[65vh] ${
+        className={`flex-1 w-full min-h-full flex flex-col items-center justify-center p-6 sm:p-8 text-center ${
           lightBg ? 'bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-white' : 'bg-slate-950 text-white'
         }`}
       >
-        <div className="w-20 h-20 rounded-2xl p-1.5 bg-white/95 border border-amber-400/40 shadow-[0_0_24px_rgba(245,158,11,0.28)] flex items-center justify-center mb-4">
+        {showFullAppLogo ? (
           <img
             src={fallbackLogo}
-            alt={fallbackName}
-            onError={(e) => {
-              const img = e.currentTarget;
-              if (!img.dataset.fallbackApplied) {
-                img.dataset.fallbackApplied = '1';
-                img.src = '/icons/icon-512.png?v=3';
-              }
-            }}
-            className="w-full h-full object-contain rounded-xl"
+            alt="SCHOOL+"
+            width={512}
+            height={512}
+            className="w-[min(86vw,512px)] aspect-square object-contain bg-transparent mb-5 drop-shadow-[0_18px_40px_rgba(0,0,0,0.65)]"
           />
-        </div>
-        <h3 className="text-base font-black tracking-wide uppercase mb-1">{fallbackName}</h3>
-        <div className="flex items-center gap-2 text-xs font-semibold opacity-75">
+        ) : (
+          <div className="w-24 h-24 rounded-2xl p-1.5 bg-white/95 border border-amber-400/40 shadow-[0_0_24px_rgba(245,158,11,0.28)] flex items-center justify-center mb-4">
+            <img
+              src={fallbackLogo}
+              alt={fallbackName}
+              onError={(e) => {
+                const img = e.currentTarget;
+                if (!img.dataset.fallbackApplied) {
+                  img.dataset.fallbackApplied = '1';
+                  img.src = '/branding/schoolplus-splash-logo.png?v=7';
+                }
+              }}
+              className="w-full h-full object-contain rounded-xl"
+            />
+          </div>
+        )}
+        {!showFullAppLogo && (
+          <h3 className="text-base font-black tracking-wide uppercase mb-1">{fallbackName}</h3>
+        )}
+        <div className="flex items-center gap-2 text-xs sm:text-sm font-semibold opacity-80">
           <Loader2 className="w-4 h-4 animate-spin text-amber-400" />
           <span>{subtitle}</span>
         </div>
@@ -1535,7 +1574,7 @@ export function App() {
             } catch {}
           }}
         />
-        <div className="flex-1">
+        <div className="flex-1 flex flex-col">
           <Suspense fallback={renderSchoolLoader(`Loading Online Admission ${nextYearNum}...`, true)}>
             <OnlineAdmissionManager
               key={activePublicSchool?.id || 'public-adm'}

@@ -84,8 +84,12 @@ import {
   getPasskeyCapabilities,
   listSavedPasskeyAccounts,
   findSavedPasskeyForAccount,
+  findCloudPasskeyForAccount,
+  syncPasskeysFromCloud,
   enrollPasskeyForUser,
   authenticateWithPasskey,
+  authenticateWithDiscoverableWebAuthn,
+  persistRestoredWebAuthnEntry,
   removeSavedPasskeyAccount,
   updateSavedPasskeySnapshot,
   type PasskeySavedAccount
@@ -162,6 +166,7 @@ export const Auth: React.FC<Props> = ({ onLogin, logActivity, appSettings, onBac
   const [passkeyLinkPassword, setPasskeyLinkPassword] = useState('');
   const [showPasskeyLinkPassword, setShowPasskeyLinkPassword] = useState(false);
   const [passkeyBusy, setPasskeyBusy] = useState(false);
+  const [passkeySyncing, setPasskeySyncing] = useState(false);
   const [quickModalError, setQuickModalError] = useState<string | null>(null);
   const [cameraActive, setCameraActive] = useState(false);
   const [showQrModal, setShowQrModal] = useState(false);
@@ -176,6 +181,23 @@ export const Auth: React.FC<Props> = ({ onLogin, logActivity, appSettings, onBac
       try { setSettings(JSON.parse(s)); } catch {}
     }
   }, []);
+
+  useEffect(() => {
+    if (!passkeyCaps.supported) return;
+    let active = true;
+    setPasskeySyncing(true);
+    syncPasskeysFromCloud(true)
+      .then((list) => {
+        if (active) setSavedPasskeys(list);
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (active) setPasskeySyncing(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [passkeyCaps.supported]);
 
   const triggerAuthHaptic = (kind: 'light' | 'success' | 'error' = 'light') => {
     try {
@@ -2286,6 +2308,75 @@ export const Auth: React.FC<Props> = ({ onLogin, logActivity, appSettings, onBac
     }
   };
 
+  const handleDiscoverablePasskeyUnlock = async () => {
+    setQuickModalError(null);
+    setError(null);
+    setPasskeyBusy(true);
+
+    try {
+      const res = await authenticateWithDiscoverableWebAuthn();
+      if (!res.ok) {
+        setQuickModalError(res.error || 'Saved Passkey verify nahi hua.');
+        triggerAuthHaptic('error');
+        return;
+      }
+
+      let finalUser: any = res.user ? { ...res.user } : null;
+      const uid = String(res.entry?.uid || res.entry?.userId || res.resolvedUid || '').trim();
+
+      try {
+        let freshUser: any = null;
+        if (uid) freshUser = await getFreshUserData(uid).catch(() => null);
+        if (!freshUser && res.entry?.email) freshUser = await getUserByEmail(res.entry.email).catch(() => null);
+        if (!freshUser && (res.entry?.mobile || res.entry?.displayId || uid)) {
+          freshUser = await getUserByMobileOrId(res.entry?.mobile || res.entry?.displayId || uid).catch(() => null);
+        }
+        if (freshUser) {
+          finalUser = finalUser ? { ...finalUser, ...freshUser } : freshUser;
+        }
+      } catch {}
+
+      if (!finalUser) {
+        setQuickModalError('Is Passkey se juda account cloud par nahi mila. Ek baar ID & Password se link karein.');
+        triggerAuthHaptic('error');
+        return;
+      }
+
+      const stuId = finalUser.studentId || (finalUser.userType === 'SCHOOL_STUDENT' ? finalUser.id : '');
+      const schId = finalUser.schoolId;
+      if (stuId && schId) {
+        const remoteStu = await getStudent(schId, stuId).catch(() => null);
+        if (remoteStu && !isActiveRosterPerson(remoteStu)) {
+          if (res.entry) removeSavedPasskeyAccount(res.entry.key, res.entry);
+          setSavedPasskeys(listSavedPasskeyAccounts());
+          setQuickModalError('Yeh student record school se hata diya gaya hai ya inactive hai.');
+          return;
+        }
+      }
+
+      if (!res.entry && res.credentialId) {
+        await persistRestoredWebAuthnEntry(finalUser, res.credentialId);
+      }
+
+      setSavedPasskeys(listSavedPasskeyAccounts());
+      finalUser = {
+        ...finalUser,
+        provider: finalUser.provider || 'passkey_login',
+        loginTimestamp: new Date().toISOString(),
+      };
+
+      triggerAuthHaptic('success');
+      setShowQuickLoginModal(false);
+      setShowPasskeyDrawerInModal(false);
+      setShowPasskeyEnrollForm(false);
+      triggerLoginSuccess(finalUser);
+    } catch (err: any) {
+      setQuickModalError(err?.message || 'Saved Passkey unlock fail hua.');
+    } finally {
+      setPasskeyBusy(false);
+    }
+  };
+
   const handleLinkPasskeyAndLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setQuickModalError(null);
@@ -2431,7 +2522,7 @@ export const Auth: React.FC<Props> = ({ onLogin, logActivity, appSettings, onBac
         return;
       }
 
-      const linkedPk = findSavedPasskeyForAccount(matched);
+      const linkedPk = await findCloudPasskeyForAccount(matched);
       setRecoveryUserObj(matched);
       setRecoveryLinkedPasskey(linkedPk);
       setRecoveryNewPassword('');
@@ -2610,7 +2701,7 @@ export const Auth: React.FC<Props> = ({ onLogin, logActivity, appSettings, onBac
               <div className="relative w-16 h-16 rounded-2xl bg-slate-950 dark:bg-slate-900 flex items-center justify-center shadow-lg p-2 border border-amber-400/50 shrink-0">
                 <GraduationCap size={28} className="text-amber-400" />
                 <img
-                  src={settings?.appLogo || '/icons/icon-192.png?v=3'}
+                  src={settings?.appLogo || '/icons/icon-512.png?v=4'}
                   alt="SCHOOL+"
                   referrerPolicy="no-referrer"
                   className="absolute inset-1.5 w-[calc(100%-0.75rem)] h-[calc(100%-0.75rem)] object-contain rounded-xl bg-slate-950"
@@ -2657,7 +2748,7 @@ export const Auth: React.FC<Props> = ({ onLogin, logActivity, appSettings, onBac
               <div className="relative w-11 h-11 rounded-full bg-slate-950 dark:bg-slate-900 flex items-center justify-center shadow-md p-1 border border-amber-400/50 dark:border-amber-400/40 shrink-0">
                 <GraduationCap size={20} className="text-amber-400" />
                 <img
-                  src={settings?.appLogo || '/icons/icon-192.png?v=3'}
+                  src={settings?.appLogo || '/icons/icon-512.png?v=4'}
                   alt="SCHOOL+"
                   referrerPolicy="no-referrer"
                   className="absolute inset-0.5 w-[calc(100%-0.25rem)] h-[calc(100%-0.25rem)] object-contain rounded-full bg-slate-950"
@@ -3013,6 +3104,13 @@ export const Auth: React.FC<Props> = ({ onLogin, logActivity, appSettings, onBac
                           setError(null);
                           setQuickModalError(null);
                           setSavedPasskeys(listSavedPasskeyAccounts());
+                          if (passkeyCaps.supported) {
+                            setPasskeySyncing(true);
+                            syncPasskeysFromCloud(true)
+                              .then((list) => setSavedPasskeys(list))
+                              .catch(() => {})
+                              .finally(() => setPasskeySyncing(false));
+                          }
                           setShowPasskeyDrawerInModal(false);
                           setShowPasskeyEnrollForm(false);
                           setShowQuickLoginModal(true);
@@ -3417,7 +3515,13 @@ export const Auth: React.FC<Props> = ({ onLogin, logActivity, appSettings, onBac
                   <div className="px-3.5 pb-2.5 flex items-center justify-between gap-2 border-t border-slate-200/70 dark:border-slate-700/60 pt-2">
                     <span className="text-[11px] font-medium text-slate-500 dark:text-slate-400 flex items-center gap-1.5 truncate">
                       <Smartphone size={12} className="shrink-0" />
-                      <span>{passkeyCaps.hasAndroidBiometric ? 'Native APK Lock Ready' : 'Device Passkey Ready'}</span>
+                      <span>
+                        {passkeySyncing
+                          ? 'Syncing saved passkeys...'
+                          : passkeyCaps.hasAndroidBiometric
+                          ? 'Native APK Lock · Cloud Synced'
+                          : 'Device Passkey · Cloud Synced'}
+                      </span>
                     </span>
                     <button
                       type="button"
@@ -3435,6 +3539,28 @@ export const Auth: React.FC<Props> = ({ onLogin, logActivity, appSettings, onBac
 
                 {showPasskeyDrawerInModal && passkeyCaps.supported && (
                   <div className="px-3.5 pb-3.5 pt-2 border-t border-slate-200 dark:border-slate-700/70 space-y-2.5 bg-white/70 dark:bg-slate-900/60">
+                    {passkeyCaps.hasWebAuthn && (
+                      <button
+                        type="button"
+                        disabled={passkeyBusy}
+                        onClick={handleDiscoverablePasskeyUnlock}
+                        className="w-full min-h-[44px] py-2.5 px-3 rounded-lg bg-indigo-50 hover:bg-indigo-100 dark:bg-indigo-950/60 dark:hover:bg-indigo-950/90 border border-indigo-200 dark:border-indigo-800/80 text-left flex items-center justify-between gap-2.5 transition cursor-pointer"
+                      >
+                        <div className="flex items-center gap-2.5 min-w-0">
+                          <Fingerprint size={17} className="text-indigo-600 dark:text-indigo-400 shrink-0" />
+                          <div className="min-w-0">
+                            <span className="block text-xs font-black text-indigo-950 dark:text-indigo-100 truncate">
+                              Use Saved Google / Device Passkey
+                            </span>
+                            <span className="block text-[10px] font-medium text-indigo-700/80 dark:text-indigo-300/80 truncate">
+                              Clear data ya reinstall ke baad saved passkey se unlock karein
+                            </span>
+                          </div>
+                        </div>
+                        <ArrowRight size={14} className="text-indigo-500 shrink-0" />
+                      </button>
+                    )}
+
                     {savedPasskeys.length > 0 && (
                       <div className="space-y-1.5">
                         <p className="text-[11px] font-bold text-slate-500 dark:text-slate-400">
@@ -3465,7 +3591,7 @@ export const Auth: React.FC<Props> = ({ onLogin, logActivity, appSettings, onBac
                               type="button"
                               disabled={passkeyBusy}
                               onClick={() => {
-                                removeSavedPasskeyAccount(entry.key);
+                                removeSavedPasskeyAccount(entry.key, entry);
                                 const updated = listSavedPasskeyAccounts();
                                 setSavedPasskeys(updated);
                                 if (updated.length === 0) setShowPasskeyEnrollForm(true);

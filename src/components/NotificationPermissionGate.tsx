@@ -269,8 +269,8 @@ export const NotificationPermissionGate: React.FC<Props> = ({ userId, onUnlocked
           : 'शानदार! स्क्रीन पर नोटिफिकेशन पॉप-अप सफलतापूर्वक काम कर रहा है।',
         type: 'SCHOOL_NOTICE',
         urgent: true,
-        icon: '/icons/icon-192.png?v=3',
-        senderPhoto: '/icons/icon-192.png?v=3',
+        icon: '/icons/icon-512.png?v=4',
+        senderPhoto: '/icons/icon-512.png?v=4',
       }).catch(() => {});
     } catch (e) {
       console.warn('Test pop up dispatch error:', e);
@@ -414,7 +414,7 @@ export const NotificationPermissionGate: React.FC<Props> = ({ userId, onUnlocked
           <>
             <div className="relative mx-auto w-20 h-20 mb-4 flex items-center justify-center">
               <img
-                src="/icons/icon-192.png"
+                src="/icons/icon-512.png?v=4"
                 alt="NSTA Logo"
                 className="w-20 h-20 rounded-2xl object-cover border-2 border-amber-500/40 shadow-xl shadow-amber-500/20 bg-slate-900"
               />

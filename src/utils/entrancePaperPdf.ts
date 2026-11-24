@@ -709,6 +709,7 @@ export async function downloadEntrancePaperPdf(
     if (i > 0) pdf.addPage();
     const canvas = await renderHtmlToCanvasSafe(pagesHtml[i], SHARED_PDF_CSS, {
       widthPx: 794,
+      heightPx: 1122,
       scale: 2,
       backgroundColor: "#ffffff",
     });
@@ -719,7 +720,8 @@ export async function downloadEntrancePaperPdf(
     const drawW = pageWidthMm * fitScale;
     const drawH = rawHeightMm * fitScale;
     const offsetX = (pageWidthMm - drawW) / 2;
-    pdf.addImage(imgData, "JPEG", offsetX, 0, drawW, drawH);
+    const offsetY = (pageHeightMm - drawH) / 2;
+    pdf.addImage(imgData, "JPEG", offsetX, offsetY, drawW, drawH);
   }
 
   pdf.save(`${docTitle}.pdf`);
@@ -2979,14 +2981,14 @@ const CUSTOM_PDF_EXTRA_CSS = `
   }
   .booklet-slot {
     width: 538px;
-    height: 762px;
+    height: 766px;
     overflow: hidden;
     position: relative;
   }
   .booklet-slot-scaler {
     width: 794px;
     height: 1122px;
-    transform: scale(0.6775);
+    transform: scale(0.668);
     transform-origin: top left;
   }
 `;
@@ -3251,21 +3253,35 @@ export function printCustomEntrancePaperA4(
 
 export async function downloadCustomEntrancePaperPdf(input: CustomPaperBuildInput): Promise<void> {
   const { pagesHtml, fullCss, docTitle, orientation } = buildCustomPaperPagesHtml(input);
-  const pdf = new jsPDF({ orientation, unit: "mm", format: "a4" });
-  const a4W = pdf.internal.pageSize.getWidth();
-  const a4H = pdf.internal.pageSize.getHeight();
-  const captureWidthPx = orientation === "landscape" ? 1122 : 794;
+  const isLandscape = orientation === "landscape";
+  const pdf = new jsPDF({
+    orientation: isLandscape ? "landscape" : "portrait",
+    unit: "mm",
+    format: "a4",
+    compress: true,
+  });
+  const a4W = isLandscape ? 297 : 210;
+  const a4H = isLandscape ? 210 : 297;
+  const captureWidthPx = isLandscape ? 1122 : 794;
+  const captureHeightPx = isLandscape ? 794 : 1122;
 
   for (let i = 0; i < pagesHtml.length; i++) {
-    if (i > 0) pdf.addPage();
+    if (i > 0) pdf.addPage("a4", isLandscape ? "landscape" : "portrait");
     const canvas = await renderHtmlToCanvasSafe(pagesHtml[i], fullCss, {
       widthPx: captureWidthPx,
-      scale: 2,
+      heightPx: captureHeightPx,
+      scale: 2.5,
       backgroundColor: "#ffffff",
     });
-    const imgData = canvas.toDataURL("image/jpeg", 0.95);
-    const renderedH = Math.min(a4H, (canvas.height * a4W) / canvas.width);
-    pdf.addImage(imgData, "JPEG", 0, 0, a4W, renderedH);
+    const imgData = canvas.toDataURL("image/png");
+    const ratio = canvas.height / Math.max(1, canvas.width);
+    const rawHeightMm = a4W * ratio;
+    const fitScale = rawHeightMm > a4H ? a4H / rawHeightMm : 1;
+    const drawW = a4W * fitScale;
+    const drawH = rawHeightMm * fitScale;
+    const offsetX = (a4W - drawW) / 2;
+    const offsetY = (a4H - drawH) / 2;
+    pdf.addImage(imgData, "PNG", offsetX, offsetY, drawW, drawH, undefined, "FAST");
   }
 
   pdf.save(`${docTitle}.pdf`);
@@ -3886,12 +3902,19 @@ export async function downloadPrePrimaryScreeningPdf(
     if (i > 0) pdf.addPage();
     const canvas = await renderHtmlToCanvasSafe(pagesHtml[i], fullCss, {
       widthPx: 794,
+      heightPx: 1122,
       scale: 2,
       backgroundColor: "#ffffff",
     });
     const imgData = canvas.toDataURL("image/jpeg", 0.94);
-    const renderedH = Math.min(a4H, (canvas.height * a4W) / canvas.width);
-    pdf.addImage(imgData, "JPEG", 0, 0, a4W, renderedH);
+    const ratio = canvas.height / Math.max(1, canvas.width);
+    const rawHeightMm = a4W * ratio;
+    const fitScale = rawHeightMm > a4H ? a4H / rawHeightMm : 1;
+    const drawW = a4W * fitScale;
+    const drawH = rawHeightMm * fitScale;
+    const offsetX = (a4W - drawW) / 2;
+    const offsetY = (a4H - drawH) / 2;
+    pdf.addImage(imgData, "JPEG", offsetX, offsetY, drawW, drawH);
   }
 
   pdf.save(`${docTitle}.pdf`);

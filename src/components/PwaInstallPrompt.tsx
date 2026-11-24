@@ -15,7 +15,7 @@ export const PwaInstallPrompt: React.FC<PwaInstallPromptProps> = ({ schoolName, 
     const displayIcon =
         schoolLogoUrl && (schoolLogoUrl.startsWith('http') || schoolLogoUrl.startsWith('data:image/') || schoolLogoUrl.startsWith('/'))
             ? schoolLogoUrl
-            : '/icons/icon-192.png?v=3';
+            : '/icons/icon-512.png?v=4';
 
     useEffect(() => {
         // Suppress if already running in standalone PWA mode
@@ -103,7 +103,7 @@ export const PwaInstallPrompt: React.FC<PwaInstallPromptProps> = ({ schoolName, 
                     <img
                         src={displayIcon}
                         alt={displayBrand}
-                        onError={(e) => { (e.currentTarget as HTMLImageElement).src = '/icons/icon-192.png?v=3'; }}
+                        onError={(e) => { (e.currentTarget as HTMLImageElement).src = '/icons/icon-512.png?v=4'; }}
                         className="w-12 h-12 rounded-xl object-cover flex-shrink-0 border border-amber-500/30 shadow-md bg-[#121212]"
                     />
                     <div className="flex-1 pr-4">
@@ -146,7 +146,7 @@ export const PwaInstallPrompt: React.FC<PwaInstallPromptProps> = ({ schoolName, 
             <img
                 src={displayIcon}
                 alt={displayBrand}
-                onError={(e) => { (e.currentTarget as HTMLImageElement).src = '/icons/icon-192.png?v=3'; }}
+                onError={(e) => { (e.currentTarget as HTMLImageElement).src = '/icons/icon-512.png?v=4'; }}
                 className="w-12 h-12 rounded-xl object-cover flex-shrink-0 border border-amber-500/30 shadow-md bg-[#121212]"
             />
             <div className="flex-1">

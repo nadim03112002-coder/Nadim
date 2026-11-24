@@ -483,9 +483,9 @@ const shouldSuppressVoiceForNotification = (data?: Record<string, any>): boolean
     return true;
   }
   const threadType = String(data.threadType || '').trim().toUpperCase();
-  if (threadType === 'TEACHER_CHAT') return true;
+  if (threadType === 'TEACHER_CHAT' || threadType === 'STUDENT_CHAT') return true;
   const url = String(data.url || '');
-  if (url.includes('subTab=teacher')) return true;
+  if (url.includes('subTab=teacher') || url.includes('subTab=friend')) return true;
   return false;
 };
 
@@ -509,7 +509,7 @@ export const sendPushNotification = async (request: PushNotificationRequest) => 
     senderId: request.senderId || '',
     senderName: request.senderName || '',
     senderPhoto: request.senderPhoto || '',
-    icon: request.icon || request.senderPhoto || '/icons/icon-192.png',
+    icon: request.icon || request.senderPhoto || '/icons/icon-512.png?v=4',
     timestamp,
     status: 'UNREAD',
     ...(request.classLevel ? { classLevel: String(request.classLevel).trim() } : {}),
@@ -715,7 +715,7 @@ export const listenToForegroundMessages = async (onMessageReceived?: (payload: a
       // 2. Automatically display visual alert so user sees it even when app is open!
       const title = payload.notification?.title || payload.data?.title || 'NSTA Study Alert';
       const body = payload.notification?.body || payload.data?.body || 'New update received!';
-      const icon = payload.notification?.icon || payload.data?.icon || '/icons/icon-192.png';
+      const icon = payload.notification?.icon || payload.data?.icon || '/icons/icon-512.png?v=4';
 
       if (typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'granted') {
         try {
@@ -786,7 +786,7 @@ export const dispatchSmartNotification = async (payload: SmartNotificationPayloa
         const reg = await getFcmServiceWorkerRegistration();
         showNotification(reg, {
           body,
-          icon: '/icons/icon-192.png',
+          icon: '/icons/icon-512.png?v=4',
           badge: '/icons/badge-monochrome.png?v=4',
           tag: 'community-silent',
           silent: true,
@@ -812,14 +812,14 @@ export const dispatchSmartNotification = async (payload: SmartNotificationPayloa
         const reg = await getFcmServiceWorkerRegistration();
         showNotification(reg, {
           body,
-          icon: '/icons/icon-192.png',
+          icon: '/icons/icon-512.png?v=4',
           badge: '/icons/badge-monochrome.png?v=4',
           tag: senderId ? `req-${senderId}` : 'friend-request',
           vibrate: [200, 100, 200],
           data: { url, category, senderId }
         });
       } else {
-        new Notification(title, { body, icon: '/icons/icon-192.png' });
+        new Notification(title, { body, icon: '/icons/icon-512.png?v=4' });
       }
     } catch (e) {
       console.warn('[SmartNotify] Chat notification trigger notice:', e);
@@ -834,7 +834,7 @@ export const dispatchSmartNotification = async (payload: SmartNotificationPayloa
         const reg = await getFcmServiceWorkerRegistration();
         showNotification(reg, {
           body,
-          icon: '/icons/icon-192.png',
+          icon: '/icons/icon-512.png?v=4',
           badge: '/icons/badge-monochrome.png?v=4',
           tag: 'streak-reminder',
           vibrate: [80],
@@ -895,7 +895,7 @@ export const testDelayedBackgroundNotification = async (delaySeconds = 5): Promi
       setTimeout(() => {
         reg.showNotification('🎉 Background Notification Test!', {
           body: 'Aapki app band hone par bhi notification bilkul sahi kaam kar raha hai! (Lock Screen Test Successful)',
-          icon: '/icons/icon-192.png?v=3',
+          icon: '/icons/icon-512.png?v=4',
           badge: '/icons/badge-monochrome.png?v=4',
           tag: 'bg-test-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6),
           renotify: true,
@@ -910,7 +910,7 @@ export const testDelayedBackgroundNotification = async (delaySeconds = 5): Promi
       setTimeout(() => {
         new Notification('🎉 Background Notification Test!', {
           body: 'Notifications active hain!',
-          icon: '/icons/icon-192.png',
+          icon: '/icons/icon-512.png?v=4',
         });
       }, Math.max(1, delaySeconds) * 1000);
       return true;
@@ -1474,8 +1474,8 @@ export const subscribeToUserNotifications = (
               return path;
             }
           };
-          const rawIcon = item.icon || item.senderPhoto || '/icons/icon-192.png?v=3';
-          const resolvedIcon = rawIcon.endsWith('.svg') ? getAbsoluteUrl('/icons/icon-192.png?v=3') : getAbsoluteUrl(rawIcon);
+          const rawIcon = item.icon || item.senderPhoto || '/icons/icon-512.png?v=4';
+          const resolvedIcon = rawIcon.endsWith('.svg') ? getAbsoluteUrl('/icons/icon-512.png?v=4') : getAbsoluteUrl(rawIcon);
           const resolvedBadge = getAbsoluteUrl('/icons/badge-monochrome.png?v=4');
 
           const reg = await getFcmServiceWorkerRegistration();
@@ -1503,7 +1503,7 @@ export const subscribeToUserNotifications = (
             }).catch(() => {});
           });
         } else {
-          const directIcon = item.icon || '/icons/icon-192.png?v=3';
+          const directIcon = item.icon || '/icons/icon-512.png?v=4';
           new Notification(item.title, { body: item.body, icon: directIcon });
         }
       } catch (err) {

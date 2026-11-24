@@ -1,7 +1,9 @@
 package app.lifemaker.school
 
 import android.content.Context
+import android.provider.Settings
 import org.json.JSONArray
+import java.security.MessageDigest
 import java.util.UUID
 
 object AppPrefs {
@@ -21,6 +23,28 @@ object AppPrefs {
 
     fun sanitizeRtdbKey(raw: String): String =
         raw.trim().replace(SAFE_KEY_REGEX, "_")
+
+    fun getPersistentHardwareDeviceId(context: Context): String {
+        val androidId = try {
+            Settings.Secure.getString(
+                context.applicationContext.contentResolver,
+                Settings.Secure.ANDROID_ID
+            )?.trim().orEmpty()
+        } catch (_: Exception) {
+            ""
+        }
+        if (androidId.isNotEmpty() && androidId != "9774d56d682e549c") {
+            return try {
+                val digest = MessageDigest.getInstance("SHA-256")
+                    .digest("schoolplus_hw_v1:$androidId".toByteArray(Charsets.UTF_8))
+                val hex = digest.joinToString("") { "%02x".format(it) }.take(32)
+                "and_$hex"
+            } catch (_: Exception) {
+                "and_${sanitizeRtdbKey(androidId)}"
+            }
+        }
+        return getOrCreateDeviceId(context)
+    }
 
     fun getOrCreateDeviceId(context: Context): String {
         val p = prefs(context)

@@ -71,6 +71,7 @@ import { autoSyncSchoolPushIfPermitted } from "../../utils/schoolPushClient";
 import { subscribeUserToPush } from "../NotificationManager";
 import { resolveTeacherPermissions, getTeacherScopedClasses } from "../../utils/schoolRolePermissions";
 import { useBackHandler } from "../../utils/backNavigation";
+import { NstaCallPortalHost } from "./NstaCallModal";
 
 interface Props {
   schoolId: string;
@@ -3696,6 +3697,19 @@ export const TeacherPanel: React.FC<Props> = ({
   return (
     <>
       {renderTeacherShell(renderViewContent())}
+      {school?.id && (
+        <NstaCallPortalHost
+          identity={{
+            schoolId: school.id,
+            schoolName: school.name,
+            userId: teacherId,
+            userName: currentTeacher?.name || teacherName,
+            userRole: "TEACHER",
+            userPhoto: currentTeacher?.photoUrl || school.logoUrl,
+            teacherId,
+          }}
+        />
+      )}
       {showFaceStudio && (
         <UniversalFaceIdStudioModal
           isOpen={showFaceStudio}

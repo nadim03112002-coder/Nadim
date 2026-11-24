@@ -39,7 +39,7 @@ function displayPushNotification(title, body, data, iconUrl) {
   }
 
   const candidateIcon = (data && (data.senderPhoto || data.icon)) || iconUrl;
-  const rawIcon = (candidateIcon && !candidateIcon.endsWith('.svg')) ? candidateIcon : '/icons/icon-192.png?v=3';
+  const rawIcon = (candidateIcon && !candidateIcon.endsWith('.svg')) ? candidateIcon : '/icons/icon-512.png?v=4';
   const icon = toAbsoluteUrl(rawIcon);
   const badge = toAbsoluteUrl('/icons/badge-monochrome.png?v=4');
   // Fresh unique tag forces Android to pop up a heads-up banner over other apps instead of silently collapsing
@@ -100,7 +100,7 @@ try {
     const notification = payload.notification || {};
     const title = notification.title || data.title || 'NSTA Study App';
     const body = notification.body || data.body || 'New notification received!';
-    const icon = notification.icon || data.icon || data.senderPhoto || '/icons/icon-192.png?v=3';
+    const icon = notification.icon || data.icon || data.senderPhoto || '/icons/icon-512.png?v=4';
 
     return displayPushNotification(title, body, { ...data, ...notification }, icon);
   });
@@ -114,7 +114,7 @@ self.addEventListener('push', (event) => {
   let title = 'NSTA Study App';
   let body = 'New notification received!';
   let data = {};
-  let icon = '/icons/icon-192.png?v=3';
+  let icon = '/icons/icon-512.png?v=4';
 
   if (event.data) {
     try {

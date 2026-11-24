@@ -286,7 +286,9 @@ if (typeof window !== "undefined") {
       String(rawVoice).trim() === "0" ||
       String(rawVoice).trim().toLowerCase() === "false" ||
       threadType === "TEACHER_CHAT" ||
-      targetUrl.includes("subTab=teacher")
+      threadType === "STUDENT_CHAT" ||
+      targetUrl.includes("subTab=teacher") ||
+      targetUrl.includes("subTab=friend")
     ) {
       return;
     }

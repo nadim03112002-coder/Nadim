@@ -85,9 +85,24 @@
     print-color-adjust: exact !important;
   }
 
-  /* Hide navigation, buttons, app shell, splash, modals overlays when printing */
-  .no-print, #pre-react-splash, header, nav, .sidebar, .action-buttons, [role="dialog"] > div:first-child {
+  /* Hide navigation, buttons, app shell, splash, toasts, modals overlays when printing */
+  .no-print,
+  #pre-react-splash,
+  header,
+  nav,
+  .sidebar,
+  .action-buttons,
+  [data-sonner-toaster],
+  [data-sonner-toast],
+  [role="dialog"].no-print,
+  [role="dialog"] > div:first-child {
     display: none !important;
+    visibility: hidden !important;
+  }
+
+  body:has(#lmps-a4-print-portal) > *:not(#lmps-a4-print-portal) {
+    display: none !important;
+    visibility: hidden !important;
   }
 
   /* Force display of the print-only container (supports multi-page documents) */
