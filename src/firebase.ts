@@ -1,10 +1,11 @@
 import { getApp, getApps, initializeApp } from "firebase/app";
 import { getFirestore, initializeFirestore, persistentLocalCache, persistentMultipleTabManager, setLogLevel, doc, setDoc, getDoc, getDocFromServer, collection, updateDoc, deleteDoc, onSnapshot, getDocs, query, where, limitToLast, orderBy, increment, arrayUnion, limit, startAfter, QueryDocumentSnapshot } from "firebase/firestore";
 import { getDatabase, ref, set, get, onValue, update, remove, query as rtdbQuery, limitToLast as rtdbLimitToLast, orderByChild as rtdbOrderByChild, equalTo as rtdbEqualTo, runTransaction, serverTimestamp } from "firebase/database";
-import { getAuth, onAuthStateChanged, GoogleAuthProvider, signInWithPopup, signOut, signInAnonymously } from "firebase/auth";
+import { getAuth, onAuthStateChanged, signOut, signInAnonymously } from "firebase/auth";
 import { storage } from "./utils/storage";
-import { CLASS_10_FAKE_LESSONS } from "./constants/class10SeedLessons";
 import { enqueueOfflineSyncItem, isNetworkOfflineImmediate } from "./services/offlineSyncService";
+
+let cachedClass10FakeLessons: any[] | null = null;
 import {
   sbGetDocument,
   sbSetDocument,
@@ -2758,8 +2759,18 @@ export const subscribeToSettings = (callback: (settings: any) => void) => {
 
     const currentNotes = Array.isArray(merged.lucentNotes) ? merged.lucentNotes : [];
     const noteIds = new Set(currentNotes.map((n: any) => n.id));
-    const missingFakeNotes = CLASS_10_FAKE_LESSONS.filter(l => !noteIds.has(l.id));
-    merged.lucentNotes = [...currentNotes, ...missingFakeNotes];
+    if (cachedClass10FakeLessons) {
+      const missingFakeNotes = cachedClass10FakeLessons.filter((l) => !noteIds.has(l.id));
+      merged.lucentNotes = [...currentNotes, ...missingFakeNotes];
+    } else {
+      merged.lucentNotes = currentNotes;
+      import("./constants/class10SeedLessons")
+        .then(({ CLASS_10_FAKE_LESSONS }) => {
+          cachedClass10FakeLessons = CLASS_10_FAKE_LESSONS;
+          emit();
+        })
+        .catch(() => {});
+    }
 
     callback(merged);
   };
@@ -5092,21 +5103,6 @@ export const subscribeUserCoins = (
         },
         () => callback(0, [])
     );
-};
-
-// Auth Providers
-export const googleProvider = new GoogleAuthProvider();
-googleProvider.setCustomParameters({ prompt: 'select_account' });
-
-// Global Auth Helpers
-export const loginWithGoogle = async () => {
-  try {
-    const result = await signInWithPopup(auth, googleProvider);
-    return result.user;
-  } catch (error) {
-    console.error("NSTA Auth Login Error:", error);
-    throw error;
-  }
 };
 
 export const logoutUser = async (): Promise<void> => {

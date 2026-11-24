@@ -1767,7 +1767,7 @@ export const Store: React.FC<Props> = ({ user, settings, onUserUpdate, onBack, i
               <div className="flex items-center gap-2 text-amber-300 min-w-0">
                 <Shield size={16} className="text-amber-400 shrink-0" />
                 <p className="text-[11px] leading-tight">
-                  <strong>Guest Mode:</strong> Subscriptions ya purchases unlock karne ke liye apna account Google se bind karein.
+                  <strong>Guest Mode:</strong> Subscriptions ya purchases unlock karne ke liye apne Email/Mobile account se login karein.
                 </p>
               </div>
               <button
@@ -1775,7 +1775,7 @@ export const Store: React.FC<Props> = ({ user, settings, onUserUpdate, onBack, i
                 onClick={() => { setGuestModalFeature('Store Subscriptions'); setGuestModalOpen(true); }}
                 className="px-2.5 py-1.5 rounded-xl bg-amber-400 text-slate-950 font-black text-[11px] shrink-0 hover:bg-amber-300 transition-all active:scale-95 cursor-pointer shadow-sm"
               >
-                Bind Google
+                Login / Sign Up
               </button>
             </div>
           )}
@@ -3248,7 +3248,7 @@ export const Store: React.FC<Props> = ({ user, settings, onUserUpdate, onBack, i
           </div>
         )}
 
-        {/* Guest Restriction & Google Binding Modal */}
+        {/* Guest Restriction Modal */}
         <GuestRestrictionModal
           isOpen={guestModalOpen}
           onClose={() => setGuestModalOpen(false)}
@@ -3257,7 +3257,7 @@ export const Store: React.FC<Props> = ({ user, settings, onUserUpdate, onBack, i
             onUserUpdate(updated);
           }}
           featureName={guestModalFeature}
-          customMessage="Guest Account me Subscriptions aur Paid Packs lena allowed nahi hai. Apne account ko Google se bind karein taaki aapka payment, streak aur membership hamesha safe rahe!"
+          customMessage="Guest Account me Subscriptions aur Paid Packs lena allowed nahi hai. Apne Email/Mobile account se Login ya Create Account karein taaki aapka payment, streak aur membership hamesha safe rahe!"
         />
 
       </div>

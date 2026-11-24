@@ -12,16 +12,6 @@ import {
   User as UserIcon,
   Globe
 } from 'lucide-react';
-import { PwaInstallPrompt } from './components/PwaInstallPrompt';
-import { NotificationPrompt } from './components/NotificationPrompt';
-import { NotificationPermissionGate } from './components/NotificationPermissionGate';
-import { GlobalNotificationPopup } from './components/GlobalNotificationPopup';
-import {
-  subscribeToUserNotifications,
-  listenToForegroundMessages,
-  syncNativeAndroidIdentity,
-  registerNativeAndroidBridgeToken
-} from './components/NotificationManager';
 import { auth, logoutUser, getFreshUserData, getUserData, getUserByEmail, getUserByLinkedGoogleUid, saveUserToLive, ensureFirebaseAuthSession } from './firebase';
 import { onAuthStateChanged } from 'firebase/auth';
 import { AppLoadingScreen } from './components/AppLoadingScreen';
@@ -33,14 +23,19 @@ import {
   getClasses,
   getLocalClasses,
   getSessions,
+  isDemoDataEnabled,
   isDemoRecord,
   shouldUseDemoForSchool,
 } from './school-firebase';
-import { getDemoSchoolDataset, isDemoDataEnabled } from './components/school/demoDataStore';
 import { buildDefaultClassesFrom2027Chart } from './utils/schoolFeeChart2027';
 import type { School as SchoolEntity, SchoolClass, SchoolSession } from './school-types';
 import { resolveWebsiteAdmissionSessionLabel } from './utils/safeBrowserActions';
-import { getSavedSchoolLogo } from './components/school/feeReceiptUtils';
+import { getSavedSchoolLogo } from './utils/schoolLogoUtils';
+import {
+  initGlobalBackNavigation,
+  syncCurrentUrlForBackNavigation,
+  useBackHandler,
+} from './utils/backNavigation';
 
 // Resilient dynamic import helper that retries transient network or dev-server warm-up blips
 function lazyWithRetry<T extends React.ComponentType<any>>(
@@ -128,6 +123,16 @@ const PublicSchoolWebsite = lazyWithRetry(
 const OnlineAdmissionManager = lazyWithRetry(
   () => import('./components/school/OnlineAdmissionManager').then(m => ({ default: m.OnlineAdmissionManager || (m as any).default })),
   'Online Admission 2027-28'
+);
+
+const PwaInstallPrompt = lazy(() =>
+  import('./components/PwaInstallPrompt').then(m => ({ default: m.PwaInstallPrompt || (m as any).default }))
+);
+const NotificationPrompt = lazy(() =>
+  import('./components/NotificationPrompt').then(m => ({ default: m.NotificationPrompt || (m as any).default }))
+);
+const NotificationPermissionGate = lazy(() =>
+  import('./components/NotificationPermissionGate').then(m => ({ default: m.NotificationPermissionGate || (m as any).default }))
 );
 
 import { PublicWebsiteTopBar, type WebsiteTopNavSection } from './components/school/PublicWebsiteTopBar';
@@ -451,6 +456,7 @@ export function App() {
       const nextRelative = `${url.pathname}${url.search}${url.hash}`;
       if (`${window.location.pathname}${window.location.search}${window.location.hash}` !== nextRelative) {
         window.history.pushState({ routePath: targetPath }, '', nextRelative);
+        syncCurrentUrlForBackNavigation();
       }
       setUrlSchoolParam(url.searchParams.get('school') || url.searchParams.get('schoolId') || url.searchParams.get('s') || '');
     } catch {}
@@ -460,21 +466,29 @@ export function App() {
     } catch {}
   };
 
+  useBackHandler(
+    Boolean(user && showPublicWebsite && routePath === '/'),
+    () => {
+      setShowPublicWebsite(false);
+    },
+    0
+  );
+
   useEffect(() => {
-    const onPopState = () => {
+    return initGlobalBackNavigation(() => {
       const nextRoute = normalizeRoutePath(window.location.pathname);
       setRoutePath(nextRoute);
       setUrlSchoolParam(getSchoolParamFromUrl());
       if (nextRoute === '/login') {
         setShowPublicWebsite(false);
-        setShowBootSplash(true);
+        setShowBootSplash(false);
       } else if (nextRoute === '/admission') {
         setShowBootSplash(false);
         setShowPublicWebsite(true);
+      } else if (nextRoute === '/') {
+        setShowBootSplash(false);
       }
-    };
-    window.addEventListener('popstate', onPopState);
-    return () => window.removeEventListener('popstate', onPopState);
+    });
   }, []);
 
   useEffect(() => {
@@ -584,7 +598,9 @@ export function App() {
   };
 
   useEffect(() => {
-    ensureFirebaseAuthSession().catch(() => {});
+    const authTimer = setTimeout(() => {
+      ensureFirebaseAuthSession().catch(() => {});
+    }, 1200);
     try {
       if (!isDemoDataEnabled()) {
         const cleanedFlag = 'nst_real_school_demo_cleanup_v1';
@@ -608,6 +624,7 @@ export function App() {
         }
       }
     } catch {}
+    return () => clearTimeout(authTimer);
   }, []);
 
   useEffect(() => {
@@ -633,7 +650,11 @@ export function App() {
         if (real.length > 0) {
           setPublicAdmClasses(real);
         } else if (allowDemo) {
-          setPublicAdmClasses(getDemoSchoolDataset()?.classes || []);
+          import('./components/school/demoDataStore')
+            .then(({ getDemoSchoolDataset }) => {
+              if (active) setPublicAdmClasses(getDemoSchoolDataset()?.classes || []);
+            })
+            .catch(() => {});
         } else if (isLifeMaker) {
           setPublicAdmClasses(buildDefaultClassesFrom2027Chart(sid));
         } else {
@@ -650,7 +671,11 @@ export function App() {
         if (cleanSess.length > 0) {
           setPublicAdmSessions(cleanSess);
         } else if (allowDemo) {
-          setPublicAdmSessions(getDemoSchoolDataset()?.sessions || []);
+          import('./components/school/demoDataStore')
+            .then(({ getDemoSchoolDataset }) => {
+              if (active) setPublicAdmSessions(getDemoSchoolDataset()?.sessions || []);
+            })
+            .catch(() => {});
         } else {
           setPublicAdmSessions([
             {
@@ -725,30 +750,8 @@ export function App() {
 
   const [bootSplashMode, setBootSplashMode] = useState<'boot' | 'to_app' | 'to_website'>('boot');
   const [bootSplashKey, setBootSplashKey] = useState<number>(1);
-  const [showBootSplash, setShowBootSplash] = useState<boolean>(() => {
-    try {
-      const path = normalizeRoutePath(window.location.pathname);
-      const p = new URLSearchParams(window.location.search);
-      const docTypeParam = p.get('type') || '';
-      const isPublicVerify = Boolean(
-        p.get('verify') ||
-        p.get('verify-certificate') ||
-        p.get('cNo') ||
-        p.get('certNo') ||
-        p.get('dispatchNo') ||
-        p.get('v') === 'id' ||
-        ['certificate', 'marksheet', 'idcard', 'driver_id', 'fee_receipt', 'admit_card', 'admission', 'gate_pass'].includes(docTypeParam) ||
-        path === '/verify'
-      );
-      const isStandaloneDriver = p.get('driverConsole') === '1' || p.get('driver') === '1';
-      const isNativeAndroidWebView =
-        typeof window !== 'undefined' &&
-        Boolean((window as any).LifeMakerAndroid?.isNativeApp?.());
-      return !isPublicVerify && !isStandaloneDriver && !isNativeAndroidWebView;
-    } catch {
-      return false;
-    }
-  });
+  // #pre-react-splash in index.html already covers the initial bundle load; do not block mounted UI with a second boot splash
+  const [showBootSplash, setShowBootSplash] = useState<boolean>(false);
 
   const triggerSplash = (mode: 'boot' | 'to_app' | 'to_website') => {
     setBootSplashMode(mode);
@@ -1151,14 +1154,9 @@ export function App() {
 
   // Real-time Push & In-App Notification Listeners (Heads-Up Pop-Up Banner)
   useEffect(() => {
+    let cancelled = false;
     let unsubForeground: any = null;
     let unsubUserNotifs: any = null;
-
-    listenToForegroundMessages((payload) => {
-      console.log('[App] Received FCM foreground message:', payload);
-    }).then((unsub) => {
-      unsubForeground = unsub;
-    }).catch(() => {});
 
     let activeStudentId = '';
     let activeSchoolId = '';
@@ -1173,23 +1171,44 @@ export function App() {
     } catch {}
 
     const uid = user?.uid || user?.id || activeStudentId;
-    if (uid) {
-      unsubUserNotifs = subscribeToUserNotifications(
-        uid,
-        (notif) => {
-          console.log('[App] Received RTDB notification:', notif);
-        },
-        {
-          studentId: activeStudentId || undefined,
-          schoolId: activeSchoolId || undefined,
-        }
-      );
-      void syncNativeAndroidIdentity(uid);
-    }
 
-    (window as any).__onLifeMakerNativeFcmToken = (token: string) => {
-      void registerNativeAndroidBridgeToken(token, uid || undefined);
-    };
+    import('./components/NotificationManager')
+      .then(({
+        subscribeToUserNotifications,
+        listenToForegroundMessages,
+        syncNativeAndroidIdentity,
+        registerNativeAndroidBridgeToken,
+      }) => {
+        if (cancelled) return;
+        listenToForegroundMessages((payload) => {
+          console.log('[App] Received FCM foreground message:', payload);
+        }).then((unsub) => {
+          if (cancelled && typeof unsub === 'function') {
+            unsub();
+          } else {
+            unsubForeground = unsub;
+          }
+        }).catch(() => {});
+
+        if (uid) {
+          unsubUserNotifs = subscribeToUserNotifications(
+            uid,
+            (notif) => {
+              console.log('[App] Received RTDB notification:', notif);
+            },
+            {
+              studentId: activeStudentId || undefined,
+              schoolId: activeSchoolId || undefined,
+            }
+          );
+          void syncNativeAndroidIdentity(uid);
+        }
+
+        (window as any).__onLifeMakerNativeFcmToken = (token: string) => {
+          void registerNativeAndroidBridgeToken(token, uid || undefined);
+        };
+      })
+      .catch(() => {});
 
     // Handle tap-to-speak when parent taps a lock-screen notification (both cold start & warm window)
     try {
@@ -1233,6 +1252,7 @@ export function App() {
     }
 
     return () => {
+      cancelled = true;
       if (typeof unsubForeground === 'function') unsubForeground();
       if (typeof unsubUserNotifs === 'function') unsubUserNotifs();
       if (typeof navigator !== 'undefined' && 'serviceWorker' in navigator) {
@@ -1572,7 +1592,9 @@ export function App() {
               />
             </Suspense>
 
-            <NotificationPermissionGate userId="" />
+            <Suspense fallback={null}>
+              <NotificationPermissionGate userId="" />
+            </Suspense>
           </div>
           {renderBootSplash()}
         </>
@@ -1612,10 +1634,12 @@ export function App() {
             }}
           />
         </Suspense>
-        <PwaInstallPrompt
-          schoolName={activePublicSchool?.name}
-          schoolLogoUrl={activePublicSchool?.logoUrl}
-        />
+        <Suspense fallback={null}>
+          <PwaInstallPrompt
+            schoolName={activePublicSchool?.name}
+            schoolLogoUrl={activePublicSchool?.logoUrl}
+          />
+        </Suspense>
       </div>
       {renderBootSplash()}
       </>
@@ -1671,10 +1695,12 @@ export function App() {
             }}
           />
         </Suspense>
-        <PwaInstallPrompt
-          schoolName={activePublicSchool?.name}
-          schoolLogoUrl={activePublicSchool?.logoUrl}
-        />
+        <Suspense fallback={null}>
+          <PwaInstallPrompt
+            schoolName={activePublicSchool?.name}
+            schoolLogoUrl={activePublicSchool?.logoUrl}
+          />
+        </Suspense>
       </div>
       {renderBootSplash()}
       </>
@@ -1749,13 +1775,14 @@ export function App() {
         </Suspense>
       </div>
 
-      <GlobalNotificationPopup />
-      <PwaInstallPrompt
-        schoolName={user?.schoolName || activePublicSchool?.name}
-        schoolLogoUrl={activePublicSchool?.logoUrl}
-      />
-      <NotificationPrompt userId={user?.uid || user?.id || ''} />
-      <NotificationPermissionGate userId={user?.uid || user?.id || ''} />
+      <Suspense fallback={null}>
+        <PwaInstallPrompt
+          schoolName={user?.schoolName || activePublicSchool?.name}
+          schoolLogoUrl={activePublicSchool?.logoUrl}
+        />
+        <NotificationPrompt userId={user?.uid || user?.id || ''} />
+        <NotificationPermissionGate userId={user?.uid || user?.id || ''} />
+      </Suspense>
     </div>
     {renderBootSplash()}
     </>

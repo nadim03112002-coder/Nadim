@@ -75,6 +75,7 @@ const DEFAULT_FALLBACK_SCHOOL: PublicSchoolMeta = {
 };
 
 let cachedSchools: { data: PublicSchoolMeta[]; fetchedAt: number } | null = null;
+let inFlightSchoolsFetch: Promise<PublicSchoolMeta[]> | null = null;
 const CACHE_TTL_MS = 30_000;
 
 function isDemoSchoolEntry(s: any): boolean {
@@ -170,66 +171,80 @@ export async function fetchAllPublicSchools(forceRefresh = false): Promise<Publi
   if (!forceRefresh && cachedSchools && Date.now() - cachedSchools.fetchedAt < CACHE_TTL_MS) {
     return cachedSchools.data;
   }
-
-  const merged = new Map<string, PublicSchoolMeta>();
-
-  // 1. Primary: Supabase schools table (unlimited reads)
-  const sbSchools = await fetchAllSchoolsFromSupabase();
-  if (Array.isArray(sbSchools) && sbSchools.length > 0) {
-    for (const raw of sbSchools) {
-      const meta = sanitizeSchoolMeta(String(raw?.id || ""), raw);
-      if (meta && meta.status !== "ARCHIVED" && meta.status !== "DELETED") {
-        merged.set(meta.id, meta);
-      }
-    }
+  if (!forceRefresh && inFlightSchoolsFetch) {
+    return inFlightSchoolsFetch;
   }
 
-  // 2. Legacy fallback & one-time auto-seed from RTDB schools_profiles if Supabase schools table empty
-  if (merged.size === 0) {
-    const rtdbProfiles = await fetchJsonWithTimeout<Record<string, any>>(
-      `${RTDB_BASE_URL}/schools_profiles.json`,
-      2500
-    );
-    if (rtdbProfiles && typeof rtdbProfiles === "object") {
-      for (const [id, raw] of Object.entries(rtdbProfiles)) {
-        const meta = sanitizeSchoolMeta(id, raw);
+  const task = (async () => {
+    const merged = new Map<string, PublicSchoolMeta>();
+
+    // 1. Primary: Supabase schools table (unlimited reads)
+    const sbSchools = await fetchAllSchoolsFromSupabase();
+    if (Array.isArray(sbSchools) && sbSchools.length > 0) {
+      for (const raw of sbSchools) {
+        const meta = sanitizeSchoolMeta(String(raw?.id || ""), raw);
         if (meta && meta.status !== "ARCHIVED" && meta.status !== "DELETED") {
           merged.set(meta.id, meta);
-          void upsertSchoolInSupabase(meta.id, raw as Record<string, any>);
         }
       }
     }
-  }
 
-  // 3. Fallback: Firestore schools collection REST API (if RTDB & Supabase both empty)
-  if (merged.size === 0) {
-    const fsData = await fetchJsonWithTimeout<{ documents?: Array<{ name: string; fields?: Record<string, any> }> }>(
-      `https://firestore.googleapis.com/v1/projects/${FIREBASE_PROJECT_ID}/databases/(default)/documents/schools?pageSize=50`,
-      2800
-    );
-    if (Array.isArray(fsData?.documents)) {
-      for (const docItem of fsData.documents) {
-        const docId = docItem.name?.split("/").pop() || "";
-        const fieldsObj: Record<string, any> = {};
-        if (docItem.fields) {
-          for (const [k, v] of Object.entries(docItem.fields)) {
-            fieldsObj[k] = decodeFirestoreValue(v);
+    // 2. Legacy fallback & one-time auto-seed from RTDB schools_profiles if Supabase schools table empty
+    if (merged.size === 0) {
+      const rtdbProfiles = await fetchJsonWithTimeout<Record<string, any>>(
+        `${RTDB_BASE_URL}/schools_profiles.json`,
+        2500
+      );
+      if (rtdbProfiles && typeof rtdbProfiles === "object") {
+        for (const [id, raw] of Object.entries(rtdbProfiles)) {
+          const meta = sanitizeSchoolMeta(id, raw);
+          if (meta && meta.status !== "ARCHIVED" && meta.status !== "DELETED") {
+            merged.set(meta.id, meta);
+            void upsertSchoolInSupabase(meta.id, raw as Record<string, any>);
           }
         }
-        const meta = sanitizeSchoolMeta(docId, fieldsObj);
-        if (meta && meta.status !== "ARCHIVED" && meta.status !== "DELETED") {
-          merged.set(meta.id, meta);
-          void upsertSchoolInSupabase(meta.id, fieldsObj);
+      }
+    }
+
+    // 3. Fallback: Firestore schools collection REST API (if RTDB & Supabase both empty)
+    if (merged.size === 0) {
+      const fsData = await fetchJsonWithTimeout<{ documents?: Array<{ name: string; fields?: Record<string, any> }> }>(
+        `https://firestore.googleapis.com/v1/projects/${FIREBASE_PROJECT_ID}/databases/(default)/documents/schools?pageSize=50`,
+        2800
+      );
+      if (Array.isArray(fsData?.documents)) {
+        for (const docItem of fsData.documents) {
+          const docId = docItem.name?.split("/").pop() || "";
+          const fieldsObj: Record<string, any> = {};
+          if (docItem.fields) {
+            for (const [k, v] of Object.entries(docItem.fields)) {
+              fieldsObj[k] = decodeFirestoreValue(v);
+            }
+          }
+          const meta = sanitizeSchoolMeta(docId, fieldsObj);
+          if (meta && meta.status !== "ARCHIVED" && meta.status !== "DELETED") {
+            merged.set(meta.id, meta);
+            void upsertSchoolInSupabase(meta.id, fieldsObj);
+          }
         }
       }
     }
-  }
 
-  const list = Array.from(merged.values());
-  if (list.length > 0) {
-    cachedSchools = { data: list, fetchedAt: Date.now() };
+    const list = Array.from(merged.values());
+    if (list.length > 0) {
+      cachedSchools = { data: list, fetchedAt: Date.now() };
+    }
+    return list;
+  })();
+
+  inFlightSchoolsFetch = task;
+  try {
+    return await task;
+  } finally {
+    if (inFlightSchoolsFetch === task) {
+      inFlightSchoolsFetch = null;
+    }
   }
-  return list;
 }
 
 export function buildShortName(school: PublicSchoolMeta): string {
@@ -281,7 +296,21 @@ export async function resolveSchoolBranding(opts: {
   const cleanPath = rawPathname.startsWith("/") ? rawPathname : `/${rawPathname}`;
   const query = (opts.schoolQuery || "").trim();
 
-  const allSchools = await fetchAllPublicSchools(Boolean(opts.forceRefresh));
+  let allSchools: PublicSchoolMeta[];
+  if (!opts.forceRefresh && cachedSchools?.data?.length) {
+    allSchools = cachedSchools.data;
+    if (Date.now() - cachedSchools.fetchedAt >= CACHE_TTL_MS) {
+      void fetchAllPublicSchools(false).catch(() => {});
+    }
+  } else if (opts.forceRefresh) {
+    allSchools = await fetchAllPublicSchools(true);
+  } else {
+    const budgetMs = query ? 1200 : 350;
+    allSchools = await Promise.race([
+      fetchAllPublicSchools(false),
+      new Promise<PublicSchoolMeta[]>((resolve) => setTimeout(() => resolve([]), budgetMs)),
+    ]);
+  }
   const activeSchools = allSchools.filter((s) => s.status !== "ARCHIVED" && s.status !== "DELETED");
   const nonDemo = activeSchools.filter((s) => !isDemoSchoolEntry(s));
   const pool = nonDemo.length > 0 ? nonDemo : activeSchools;

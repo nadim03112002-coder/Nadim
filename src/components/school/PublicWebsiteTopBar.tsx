@@ -10,7 +10,7 @@ import {
   X,
 } from "lucide-react";
 import type { School, SchoolSession } from "../../school-types";
-import { getSavedSchoolLogo, isAppLogo } from "./feeReceiptUtils";
+import { getSavedSchoolLogo, isAppLogo } from "../../utils/schoolLogoUtils";
 import {
   buildDefaultSchoolTickerItems,
   parseCustomTickerItems,

@@ -46,6 +46,7 @@ import { uploadToCloudinary, getOptimizedVideoUrl } from "../../services/cloudin
 import { resolveTelegramUrl } from "../../services/telegramStorageService";
 import { sendSchoolPushNotification } from "../../utils/schoolPushClient";
 import { getDemoSchoolDataset, isDemoDataEnabled, removeCustomHoliday } from "./demoDataStore";
+import { useBackHandler } from "../../utils/backNavigation";
 
 export interface SchoolCommunityFeedProps {
   schoolId: string;
@@ -100,6 +101,8 @@ export const SchoolCommunityFeed: React.FC<SchoolCommunityFeedProps> = ({
   // Media Upload States
   const [uploadedImageUrl, setUploadedImageUrl] = useState<string>("");
   const [uploadedVideoUrl, setUploadedVideoUrl] = useState<string>("");
+  const [localImagePreview, setLocalImagePreview] = useState<string>("");
+  const [localVideoPreview, setLocalVideoPreview] = useState<string>("");
   const [uploadingMedia, setUploadingMedia] = useState<"NONE" | "IMAGE" | "VIDEO">("NONE");
   const [uploadProgress, setUploadProgress] = useState<number>(0);
   const [submitting, setSubmitting] = useState<boolean>(false);
@@ -113,6 +116,10 @@ export const SchoolCommunityFeed: React.FC<SchoolCommunityFeedProps> = ({
 
   const photoInputRef = useRef<HTMLInputElement>(null);
   const videoInputRef = useRef<HTMLInputElement>(null);
+
+  useBackHandler(Boolean(lightboxImage), () => setLightboxImage(null), 30);
+  useBackHandler(Boolean(confirmDeleteId), () => setConfirmDeleteId(null), 22);
+  useBackHandler(showComposer, () => setShowComposer(false), 15);
 
   useEffect(() => {
     setActiveFilter(initialFilter);
@@ -270,25 +277,33 @@ export const SchoolCommunityFeed: React.FC<SchoolCommunityFeedProps> = ({
     e.target.value = "";
     if (!file) return;
 
-    // Instant local preview so user doesn't have to wait to see their photo
-    const localPreview = URL.createObjectURL(file);
-    setUploadedImageUrl(localPreview);
+    if (localImagePreview) {
+      try { URL.revokeObjectURL(localImagePreview); } catch {}
+    }
+    const preview = URL.createObjectURL(file);
+    setLocalImagePreview(preview);
+    setUploadedImageUrl("");
     setUploadingMedia("IMAGE");
     setUploadProgress(30);
 
     try {
-      // Fast client-side compressed upload (1280px Web JPEG under 200KB)
       const url = await uploadImageToImgBB(file, `school_${schoolId}_${Date.now()}.jpg`, {
         isHd: false,
         maxWidth: 1400,
         maxHeight: 1400,
         quality: 0.82,
       });
+      if (!url || url.startsWith("blob:")) {
+        throw new Error("Photo cloud URL prapt nahi hui.");
+      }
       setUploadedImageUrl(url);
       setUploadProgress(100);
-      showToast("ok", "⚡ Photo instant attach ho gayi!");
+      showToast("ok", "⚡ Photo cloud par safely attach ho gayi!");
     } catch (err: any) {
-      showToast("err", err?.message || "Photo cloud upload me samasya aayi par preview attach hai.");
+      setUploadedImageUrl("");
+      setLocalImagePreview("");
+      try { URL.revokeObjectURL(preview); } catch {}
+      showToast("err", err?.message || "Photo upload fail ho gaya. Kripya dubara try karein.");
     } finally {
       setUploadingMedia("NONE");
     }
@@ -298,23 +313,33 @@ export const SchoolCommunityFeed: React.FC<SchoolCommunityFeedProps> = ({
     const file = e.target.files?.[0];
     e.target.value = "";
     if (!file) return;
-    if (file.size > 45 * 1024 * 1024) {
-      showToast("err", "Video 45 MB se chhota chunein taaki tezi se upload aur play ho sake.");
+    if (file.size > 19.5 * 1024 * 1024) {
+      showToast("err", "Video 19.5 MB se chhota chunein (Telegram Cloud 20MB streaming limit).");
       return;
     }
 
-    // Instant local preview
-    const localVideoUrl = URL.createObjectURL(file);
-    setUploadedVideoUrl(localVideoUrl);
+    if (localVideoPreview) {
+      try { URL.revokeObjectURL(localVideoPreview); } catch {}
+    }
+    const preview = URL.createObjectURL(file);
+    setLocalVideoPreview(preview);
+    setUploadedVideoUrl("");
     setUploadingMedia("VIDEO");
     setUploadProgress(15);
     try {
       const result = await uploadToCloudinary(file, "video", (pct) => setUploadProgress(pct));
-      setUploadedVideoUrl(result.secure_url || result.url);
+      const finalVideoUrl = result.secure_url || result.url;
+      if (!finalVideoUrl || finalVideoUrl.startsWith("blob:")) {
+        throw new Error("Video cloud link generate nahi ho saki.");
+      }
+      setUploadedVideoUrl(finalVideoUrl);
       setUploadProgress(100);
-      showToast("ok", "⚡ Video safaltapoorvak attach ho gaya hai.");
+      showToast("ok", "⚡ Video cloud par safely attach ho gaya hai.");
     } catch (err: any) {
-      showToast("err", err?.message || "Video upload me samasya aayi.");
+      setUploadedVideoUrl("");
+      setLocalVideoPreview("");
+      try { URL.revokeObjectURL(preview); } catch {}
+      showToast("err", err?.message || "Video upload fail ho gaya. Kripya dubara try karein.");
     } finally {
       setUploadingMedia("NONE");
     }
@@ -323,13 +348,21 @@ export const SchoolCommunityFeed: React.FC<SchoolCommunityFeedProps> = ({
   const handleAddVideoLink = () => {
     const rawUrl = window.prompt("YouTube ya Google Drive video ka link paste karein (0-second instant attach):");
     if (!rawUrl || !rawUrl.trim()) return;
+    setLocalVideoPreview("");
     setUploadedVideoUrl(rawUrl.trim());
     showToast("ok", "⚡ Video link instant jud gaya!");
   };
 
   const handlePublishPost = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!postText.trim() && !postTitle.trim() && !uploadedImageUrl && !uploadedVideoUrl) {
+    if (uploadingMedia !== "NONE") {
+      showToast("err", "Photo/Video upload ho raha hai, kripya upload poora hone ka wait karein.");
+      return;
+    }
+    const safeImageUrl = uploadedImageUrl && !uploadedImageUrl.startsWith("blob:") ? uploadedImageUrl : "";
+    const safeVideoUrl = uploadedVideoUrl && !uploadedVideoUrl.startsWith("blob:") ? uploadedVideoUrl : "";
+
+    if (!postText.trim() && !postTitle.trim() && !safeImageUrl && !safeVideoUrl) {
       showToast("err", "Post likhein ya Photo/Video jodein.");
       return;
     }
@@ -355,8 +388,8 @@ export const SchoolCommunityFeed: React.FC<SchoolCommunityFeedProps> = ({
             : "कैंपस अपडेट (School Community)"),
         text: postText.trim(),
         category: postCategory,
-        imageUrl: uploadedImageUrl || undefined,
-        videoUrl: uploadedVideoUrl || undefined,
+        imageUrl: safeImageUrl || undefined,
+        videoUrl: safeVideoUrl || undefined,
         holidayStartDate: postCategory === "HOLIDAY" ? holidayStart : undefined,
         holidayEndDate: postCategory === "HOLIDAY" && holidayEnd ? holidayEnd : undefined,
         classId: targetClassId !== "ALL" ? targetClassId : undefined,
@@ -440,6 +473,8 @@ export const SchoolCommunityFeed: React.FC<SchoolCommunityFeedProps> = ({
       setPostText("");
       setUploadedImageUrl("");
       setUploadedVideoUrl("");
+      setLocalImagePreview("");
+      setLocalVideoPreview("");
       setHolidayEnd("");
       setIsPinned(false);
       setShowComposer(false);
@@ -759,7 +794,7 @@ export const SchoolCommunityFeed: React.FC<SchoolCommunityFeedProps> = ({
           </div>
 
           {/* Media Previews */}
-          {(uploadedImageUrl || uploadedVideoUrl || uploadingMedia !== "NONE") && (
+          {(uploadedImageUrl || localImagePreview || uploadedVideoUrl || localVideoPreview || uploadingMedia !== "NONE") && (
             <div className="p-3 rounded-xl bg-slate-950 border border-slate-800 space-y-3">
               {uploadingMedia !== "NONE" && (
                 <div className="flex items-center gap-3 text-xs text-emerald-300">
@@ -771,16 +806,19 @@ export const SchoolCommunityFeed: React.FC<SchoolCommunityFeedProps> = ({
                 </div>
               )}
 
-              {uploadedImageUrl && (
+              {(uploadedImageUrl || localImagePreview) && (
                 <div className="relative inline-block">
                   <img
-                    src={resolveTelegramUrl(uploadedImageUrl)}
+                    src={resolveTelegramUrl(uploadedImageUrl || localImagePreview)}
                     alt="Attached preview"
                     className="max-h-52 rounded-xl border border-slate-700 object-cover"
                   />
                   <button
                     type="button"
-                    onClick={() => setUploadedImageUrl("")}
+                    onClick={() => {
+                      setUploadedImageUrl("");
+                      setLocalImagePreview("");
+                    }}
                     className="absolute top-2 right-2 p-1.5 rounded-lg bg-slate-950/90 text-rose-400 hover:text-white cursor-pointer"
                   >
                     <X className="w-4 h-4" />
@@ -788,18 +826,18 @@ export const SchoolCommunityFeed: React.FC<SchoolCommunityFeedProps> = ({
                 </div>
               )}
 
-              {uploadedVideoUrl && (
+              {(uploadedVideoUrl || localVideoPreview) && (
                 <div className="relative max-w-md">
-                  {extractYouTubeVideoId(uploadedVideoUrl) ? (
+                  {extractYouTubeVideoId(uploadedVideoUrl || localVideoPreview) ? (
                     <iframe
-                      src={`https://www.youtube.com/embed/${extractYouTubeVideoId(uploadedVideoUrl)}`}
+                      src={`https://www.youtube.com/embed/${extractYouTubeVideoId(uploadedVideoUrl || localVideoPreview)}`}
                       title="YouTube Video Preview"
                       className="w-full aspect-video rounded-xl border border-slate-700 bg-black"
                       allowFullScreen
                     />
                   ) : (
                     <video
-                      src={getOptimizedVideoUrl(uploadedVideoUrl)}
+                      src={getOptimizedVideoUrl(uploadedVideoUrl || localVideoPreview)}
                       controls
                       playsInline
                       className="w-full max-h-56 rounded-xl border border-slate-700 bg-black"
@@ -807,7 +845,10 @@ export const SchoolCommunityFeed: React.FC<SchoolCommunityFeedProps> = ({
                   )}
                   <button
                     type="button"
-                    onClick={() => setUploadedVideoUrl("")}
+                    onClick={() => {
+                      setUploadedVideoUrl("");
+                      setLocalVideoPreview("");
+                    }}
                     className="absolute top-2 right-2 p-1.5 rounded-lg bg-slate-950/90 text-rose-400 hover:text-white cursor-pointer"
                   >
                     <X className="w-4 h-4" />

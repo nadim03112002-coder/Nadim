@@ -201,12 +201,22 @@ class VoiceGuardService : Service() {
         val body = item.optString("body")
         val targetUrl = item.optString("url")
 
-        VoiceAnnouncer.speak(
-            context = applicationContext,
-            title = title,
-            body = body,
-            dedupeKey = notifId
-        )
+        val voiceSpeakRaw = item.opt("voiceSpeak")?.toString()?.trim()?.lowercase().orEmpty()
+        val threadType = item.optString("threadType").trim().uppercase()
+        val suppressVoice =
+            voiceSpeakRaw == "false" ||
+            voiceSpeakRaw == "0" ||
+            threadType == "TEACHER_CHAT" ||
+            targetUrl.contains("subTab=teacher")
+
+        if (!suppressVoice) {
+            VoiceAnnouncer.speak(
+                context = applicationContext,
+                title = title,
+                body = body,
+                dedupeKey = notifId
+            )
+        }
 
         NotificationHelper.showVoiceNotification(
             context = applicationContext,

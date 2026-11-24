@@ -6,13 +6,25 @@ export interface AndroidBatteryIndicatorProps {
   className?: string;
 }
 
+const isRunningInAppShell = (): boolean => {
+  if (typeof window === 'undefined') return false;
+  try {
+    if (window.matchMedia?.('(display-mode: standalone)')?.matches) return true;
+    if (window.matchMedia?.('(display-mode: fullscreen)')?.matches) return true;
+    if ((window.navigator as any)?.standalone === true) return true;
+    if (document.referrer?.startsWith('android-app://')) return true;
+    if ((window as any).LifeMakerAndroid?.isNativeApp?.() || (window as any).LifeMakerAndroid) return true;
+  } catch {}
+  return false;
+};
+
 export const AndroidBatteryIndicator: React.FC<AndroidBatteryIndicatorProps> = ({
   tone = 'auto',
   className = '',
 }) => {
   const { isAndroid, isSupported, level, isCharging } = useAndroidBattery();
 
-  if (!isAndroid || !isSupported || level === null) {
+  if (isRunningInAppShell() || !isAndroid || !isSupported || level === null) {
     return null;
   }
 

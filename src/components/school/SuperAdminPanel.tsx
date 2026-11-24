@@ -1,6 +1,5 @@
 // @ts-nocheck
 import React, { useState, useEffect } from "react";
-import AndroidBatteryIndicator from "../AndroidBatteryIndicator";
 import {
   subscribeToAllSchools, saveSchool, updateSchool, generateId, setSchoolLockCode,
   assignSchoolAdminByEmail, checkEmailSchoolAllotment, lockSchool, deleteSchool
@@ -34,6 +33,7 @@ import {
   subscribeToGlobalDeveloperConfig,
   type GlobalWebsiteDeveloperConfig,
 } from "../../utils/globalDeveloperConfig";
+import { useBackHandler } from "../../utils/backNavigation";
 
 interface Props {
   adminUid: string;
@@ -1142,6 +1142,17 @@ export const SuperAdminPanel: React.FC<Props> = ({ adminUid, onBack, onLogout })
 
   const [createError, setCreateError] = useState<string | null>(null);
 
+  useBackHandler(deleteConfirm, () => setDeleteConfirm(false), 22);
+  useBackHandler(showLockCode, () => setShowLockCode(false), 20);
+  useBackHandler(Boolean(directManageSchool), () => setDirectManageSchool(null), -5);
+  useBackHandler(view !== "dashboard", () => {
+    setView("dashboard");
+    setSelectedSchool(null);
+  }, 0);
+  useBackHandler(dashTab !== "schools" && view === "dashboard" && !directManageSchool, () => {
+    setDashTab("schools");
+  }, 0);
+
   const createSchool = async () => {
     const cleanName = (form.name || "").trim();
     if (!cleanName) {
@@ -1605,7 +1616,6 @@ export const SuperAdminPanel: React.FC<Props> = ({ adminUid, onBack, onLogout })
             <p className="text-slate-700 dark:text-slate-400 text-sm font-medium mt-1">Manage all schools in the ecosystem</p>
           </div>
           <div className="flex items-center gap-2 shrink-0">
-            <AndroidBatteryIndicator tone="auto" />
             <button
               type="button"
               onClick={handlePerformLogout}

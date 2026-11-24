@@ -315,6 +315,8 @@ export async function sendSchoolPushNotification(payload: {
   title: string;
   body: string;
   type?: "MONTHLY_FEE" | "FEE_RECEIPT" | "SCHOOL_NOTICE" | "SCHOOL_HOLIDAY" | "HOMEWORK" | "DEFAULT" | "NSTA_MESSAGE";
+  threadType?: "CLASS_GROUP" | "SCHOOL_DESK" | "TEACHER_CHAT";
+  voiceSpeak?: boolean;
   url?: string;
   urgent?: boolean;
   icon?: string;
@@ -373,6 +375,11 @@ export async function sendSchoolPushNotification(payload: {
 
   const resolvedSenderIds = Array.from(senderIdSet).filter(Boolean);
   const resolvedPrimarySenderId = String(payload.senderId || resolvedSenderIds[0] || "").trim();
+  const resolvedThreadType = payload.threadType || "";
+  const shouldVoiceSpeak =
+    payload.voiceSpeak !== false &&
+    resolvedThreadType !== "TEACHER_CHAT" &&
+    !String(payload.url || "").includes("subTab=teacher");
 
   // 1. Dual-write to RTDB for instantaneous in-app & background SW wake up
   try {
@@ -384,6 +391,8 @@ export async function sendSchoolPushNotification(payload: {
       const notifPayload = {
         id: notifId,
         type: payload.type || "SCHOOL_NOTICE",
+        ...(resolvedThreadType ? { threadType: resolvedThreadType } : {}),
+        voiceSpeak: shouldVoiceSpeak,
         title: payload.title,
         body: payload.body,
         url: payload.url || "/?schoolPortal=1",
@@ -452,6 +461,8 @@ export async function sendSchoolPushNotification(payload: {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         ...payload,
+        ...(resolvedThreadType ? { threadType: resolvedThreadType } : {}),
+        voiceSpeak: shouldVoiceSpeak,
         senderId: resolvedPrimarySenderId || payload.senderId,
         senderIds: resolvedSenderIds,
         senderDeviceId: allowSelf ? "" : resolvedSenderDeviceId,

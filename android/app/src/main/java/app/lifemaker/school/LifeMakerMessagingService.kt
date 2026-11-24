@@ -59,12 +59,22 @@ class LifeMakerMessagingService : FirebaseMessagingService() {
             return
         }
 
-        VoiceAnnouncer.speak(
-            context = applicationContext,
-            title = title,
-            body = body,
-            dedupeKey = msgId
-        )
+        val voiceSpeakRaw = data["voiceSpeak"]?.trim()?.lowercase().orEmpty()
+        val threadType = data["threadType"]?.trim()?.uppercase().orEmpty()
+        val suppressVoice =
+            voiceSpeakRaw == "false" ||
+            voiceSpeakRaw == "0" ||
+            threadType == "TEACHER_CHAT" ||
+            targetUrl.orEmpty().contains("subTab=teacher")
+
+        if (!suppressVoice) {
+            VoiceAnnouncer.speak(
+                context = applicationContext,
+                title = title,
+                body = body,
+                dedupeKey = msgId
+            )
+        }
 
         NotificationHelper.showVoiceNotification(
             context = applicationContext,

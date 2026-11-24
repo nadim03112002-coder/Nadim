@@ -34,6 +34,7 @@ import { getDemoSchoolDataset, isDemoDataEnabled, setDemoDataEnabled } from "./d
 import { syncLinkedStudentsToPushSubscription } from "../../utils/schoolPushClient";
 import { speakNotification } from "../../utils/voiceNotifyEngine";
 import { QrScannerModal } from "../QrScannerModal";
+import { useBackHandler } from "../../utils/backNavigation";
 import type { School, SchoolUserProfile } from "../../school-types";
 import {
   Loader2,
@@ -109,7 +110,10 @@ function lazyWithRetry<T extends React.ComponentType<any>>(
   });
 }
 
-import { SchoolAdminPanel } from "./SchoolAdminPanel";
+const SchoolAdminPanel = lazyWithRetry(
+  () => import("./SchoolAdminPanel").then(m => ({ default: m.SchoolAdminPanel || (m as any).default })),
+  "SchoolAdminPanel"
+);
 const SuperAdminPanel = lazyWithRetry(() => import("./SuperAdminPanel"), "SuperAdminPanel");
 const TeacherPanel = lazyWithRetry(() => import("./TeacherPanel"), "TeacherPanel");
 const StudentSchoolPanel = lazyWithRetry(() => import("./StudentSchoolPanel"), "StudentSchoolPanel");
@@ -261,7 +265,30 @@ export const SchoolEcosystem: React.FC<Props> = ({
   onOpenPublicAdmission,
 }) => {
   const [profile, setProfile] = useState<SchoolUserProfile | null | undefined>(undefined);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState<boolean>(() => {
+    try {
+      const r = (userRole || user?.role || "").toUpperCase();
+      const em = (email || user?.email || "").trim().toLowerCase();
+      if (
+        isSuperAdmin ||
+        forceAdminView ||
+        user?.provider === "qr_teacher_id" ||
+        user?.provider === "qr_student_id" ||
+        user?.provider === "face_recognition_login" ||
+        user?.provider === "student_record" ||
+        (user?.userType === "SCHOOL_STUDENT" && Boolean(user?.admissionNo || user?.studentId)) ||
+        ["ADMIN", "SUPERADMIN", "SCHOOL_ADMIN", "PRINCIPAL", "SCHOOL_SUB_ADMIN", "TEACHER", "STAFF", "ACCOUNTANT", "CASHIER"].includes(r) ||
+        isSuperAdminEmail(em) ||
+        isSchoolAdminEmail(em) ||
+        Boolean(user?.schoolId) ||
+        Boolean(getLocalLinkedTeacher(uid)) ||
+        Boolean(getLocalUserLinkedStudents(uid)?.students?.length)
+      ) {
+        return false;
+      }
+    } catch {}
+    return true;
+  });
   const [adminPreviewRole, setAdminPreviewRole] = useState<"ADMIN" | "TEACHER" | "STUDENT" | "ACCOUNTANT">("ADMIN");
   const [demoEnabled, setDemoEnabled] = useState<boolean>(() => isDemoDataEnabled());
   const [allSchools, setAllSchools] = useState<School[]>(() => {
@@ -331,6 +358,10 @@ export const SchoolEcosystem: React.FC<Props> = ({
   const [manualInput, setManualInput] = useState("");
   const [linkError, setLinkError] = useState<string | null>(null);
   const [showOnlineAdmission, setShowOnlineAdmission] = useState(false);
+
+  useBackHandler(isQrModalOpen, () => setIsQrModalOpen(false), 30);
+  useBackHandler(showOnlineAdmission, () => setShowOnlineAdmission(false), 10);
+  useBackHandler(showSuperAdminHub, () => setShowSuperAdminHub(false), 10);
 
   const effectiveEmail = (email || user?.email || "").trim().toLowerCase();
   const rawRole = (userRole || user?.role || "").toUpperCase();
@@ -686,7 +717,14 @@ export const SchoolEcosystem: React.FC<Props> = ({
     const handleSwMsg = (event: MessageEvent) => {
       const data = event.data;
       if (data?.type === "SCHOOL_PUSH_NAVIGATE") {
-        if (data.title || data.body) {
+        const suppressVoice =
+          data.voiceSpeak === false ||
+          data.voiceSpeak === "0" ||
+          String(data.voiceSpeak || "").toLowerCase() === "false" ||
+          String(data.threadType || "").toUpperCase() === "TEACHER_CHAT" ||
+          String(data.notifType || "").toUpperCase() === "TEACHER_CHAT" ||
+          String(data.url || "").includes("subTab=teacher");
+        if (!suppressVoice && (data.title || data.body)) {
           speakNotification(data.title || "स्कूल सूचना", data.body || "", {
             dedupeKey: data.id || `tap_${data.title || ""}_${data.body || ""}`,
           });
@@ -779,13 +817,28 @@ export const SchoolEcosystem: React.FC<Props> = ({
       setLoading(false);
       return;
     }
-    setLoading(true);
+    let settled = false;
+    const safetyTimer = setTimeout(() => {
+      if (!settled) {
+        settled = true;
+        setLoading(false);
+      }
+    }, 1500);
+
     getSchoolUserProfile(uid, effectiveEmail)
       .then(p => {
+        if (!settled) {
+          settled = true;
+          clearTimeout(safetyTimer);
+        }
         setProfile(p);
         setLoading(false);
       })
       .catch(() => {
+        if (!settled) {
+          settled = true;
+          clearTimeout(safetyTimer);
+        }
         setLoading(false);
       });
   };
@@ -1370,20 +1423,24 @@ export const SchoolEcosystem: React.FC<Props> = ({
     if (isSuperAdmin && (showSuperAdminHub || !effectiveSchoolId || allSchools.length === 0)) {
       return (
         <div className={`min-h-screen flex flex-col ${shellThemeClass}`}>
-          <SuperAdminPanel
-            adminUid={uid}
-            onBack={() => {
-              if (allSchools.length > 0 && allSchools[0]?.id) {
-                setShowSuperAdminHub(false);
-                setSelectedAdminSchoolId(allSchools[0].id);
-              } else if (onOpenAdminDashboard) {
-                onOpenAdminDashboard();
-              } else if (onBack) {
-                onBack();
-              }
-            }}
-            onLogout={onLogout}
-          />
+          <PanelErrorBoundary fallbackTitle="Super Admin Panel">
+            <Suspense fallback={<PanelLoadingFallback title="Super Admin Panel" />}>
+              <SuperAdminPanel
+                adminUid={uid}
+                onBack={() => {
+                  if (allSchools.length > 0 && allSchools[0]?.id) {
+                    setShowSuperAdminHub(false);
+                    setSelectedAdminSchoolId(allSchools[0].id);
+                  } else if (onOpenAdminDashboard) {
+                    onOpenAdminDashboard();
+                  } else if (onBack) {
+                    onBack();
+                  }
+                }}
+                onLogout={onLogout}
+              />
+            </Suspense>
+          </PanelErrorBoundary>
         </div>
       );
     }

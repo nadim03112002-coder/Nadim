@@ -1,6 +1,5 @@
 // @ts-nocheck
-import React, { useState, useEffect, useMemo } from "react";
-import AndroidBatteryIndicator from "../AndroidBatteryIndicator";
+import React, { Suspense, useState, useEffect, useMemo } from "react";
 import { safeOpenExternalUrl } from "../../utils/safeBrowserActions";
 import {
   IndianRupee,
@@ -69,16 +68,23 @@ import type {
 } from "../../school-types";
 import {
   getSchool,
+  getLocalSchools,
   getClasses,
+  getLocalClasses,
   getSessions,
+  getLocalSessions,
   getStudents,
+  getLocalStudents,
   getMonthlyFees,
+  getLocalFees,
   getSchoolFeeHistory,
   saveFee,
   currentMonthStr,
   getAccountants,
+  getLocalAccountants,
   saveAccountant,
   getSchoolExpenseVouchers,
+  getLocalExpenseVouchers,
   saveSchoolExpenseVoucher,
   deleteSchoolExpenseVoucher,
   getAdmissions,
@@ -87,6 +93,7 @@ import {
   getAttendance,
   todayStr as getTodayDateStr,
   getTeachers,
+  getLocalTeachers,
   isDemoSessionId,
   isDemoRecord,
   autoSendFeeSlipToSchoolDesk
@@ -97,10 +104,10 @@ import { loadMergedStoreSales } from "../../utils/schoolCloudSync";
 import { computePaymentBreakdown } from "../../utils/paymentBreakdown";
 import { toast } from "sonner";
 import { FeeManager } from "./FeeManager";
-import { OnlineAdmissionManager } from "./OnlineAdmissionManager";
+const OnlineAdmissionManager = React.lazy(() => import("./OnlineAdmissionManager").then(m => ({ default: m.OnlineAdmissionManager })));
 import { AbsenteeActionPage } from "./AbsenteeActionPage";
 import { SiblingProfileManager } from "./SiblingProfileManager";
-import { NstaMessengerSuite } from "./NstaMessengerSuite";
+const NstaMessengerSuite = React.lazy(() => import("./NstaMessengerSuite").then(m => ({ default: m.NstaMessengerSuite })));
 import { ReceiptCancellationModal } from "./ReceiptCancellationModal";
 import { RazorpaySettingsModal } from "./RazorpaySettingsModal";
 import { StudentReAdmissionManager } from "./StudentReAdmissionManager";
@@ -114,6 +121,7 @@ import {
   cleanLogoUrl,
   getSavedSchoolLogo
 } from "./feeReceiptUtils";
+import { useBackHandler } from "../../utils/backNavigation";
 
 interface Props {
   schoolId: string;
@@ -180,20 +188,60 @@ export const AccountantPanel: React.FC<Props> = ({
     }
   };
 
+  const cachedBootstrap = useMemo(() => {
+    try {
+      const sch = getLocalSchools().find(s => s.id === schoolId || s.code === schoolId) || null;
+      const rawSess = getLocalSessions(schoolId).filter((s: any) => s && s.id && s.name && !isDemoSessionId(s.id));
+      const savedSessionId = typeof localStorage !== "undefined" ? localStorage.getItem(`nst_active_session_${schoolId}`) : null;
+      const isSavedDemo = Boolean(savedSessionId && isDemoSessionId(savedSessionId));
+      const curSess = isSavedDemo
+        ? { id: DEMO_SESSION_ID, schoolId, name: "🧪 Demo Session (केवल डमी डेटा)", startDate: "2026-04-01", endDate: "2027-03-31", active: true, isDemo: true }
+        : ((savedSessionId && rawSess.find((s: any) => s.id === savedSessionId)) || rawSess.find((s: any) => s.active) || rawSess[0]);
+      const sid = curSess?.id;
+      const clsAll = getLocalClasses(schoolId) || [];
+      const stdAll = getLocalStudents(schoolId) || [];
+      const feeAll = getLocalFees(schoolId) || [];
+      const accAll = getLocalAccountants(schoolId) || [];
+      const expAll = getLocalExpenseVouchers(schoolId) || [];
+      const tchAll = getLocalTeachers(schoolId) || [];
+      const clsFiltered = sid && !isDemoSessionId(sid) ? clsAll.filter((c: any) => c.sessionId === sid) : clsAll;
+      const stdFiltered = sid && !isDemoSessionId(sid) ? stdAll.filter((s: any) => !isDemoRecord(s) && (!s.sessionId || s.sessionId === sid)) : stdAll;
+      const curMonth = currentMonthStr();
+      const feeCur = feeAll.filter((f: any) => (!sid || isDemoSessionId(sid) || !f.sessionId || f.sessionId === sid) && f.month === curMonth && (isDemoSessionId(sid) || !isDemoRecord(f)));
+      const foundAcc = accAll.length > 0 ? (accountantId ? accAll.find((a: any) => a.id === accountantId) : accAll[0]) || accAll[0] : null;
+      return {
+        hasCache: Boolean(sch && (clsAll.length > 0 || stdAll.length > 0 || accAll.length > 0)),
+        sch,
+        rawSess,
+        clsAll,
+        clsFiltered,
+        stdAll,
+        stdFiltered,
+        feeCur,
+        expAll,
+        accAll,
+        tchAll,
+        foundAcc,
+      };
+    } catch {
+      return null;
+    }
+  }, [schoolId, accountantId]);
+
   const [activeTab, setActiveTab] = useState<AccountantTab>("home");
-  const [school, setSchool] = useState<School | null>(null);
-  const [classes, setClasses] = useState<SchoolClass[]>([]);
-  const [allClasses, setAllClasses] = useState<SchoolClass[]>([]);
-  const [sessions, setSessions] = useState<SchoolSession[]>([]);
-  const [students, setStudents] = useState<SchoolStudent[]>([]);
-  const [allStudents, setAllStudents] = useState<SchoolStudent[]>([]);
-  const [fees, setFees] = useState<MonthlyFee[]>([]);
+  const [school, setSchool] = useState<School | null>(() => cachedBootstrap?.sch || null);
+  const [classes, setClasses] = useState<SchoolClass[]>(() => cachedBootstrap?.clsFiltered || []);
+  const [allClasses, setAllClasses] = useState<SchoolClass[]>(() => cachedBootstrap?.clsAll || []);
+  const [sessions, setSessions] = useState<SchoolSession[]>(() => cachedBootstrap?.rawSess || []);
+  const [students, setStudents] = useState<SchoolStudent[]>(() => cachedBootstrap?.stdFiltered || []);
+  const [allStudents, setAllStudents] = useState<SchoolStudent[]>(() => cachedBootstrap?.stdAll || []);
+  const [fees, setFees] = useState<MonthlyFee[]>(() => cachedBootstrap?.feeCur || []);
   const [allHistoryFees, setAllHistoryFees] = useState<MonthlyFee[]>([]);
   const [storeSales, setStoreSales] = useState<StoreSaleRecord[]>([]);
-  const [expenses, setExpenses] = useState<SchoolExpenseVoucher[]>([]);
-  const [accountants, setAccountants] = useState<SchoolAccountant[]>([]);
-  const [teachers, setTeachers] = useState<any[]>([]);
-  const [activeAccountant, setActiveAccountant] = useState<SchoolAccountant | null>(null);
+  const [expenses, setExpenses] = useState<SchoolExpenseVoucher[]>(() => cachedBootstrap?.expAll || []);
+  const [accountants, setAccountants] = useState<SchoolAccountant[]>(() => cachedBootstrap?.accAll || []);
+  const [teachers, setTeachers] = useState<any[]>(() => cachedBootstrap?.tchAll || []);
+  const [activeAccountant, setActiveAccountant] = useState<SchoolAccountant | null>(() => cachedBootstrap?.foundAcc || null);
   const [attendanceSummary, setAttendanceSummary] = useState<{
     presentCount: number;
     absentCount: number;
@@ -205,7 +253,7 @@ export const AccountantPanel: React.FC<Props> = ({
     totalMarked: 0,
     attendancePct: 0,
   });
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState<boolean>(() => !cachedBootstrap?.hasCache);
   const [sendingNstaSlipId, setSendingNstaSlipId] = useState<string | null>(null);
   const [sentNstaSlipIds, setSentNstaSlipIds] = useState<Record<string, boolean>>({});
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
@@ -283,6 +331,12 @@ export const AccountantPanel: React.FC<Props> = ({
     saving: boolean;
   } | null>(null);
 
+  useBackHandler(Boolean(duesSettlementModal), () => setDuesSettlementModal(null), 22);
+  useBackHandler(Boolean(selectedStudentForDues), () => setSelectedStudentForDues(null), 20);
+  useBackHandler(showExpenseModal, () => setShowExpenseModal(false), 20);
+  useBackHandler(isMobileMenuOpen, () => setIsMobileMenuOpen(false), 18);
+  useBackHandler(activeTab !== "home", () => setActiveTab("home"), 0);
+
   // Continuous Device Orientation & Screen Width Hook
   const { isLandscape: isClientLandscape, isWideScreen } = useDeviceOrientation();
   const [isDesktopMode, setIsDesktopMode] = useState<boolean>(() => {
@@ -315,14 +369,19 @@ export const AccountantPanel: React.FC<Props> = ({
   useEffect(() => {
     let mounted = true;
     const loadAll = async () => {
-      setLoading(true);
+      if (!cachedBootstrap?.hasCache) setLoading(true);
+      const safetyTimer = setTimeout(() => {
+        if (mounted) setLoading(false);
+      }, 1800);
       try {
-        const [schData, sessData, expData, accData, tchData] = await Promise.all([
+        const [schData, sessData, expData, accData, tchData, clsDataAll, stdDataAll] = await Promise.all([
           getSchool(schoolId),
           getSessions(schoolId),
           getSchoolExpenseVouchers(schoolId),
           getAccountants(schoolId),
-          getTeachers(schoolId)
+          getTeachers(schoolId),
+          getClasses(schoolId),
+          getStudents(schoolId),
         ]);
 
         const savedSessionId = typeof localStorage !== "undefined" ? localStorage.getItem(`nst_active_session_${schoolId}`) : null;
@@ -334,13 +393,7 @@ export const AccountantPanel: React.FC<Props> = ({
           : ((savedSessionId && cleanSess.find((s: any) => s.id === savedSessionId)) || cleanSess.find((s: any) => s.active) || cleanSess[0]);
         const targetSessionId = currentSess?.id;
 
-        const [clsDataAll, stdDataAll, feeData, histFeeData, storeSalesData] = await Promise.all([
-          getClasses(schoolId),
-          getStudents(schoolId),
-          getMonthlyFees(schoolId, currentMonthStr(), undefined, targetSessionId),
-          getSchoolFeeHistory(schoolId, targetSessionId).catch(() => []),
-          loadMergedStoreSales<StoreSaleRecord>(schoolId).catch(() => [])
-        ]);
+        const feeData = await getMonthlyFees(schoolId, currentMonthStr(), undefined, targetSessionId).catch(() => []);
         const clsData = targetSessionId && !isDemoSessionId(targetSessionId)
           ? (clsDataAll || []).filter((c: any) => c.sessionId === targetSessionId)
           : (clsDataAll || []);
@@ -356,23 +409,52 @@ export const AccountantPanel: React.FC<Props> = ({
         setAllStudents(stdDataAll || []);
         setStudents(isDemoSessionId(targetSessionId) ? (stdData || []) : (stdData || []).filter(s => !isDemoRecord(s) && (!targetSessionId || s.sessionId === targetSessionId)));
         setFees(isDemoSessionId(targetSessionId) ? (feeData || []) : (feeData || []).filter(f => !isDemoRecord(f)));
-        setAllHistoryFees(Array.isArray(histFeeData) ? (isDemoSessionId(targetSessionId) ? histFeeData : histFeeData.filter(f => !isDemoRecord(f))) : []);
-        setStoreSales(Array.isArray(storeSalesData) ? storeSalesData : []);
         setExpenses(expData || []);
         setAccountants(accData || []);
         setTeachers(tchData || []);
 
-        // Load today's attendance summary across classes
+        if (accData && accData.length > 0) {
+          const found = accountantId ? accData.find(a => a.id === accountantId) : accData[0];
+          setActiveAccountant(found || accData[0]);
+        } else {
+          const defaultAcc: SchoolAccountant = {
+            id: accountantId || "acc_head_01",
+            schoolId,
+            name: "Head Accountant",
+            phone: "",
+            employeeId: "ACC-01",
+            designation: "Senior School Accountant & Cashier",
+            joinDate: "2026-04-01",
+            active: true,
+            permissions: DEFAULT_PERMISSIONS,
+            createdAt: new Date().toISOString()
+          };
+          setActiveAccountant(defaultAcc);
+        }
+
+        // Release UI immediately once core lists are ready; load heavy history, store sales, and per-class attendance asynchronously
+        clearTimeout(safetyTimer);
+        if (mounted) setLoading(false);
+
+        Promise.all([
+          getSchoolFeeHistory(schoolId, targetSessionId).catch(() => []),
+          loadMergedStoreSales<StoreSaleRecord>(schoolId).catch(() => [])
+        ]).then(([histFeeData, storeSalesData]) => {
+          if (!mounted) return;
+          setAllHistoryFees(Array.isArray(histFeeData) ? (isDemoSessionId(targetSessionId) ? histFeeData : histFeeData.filter(f => !isDemoRecord(f))) : []);
+          setStoreSales(Array.isArray(storeSalesData) ? storeSalesData : []);
+        }).catch(() => {});
+
         const todayDateStr = getTodayDateStr();
         const attTargetClasses = targetSessionId && !isDemoSessionId(targetSessionId) ? (clsData || []).filter(c => c.sessionId === targetSessionId) : (clsData || []);
         if (attTargetClasses && attTargetClasses.length > 0) {
-          try {
+          Promise.allSettled(
+            attTargetClasses.map(c => getAttendance(schoolId, c.id, todayDateStr))
+          ).then((attResults) => {
+            if (!mounted) return;
             let pCount = 0;
             let aCount = 0;
             let tMarked = 0;
-            const attResults = await Promise.allSettled(
-              attTargetClasses.map(c => getAttendance(schoolId, c.id, todayDateStr))
-            );
             attResults.forEach(res => {
               if (res.status === "fulfilled" && res.value?.students) {
                 Object.values(res.value.students).forEach((s: any) => {
@@ -389,33 +471,12 @@ export const AccountantPanel: React.FC<Props> = ({
               totalMarked: tMarked,
               attendancePct: pct,
             });
-          } catch (attErr) {
-            console.warn("[AccountantPanel] Failed loading attendance summary:", attErr);
-          }
-        }
-
-        if (accData && accData.length > 0) {
-          const found = accountantId ? accData.find(a => a.id === accountantId) : accData[0];
-          setActiveAccountant(found || accData[0]);
-        } else {
-          // Fallback accountant profile
-          const defaultAcc: SchoolAccountant = {
-            id: accountantId || "acc_head_01",
-            schoolId,
-            name: "Head Accountant",
-            phone: "",
-            employeeId: "ACC-01",
-            designation: "Senior School Accountant & Cashier",
-            joinDate: "2026-04-01",
-            active: true,
-            permissions: DEFAULT_PERMISSIONS,
-            createdAt: new Date().toISOString()
-          };
-          setActiveAccountant(defaultAcc);
+          }).catch(() => {});
         }
       } catch (err) {
         console.error("Failed to load accountant panel data:", err);
       } finally {
+        clearTimeout(safetyTimer);
         if (mounted) setLoading(false);
       }
     };
@@ -725,7 +786,6 @@ export const AccountantPanel: React.FC<Props> = ({
 
         {/* Action Controls */}
         <div className="flex items-center gap-2 shrink-0">
-          <AndroidBatteryIndicator tone={isWhite ? "light" : "dark"} />
           <button
             type="button"
             onClick={() => setRefreshTrigger(prev => prev + 1)}
@@ -2741,15 +2801,17 @@ export const AccountantPanel: React.FC<Props> = ({
             permissions.canAdmitStudents ? (
               <div className="h-full">
                 {school && (
-                  <OnlineAdmissionManager
-                    school={school}
-                    classes={classes}
-                    sessions={sessions}
-                    activeSession={activeSession}
-                    isAdmin={true}
-                    viewMode="admissions_only"
-                    onBack={() => setActiveTab("counter")}
-                  />
+                  <Suspense fallback={<div className="py-12 flex justify-center"><Loader2 className="w-7 h-7 animate-spin text-emerald-500" /></div>}>
+                    <OnlineAdmissionManager
+                      school={school}
+                      classes={classes}
+                      sessions={sessions}
+                      activeSession={activeSession}
+                      isAdmin={true}
+                      viewMode="admissions_only"
+                      onBack={() => setActiveTab("counter")}
+                    />
+                  </Suspense>
                 )}
               </div>
             ) : (
@@ -3180,16 +3242,18 @@ export const AccountantPanel: React.FC<Props> = ({
           {/* TAB 8: NSTA MESSENGER SUITE */}
           {activeTab === "messenger" && school && (
             <div className="fixed inset-0 z-50 bg-slate-950 flex flex-col h-screen w-screen overflow-hidden">
-              <NstaMessengerSuite
-                school={school}
-                classes={classes}
-                students={students}
-                teachers={teachers}
-                currentUserId={accountantId || "accountant_admin"}
-                currentUserName={activeAccountant?.name || "School Accountant"}
-                currentUserRole="ADMIN"
-                onBack={() => setActiveTab("home")}
-              />
+              <Suspense fallback={<div className="flex-1 flex items-center justify-center"><Loader2 className="w-7 h-7 animate-spin text-emerald-500" /></div>}>
+                <NstaMessengerSuite
+                  school={school}
+                  classes={classes}
+                  students={students}
+                  teachers={teachers}
+                  currentUserId={accountantId || "accountant_admin"}
+                  currentUserName={activeAccountant?.name || "School Accountant"}
+                  currentUserRole="ADMIN"
+                  onBack={() => setActiveTab("home")}
+                />
+              </Suspense>
             </div>
           )}
 

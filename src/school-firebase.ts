@@ -64,7 +64,7 @@ import {
   subscribeDemoSessions
 } from "./components/school/demoDataStore";
 export { isDemoDataEnabled, setDemoDataEnabled };
-import { cleanLogoUrl, isAppLogo, getSavedSchoolLogo } from "./components/school/feeReceiptUtils";
+import { cleanLogoUrl, isAppLogo, getSavedSchoolLogo } from "./utils/schoolLogoUtils";
 import {
   getSchoolCacheSync,
   setSchoolCacheSync,
@@ -493,7 +493,7 @@ const normalizeDefaultSchoolBrand = (sc: School): School => {
   const stripDeadDefaultTgUrl = (val?: string): string => {
     const clean = String(val || "").trim();
     if (!clean) return "";
-    if (/api\.telegram\.org\/file\/bot8932524192:[^/]+\/documents\/file_(69|70|71|72|73)\.png$/i.test(clean)) {
+    if (/api\.telegram\.org\/file\/bot\d+:[^/]+\/documents\/file_(69|70|71|72|73)\.png$/i.test(clean)) {
       return "";
     }
     return clean;

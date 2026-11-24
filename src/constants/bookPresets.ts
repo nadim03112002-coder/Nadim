@@ -1,0 +1,65 @@
+export const COMMON_BOOK_PRESETS = [
+  { name: "Hindi", icon: "📖", category: "Language" },
+  { name: "English", icon: "📘", category: "Language" },
+  { name: "Mathematics", icon: "📐", category: "Core" },
+  { name: "Science", icon: "🔬", category: "Core" },
+  { name: "Social Science", icon: "🌍", category: "Core" },
+  { name: "EVS", icon: "🌿", category: "Junior" },
+  { name: "Sanskrit", icon: "📜", category: "Language" },
+  { name: "Computer / IT", icon: "💻", category: "Technical" },
+  { name: "General Knowledge (GK)", icon: "🧠", category: "General" },
+  { name: "Drawing & Art", icon: "🎨", category: "Creative" },
+  { name: "Moral Science", icon: "🕊️", category: "General" },
+  { name: "Physical Education", icon: "🏃", category: "Sports" },
+  { name: "Urdu", icon: "🕌", category: "Language" },
+  { name: "Rhymes & Oral", icon: "🎵", category: "Junior" },
+  { name: "Physics", icon: "⚛️", category: "Science" },
+  { name: "Chemistry", icon: "🧪", category: "Science" },
+  { name: "Biology", icon: "🧬", category: "Science" },
+  { name: "Accountancy", icon: "📑", category: "Commerce" },
+  { name: "Business Studies", icon: "💼", category: "Commerce" },
+  { name: "Economics", icon: "📈", category: "Commerce" },
+  { name: "History", icon: "🏛️", category: "Arts" },
+  { name: "Political Science", icon: "⚖️", category: "Arts" },
+  { name: "Geography", icon: "🗺️", category: "Arts" },
+  { name: "Sociology", icon: "👥", category: "Arts" },
+  { name: "Informatics Practices", icon: "🖥️", category: "Technical" },
+];
+
+export const PRESET_BOOK_BUNDLES = [
+  {
+    label: "⚡ All 6 Core Books",
+    desc: "Hindi, English, Math, Science, SST, Computer",
+    books: ["Hindi", "English", "Mathematics", "Science", "Social Science", "Computer / IT"],
+  },
+  {
+    label: "🎒 Nursery / KG Pack",
+    desc: "Rhymes, Balgeet, Numbers, Art, GK",
+    books: ["English Rhymes", "Hindi Balgeet", "Numbers & Maths", "Drawing & Art", "General Knowledge (GK)"],
+  },
+  {
+    label: "📚 Primary 8 Books",
+    desc: "Class 1st to 5th standard set",
+    books: ["Hindi", "English", "Mathematics", "EVS", "Social Science", "Computer / IT", "General Knowledge (GK)", "Drawing & Art"],
+  },
+  {
+    label: "🎓 Middle / High 8 Books",
+    desc: "Class 6th to 10th standard set",
+    books: ["Hindi", "English", "Mathematics", "Science", "Social Science", "Sanskrit", "Computer / IT", "Physical Education"],
+  },
+  {
+    label: "🔬 Class 11-12 Science Pack",
+    desc: "Physics, Chemistry, Maths, Biology, English Core, Computer",
+    books: ["Physics", "Chemistry", "Mathematics", "Biology", "English", "Computer / IT", "Physical Education"],
+  },
+  {
+    label: "📊 Class 11-12 Commerce Pack",
+    desc: "Accountancy, Business Studies, Economics, English, Applied Maths",
+    books: ["Accountancy", "Business Studies", "Economics", "English", "Mathematics", "Informatics Practices"],
+  },
+  {
+    label: "🎨 Class 11-12 Arts / Humanities Pack",
+    desc: "History, Political Science, Geography, Economics, English, Hindi",
+    books: ["History", "Political Science", "Geography", "Economics", "English", "Hindi", "Sociology"],
+  },
+];

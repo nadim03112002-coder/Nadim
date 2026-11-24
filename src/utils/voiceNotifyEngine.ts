@@ -264,7 +264,32 @@ if (typeof window !== "undefined") {
   // 1. Listen for foreground push/in-app notifications
   window.addEventListener("nst_foreground_notification", (event: any) => {
     const detail = event?.detail;
-    if (detail?.alreadySpoken) return;
+    if (detail?.alreadySpoken || detail?.suppressVoice) return;
+    const rawVoice =
+      detail?.voiceSpeak ??
+      detail?.payload?.voiceSpeak ??
+      detail?.payload?.data?.voiceSpeak;
+    const threadType = String(
+      detail?.threadType ||
+        detail?.payload?.threadType ||
+        detail?.payload?.data?.threadType ||
+        ""
+    )
+      .trim()
+      .toUpperCase();
+    const targetUrl = String(
+      detail?.url || detail?.payload?.url || detail?.payload?.data?.url || ""
+    );
+    if (
+      rawVoice === false ||
+      rawVoice === 0 ||
+      String(rawVoice).trim() === "0" ||
+      String(rawVoice).trim().toLowerCase() === "false" ||
+      threadType === "TEACHER_CHAT" ||
+      targetUrl.includes("subTab=teacher")
+    ) {
+      return;
+    }
     if (detail && (detail.title || detail.body)) {
       speakNotification(detail.title || "नया नोटिफिकेशन", detail.body, {
         dedupeKey: detail.id || detail.payload?.id || detail.payload?.data?.id,

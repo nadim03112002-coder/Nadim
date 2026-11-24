@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useMemo, useRef } from "react";
 import { toast } from "sonner";
+import { useBackHandler } from "../../utils/backNavigation";
 import {
   Users,
   Building2,
@@ -952,6 +953,33 @@ export const NstaMessengerSuite: React.FC<Props> = ({
   const [showWallpaperModal, setShowWallpaperModal] = useState(false);
   const [isUploadingGallery, setIsUploadingGallery] = useState(false);
 
+  // Android / Browser Back navigation inside Messenger (Camera/Lightbox -> Modals -> Search -> Chat Inbox -> Parent Tab)
+  useBackHandler(Boolean(fullscreenMedia), () => setFullscreenMedia(null), 32);
+  useBackHandler(showInAppCamera, () => stopInAppCamera(), 30);
+  useBackHandler(Boolean(selectedImageFile && imagePreviewUrl), () => {
+    if (!isUploadingMedia) {
+      setSelectedImageFile(null);
+      setImagePreviewUrl(null);
+    }
+  }, 28);
+  useBackHandler(Boolean(selectedVideoFile && videoPreviewUrl), () => {
+    if (!isUploadingMedia) {
+      setSelectedVideoFile(null);
+      setVideoPreviewUrl(null);
+    }
+  }, 28);
+  useBackHandler(Boolean(showMessageInfoMsg), () => setShowMessageInfoMsg(null), 22);
+  useBackHandler(showDeleteModal, () => setShowDeleteModal(false), 22);
+  useBackHandler(showWallpaperModal, () => setShowWallpaperModal(false), 20);
+  useBackHandler(showMemberDrawer, () => setShowMemberDrawer(false), 20);
+  useBackHandler(showAttachmentMenu, () => setShowAttachmentMenu(false), 18);
+  useBackHandler(showChatMoreMenu, () => setShowChatMoreMenu(false), 18);
+  useBackHandler(isHomeSearchOpen, () => {
+    setIsHomeSearchOpen(false);
+    setHomeSearchQuery("");
+  }, 10);
+  useBackHandler(mobileView === "chat", () => setMobileView("home"), 5);
+
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
@@ -1387,25 +1415,6 @@ export const NstaMessengerSuite: React.FC<Props> = ({
     return safeStudents;
   }, [safeStudents, activeClass, activeStudent]);
 
-  // Daily message limit per student-teacher pair based on school subscription plan & student count
-  const dailyTeacherStudentLimit = useMemo(() => {
-    const isElite = Boolean(
-      school?.subscription?.isElite ||
-      school?.subscription?.customCurriculumEnabled ||
-      ((school?.subscription?.monthlyAmount || 0) >= 1999 && school?.subscription?.status === 'active')
-    );
-    const studentCount = safeStudents.length;
-
-    if (isElite) {
-      if (studentCount <= 200) return 15;
-      if (studentCount <= 500) return 30; // 500 me 30 messages/day
-      return 50; // 2000+ me 50 messages/day
-    } else {
-      if (studentCount <= 200) return 10; // lite 200 me 10 messages/day
-      if (studentCount <= 500) return 15; // lite 500 me 15 messages/day
-      return 20; // lite 2000+ me 20 messages/day
-    }
-  }, [school?.subscription, safeStudents.length]);
 
   const isTeacherDirectoryView =
     activeTab === "teacher" && !isTeacherChatOpen && currentUserRole !== "TEACHER";
@@ -1464,24 +1473,6 @@ export const NstaMessengerSuite: React.FC<Props> = ({
     isTeacherDirectoryView,
     currentUserRole,
   ]);
-
-  const todayStr = useMemo(() => new Date().toISOString().split("T")[0], []);
-  const messagesTodayCount = useMemo(() => {
-    if (activeTab !== "teacher") return 0;
-    const sId = student?.id || activeStudent?.id;
-    const tId = teacher?.id || activeTeacher?.id;
-    if (!sId || !tId) return 0;
-
-    return messages.filter(m => {
-      if (m.threadType !== "TEACHER_CHAT") return false;
-      const isMatch = (m.studentId === sId && m.teacherId === tId);
-      if (!isMatch) return false;
-      const mDate = (m.createdAt || "").split("T")[0];
-      return mDate === todayStr;
-    }).length;
-  }, [activeTab, student?.id, activeStudent?.id, teacher?.id, activeTeacher?.id, messages, todayStr]);
-
-  const isTeacherQuotaExceeded = activeTab === "teacher" && currentUserRole !== "ADMIN" && messagesTodayCount >= dailyTeacherStudentLimit;
 
   // Track read receipts processed in this session to prevent infinite event re-dispatch loops
   const processedReadIdsRef = useRef<Set<string>>(new Set());
@@ -1580,8 +1571,9 @@ export const NstaMessengerSuite: React.FC<Props> = ({
         if (m.senderId !== currentUserId) incomingNew.push(m);
       }
     }
-    if (incomingNew.length > 0 && isVoiceAnnounceEnabled) {
-      const latest = incomingNew[incomingNew.length - 1];
+    const voiceEligibleNew = incomingNew.filter((m) => m.threadType !== "TEACHER_CHAT");
+    if (voiceEligibleNew.length > 0 && isVoiceAnnounceEnabled) {
+      const latest = voiceEligibleNew[voiceEligibleNew.length - 1];
       const speakerName =
         latest.senderName ||
         (latest.senderRole === "ADMIN"
@@ -2041,6 +2033,7 @@ export const NstaMessengerSuite: React.FC<Props> = ({
 
       if (isTeacherChat) {
         // 1-on-1 Teacher <-> Admin or Teacher <-> Student private routing:
+        // Teacher chats deliver normal push/sound notifications without TTS voice readout.
         if (msg.senderRole === "ADMIN") {
           const teacherTargetId = msg.teacherId || activeTeacher?.id;
           if (teacherTargetId && !senderIdSet.has(String(teacherTargetId).trim())) {
@@ -2053,6 +2046,8 @@ export const NstaMessengerSuite: React.FC<Props> = ({
               title: `🏫 School Admin (Principal) • संदेश`,
               body,
               type: "NSTA_MESSAGE",
+              threadType: "TEACHER_CHAT",
+              voiceSpeak: false,
               icon: senderPhoto,
               senderPhoto,
               url: `/?schoolPortal=1&schoolTab=messenger&subTab=teacher`,
@@ -2071,6 +2066,8 @@ export const NstaMessengerSuite: React.FC<Props> = ({
               title: `💬 Student: ${senderTitle}`,
               body,
               type: "NSTA_MESSAGE",
+              threadType: "TEACHER_CHAT",
+              voiceSpeak: false,
               icon: senderPhoto,
               senderPhoto,
               url: `/?schoolPortal=1&schoolTab=messenger&subTab=teacher`,
@@ -2089,6 +2086,8 @@ export const NstaMessengerSuite: React.FC<Props> = ({
               title: `💬 Teacher: ${senderTitle}`,
               body,
               type: "NSTA_MESSAGE",
+              threadType: "TEACHER_CHAT",
+              voiceSpeak: false,
               icon: senderPhoto,
               senderPhoto,
               url: `/?schoolPortal=1&schoolTab=messenger&subTab=teacher`,
@@ -2104,6 +2103,8 @@ export const NstaMessengerSuite: React.FC<Props> = ({
               title: `💬 Teacher: ${senderTitle}`,
               body,
               type: "NSTA_MESSAGE",
+              threadType: "TEACHER_CHAT",
+              voiceSpeak: false,
               icon: senderPhoto,
               senderPhoto,
               url: `/?schoolPortal=1&schoolTab=messenger&subTab=teacher`,
@@ -2132,6 +2133,8 @@ export const NstaMessengerSuite: React.FC<Props> = ({
           title,
           body,
           type: "NSTA_MESSAGE",
+          threadType: "CLASS_GROUP",
+          voiceSpeak: true,
           icon: senderPhoto,
           senderPhoto,
           url: `/?schoolPortal=1&schoolTab=messenger&subTab=class`,
@@ -2156,6 +2159,8 @@ export const NstaMessengerSuite: React.FC<Props> = ({
             title,
             body,
             type: "SCHOOL_NOTICE",
+            threadType: "SCHOOL_DESK",
+            voiceSpeak: true,
             icon: senderPhoto,
             senderPhoto,
             url: `/?schoolPortal=1&schoolTab=messenger&subTab=school`,
@@ -2173,12 +2178,6 @@ export const NstaMessengerSuite: React.FC<Props> = ({
     if (e) e.preventDefault();
     const cleanText = inputText.trim();
     if (!cleanText || isSending) return;
-
-    // Quota check for teacher chat (only applies to students, not school admin or teachers)
-    if (activeTab === "teacher" && currentUserRole === "STUDENT" && isTeacherQuotaExceeded) {
-      toast.error(`Daily message limit (${dailyTeacherStudentLimit} messages) poora ho chuka hai. Agla message kal bhej sakenge!`);
-      return;
-    }
 
     // Permission check for Class Group & School Desk
     if (currentUserRole === "STUDENT") {
@@ -2394,8 +2393,8 @@ export const NstaMessengerSuite: React.FC<Props> = ({
       toast.error("Kripya ek valid video file (MP4/WebM) select karein.");
       return;
     }
-    if (file.size > 75 * 1024 * 1024) {
-      toast.error("Video ka size 75MB se kam hona chahiye.");
+    if (file.size > 19.5 * 1024 * 1024) {
+      toast.error("Video ka size 19.5MB se kam hona chahiye (Telegram 20MB streaming limit).");
       return;
     }
 
@@ -2409,11 +2408,6 @@ export const NstaMessengerSuite: React.FC<Props> = ({
   // 3. Send Photo Message
   const handleSendImage = async () => {
     if (!selectedImageFile || isUploadingMedia) return;
-
-    if (activeTab === "teacher" && isTeacherQuotaExceeded) {
-      toast.error(`Daily message limit (${dailyTeacherStudentLimit} messages) poora ho chuka hai. Agla message kal bhej sakenge!`);
-      return;
-    }
 
     if (currentUserRole === "STUDENT" && activeTab !== "teacher") {
       toast.error("Keval Teachers aur School Admin hi is tab me media bhej sakte hain.");
@@ -2488,11 +2482,6 @@ export const NstaMessengerSuite: React.FC<Props> = ({
   const handleSendVideo = async () => {
     if (!selectedVideoFile || isUploadingMedia) return;
 
-    if (activeTab === "teacher" && isTeacherQuotaExceeded) {
-      toast.error(`Daily message limit (${dailyTeacherStudentLimit} messages) poora ho chuka hai. Agla message kal bhej sakenge!`);
-      return;
-    }
-
     if (currentUserRole === "STUDENT" && activeTab !== "teacher") {
       toast.error("Keval Teachers aur School Admin hi is tab me media bhej sakte hain.");
       return;
@@ -2558,11 +2547,6 @@ export const NstaMessengerSuite: React.FC<Props> = ({
   ) => {
     const file = e.target.files?.[0];
     if (!file) return;
-
-    if (activeTab === "teacher" && isTeacherQuotaExceeded) {
-      toast.error(`Daily message limit (${dailyTeacherStudentLimit} messages) poora ho chuka hai. Agla message kal bhej sakenge!`);
-      return;
-    }
 
     if (currentUserRole === "STUDENT" && activeTab !== "teacher") {
       toast.error("Keval Teachers aur School Admin hi is tab me documents/files bhej sakte hain.");
@@ -2712,10 +2696,6 @@ export const NstaMessengerSuite: React.FC<Props> = ({
   };
 
   const handleStartVoiceRecording = async () => {
-    if (activeTab === "teacher" && isTeacherQuotaExceeded) {
-      toast.error(`Daily message limit (${dailyTeacherStudentLimit} messages) poora ho chuka hai. Agla message kal bhej sakenge!`);
-      return;
-    }
 
     if (currentUserRole === "STUDENT" && activeTab !== "teacher") {
       toast.error("Keval Teachers aur School Admin hi is tab me voice note bhej sakte hain.");
@@ -2802,11 +2782,6 @@ export const NstaMessengerSuite: React.FC<Props> = ({
   const handleAudioFileSelected = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-
-    if (activeTab === "teacher" && isTeacherQuotaExceeded) {
-      toast.error(`Daily message limit (${dailyTeacherStudentLimit} messages) poora ho chuka hai. Agla message kal bhej sakenge!`);
-      return;
-    }
 
     if (currentUserRole === "STUDENT" && activeTab !== "teacher") {
       toast.error("Keval Teachers aur School Admin hi is tab me voice note bhej sakte hain.");
@@ -3010,10 +2985,7 @@ export const NstaMessengerSuite: React.FC<Props> = ({
     designation?: string;
     photoUrl?: string;
   }) => {
-    if (activeTab === "teacher" && isTeacherQuotaExceeded) {
-      toast.error(`Daily message limit (${dailyTeacherStudentLimit} messages) poora ho chuka hai. Agla message kal bhej sakenge!`);
-      return;
-    }
+
     if (currentUserRole === "STUDENT" && activeTab !== "teacher") {
       toast.error("Class group me keval Teachers aur School Admin hi contact bhej sakte hain.");
       return;
@@ -3063,10 +3035,7 @@ export const NstaMessengerSuite: React.FC<Props> = ({
 
   // 9. Location Sharing Handler
   const handleSendLocation = async (locName: string, locAddress: string, lat: number, lng: number) => {
-    if (activeTab === "teacher" && isTeacherQuotaExceeded) {
-      toast.error(`Daily message limit (${dailyTeacherStudentLimit} messages) poora ho chuka hai. Agla message kal bhej sakenge!`);
-      return;
-    }
+
     if (currentUserRole === "STUDENT" && activeTab !== "teacher") {
       toast.error("Class group me keval Teachers aur Admin location bhej sakte hain.");
       return;
@@ -3977,7 +3946,7 @@ export const NstaMessengerSuite: React.FC<Props> = ({
               ? "Official Class Notice & Announcements Group"
               : activeTab === "school"
               ? "Direct Communication Desk • Admissions, Fees & Official Alerts"
-              : `Teacher-Student 1-to-1 Chat (${dailyTeacherStudentLimit} messages daily quota)`}
+              : "Teacher-Student 1-to-1 Direct Chat · Unlimited Messages"}
           </div>
         </div>
 
@@ -4922,25 +4891,9 @@ export const NstaMessengerSuite: React.FC<Props> = ({
               Keval School Admin hi is School Desk par official sandesh bhej sakte hain.
             </span>
           </div>
-        ) : activeTab === "teacher" && isTeacherQuotaExceeded ? (
-          /* 2. Teacher Chat: Quota Limit Exceeded */
-          <div className="flex items-center justify-between gap-3 p-2.5 rounded-2xl bg-amber-950/40 border border-amber-600/40 text-amber-300 text-xs">
-            <div className="flex items-center gap-2">
-              <AlertCircle className="w-4 h-4 shrink-0 text-amber-400" />
-              <span>
-                {currentUserRole === "TEACHER"
-                  ? `Is student ke sath aaj ka daily message quota (${dailyTeacherStudentLimit} messages) poora ho chuka hai.`
-                  : `Aapka aaj ka daily quota (${dailyTeacherStudentLimit} messages) poora ho chuka hai. Agla message kal bhej sakenge.`}
-              </span>
-            </div>
-            <span className="font-mono text-[10px] font-black px-2 py-0.5 rounded bg-amber-500/20">
-              {dailyTeacherStudentLimit}/{dailyTeacherStudentLimit} Used
-            </span>
-          </div>
         ) : (
           /* 3. Standard Interactive WhatsApp Input */
           <form onSubmit={handleSendMessage} className="space-y-1.5">
-            {/* Quota Counter for Student/Teacher in Teacher Chat */}
             {activeTab === "teacher" && (
               <div className="flex items-center justify-between text-[11px] text-purple-300 px-1 font-semibold">
                 <span>
@@ -4948,8 +4901,8 @@ export const NstaMessengerSuite: React.FC<Props> = ({
                     ? `Chat with ${activeStudent?.name || "Student"}:`
                     : `Doubt Session with ${activeTeacher?.name || "Teacher"}:`}
                 </span>
-                <span className="font-mono bg-purple-500/20 px-2 py-0.5 rounded-full border border-purple-500/30 text-purple-200">
-                  {Math.max(0, dailyTeacherStudentLimit - messagesTodayCount)} / {dailyTeacherStudentLimit} messages remaining today
+                <span className="font-mono bg-emerald-500/15 px-2 py-0.5 rounded-full border border-emerald-500/30 text-emerald-300">
+                  Unlimited Messages
                 </span>
               </div>
             )}
@@ -5239,7 +5192,7 @@ export const NstaMessengerSuite: React.FC<Props> = ({
                       ? "Class group me official notice ya sandesh likhein..."
                       : activeTab === "school"
                       ? "School desk ke liye sandesh ya enquiry likhein..."
-                      : `Sandesh likhein (${Math.max(0, dailyTeacherStudentLimit - messagesTodayCount)} baaki)...`
+                      : "Teacher ko sandesh ya doubt likhein..."
                   }
                   className="flex-1 px-3.5 sm:px-4 py-2 sm:py-2.5 rounded-2xl bg-slate-800 border border-slate-700 text-white placeholder-slate-400 text-xs sm:text-sm focus:outline-none focus:border-emerald-500 transition min-w-0"
                 />

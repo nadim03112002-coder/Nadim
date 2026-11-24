@@ -143,9 +143,16 @@ self.addEventListener('notificationclick', (event) => {
   const notifTitle = String(event.notification.title || notifData.title || '');
   const notifBody = String(event.notification.body || notifData.body || '');
 
+  const suppressVoice =
+    notifData.voiceSpeak === false ||
+    notifData.voiceSpeak === '0' ||
+    String(notifData.voiceSpeak || '').toLowerCase() === 'false' ||
+    notifData.threadType === 'TEACHER_CHAT' ||
+    String(targetUrl).includes('subTab=teacher');
+
   let openTargetUrl = targetUrl;
   try {
-    if (notifTitle || notifBody) {
+    if (!suppressVoice && (notifTitle || notifBody)) {
       const u = new URL(targetUrl, self.location.origin);
       if (notifTitle) u.searchParams.set('speakTitle', notifTitle.slice(0, 140));
       if (notifBody) u.searchParams.set('speakBody', notifBody.slice(0, 260));
@@ -171,6 +178,7 @@ self.addEventListener('notificationclick', (event) => {
               tab: notifData.tab || notifData.schoolTab || '',
               schoolTab: notifData.schoolTab || notifData.tab || '',
               threadType: notifData.threadType || '',
+              voiceSpeak: suppressVoice ? '0' : '1',
               classId: notifData.classId || '',
               teacherId: notifData.teacherId || '',
             });

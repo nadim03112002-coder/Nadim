@@ -1,6 +1,5 @@
 // @ts-nocheck
 import React, { useState, useEffect, useLayoutEffect, useRef, useMemo } from "react";
-import AndroidBatteryIndicator from "../AndroidBatteryIndicator";
 import { toast } from "sonner";
 import {
   subscribeToClasses, subscribeToSubjects, subscribeToStudents,
@@ -71,6 +70,7 @@ import { rotateToLandscape, rotateToPortrait, setDesktopMode, useDeviceOrientati
 import { autoSyncSchoolPushIfPermitted } from "../../utils/schoolPushClient";
 import { subscribeUserToPush } from "../NotificationManager";
 import { resolveTeacherPermissions, getTeacherScopedClasses } from "../../utils/schoolRolePermissions";
+import { useBackHandler } from "../../utils/backNavigation";
 
 interface Props {
   schoolId: string;
@@ -112,71 +112,7 @@ type TeacherView =
   | "my_leaves"
   | "profile";
 
-export const COMMON_BOOK_PRESETS = [
-  { name: "Hindi", icon: "📖", category: "Language" },
-  { name: "English", icon: "📘", category: "Language" },
-  { name: "Mathematics", icon: "📐", category: "Core" },
-  { name: "Science", icon: "🔬", category: "Core" },
-  { name: "Social Science", icon: "🌍", category: "Core" },
-  { name: "EVS", icon: "🌿", category: "Junior" },
-  { name: "Sanskrit", icon: "📜", category: "Language" },
-  { name: "Computer / IT", icon: "💻", category: "Technical" },
-  { name: "General Knowledge (GK)", icon: "🧠", category: "General" },
-  { name: "Drawing & Art", icon: "🎨", category: "Creative" },
-  { name: "Moral Science", icon: "🕊️", category: "General" },
-  { name: "Physical Education", icon: "🏃", category: "Sports" },
-  { name: "Urdu", icon: "🕌", category: "Language" },
-  { name: "Rhymes & Oral", icon: "🎵", category: "Junior" },
-  { name: "Physics", icon: "⚛️", category: "Science" },
-  { name: "Chemistry", icon: "🧪", category: "Science" },
-  { name: "Biology", icon: "🧬", category: "Science" },
-  { name: "Accountancy", icon: "📑", category: "Commerce" },
-  { name: "Business Studies", icon: "💼", category: "Commerce" },
-  { name: "Economics", icon: "📈", category: "Commerce" },
-  { name: "History", icon: "🏛️", category: "Arts" },
-  { name: "Political Science", icon: "⚖️", category: "Arts" },
-  { name: "Geography", icon: "🗺️", category: "Arts" },
-  { name: "Sociology", icon: "👥", category: "Arts" },
-  { name: "Informatics Practices", icon: "🖥️", category: "Technical" },
-];
-
-export const PRESET_BOOK_BUNDLES = [
-  {
-    label: "⚡ All 6 Core Books",
-    desc: "Hindi, English, Math, Science, SST, Computer",
-    books: ["Hindi", "English", "Mathematics", "Science", "Social Science", "Computer / IT"],
-  },
-  {
-    label: "🎒 Nursery / KG Pack",
-    desc: "Rhymes, Balgeet, Numbers, Art, GK",
-    books: ["English Rhymes", "Hindi Balgeet", "Numbers & Maths", "Drawing & Art", "General Knowledge (GK)"],
-  },
-  {
-    label: "📚 Primary 8 Books",
-    desc: "Class 1st to 5th standard set",
-    books: ["Hindi", "English", "Mathematics", "EVS", "Social Science", "Computer / IT", "General Knowledge (GK)", "Drawing & Art"],
-  },
-  {
-    label: "🎓 Middle / High 8 Books",
-    desc: "Class 6th to 10th standard set",
-    books: ["Hindi", "English", "Mathematics", "Science", "Social Science", "Sanskrit", "Computer / IT", "Physical Education"],
-  },
-  {
-    label: "🔬 Class 11-12 Science Pack",
-    desc: "Physics, Chemistry, Maths, Biology, English Core, Computer",
-    books: ["Physics", "Chemistry", "Mathematics", "Biology", "English", "Computer / IT", "Physical Education"],
-  },
-  {
-    label: "📊 Class 11-12 Commerce Pack",
-    desc: "Accountancy, Business Studies, Economics, English, Applied Maths",
-    books: ["Accountancy", "Business Studies", "Economics", "English", "Mathematics", "Informatics Practices"],
-  },
-  {
-    label: "🎨 Class 11-12 Arts / Humanities Pack",
-    desc: "History, Political Science, Geography, Economics, English, Hindi",
-    books: ["History", "Political Science", "Geography", "Economics", "English", "Hindi", "Sociology"],
-  },
-];
+export { COMMON_BOOK_PRESETS, PRESET_BOOK_BUNDLES } from "../../constants/bookPresets";
 
 export const TeacherPanel: React.FC<Props> = ({
   schoolId,
@@ -413,6 +349,37 @@ export const TeacherPanel: React.FC<Props> = ({
     reason: "",
   });
   const [submittingTeacherLeave, setSubmittingTeacherLeave] = useState(false);
+
+  // Android / Browser Back button step-by-step navigation across Teacher Portal
+  useBackHandler(showFaceStudio, () => setShowFaceStudio(false), 30);
+  useBackHandler(Boolean(admissionPrintPayload), () => setAdmissionPrintPayload(null), 22);
+  useBackHandler(Boolean(confirmDeleteSubjectId), () => setConfirmDeleteSubjectId(null), 22);
+  useBackHandler(showMySignatureModal, () => setShowMySignatureModal(false), 22);
+  useBackHandler(showMyAppointmentLetter, () => setShowMyAppointmentLetter(false), 20);
+  useBackHandler(showDirectAdmissionModal, () => setShowDirectAdmissionModal(false), 20);
+  useBackHandler(showAddBooksModal, () => setShowAddBooksModal(false), 20);
+  useBackHandler(showRotatePrompt, () => setShowRotatePrompt(false), 20);
+  useBackHandler(isSidebarOpen, () => setIsSidebarOpen(false), 18);
+  useBackHandler(view === "smart_class", () => setView("lessons"), 10);
+  useBackHandler(view === "lessons", () => {
+    setSelectedLesson(null);
+    setView("subjects");
+  }, 8);
+  useBackHandler(view === "class_students", () => {
+    setSelectedClass(null);
+    setView("classes");
+  }, 8);
+  useBackHandler(view === "subjects" && Boolean(selectedClass), () => {
+    setSelectedSubject(null);
+    setSelectedClass(null);
+    setView("classes");
+  }, 6);
+  useBackHandler(view !== "dashboard", () => {
+    setSelectedLesson(null);
+    setSelectedSubject(null);
+    setSelectedClass(null);
+    setView("dashboard");
+  }, 0);
 
   // Initial load
   useEffect(() => {
@@ -1648,7 +1615,6 @@ export const TeacherPanel: React.FC<Props> = ({
 
         {/* Right: Quick Routine Button + 3-Theme Switcher, Screen Rotate Toggle & Faculty Badge */}
         <div className="flex items-center gap-2 shrink-0">
-          <AndroidBatteryIndicator tone="auto" />
           <button
             type="button"
             onClick={() => setView("timetable")}

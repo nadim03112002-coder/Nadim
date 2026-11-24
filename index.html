@@ -31,7 +31,8 @@
     <link rel="icon" type="image/png" sizes="512x512" href="/icons/icon-512.png?v=3" />
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@500;700&family=Playfair+Display:ital,wght@0,600;0,700;0,800;1,600&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@500;700&family=Playfair+Display:ital,wght@0,600;0,700;0,800;1,600&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet" media="print" onload="this.media='all'">
+    <noscript><link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@500;700&family=Playfair+Display:ital,wght@0,600;0,700;0,800;1,600&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet"></noscript>
     <script>
       // Start the app splash clock before the React bundle begins loading.
       // The HTML fallback below covers the gap between the native PWA splash
@@ -273,22 +274,14 @@
           splash.style.transform = 'scale(0.98)';
           setTimeout(function() {
             try { splash.remove(); } catch(e) {}
-          }, 320);
+          }, 180);
         }
       };
 
-      // Guaranteed auto-hide timeout: dismiss splash after 1.2s so user never gets stuck
+      // Safety fallback timeout in case React takes too long on ultra-slow 2G
       setTimeout(function() {
         if (window.hidePreReactSplash) window.hidePreReactSplash();
-      }, 1200);
-
-      if (document.readyState === 'complete') {
-        setTimeout(window.hidePreReactSplash, 400);
-      } else {
-        window.addEventListener('load', function() {
-          setTimeout(window.hidePreReactSplash, 400);
-        });
-      }
+      }, 2500);
     </script>
     <script type="module" src="/src/main.tsx"></script>
   </body>

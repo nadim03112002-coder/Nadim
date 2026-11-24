@@ -468,9 +468,9 @@ export const CommunityPostFeed: React.FC<CommunityPostFeedProps> = ({
   const handleVideoSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    const MAX_VIDEO_SIZE = 50 * 1024 * 1024; // 50MB Telegram Cloud storage limit
+    const MAX_VIDEO_SIZE = Math.floor(19.5 * 1024 * 1024); // Telegram Bot API 20MB streaming/download limit
     if (file.size > MAX_VIDEO_SIZE) {
-      showToast('⚠️ Video size maximum 50MB tak ho sakti hai (Cloud storage limit 50MB hai)!');
+      showToast('⚠️ Video size maximum 19.5MB tak ho sakti hai (Telegram 20MB streaming limit)!');
       return;
     }
     setSelectedVideoFile(file);
@@ -592,10 +592,10 @@ export const CommunityPostFeed: React.FC<CommunityPostFeedProps> = ({
         ...(isOfficialAnnouncement ? { isOfficial: true } : {}),
       };
 
-      if (uploadedImageUrl && uploadedImageUrl.trim()) {
+      if (uploadedImageUrl && uploadedImageUrl.trim() && !uploadedImageUrl.trim().startsWith('blob:')) {
         newPostData.imageUrl = uploadedImageUrl.trim();
       }
-      if (uploadedVideoUrl && uploadedVideoUrl.trim()) {
+      if (uploadedVideoUrl && uploadedVideoUrl.trim() && !uploadedVideoUrl.trim().startsWith('blob:')) {
         newPostData.videoUrl = uploadedVideoUrl.trim();
       }
 
@@ -1483,7 +1483,7 @@ export const CommunityPostFeed: React.FC<CommunityPostFeedProps> = ({
           <div className="flex items-center gap-2.5 text-amber-300 min-w-0">
             <Eye size={17} className="text-amber-400 shrink-0" />
             <p className="text-[11px] leading-tight">
-              <strong>Guest Mode:</strong> Aap sabhi posts aur messages padh sakte hain. Post, like ya comment karne ke liye Google se link karein.
+              <strong>Guest Mode:</strong> Aap sabhi posts aur messages padh sakte hain. Post, like ya comment karne ke liye Email/Mobile se login karein.
             </p>
           </div>
           <button
@@ -1491,7 +1491,7 @@ export const CommunityPostFeed: React.FC<CommunityPostFeedProps> = ({
             onClick={() => { setGuestModalContext('Community Access'); setGuestModalOpen(true); }}
             className="px-2.5 py-1.5 rounded-xl bg-amber-400 text-slate-900 font-black text-[11px] shrink-0 hover:bg-amber-300 transition-all active:scale-95 cursor-pointer shadow-sm"
           >
-            Link Google
+            Login / Sign Up
           </button>
         </div>
       )}
@@ -3064,7 +3064,7 @@ export const CommunityPostFeed: React.FC<CommunityPostFeedProps> = ({
         </div>
       )}
 
-      {/* Guest Restriction & Google Binding Modal */}
+      {/* Guest Restriction Modal */}
       <GuestRestrictionModal
         isOpen={guestModalOpen}
         onClose={() => setGuestModalOpen(false)}
@@ -3073,7 +3073,7 @@ export const CommunityPostFeed: React.FC<CommunityPostFeedProps> = ({
           if (onUserUpdate) onUserUpdate(updated);
         }}
         featureName={guestModalContext}
-        customMessage="Guest Account me Community par post likhna, like ya comment karna allowed nahi hai. Apne account ko Google se bind karein taaki aapka profile hamesha verified rahe!"
+        customMessage="Guest Account me Community par post likhna, like ya comment karna allowed nahi hai. Apne Email/Mobile account se Login ya Create Account karein taaki aapka profile hamesha verified rahe!"
       />
     </div>
   );

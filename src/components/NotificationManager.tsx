@@ -458,6 +458,8 @@ export const getStoredFcmToken = (): string | null => {
 export interface PushNotificationRequest {
   recipientIds: string[];
   type: NotificationCategory;
+  threadType?: string;
+  voiceSpeak?: boolean;
   title: string;
   body: string;
   url?: string;
@@ -469,13 +471,38 @@ export interface PushNotificationRequest {
   classLevel?: string;
 }
 
+const shouldSuppressVoiceForNotification = (data?: Record<string, any>): boolean => {
+  if (!data) return false;
+  const vs = data.voiceSpeak;
+  if (
+    vs === false ||
+    vs === 0 ||
+    String(vs).trim() === '0' ||
+    String(vs).trim().toLowerCase() === 'false'
+  ) {
+    return true;
+  }
+  const threadType = String(data.threadType || '').trim().toUpperCase();
+  if (threadType === 'TEACHER_CHAT') return true;
+  const url = String(data.url || '');
+  if (url.includes('subTab=teacher')) return true;
+  return false;
+};
+
 /** Ask the server to send an FCM push, AND directly deliver via Firebase RTDB user inbox for instant background wake-up. */
 export const sendPushNotification = async (request: PushNotificationRequest) => {
   const timestamp = Date.now();
   const notifId = `notif_${timestamp}_${Math.random().toString(36).substring(2, 8)}`;
+  const suppressVoice = shouldSuppressVoiceForNotification({
+    voiceSpeak: request.voiceSpeak,
+    threadType: request.threadType,
+    url: request.url,
+  });
   const notifPayload = {
     id: notifId,
     type: request.type,
+    ...(request.threadType ? { threadType: request.threadType } : {}),
+    voiceSpeak: !suppressVoice,
     title: request.title,
     body: request.body,
     url: request.url || '/',
@@ -712,13 +739,16 @@ export const listenToForegroundMessages = async (onMessageReceived?: (payload: a
 
       // Also trigger chime & custom event for in-app toasts & voice readout
       const msgDedupeId = String(payload?.data?.id || payload?.messageId || `${title}|${body}`);
-      const spoke = speakNotification(title, body, { dedupeKey: msgDedupeId, playTone: true });
+      const suppressVoice = shouldSuppressVoiceForNotification(payload?.data);
+      const spoke = suppressVoice
+        ? false
+        : speakNotification(title, body, { dedupeKey: msgDedupeId, playTone: true });
       if (!spoke) {
         playNotificationTone();
       }
 
       window.dispatchEvent(new CustomEvent('nst_foreground_notification', {
-        detail: { id: msgDedupeId, title, body, payload, alreadySpoken: true }
+        detail: { id: msgDedupeId, title, body, payload, alreadySpoken: true, suppressVoice }
       }));
     });
   } catch (e) {
@@ -1374,14 +1404,17 @@ export const subscribeToUserNotifications = (
       try { onNotificationReceived(item); } catch (_) {}
     }
 
-    // 2. Voice Notification + Audio Chime (for fresh real-time messages & attendance alerts)
+    // 2. Voice Notification + Audio Chime (for fresh real-time messages & attendance alerts; skip voice TTS for 1-on-1 Teacher Chat)
+    const suppressVoice = shouldSuppressVoiceForNotification(item);
     let voiceTriggered = false;
-    try {
-      voiceTriggered = speakNotification(item.title || 'स्कूल सूचना', item.body || '', {
-        dedupeKey: item.id,
-        playTone: true,
-      });
-    } catch (_) {}
+    if (!suppressVoice) {
+      try {
+        voiceTriggered = speakNotification(item.title || 'स्कूल सूचना', item.body || '', {
+          dedupeKey: item.id,
+          playTone: true,
+        });
+      } catch (_) {}
+    }
     if (!voiceTriggered) {
       playNotificationTone();
     }
@@ -1395,6 +1428,7 @@ export const subscribeToUserNotifications = (
             body: item.body,
             payload: item,
             alreadySpoken: true,
+            suppressVoice,
           },
         })
       );

@@ -1,12 +1,11 @@
 // @ts-nocheck
-import React, { useState, useEffect, useLayoutEffect, useRef, useMemo } from "react";
-import AndroidBatteryIndicator from "../AndroidBatteryIndicator";
+import React, { Suspense, useState, useEffect, useLayoutEffect, useRef, useMemo } from "react";
 import {
   subscribeToSessions, subscribeToClasses, subscribeToSubjects, subscribeToTeachers,
   subscribeToAllStudents, saveSession, saveClass, saveSubject, saveMultipleSubjects, saveTeacher, saveStudent,
   deleteClass, deleteSubject, deleteTeacher, deleteStudent, updateStudent, deleteSession,
   updateSchool, updateSession, updateClass, updateTeacher,
-  generateId, getSchool, getSessions, setSchoolLockCode,
+  generateId, getSchool, getLocalSchools, getSessions, setSchoolLockCode,
   assignSchoolSubAdminByEmail, getSchoolAdmins, removeSchoolUserByUid,
   getAllMonthlyFees, getSchoolFeeHistory, currentMonthStr, saveFee, markFeePaid, isStudentInClass, isDemoRecord, isDemoSessionId,
   shouldUseDemoForSchool, getLocalAttendance, getLocalFees,
@@ -30,7 +29,7 @@ import { buildMergedFleetList } from "../../utils/schoolTransportStore";
 import { computePaymentBreakdown } from "../../utils/paymentBreakdown";
 import { toUpperFormText, rememberOccupation } from "../../utils/schoolFormUtils";
 import { OccupationAutocomplete } from "./OccupationAutocomplete";
-import { COMMON_BOOK_PRESETS, PRESET_BOOK_BUNDLES } from "./TeacherPanel";
+import { COMMON_BOOK_PRESETS, PRESET_BOOK_BUNDLES } from "../../constants/bookPresets";
 import type { SchoolUserProfile } from "../../school-types";
 import type {
   School, SchoolSession, SchoolClass, SchoolSubject, SchoolTeacher, SchoolStudent, StaffDailyAttendanceRecord
@@ -44,24 +43,24 @@ import { getDemoSchoolDataset, isDemoDataEnabled, setDemoDataEnabled } from "./d
 import { ContentManager } from "./ContentManager";
 import { SmartClass } from "./SmartClass";
 import { AttendanceManager } from "./AttendanceManager";
-import { FaceAttendanceKioskModal } from "./FaceAttendanceKioskModal";
-import { UniversalFaceIdStudioModal } from "./UniversalFaceIdStudioModal";
+const FaceAttendanceKioskModal = React.lazy(() => import("./FaceAttendanceKioskModal").then(m => ({ default: m.FaceAttendanceKioskModal })));
+const UniversalFaceIdStudioModal = React.lazy(() => import("./UniversalFaceIdStudioModal").then(m => ({ default: m.UniversalFaceIdStudioModal })));
 import { FeeManager } from "./FeeManager";
 import { ReportCard } from "./ReportCard";
 import { MarksManager } from "./MarksManager";
 import { ExamResultsPanel } from "./ExamResultsPanel";
 import { DirectUploadButton } from "../DirectUploadButton";
-import { IdCardManager } from "./IdCardManager";
-import { AdmitCardManager } from "./AdmitCardManager";
-import { CertificateManager } from "./CertificateManager";
-import { MarksheetGenerator } from "./MarksheetGenerator";
+const IdCardManager = React.lazy(() => import("./IdCardManager").then(m => ({ default: m.IdCardManager })));
+const AdmitCardManager = React.lazy(() => import("./AdmitCardManager").then(m => ({ default: m.AdmitCardManager })));
+const CertificateManager = React.lazy(() => import("./CertificateManager").then(m => ({ default: m.CertificateManager })));
+const MarksheetGenerator = React.lazy(() => import("./MarksheetGenerator").then(m => ({ default: m.MarksheetGenerator })));
 import { StudentReAdmissionManager } from "./StudentReAdmissionManager";
 import { NoticeBoardManager } from "./NoticeBoardManager";
-import { StaffHRMManager } from "./StaffHRMManager";
-import { SchoolReportsHub } from "./SchoolReportsHub";
-import { PublicSchoolWebsite } from "./PublicSchoolWebsite";
-import { SchoolWebsiteCms } from "./SchoolWebsiteCms";
-import { OnlineAdmissionManager } from "./OnlineAdmissionManager";
+const StaffHRMManager = React.lazy(() => import("./StaffHRMManager").then(m => ({ default: m.StaffHRMManager })));
+const SchoolReportsHub = React.lazy(() => import("./SchoolReportsHub").then(m => ({ default: m.SchoolReportsHub })));
+const PublicSchoolWebsite = React.lazy(() => import("./PublicSchoolWebsite").then(m => ({ default: m.PublicSchoolWebsite })));
+const SchoolWebsiteCms = React.lazy(() => import("./SchoolWebsiteCms").then(m => ({ default: m.SchoolWebsiteCms })));
+const OnlineAdmissionManager = React.lazy(() => import("./OnlineAdmissionManager").then(m => ({ default: m.OnlineAdmissionManager })));
 import { getStaffEmployees, saveStaffEmployee, getAccountants, saveAccountant, subscribeToAccountants, deleteAccountant, unassignTeacherForAccountantRole, saveSchoolGalleryItem, deleteSchoolGalleryItem } from "../../school-firebase";
 import { compressImageFileToDataUrl } from "../../utils/imageCompression";
 import type { MonthlyFee, StaffEmployee, StoreSaleRecord, SchoolAccountant } from "../../school-types";
@@ -77,14 +76,14 @@ import { InventoryStoreManager } from "./InventoryStoreManager";
 import { TeacherIdCardModal } from "./TeacherIdCardModal";
 import { SchoolCommunityFeed } from "./SchoolCommunityFeed";
 import { SchoolMessengerBroadcastStudio } from "./SchoolMessengerBroadcastStudio";
-import { NstaMessengerSuite } from "./NstaMessengerSuite";
+const NstaMessengerSuite = React.lazy(() => import("./NstaMessengerSuite").then(m => ({ default: m.NstaMessengerSuite })));
 import { AbsenteeActionPage } from "./AbsenteeActionPage";
 import { GroupStudyModal } from "../GroupStudyModal";
 import { TeacherRulesRegulationsView } from "./TeacherRulesRegulationsView";
 import { TeacherSignatureModal } from "./TeacherSignatureModal";
 import { AppointmentLetterModal } from "./AppointmentLetterModal";
 import { AccountRecoveryCard } from "./AccountRecoveryCard";
-import { AdminAccountsDirectory } from "./AdminAccountsDirectory";
+const AdminAccountsDirectory = React.lazy(() => import("./AdminAccountsDirectory").then(m => ({ default: m.AdminAccountsDirectory })));
 import {
   Users, BookOpen, Calendar, IndianRupee, Plus, Trash2, Settings,
   ChevronRight, ChevronLeft, X, Edit3, FileText, Award,
@@ -113,33 +112,36 @@ import { SchoolBirthdayCalendar } from "./SchoolBirthdayCalendar";
 import { UniversalAttendanceDesk } from "./UniversalAttendanceDesk";
 import { UniversalAttendanceScannerModal } from "./UniversalAttendanceScannerModal";
 import { SchoolLocationModal } from "./SchoolLocationModal";
-import { getSchoolFaceDescriptors, playAttendanceSuccessChime } from "../../utils/faceRecognitionEngine";
 import { speakNotification } from "../../utils/voiceNotifyEngine";
 import { getCombinedDiscountLedger, DISPLAY_DISCOUNT_LABEL } from "../../utils/schoolDiscountAndPayment";
-import { SchoolBackupManager } from "./SchoolBackupManager";
+const SchoolBackupManager = React.lazy(() => import("./SchoolBackupManager").then(m => ({ default: m.SchoolBackupManager })));
 import { SchoolExpenseManager } from "./SchoolExpenseManager";
 import { ReceiptCancellationModal } from "./ReceiptCancellationModal";
 import { RazorpaySettingsModal } from "./RazorpaySettingsModal";
 import { ParentLeaveManager } from "./ParentLeaveManager";
 import { PtmSchedulerModal } from "./PtmSchedulerModal";
 import { StaffPayrollManager } from "./StaffPayrollManager";
-import { QuestionPaperBuilder } from "./QuestionPaperBuilder";
+const QuestionPaperBuilder = React.lazy(() => import("./QuestionPaperBuilder").then(m => ({ default: m.QuestionPaperBuilder })));
 import { SiblingProfileManager } from "./SiblingProfileManager";
-import { MultiBranchManager } from "./MultiBranchManager";
-import { HostelMessManager } from "./HostelMessManager";
+const MultiBranchManager = React.lazy(() => import("./MultiBranchManager").then(m => ({ default: m.MultiBranchManager })));
+const HostelMessManager = React.lazy(() => import("./HostelMessManager").then(m => ({ default: m.HostelMessManager })));
 import { SyllabusPacingTracker } from "./SyllabusPacingTracker";
 import { BusFleetLogbookModal } from "./BusFleetLogbookModal";
 import { VisitorGateSecurityManager } from "./VisitorGateSecurityManager";
-import { DocumentVerificationView } from "./DocumentVerificationView";
+const DocumentVerificationView = React.lazy(() => import("./DocumentVerificationView").then(m => ({ default: m.DocumentVerificationView })));
 import { AdmissionEnquiryCrm } from "./AdmissionEnquiryCrm";
 import { TeacherAdminGrowthHub } from "./TeacherAdminGrowthHub";
-import { EntranceTestAdminManager } from "./EntranceTestAdminManager";
+const EntranceTestAdminManager = React.lazy(() => import("./EntranceTestAdminManager").then(m => ({ default: m.EntranceTestAdminManager })));
 import { HomeDailyRoutineWidget } from "./HomeDailyRoutineWidget";
 import { AdminDashboardCharts } from "./AdminDashboardCharts";
 import { LessonTopicManagerPanel } from "./LessonTopicManagerPanel";
 import { RolesPermissionsManager } from "./RolesPermissionsManager";
-import { DocumentTemplateStudioModal } from "./DocumentTemplateStudioModal";
-import { evaluateEntranceScore, saveEntranceAdmissionPrefill } from "../../utils/entranceTestEngine";
+const DocumentTemplateStudioModal = React.lazy(() => import("./DocumentTemplateStudioModal").then(m => ({ default: m.DocumentTemplateStudioModal })));
+const playAttendanceSuccessChimeLazy = () => {
+  void import("../../utils/faceRecognitionEngine")
+    .then((m) => m.playAttendanceSuccessChime?.())
+    .catch(() => {});
+};
 import { ShieldCheck, Receipt } from "lucide-react";
 import { rotateToLandscape, rotateToPortrait, isDesktopModeOn, setDesktopMode, useDeviceOrientation } from "../../utils/displayPrefs";
 import { toast } from "sonner";
@@ -147,6 +149,7 @@ import { ADMIN_WHATSAPP_NUMBER } from "../../constants";
 import { safeOpenExternalUrl, getDynamicAcademicSessionLabel, resolveWebsiteAdmissionSessionLabel, formatCleanSessionName } from "../../utils/safeBrowserActions";
 import { autoSyncSchoolPushIfPermitted, sendSchoolPushNotification } from "../../utils/schoolPushClient";
 import { subscribeUserToPush } from "../NotificationManager";
+import { useBackHandler } from "../../utils/backNavigation";
 
 interface Props {
   schoolId: string;
@@ -230,10 +233,18 @@ export const SchoolAdminPanel: React.FC<Props> = ({
     }
   };
 
-  const [school, setSchool] = useState<School | null>(null);
+  const initialCachedSchool = useMemo(() => {
+    try {
+      const list = getLocalSchools();
+      return list.find((s) => s.id === schoolId || s.code === schoolId) || null;
+    } catch {
+      return null;
+    }
+  }, [schoolId]);
+  const [school, setSchool] = useState<School | null>(initialCachedSchool);
   const [showLeaveConfirmModal, setShowLeaveConfirmModal] = useState(false);
   const [leavingSchoolLoading, setLeavingSchoolLoading] = useState(false);
-  const [schoolLoading, setSchoolLoading] = useState(true);
+  const [schoolLoading, setSchoolLoading] = useState<boolean>(() => !initialCachedSchool);
   const [sessions, setSessions] = useState<SchoolSession[]>([]);
   const [classes, setClasses] = useState<SchoolClass[]>([]);
   const [subjects, setSubjects] = useState<SchoolSubject[]>([]);
@@ -945,6 +956,40 @@ export const SchoolAdminPanel: React.FC<Props> = ({
   const [recycleSearch, setRecycleSearch] = useState<string>("");
   const [recycleBusyId, setRecycleBusyId] = useState<string | null>(null);
 
+  // Android / Browser Back button step-by-step navigation across School Admin ERP
+  useBackHandler(showUniversalScannerModal, () => setShowUniversalScannerModal(false), 30);
+  useBackHandler(showFaceKioskModal, () => setShowFaceKioskModal(false), 30);
+  useBackHandler(showFaceStudioModal, () => setShowFaceStudioModal(false), 30);
+  useBackHandler(Boolean(signatureTargetTeacher), () => setSignatureTargetTeacher(null), 25);
+  useBackHandler(Boolean(appointmentLetterTeacher), () => setAppointmentLetterTeacher(null), 23);
+  useBackHandler(Boolean(selectedTeacherForIdCard), () => setSelectedTeacherForIdCard(null), 22);
+  useBackHandler(Boolean(quickActionStudent), () => setQuickActionStudent(null), 22);
+  useBackHandler(Boolean(showForm), () => setShowForm(null), 22);
+  useBackHandler(Boolean(admissionPrintPayload), () => setAdmissionPrintPayload(null), 22);
+  useBackHandler(showLeaveConfirmModal, () => setShowLeaveConfirmModal(false), 20);
+  useBackHandler(showExpiryPopup, () => setShowExpiryPopup(false), 20);
+  useBackHandler(showTeacherRulesModal, () => setShowTeacherRulesModal(false), 20);
+  useBackHandler(showTeacherReferralModal, () => setShowTeacherReferralModal(false), 20);
+  useBackHandler(showAttScheduleEditor, () => setShowAttScheduleEditor(false), 20);
+  useBackHandler(showFullSchoolProfileEditor, () => setShowFullSchoolProfileEditor(false), 20);
+  useBackHandler(showDigitalSignatureModal, () => setShowDigitalSignatureModal(false), 20);
+  useBackHandler(showLockCode, () => setShowLockCode(false), 20);
+  useBackHandler(showRotatePrompt, () => setShowRotatePrompt(false), 20);
+  useBackHandler(showHeaderSettingsMenu, () => setShowHeaderSettingsMenu(false), 20);
+  useBackHandler(showAddMemoryModal, () => setShowAddMemoryModal(false), 20);
+  useBackHandler(showSessionModal, () => setShowSessionModal(false), 20);
+  useBackHandler(showHowToUseModal, () => setShowHowToUseModal(false), 20);
+  useBackHandler(showDirectAdmissionModal, () => setShowDirectAdmissionModal(false), 20);
+  useBackHandler(showSchoolLocationModal, () => setShowSchoolLocationModal(false), 20);
+  useBackHandler(isSidebarOpen, () => setIsSidebarOpen(false), 18);
+  useBackHandler(Boolean(smartClassLesson), () => setSmartClassLesson(null), 12);
+  useBackHandler(Boolean(selectedSubject), () => setSelectedSubject(null), 10);
+  useBackHandler(Boolean(selectedClass), () => {
+    setSelectedClass(null);
+    setSelectedSectionFilter("ALL");
+  }, 8);
+  useBackHandler(view !== "dashboard", () => setView("dashboard"), 0);
+
   useEffect(() => {
     if (!schoolId) return;
     const unsub = subscribeToRecycleBin(schoolId, ({ teachers: rTeachers, students: rStudents }) => {
@@ -959,20 +1004,24 @@ export const SchoolAdminPanel: React.FC<Props> = ({
   useEffect(() => {
     if (!schoolId) return;
     let cancelled = false;
-    getSchoolFaceDescriptors(schoolId)
-      .then((map) => {
-        if (cancelled) return;
-        const next: Record<string, boolean> = {};
-        Object.keys(map || {}).forEach((id) => {
-          next[id] = true;
+    const timer = setTimeout(() => {
+      import("../../utils/faceRecognitionEngine")
+        .then(({ getSchoolFaceDescriptors }) => getSchoolFaceDescriptors(schoolId))
+        .then((map) => {
+          if (cancelled) return;
+          const next: Record<string, boolean> = {};
+          Object.keys(map || {}).forEach((id) => {
+            next[id] = true;
+          });
+          setEnrolledFaceIds(next);
+        })
+        .catch((err) => {
+          console.warn("Failed to fetch face descriptors:", err);
         });
-        setEnrolledFaceIds(next);
-      })
-      .catch((err) => {
-        console.warn("Failed to fetch face descriptors:", err);
-      });
+    }, showFaceKioskModal ? 0 : 1200);
     return () => {
       cancelled = true;
+      clearTimeout(timer);
     };
   }, [schoolId, showFaceKioskModal, students.length]);
 
@@ -986,18 +1035,21 @@ export const SchoolAdminPanel: React.FC<Props> = ({
   useEffect(() => {
     let active = true;
     if (!schoolId) return;
-    getSchoolFeeHistory(schoolId, activeSession?.id)
-      .then((fees) => {
-        if (active && Array.isArray(fees)) setDashboardFeeHistory(fees);
-      })
-      .catch(() => {});
-    loadMergedStoreSales<StoreSaleRecord>(schoolId)
-      .then((sales) => {
-        if (active && Array.isArray(sales)) setDashboardStoreSales(sales);
-      })
-      .catch(() => {});
+    const timer = setTimeout(() => {
+      getSchoolFeeHistory(schoolId, activeSession?.id)
+        .then((fees) => {
+          if (active && Array.isArray(fees)) setDashboardFeeHistory(fees);
+        })
+        .catch(() => {});
+      loadMergedStoreSales<StoreSaleRecord>(schoolId)
+        .then((sales) => {
+          if (active && Array.isArray(sales)) setDashboardStoreSales(sales);
+        })
+        .catch(() => {});
+    }, 650);
     return () => {
       active = false;
+      clearTimeout(timer);
     };
   }, [schoolId, activeSession?.id]);
   const [feeClassSelected, setFeeClassSelected] = useState<SchoolClass | null>(null);
@@ -1408,7 +1460,10 @@ export const SchoolAdminPanel: React.FC<Props> = ({
 
   useEffect(() => {
     let isCurrentView = true;
-    if (!school) setSchoolLoading(true);
+    if (!initialCachedSchool && !school) setSchoolLoading(true);
+    const safetyTimer = setTimeout(() => {
+      if (isCurrentView) setSchoolLoading(false);
+    }, 1800);
     getSchool(schoolId).then(s => {
       if (!isCurrentView || !s) return;
       setSchool(prev => {
@@ -1430,10 +1485,12 @@ export const SchoolAdminPanel: React.FC<Props> = ({
     }).catch(() => {
       if (isCurrentView && !school) setSchool(null);
     }).finally(() => {
+      clearTimeout(safetyTimer);
       if (isCurrentView) setSchoolLoading(false);
     });
     return () => {
       isCurrentView = false;
+      clearTimeout(safetyTimer);
     };
   }, [schoolId]);
 
@@ -3818,7 +3875,6 @@ export const SchoolAdminPanel: React.FC<Props> = ({
 
           {/* Right: Search + Mobile/Laptop Rotate + Settings Icon (Profile & Theme) */}
           <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
-            <AndroidBatteryIndicator tone={isWhite ? "light" : "dark"} />
             {/* Direct Routine & Timetable Quick Button (Next to Search) */}
             <button
               type="button"
@@ -7457,28 +7513,30 @@ export const SchoolAdminPanel: React.FC<Props> = ({
 
         {/* AI Face Attendance Kiosk Modal */}
         {school && showFaceKioskModal && (
-          <FaceAttendanceKioskModal
-            isOpen={showFaceKioskModal}
-            onClose={() => {
-              setShowFaceKioskModal(false);
-              setFaceKioskInitialTestMode(false);
-            }}
-            initialTestMode={faceKioskInitialTestMode}
-            hasFaceAccess={hasFaceAttendanceAccess(school)}
-            onUpgradeToElite={() => {
-              setShowFaceKioskModal(false);
-              setView("plan");
-            }}
-            onOpenQrScanner={() => {
-              setShowFaceKioskModal(false);
-              setShowUniversalScannerModal(true);
-            }}
-            schoolId={school.id}
-            schoolName={school.name}
-            classes={displayedClasses}
-            students={displayedStudents}
-            teachers={displayedTeachers}
-          />
+          <Suspense fallback={null}>
+            <FaceAttendanceKioskModal
+              isOpen={showFaceKioskModal}
+              onClose={() => {
+                setShowFaceKioskModal(false);
+                setFaceKioskInitialTestMode(false);
+              }}
+              initialTestMode={faceKioskInitialTestMode}
+              hasFaceAccess={hasFaceAttendanceAccess(school)}
+              onUpgradeToElite={() => {
+                setShowFaceKioskModal(false);
+                setView("plan");
+              }}
+              onOpenQrScanner={() => {
+                setShowFaceKioskModal(false);
+                setShowUniversalScannerModal(true);
+              }}
+              schoolId={school.id}
+              schoolName={school.name}
+              classes={displayedClasses}
+              students={displayedStudents}
+              teachers={displayedTeachers}
+            />
+          </Suspense>
         )}
 
         {/* Digital Signature & School Header Modals */}
@@ -8332,41 +8390,46 @@ export const SchoolAdminPanel: React.FC<Props> = ({
           </div>
         )}
         {showFaceStudioModal && (
-          <UniversalFaceIdStudioModal
-            isOpen={showFaceStudioModal}
-            onClose={() => {
-              setShowFaceStudioModal(false);
-              setFaceStudioTargetPerson(null);
-            }}
-            hasFaceAccess={hasFaceAttendanceAccess(school)}
-            onUpgradeToElite={() => {
-              setShowFaceStudioModal(false);
-              setView("plan");
-            }}
-            onOpenQrScanner={() => {
-              setShowFaceStudioModal(false);
-              setShowUniversalScannerModal(true);
-            }}
-            schoolId={schoolId}
-            students={displayedStudents}
-            teachers={displayedTeachers}
-            classes={displayedClasses}
-            initialTab={faceStudioInitialTab}
-            initialTargetPerson={faceStudioTargetPerson}
-            initialTargetType={faceStudioTargetType}
-            onEnrollmentUpdated={() => {
-              try { loadAll(); } catch (e) { console.warn("Failed to reload after enrollment:", e); }
-              if (schoolId) {
-                getSchoolFaceDescriptors(schoolId).then((map) => {
-                  const next: Record<string, boolean> = {};
-                  Object.keys(map || {}).forEach((id) => {
-                    next[id] = true;
-                  });
-                  setEnrolledFaceIds(next);
-                }).catch((e) => console.warn("Failed to refresh face descriptors:", e));
-              }
-            }}
-          />
+          <Suspense fallback={null}>
+            <UniversalFaceIdStudioModal
+              isOpen={showFaceStudioModal}
+              onClose={() => {
+                setShowFaceStudioModal(false);
+                setFaceStudioTargetPerson(null);
+              }}
+              hasFaceAccess={hasFaceAttendanceAccess(school)}
+              onUpgradeToElite={() => {
+                setShowFaceStudioModal(false);
+                setView("plan");
+              }}
+              onOpenQrScanner={() => {
+                setShowFaceStudioModal(false);
+                setShowUniversalScannerModal(true);
+              }}
+              schoolId={schoolId}
+              students={displayedStudents}
+              teachers={displayedTeachers}
+              classes={displayedClasses}
+              initialTab={faceStudioInitialTab}
+              initialTargetPerson={faceStudioTargetPerson}
+              initialTargetType={faceStudioTargetType}
+              onEnrollmentUpdated={() => {
+                try { loadAll(); } catch (e) { console.warn("Failed to reload after enrollment:", e); }
+                if (schoolId) {
+                  import("../../utils/faceRecognitionEngine")
+                    .then(({ getSchoolFaceDescriptors }) => getSchoolFaceDescriptors(schoolId))
+                    .then((map) => {
+                      const next: Record<string, boolean> = {};
+                      Object.keys(map || {}).forEach((id) => {
+                        next[id] = true;
+                      });
+                      setEnrolledFaceIds(next);
+                    })
+                    .catch((e) => console.warn("Failed to refresh face descriptors:", e));
+                }
+              }}
+            />
+          </Suspense>
         )}
         {confirmAction && (
           <div className="fixed inset-0 z-[9999] bg-black/70 backdrop-blur-xs flex items-center justify-center p-4">
@@ -8434,7 +8497,16 @@ export const SchoolAdminPanel: React.FC<Props> = ({
           <main className={`flex-1 p-3 sm:p-4 lg:p-6 w-full mx-auto pb-20 md:pb-8 print:p-0 print:m-0 print:max-w-none print:min-w-0 ${
             isEffectiveLandscape ? "min-w-[980px] sm:min-w-0 max-w-7xl" : "max-w-7xl"
           }`}>
-            {content}
+            <Suspense
+              fallback={
+                <div className="min-h-[45vh] flex flex-col items-center justify-center gap-2 text-slate-400">
+                  <Loader2 className="w-7 h-7 animate-spin text-emerald-500" />
+                  <span className="text-xs font-semibold">Loading module...</span>
+                </div>
+              }
+            >
+              {content}
+            </Suspense>
           </main>
         </div>
 
@@ -8793,7 +8865,7 @@ export const SchoolAdminPanel: React.FC<Props> = ({
       };
       setTeacherAttRecords(updated);
       await saveStaffDailyAttendance(updated);
-      playAttendanceSuccessChime();
+      playAttendanceSuccessChimeLazy();
       speakNotification(
         "प्रधानाचार्य हाजिरी दर्ज",
         `${principalName} का ${action === "late" ? "लेट आगमन" : action === "in" ? "आगमन" : action === "out" ? "प्रस्थान" : "अनुपस्थिति"} दर्ज हुआ।`
@@ -8868,7 +8940,7 @@ export const SchoolAdminPanel: React.FC<Props> = ({
 
       setTeacherAttRecords(updated);
       await saveStaffDailyAttendance(updated);
-      playAttendanceSuccessChime();
+      playAttendanceSuccessChimeLazy();
       speakNotification(
         "हाजिरी दर्ज",
         `${teacher.name} का ${action === "late" || (action === "in" && markedAsLate) ? "लेट आगमन" : action === "in" ? "आगमन" : action === "out" ? "प्रस्थान" : "अनुपस्थिति"} दर्ज हुआ।`
@@ -8915,7 +8987,7 @@ export const SchoolAdminPanel: React.FC<Props> = ({
 
       setTeacherAttRecords(updated);
       await saveStaffDailyAttendance(updated);
-      playAttendanceSuccessChime();
+      playAttendanceSuccessChimeLazy();
       speakNotification("हाजिरी पूर्ण", "सभी शिक्षक उपस्थित दर्ज हो गए।");
     };
 
@@ -8971,7 +9043,7 @@ export const SchoolAdminPanel: React.FC<Props> = ({
 
       setTeacherAttRecords(updated);
       await saveStaffDailyAttendance(updated);
-      playAttendanceSuccessChime();
+      playAttendanceSuccessChimeLazy();
       toast.success(`🏃 ${updatedCount} शिक्षकों का Punch-Out दर्ज हुआ!`);
       speakNotification("प्रस्थान पूर्ण", "सभी उपस्थित शिक्षकों का प्रस्थान दर्ज हो गया।");
     };
@@ -10421,16 +10493,24 @@ export const SchoolAdminPanel: React.FC<Props> = ({
               : "top-0 inset-x-0 bottom-[calc(57px+env(safe-area-inset-bottom))] md:inset-0"
           } z-30 bg-slate-950 flex flex-col overflow-hidden`}
         >
-          <NstaMessengerSuite
-            school={school!}
-            classes={displayedClasses}
-            students={displayedStudents}
-            teachers={displayedTeachers}
-            currentUserId={adminUid}
-            currentUserName={school?.principalName || "Principal / Admin"}
-            currentUserRole="ADMIN"
-            onBack={() => setView("dashboard")}
-          />
+          <Suspense
+            fallback={
+              <div className="flex-1 flex items-center justify-center text-slate-400">
+                <Loader2 className="w-7 h-7 animate-spin text-emerald-500" />
+              </div>
+            }
+          >
+            <NstaMessengerSuite
+              school={school!}
+              classes={displayedClasses}
+              students={displayedStudents}
+              teachers={displayedTeachers}
+              currentUserId={adminUid}
+              currentUserName={school?.principalName || "Principal / Admin"}
+              currentUserRole="ADMIN"
+              onBack={() => setView("dashboard")}
+            />
+          </Suspense>
         </div>
         {renderAdminBottomNav()}
       </>
@@ -10559,7 +10639,8 @@ export const SchoolAdminPanel: React.FC<Props> = ({
           setView("dashboard");
         }}
         onSchoolUpdated={(updated) => setSchool(updated)}
-        onConvertLeadToAdmission={(attempt) => {
+        onConvertLeadToAdmission={async (attempt) => {
+          const { evaluateEntranceScore, saveEntranceAdmissionPrefill } = await import("../../utils/entranceTestEngine");
           const evalSummary = evaluateEntranceScore(
             attempt.percentage,
             attempt.classLabel,

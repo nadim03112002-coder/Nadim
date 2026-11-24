@@ -1,6 +1,5 @@
 // @ts-nocheck
-import React, { useState, useEffect, useMemo, useRef } from "react";
-import AndroidBatteryIndicator from "../AndroidBatteryIndicator";
+import React, { Suspense, useState, useEffect, useMemo, useRef } from "react";
 import {
   GraduationCap,
   Calendar,
@@ -59,13 +58,14 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import QRCode from "react-qr-code";
-import { StudentFaceIdModal } from "./StudentFaceIdModal";
-import { ClassroomVideoArchive } from "./ClassroomVideoArchive";
+const StudentFaceIdModal = React.lazy(() => import("./StudentFaceIdModal").then(m => ({ default: m.StudentFaceIdModal })));
+const ClassroomVideoArchive = React.lazy(() => import("./ClassroomVideoArchive").then(m => ({ default: m.ClassroomVideoArchive })));
 import { StudentDatewiseNotesView } from "./StudentDatewiseNotesView";
-import { SchoolLucentViewer, type LucentViewerTab } from "./SchoolLucentViewer";
+const SchoolLucentViewer = React.lazy(() => import("./SchoolLucentViewer").then(m => ({ default: m.SchoolLucentViewer })));
+import type { LucentViewerTab } from "./SchoolLucentViewer";
 import { DEFAULT_SUBJECTS_BY_CLASS } from "./ClassCurriculumNotesManager";
 import { CustomPlayer } from "../CustomPlayer";
-import { GroupStudyModal } from "../GroupStudyModal";
+const GroupStudyModal = React.lazy(() => import("../GroupStudyModal").then(m => ({ default: m.GroupStudyModal })));
 import {
   subscribeToActiveRooms,
   doesRoomMatchStudentClass,
@@ -129,11 +129,11 @@ import { AnnualBulkFeeStatementModal } from "./AnnualBulkFeeStatementModal";
 import { QrAttendanceScannerModal } from "./QrAttendanceScannerModal";
 import { SchoolCommunityFeed } from "./SchoolCommunityFeed";
 import { SchoolClassChannelView } from "./SchoolClassChannelView";
-import { NstaMessengerSuite } from "./NstaMessengerSuite";
+const NstaMessengerSuite = React.lazy(() => import("./NstaMessengerSuite").then(m => ({ default: m.NstaMessengerSuite })));
 import { SchoolWelcomeModal } from "./SchoolWelcomeModal";
 import { SchoolBirthdayModal } from "./SchoolBirthdayModal";
-import { StudentSchoolStore } from "./StudentSchoolStore";
-import { StudentQuestionBankView } from "./StudentQuestionBankView";
+const StudentSchoolStore = React.lazy(() => import("./StudentSchoolStore").then(m => ({ default: m.StudentSchoolStore })));
+const StudentQuestionBankView = React.lazy(() => import("./StudentQuestionBankView").then(m => ({ default: m.StudentQuestionBankView })));
 import { AccountRecoveryCard } from "./AccountRecoveryCard";
 import { downloadFeeDocument, shareFeeReceiptOnWhatsApp } from "./feeDocument";
 import {
@@ -168,6 +168,7 @@ import {
   DEFAULT_IN_CUTOFF_TIME,
   DEFAULT_OUT_START_TIME,
 } from "../../utils/schoolAttendanceSchedule";
+import { useBackHandler } from "../../utils/backNavigation";
 
 interface Props {
   uid?: string;
@@ -2619,6 +2620,30 @@ export const StudentSchoolPanel: React.FC<Props> = ({
 
   const [birthdayModalData, setBirthdayModalData] = useState<NstaBirthdayData | null>(null);
 
+  // Android / Browser Back button step-by-step navigation across Student Portal
+  useBackHandler(showQrAttendanceScanner, () => setShowQrAttendanceScanner(false), 30);
+  useBackHandler(showFaceIdModal, () => setShowFaceIdModal(false), 30);
+  useBackHandler(Boolean(selectedFeeForReceipt), () => setSelectedFeeForReceipt(null), 28);
+  useBackHandler(Boolean(welcomeModalData), () => setWelcomeModalData(null), 25);
+  useBackHandler(Boolean(birthdayModalData), () => setBirthdayModalData(null), 25);
+  useBackHandler(Boolean(selectedChapterNotes), () => setSelectedChapterNotes(null), 24);
+  useBackHandler(Boolean(selectedSchoolNote), () => setSelectedSchoolNote(null), 24);
+  useBackHandler(Boolean(selectedSyllabusSubject), () => setSelectedSyllabusSubject(null), 22);
+  useBackHandler(Boolean(selectedSchoolSubject), () => setSelectedSchoolSubject(null), 22);
+  useBackHandler(showClassSyllabusModal, () => setShowClassSyllabusModal(false), 20);
+  useBackHandler(showSchoolSyllabusModal, () => setShowSchoolSyllabusModal(false), 20);
+  useBackHandler(showPtmModal, () => setShowPtmModal(false), 20);
+  useBackHandler(showBusLiveMapModal, () => setShowBusLiveMapModal(false), 20);
+  useBackHandler(showThemeModal, () => setShowThemeModal(false), 20);
+  useBackHandler(showNotificationModal, () => setShowNotificationModal(false), 20);
+  useBackHandler(showStudentSwitcherModal, () => setShowStudentSwitcherModal(false), 20);
+  useBackHandler(showAllHolidaysModal, () => setShowAllHolidaysModal(false), 20);
+  useBackHandler(showBulkFeeModal, () => setShowBulkFeeModal(false), 20);
+  useBackHandler(Boolean(selectedAdmissionModal), () => setSelectedAdmissionModal(null), 20);
+  useBackHandler(showPreAdmissionMonths, () => setShowPreAdmissionMonths(false), 20);
+  useBackHandler(Boolean(confirmRemoveLinkedKey), () => setConfirmRemoveLinkedKey(null), 20);
+  useBackHandler(activeTab !== "overview", () => setActiveTab("overview"), 0);
+
   // Automated Birthday Detection & School Dispatch
   useEffect(() => {
     if (!studentId) return;
@@ -2977,7 +3002,6 @@ export const StudentSchoolPanel: React.FC<Props> = ({
               </div>
 
               <div className="flex items-center gap-2 shrink-0">
-                <AndroidBatteryIndicator tone={studentTheme === "white" ? "light" : "dark"} />
                 <button
                   type="button"
                   onClick={() => setShowNotificationModal(true)}
@@ -3505,37 +3529,45 @@ export const StudentSchoolPanel: React.FC<Props> = ({
         {/* ── TAB: NSTA MESSENGER SUITE (CLASS | SCHOOL | TEACHER) ─────────── */}
         {activeTab === "channel" && (
           <div className="fixed top-0 inset-x-0 bottom-[calc(60px+env(safe-area-inset-bottom))] z-30 bg-slate-950 flex flex-col overflow-hidden">
-            <NstaMessengerSuite
-              school={{
-                ...(school || {}),
-                id: schoolId,
-                name: schoolDisplayName,
-                logoUrl: resolvedSchoolLogo,
-                address: school?.address || "Institutional Academic Campus, Educational Zone",
-                affiliation: school?.affiliation || "Affiliated School Campus",
-                code: getVisibleSchoolRegNo(school),
-              } as any}
-              currentUserRole="STUDENT"
-              currentUserId={activeStudent?.id || studentId || "std_current"}
-              currentUserName={activeStudent?.name || studentName || "Student"}
-              student={activeStudent || undefined}
-              classes={classesList}
-              teachers={schoolTeachers}
-              students={allStudentsInSchool}
-              fees={allStudentFees}
-              initialTeacherId={requestedTeacherChatId}
-              onClearInitialTeacher={() => setRequestedTeacherChatId(null)}
-              onBack={() => setActiveTab("overview")}
-              onOpenFeeReceipt={(f) => {
-                const isA6Demand = f?.type === "A6_DEMAND_SLIP" || f?.slipType === "A6_DEMAND_SLIP" || f?.isDueDemand || (f?.paid === false && Number(f?.paidAmount || 0) === 0);
-                setFeeModalFormat(isA6Demand ? "a6" : "pos");
-                setSelectedFeeForReceipt(f);
-              }}
-              onOpenWhatsAppPay={(f) => {
-                setPendingWhatsAppFee(f);
-                setShowWhatsAppModal(true);
-              }}
-            />
+            <Suspense
+              fallback={
+                <div className="flex-1 flex items-center justify-center">
+                  <div className="w-7 h-7 rounded-full border-2 border-emerald-500 border-t-transparent animate-spin" />
+                </div>
+              }
+            >
+              <NstaMessengerSuite
+                school={{
+                  ...(school || {}),
+                  id: schoolId,
+                  name: schoolDisplayName,
+                  logoUrl: resolvedSchoolLogo,
+                  address: school?.address || "Institutional Academic Campus, Educational Zone",
+                  affiliation: school?.affiliation || "Affiliated School Campus",
+                  code: getVisibleSchoolRegNo(school),
+                } as any}
+                currentUserRole="STUDENT"
+                currentUserId={activeStudent?.id || studentId || "std_current"}
+                currentUserName={activeStudent?.name || studentName || "Student"}
+                student={activeStudent || undefined}
+                classes={classesList}
+                teachers={schoolTeachers}
+                students={allStudentsInSchool}
+                fees={allStudentFees}
+                initialTeacherId={requestedTeacherChatId}
+                onClearInitialTeacher={() => setRequestedTeacherChatId(null)}
+                onBack={() => setActiveTab("overview")}
+                onOpenFeeReceipt={(f) => {
+                  const isA6Demand = f?.type === "A6_DEMAND_SLIP" || f?.slipType === "A6_DEMAND_SLIP" || f?.isDueDemand || (f?.paid === false && Number(f?.paidAmount || 0) === 0);
+                  setFeeModalFormat(isA6Demand ? "a6" : "pos");
+                  setSelectedFeeForReceipt(f);
+                }}
+                onOpenWhatsAppPay={(f) => {
+                  setPendingWhatsAppFee(f);
+                  setShowWhatsAppModal(true);
+                }}
+              />
+            </Suspense>
           </div>
         )}
 
@@ -3562,26 +3594,28 @@ export const StudentSchoolPanel: React.FC<Props> = ({
               </div>
             </div>
 
-            <ClassroomVideoArchive
-              school={{
-                ...(school || {}),
-                id: schoolId,
-                name: schoolDisplayName,
-                logoUrl: resolvedSchoolLogo,
-                address: school?.address || "Institutional Academic Campus, Educational Zone",
-                affiliation: school?.affiliation || "Affiliated School Campus",
-                code: getVisibleSchoolRegNo(school),
-              } as any}
-              classes={classesList}
-              teachers={schoolTeachers}
-              currentUserRole="STUDENT"
-              studentClassId={activeStudent.classId}
-              studentClassName={studentClassLabel || activeStudent.className}
-              onBack={() => {
-                setAdvanceTab("videos");
-                setActiveTab("advance");
-              }}
-            />
+            <Suspense fallback={<div className="py-12 flex justify-center"><div className="w-7 h-7 rounded-full border-2 border-emerald-500 border-t-transparent animate-spin" /></div>}>
+              <ClassroomVideoArchive
+                school={{
+                  ...(school || {}),
+                  id: schoolId,
+                  name: schoolDisplayName,
+                  logoUrl: resolvedSchoolLogo,
+                  address: school?.address || "Institutional Academic Campus, Educational Zone",
+                  affiliation: school?.affiliation || "Affiliated School Campus",
+                  code: getVisibleSchoolRegNo(school),
+                } as any}
+                classes={classesList}
+                teachers={schoolTeachers}
+                currentUserRole="STUDENT"
+                studentClassId={activeStudent.classId}
+                studentClassName={studentClassLabel || activeStudent.className}
+                onBack={() => {
+                  setAdvanceTab("videos");
+                  setActiveTab("advance");
+                }}
+              />
+            </Suspense>
           </div>
         )}
 
@@ -5518,69 +5552,75 @@ export const StudentSchoolPanel: React.FC<Props> = ({
 
               {/* Sub-tab 3: Online Test (Embedded Inline — No 2nd Page Redirect) */}
               {advanceTab === "online_test" && (
-                <GroupStudyModal
-                  isOpen={true}
-                  embedded={true}
-                  preferredTheme={studentTheme === "white" ? "white" : studentTheme === "black" ? "black" : "blue"}
-                  onClose={() => setAdvanceTab("classwork")}
-                  user={{
-                    id: activeStudent.id,
-                    uid: activeStudent.id,
-                    name: activeStudent.name,
-                    role: "STUDENT",
-                    isSchoolHost: false,
-                    schoolId: schoolId,
-                    schoolName: schoolDisplayName,
-                    classLevel: selectedClassLevel,
-                    className: formatClassLabel(selectedClassLevel),
-                    classId: activeStudent.classId,
-                    subscriptionLevel: "ULTRA",
-                  }}
-                  tierTheme={{ primary: "#0d9488" }}
-                  isSchoolHost={false}
-                  schoolId={schoolId}
-                  schoolName={schoolDisplayName}
-                  studentClassLevel={selectedClassLevel}
-                  studentClassLabel={formatClassLabel(selectedClassLevel)}
-                  studentClassId={activeStudent.classId}
-                />
+                <Suspense fallback={<div className="py-12 flex justify-center"><div className="w-7 h-7 rounded-full border-2 border-emerald-500 border-t-transparent animate-spin" /></div>}>
+                  <GroupStudyModal
+                    isOpen={true}
+                    embedded={true}
+                    preferredTheme={studentTheme === "white" ? "white" : studentTheme === "black" ? "black" : "blue"}
+                    onClose={() => setAdvanceTab("classwork")}
+                    user={{
+                      id: activeStudent.id,
+                      uid: activeStudent.id,
+                      name: activeStudent.name,
+                      role: "STUDENT",
+                      isSchoolHost: false,
+                      schoolId: schoolId,
+                      schoolName: schoolDisplayName,
+                      classLevel: selectedClassLevel,
+                      className: formatClassLabel(selectedClassLevel),
+                      classId: activeStudent.classId,
+                      subscriptionLevel: "ULTRA",
+                    }}
+                    tierTheme={{ primary: "#0d9488" }}
+                    isSchoolHost={false}
+                    schoolId={schoolId}
+                    schoolName={schoolDisplayName}
+                    studentClassLevel={selectedClassLevel}
+                    studentClassLabel={formatClassLabel(selectedClassLevel)}
+                    studentClassId={activeStudent.classId}
+                  />
+                </Suspense>
               )}
 
               {/* Sub-tab 4: Question Paper Library (Strictly Locked to Student's Class) */}
               {advanceTab === "question_bank" && (
-                <StudentQuestionBankView
-                  school={{
-                    ...(school || {}),
-                    id: schoolId,
-                    name: schoolDisplayName,
-                    logoUrl: resolvedSchoolLogo,
-                  }}
-                  studentClassLabel={studentClassLabel}
-                  activeSessionLabel={activeSessLabel}
-                  onBack={() => setAdvanceTab("classwork")}
-                />
-              )}
-
-              {/* Sub-tab 5: Daily Class Video Lectures (YouTube Archive moved from Attendance) */}
-              {advanceTab === "videos" && activeStudent && (
-                <div className="space-y-3">
-                  <ClassroomVideoArchive
+                <Suspense fallback={<div className="py-12 flex justify-center"><div className="w-7 h-7 rounded-full border-2 border-emerald-500 border-t-transparent animate-spin" /></div>}>
+                  <StudentQuestionBankView
                     school={{
                       ...(school || {}),
                       id: schoolId,
                       name: schoolDisplayName,
                       logoUrl: resolvedSchoolLogo,
-                      address: school?.address || "Institutional Academic Campus, Educational Zone",
-                      affiliation: school?.affiliation || "Affiliated School Campus",
-                      code: getVisibleSchoolRegNo(school),
-                    } as any}
-                    classes={classesList}
-                    teachers={schoolTeachers}
-                    currentUserRole="STUDENT"
-                    studentClassId={activeStudent.classId}
-                    studentClassName={studentClassLabel || activeStudent.className}
+                    }}
+                    studentClassLabel={studentClassLabel}
+                    activeSessionLabel={activeSessLabel}
                     onBack={() => setAdvanceTab("classwork")}
                   />
+                </Suspense>
+              )}
+
+              {/* Sub-tab 5: Daily Class Video Lectures (YouTube Archive moved from Attendance) */}
+              {advanceTab === "videos" && activeStudent && (
+                <div className="space-y-3">
+                  <Suspense fallback={<div className="py-12 flex justify-center"><div className="w-7 h-7 rounded-full border-2 border-emerald-500 border-t-transparent animate-spin" /></div>}>
+                    <ClassroomVideoArchive
+                      school={{
+                        ...(school || {}),
+                        id: schoolId,
+                        name: schoolDisplayName,
+                        logoUrl: resolvedSchoolLogo,
+                        address: school?.address || "Institutional Academic Campus, Educational Zone",
+                        affiliation: school?.affiliation || "Affiliated School Campus",
+                        code: getVisibleSchoolRegNo(school),
+                      } as any}
+                      classes={classesList}
+                      teachers={schoolTeachers}
+                      currentUserRole="STUDENT"
+                      studentClassId={activeStudent.classId}
+                      studentClassName={studentClassLabel || activeStudent.className}
+                      onBack={() => setAdvanceTab("classwork")}
+                    />
+                  </Suspense>
                 </div>
               )}
             </div>
@@ -5589,36 +5629,40 @@ export const StudentSchoolPanel: React.FC<Props> = ({
 
         {/* TAB: QUESTION BANK (PUBLISHED SESSION-WISE SCHOOL PAPERS — LEGACY DEEP LINK) ─────────── */}
         {activeTab === "question_bank" && (
-          <StudentQuestionBankView
-            school={{
-              ...(school || {}),
-              id: schoolId,
-              name: schoolDisplayName,
-              logoUrl: resolvedSchoolLogo,
-            }}
-            studentClassLabel={studentClassLabel}
-            activeSessionLabel={
-              schoolSessions.find((s: any) => s?.id === (activeStudent?.sessionId || sessionId))?.name ||
-              schoolSessions.find((s: any) => s?.isActive)?.name ||
-              getDynamicAcademicSessionLabel()
-            }
-            onBack={() => setActiveTab("overview")}
-          />
-        )}
-
-        {/* TAB: SCHOOL STORE & 24-HOUR ITEM BOOKING ──────────────────────────── */}
-        {activeTab === "store" && (
-          <div className="space-y-4 animate-in fade-in">
-            <StudentSchoolStore
+          <Suspense fallback={<div className="py-12 flex justify-center"><div className="w-7 h-7 rounded-full border-2 border-emerald-500 border-t-transparent animate-spin" /></div>}>
+            <StudentQuestionBankView
               school={{
                 ...(school || {}),
                 id: schoolId,
                 name: schoolDisplayName,
                 logoUrl: resolvedSchoolLogo,
-              } as any}
-              student={activeStudent}
+              }}
+              studentClassLabel={studentClassLabel}
+              activeSessionLabel={
+                schoolSessions.find((s: any) => s?.id === (activeStudent?.sessionId || sessionId))?.name ||
+                schoolSessions.find((s: any) => s?.isActive)?.name ||
+                getDynamicAcademicSessionLabel()
+              }
               onBack={() => setActiveTab("overview")}
             />
+          </Suspense>
+        )}
+
+        {/* TAB: SCHOOL STORE & 24-HOUR ITEM BOOKING ──────────────────────────── */}
+        {activeTab === "store" && (
+          <div className="space-y-4 animate-in fade-in">
+            <Suspense fallback={<div className="py-12 flex justify-center"><div className="w-7 h-7 rounded-full border-2 border-emerald-500 border-t-transparent animate-spin" /></div>}>
+              <StudentSchoolStore
+                school={{
+                  ...(school || {}),
+                  id: schoolId,
+                  name: schoolDisplayName,
+                  logoUrl: resolvedSchoolLogo,
+                } as any}
+                student={activeStudent}
+                onBack={() => setActiveTab("overview")}
+              />
+            </Suspense>
           </div>
         )}
         {/* TAB: DEDICATED STUDENT PROFILE, DOCUMENTS, TOOLS & ACCOUNT ────────── */}
@@ -6949,18 +6993,22 @@ export const StudentSchoolPanel: React.FC<Props> = ({
       />
 
       {/* ── 30-DAY SELF-SERVICE FACE ID BIOMETRIC MODAL ── */}
-      <StudentFaceIdModal
-        isOpen={showFaceIdModal}
-        onClose={() => setShowFaceIdModal(false)}
-        student={activeStudent}
-        schoolId={schoolId}
-        lastFaceUpdate={lastFaceUpdate}
-        onFaceUpdated={(newPhoto) => {
-          setLastFaceUpdate(new Date().toISOString());
-          setStudentPhoto(newPhoto);
-          setLiveStudentData((prev: any) => ({ ...(prev || {}), photoUrl: newPhoto }));
-        }}
-      />
+      {showFaceIdModal && (
+        <Suspense fallback={null}>
+          <StudentFaceIdModal
+            isOpen={showFaceIdModal}
+            onClose={() => setShowFaceIdModal(false)}
+            student={activeStudent}
+            schoolId={schoolId}
+            lastFaceUpdate={lastFaceUpdate}
+            onFaceUpdated={(newPhoto) => {
+              setLastFaceUpdate(new Date().toISOString());
+              setStudentPhoto(newPhoto);
+              setLiveStudentData((prev: any) => ({ ...(prev || {}), photoUrl: newPhoto }));
+            }}
+          />
+        </Suspense>
+      )}
 
       {/* ── PTM SLOT BOOKING MODAL FOR PARENTS ── */}
       {showPtmModal && (
@@ -7430,21 +7478,23 @@ export const StudentSchoolPanel: React.FC<Props> = ({
       )}
       {/* ── FULL A-TO-Z LUCENT LESSON & MCQ VIEWER ── */}
       {selectedSchoolNote && (
-        <SchoolLucentViewer
-          note={selectedSchoolNote}
-          activeStudent={activeStudent}
-          schoolId={schoolId}
-          schoolDisplayName={schoolDisplayName}
-          classLevel={selectedClassLevel}
-          initialTab={selectedNoteInitialTab}
-          onBack={() => setSelectedSchoolNote(null)}
-          onOpenStudyRoom={() => {
-            setSelectedSchoolNote(null);
-            setShowSchoolSyllabusModal(false);
-            setActiveTab("advance");
-            setAdvanceTab("online_test");
-          }}
-        />
+        <Suspense fallback={null}>
+          <SchoolLucentViewer
+            note={selectedSchoolNote}
+            activeStudent={activeStudent}
+            schoolId={schoolId}
+            schoolDisplayName={schoolDisplayName}
+            classLevel={selectedClassLevel}
+            initialTab={selectedNoteInitialTab}
+            onBack={() => setSelectedSchoolNote(null)}
+            onOpenStudyRoom={() => {
+              setSelectedSchoolNote(null);
+              setShowSchoolSyllabusModal(false);
+              setActiveTab("advance");
+              setAdvanceTab("online_test");
+            }}
+          />
+        </Suspense>
       )}
     </div>
   );

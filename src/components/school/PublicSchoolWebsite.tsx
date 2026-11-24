@@ -1,6 +1,6 @@
-import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { Html5Qrcode } from "html5-qrcode";
+import React, { Suspense, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import AndroidBatteryIndicator from "../AndroidBatteryIndicator";
+import { useBackHandler } from "../../utils/backNavigation";
 import type {
   AdmissionApplication,
   ClassSeatConfig,
@@ -88,7 +88,7 @@ import { loadSchoolSubcollection } from "../../utils/schoolCloudSync";
 import { getLocalRoutes } from "../../utils/schoolTransportStore";
 import { sendSchoolPushNotification } from "../../utils/schoolPushClient";
 import { toast } from "sonner";
-import { getSavedSchoolLogo, getVisibleSchoolRegNo, isAppLogo } from "./feeReceiptUtils";
+import { getSavedSchoolLogo, getVisibleSchoolRegNo, isAppLogo } from "../../utils/schoolLogoUtils";
 import {
   DEFAULT_GLOBAL_DEVELOPER,
   subscribeToGlobalDeveloperConfig,
@@ -128,7 +128,9 @@ import campusHeroImg from "../../assets/images/school_campus_hero_1794756374517.
 import smartLabImg from "../../assets/images/smart_classroom_lab_1794756374079.jpg";
 import sportsArenaImg from "../../assets/images/school_sports_arena_1794756373791.jpg";
 import { resolveTelegramUrl } from "../../services/telegramStorageService";
-import { EntranceTestModal } from "./EntranceTestModal";
+const EntranceTestModal = React.lazy(() =>
+  import("./EntranceTestModal").then((m) => ({ default: m.EntranceTestModal }))
+);
 
 interface Props {
   school: School;
@@ -254,8 +256,19 @@ export const PublicSchoolWebsite: React.FC<Props> = ({
   const [qrCameraError, setQrCameraError] = useState<string | null>(null);
   const [qrIsScanning, setQrIsScanning] = useState(false);
   const [qrFileScanning, setQrFileScanning] = useState(false);
-  const qrScannerRef = useRef<Html5Qrcode | null>(null);
+  const qrScannerRef = useRef<any>(null);
   const qrFileInputRef = useRef<HTMLInputElement>(null);
+
+  useBackHandler(isQrScannerOpen, () => setIsQrScannerOpen(false), 30);
+  useBackHandler(Boolean(activeMemoryPreview), () => setActiveMemoryPreview(null), 25);
+  useBackHandler(isEntranceTestOpen, () => setIsEntranceTestOpen(false), 20);
+  useBackHandler(isSchoolDrawerOpen, () => setIsSchoolDrawerOpen(false), 18);
+  useBackHandler(activeSection !== "home", () => {
+    setActiveSection("home");
+    try {
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    } catch {}
+  }, 5);
 
   // Admission Status Lookup
   const [statusQuery, setStatusQuery] = useState("");
@@ -620,14 +633,34 @@ export const PublicSchoolWebsite: React.FC<Props> = ({
     loadSchoolSubcollection<ClassSeatConfig>(sid, "class_seat_configs", `nst_class_seats_${sid}`).then((seats) => {
       if (active) setSeatConfigs(seats);
     });
-    getAdmissionApplications(sid).then((apps) => active && setApplications(apps)).catch(() => {});
-    getExams(sid).then((ex) => active && setExamsList(ex)).catch(() => {});
-    getCertificates(sid).then((certs) => active && setCertificatesList(certs)).catch(() => {});
 
     return () => {
       active = false;
     };
   }, [school?.id, classesProp.length, sessionsProp.length, teachersProp.length, studentsProp.length]);
+
+  // Defer admissions & verification cloud queries until the user visits those sections (or shortly after idle)
+  useEffect(() => {
+    let active = true;
+    const sid = school?.id;
+    if (!sid) return;
+    if (activeSection !== "admissions" && activeSection !== "verify") return;
+
+    if (activeSection === "admissions" && applications.length === 0) {
+      getAdmissionApplications(sid).then((apps) => active && setApplications(apps)).catch(() => {});
+    }
+    if (activeSection === "verify") {
+      if (examsList.length === 0) {
+        getExams(sid).then((ex) => active && setExamsList(ex)).catch(() => {});
+      }
+      if (certificatesList.length === 0) {
+        getCertificates(sid).then((certs) => active && setCertificatesList(certs)).catch(() => {});
+      }
+    }
+    return () => {
+      active = false;
+    };
+  }, [school?.id, activeSection]);
 
   const configuredRoutes = useMemo(() => (school?.id ? getLocalRoutes(school.id) : []), [school?.id]);
 
@@ -1575,6 +1608,7 @@ export const PublicSchoolWebsite: React.FC<Props> = ({
     setQrIsScanning(true);
     try {
       await stopDocQrScanner();
+      const { Html5Qrcode } = await import("html5-qrcode");
       const html5QrCode = new Html5Qrcode("website-doc-qr-reader");
       qrScannerRef.current = html5QrCode;
       await html5QrCode.start(
@@ -1616,6 +1650,7 @@ export const PublicSchoolWebsite: React.FC<Props> = ({
     setQrCameraError(null);
     setVerifyError(null);
     try {
+      const { Html5Qrcode } = await import("html5-qrcode");
       const fileScanner = new Html5Qrcode("website-doc-qr-file-helper");
       const decoded = await fileScanner.scanFile(file, true);
       await fileScanner.clear();
@@ -5585,19 +5620,23 @@ export const PublicSchoolWebsite: React.FC<Props> = ({
         </div>
       </footer>
 
-      <EntranceTestModal
-        isOpen={isEntranceTestOpen && showEntranceExamOnSite}
-        onClose={() => setIsEntranceTestOpen(false)}
-        school={school}
-        onProceedToAdmission={() => {
-          setIsEntranceTestOpen(false);
-          if (onOpenAdmission) {
-            onOpenAdmission();
-          } else {
-            navigateSection("admissions");
-          }
-        }}
-      />
+      {isEntranceTestOpen && showEntranceExamOnSite && (
+        <Suspense fallback={null}>
+          <EntranceTestModal
+            isOpen={true}
+            onClose={() => setIsEntranceTestOpen(false)}
+            school={school}
+            onProceedToAdmission={() => {
+              setIsEntranceTestOpen(false);
+              if (onOpenAdmission) {
+                onOpenAdmission();
+              } else {
+                navigateSection("admissions");
+              }
+            }}
+          />
+        </Suspense>
+      )}
     </div>
   );
 };

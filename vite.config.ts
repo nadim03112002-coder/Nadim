@@ -1,32 +1,10 @@
 import tailwindcss from '@tailwindcss/vite';
-import { buildSync } from 'esbuild';
-import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { defineConfig } from 'vite';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-
-function getPrebundledLucidePath(rootDir: string): string {
-  const cacheDir = path.resolve(rootDir, 'node_modules/.vite-build-cache');
-  const outFile = path.join(cacheDir, 'lucide-react.esm.js');
-  if (!fs.existsSync(outFile)) {
-    fs.mkdirSync(cacheDir, { recursive: true });
-    buildSync({
-      entryPoints: [path.resolve(rootDir, 'node_modules/lucide-react/dist/esm/lucide-react.js')],
-      outfile: outFile,
-      bundle: true,
-      format: 'esm',
-      platform: 'browser',
-      target: 'es2022',
-      minifySyntax: true,
-      minifyWhitespace: true,
-      external: ['react', 'react/jsx-runtime'],
-    });
-  }
-  return outFile;
-}
 
 export default defineConfig(async ({ command }) => {
   const isBuild = command === 'build';
@@ -75,8 +53,18 @@ export default defineConfig(async ({ command }) => {
           ],
         },
         injectManifest: {
+          globPatterns: [
+            'index.html',
+            'manifest.webmanifest',
+            'favicon.svg',
+            'branding/schoolplus-splash-logo.png',
+            'branding/nsta-logo.png',
+            'icons/icon-192.png',
+            'assets/index-*.{js,css}',
+            'assets/vendor-react-*.js',
+          ],
           globIgnores: ['**/*.map', '**/*.wasm', 'assets/aistudio/**', 'onnx-wasm/**', 'models/**'],
-          maximumFileSizeToCacheInBytes: 20 * 1024 * 1024,
+          maximumFileSizeToCacheInBytes: 5 * 1024 * 1024,
         },
       })
     );
@@ -103,7 +91,14 @@ export default defineConfig(async ({ command }) => {
       minifyWhitespace: isBuild,
     },
     optimizeDeps: {
-      entries: ['src/**/*.{ts,tsx}'],
+      entries: ['index.html', 'src/main.tsx'],
+      holdUntilCrawlEnd: false,
+      exclude: [
+        '@vladmandic/face-api',
+        '@vladmandic/face-api/dist/face-api.esm.js',
+        'onnxruntime-web',
+        'onnxruntime-web/wasm',
+      ],
       include: [
         'react',
         'react-dom',
@@ -115,38 +110,11 @@ export default defineConfig(async ({ command }) => {
         'firebase/auth',
         'firebase/firestore',
         'firebase/database',
-        'firebase/analytics',
-        'firebase/messaging',
-        'framer-motion',
+        '@supabase/supabase-js',
+        'localforage',
+        'sonner',
         'clsx',
         'tailwind-merge',
-        '@radix-ui/react-slot',
-        'class-variance-authority',
-        'html2canvas',
-        'html5-qrcode',
-        'jspdf',
-        'jsqr',
-        'jszip',
-        'katex',
-        'localforage',
-        'p-limit',
-        'react-markdown',
-        'react-pdf',
-        'react-qr-code',
-        'recharts',
-        'rehype-katex',
-        'remark-math',
-        'sonner',
-        'three',
-        'three/examples/jsm/controls/OrbitControls.js',
-        'cmdk',
-        'input-otp',
-        'next-themes',
-        'react-day-picker',
-        'react-resizable-panels',
-        'vaul',
-        'canvas-confetti',
-        '@vis.gl/react-google-maps',
       ],
     },
     plugins,
@@ -175,6 +143,35 @@ export default defineConfig(async ({ command }) => {
           tryCatchDeoptimization: false,
           unknownGlobalSideEffects: false,
         },
+        output: {
+          manualChunks(id) {
+            if (id.includes('commonjsHelpers') || id.includes('vite/preload-helper')) {
+              return 'vendor-react';
+            }
+            if (!id.includes('node_modules')) return;
+            if (id.includes('/react/') || id.includes('/react-dom/') || id.includes('/scheduler/')) {
+              return 'vendor-react';
+            }
+            if (id.includes('/firebase/') || id.includes('/@firebase/')) {
+              return 'vendor-firebase';
+            }
+            if (id.includes('/@supabase/')) {
+              return 'vendor-supabase';
+            }
+            if (id.includes('/recharts/') || id.includes('/d3-')) {
+              return 'vendor-charts';
+            }
+            if (id.includes('/jspdf/') || id.includes('/html2canvas/')) {
+              return 'vendor-pdf';
+            }
+            if (id.includes('/three/')) {
+              return 'vendor-three';
+            }
+            if (id.includes('/katex/') || id.includes('/rehype-katex/') || id.includes('/remark-math/') || id.includes('/react-markdown/')) {
+              return 'vendor-math';
+            }
+          },
+        },
       },
     },
     resolve: {
@@ -184,11 +181,6 @@ export default defineConfig(async ({ command }) => {
         'react-dom': path.resolve(__dirname, 'node_modules/react-dom'),
         'react/jsx-runtime': path.resolve(__dirname, 'node_modules/react/jsx-runtime'),
         'react/jsx-dev-runtime': path.resolve(__dirname, 'node_modules/react/jsx-dev-runtime'),
-        ...(isBuild
-          ? {
-              'lucide-react': getPrebundledLucidePath(__dirname),
-            }
-          : {}),
       },
       dedupe: ['react', 'react-dom', 'react/jsx-runtime', 'react/jsx-dev-runtime'],
     },
@@ -202,6 +194,10 @@ export default defineConfig(async ({ command }) => {
         ignored: [
           '**/.aistudio/**',
           '**/public/assets/aistudio/**',
+          '**/public/models/**',
+          '**/public/onnx-wasm/**',
+          '**/android/**',
+          '**/dist/**',
           '**/.vapid-keys.json',
           '**/.push-subscriptions.json',
         ],

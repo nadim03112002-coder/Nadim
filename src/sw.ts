@@ -1,7 +1,10 @@
 /// <reference lib="webworker" />
 
 import { clientsClaim } from 'workbox-core';
+import { ExpirationPlugin } from 'workbox-expiration';
 import { precacheAndRoute } from 'workbox-precaching';
+import { registerRoute } from 'workbox-routing';
+import { CacheFirst, StaleWhileRevalidate } from 'workbox-strategies';
 
 declare const self: ServiceWorkerGlobalScope & {
   __WB_MANIFEST: Array<unknown>;
@@ -17,6 +20,39 @@ precacheAndRoute(self.__WB_MANIFEST, {
 });
 self.skipWaiting();
 clientsClaim();
+
+// On-demand runtime caching for lazy-loaded JS/CSS chunks (prevents 16MB boot blast)
+registerRoute(
+  ({ request, url }) =>
+    url.origin === self.location.origin &&
+    (request.destination === 'script' || request.destination === 'style') &&
+    url.pathname.startsWith('/assets/'),
+  new CacheFirst({
+    cacheName: 'nsta-lazy-assets-v1',
+    plugins: [
+      new ExpirationPlugin({
+        maxEntries: 80,
+        maxAgeSeconds: 30 * 24 * 60 * 60,
+      }),
+    ],
+  })
+);
+
+// Runtime caching for images & icons
+registerRoute(
+  ({ request, url }) =>
+    url.origin === self.location.origin &&
+    request.destination === 'image',
+  new StaleWhileRevalidate({
+    cacheName: 'nsta-images-v1',
+    plugins: [
+      new ExpirationPlugin({
+        maxEntries: 60,
+        maxAgeSeconds: 14 * 24 * 60 * 60,
+      }),
+    ],
+  })
+);
 
 type NstaPushPayload = {
   data?: Record<string, string>;
@@ -115,9 +151,16 @@ self.addEventListener('notificationclick', (event) => {
   const notifTitle = String(event.notification.title || notifData.title || '');
   const notifBody = String(event.notification.body || notifData.body || '');
 
+  const suppressVoice =
+    notifData.voiceSpeak === false ||
+    notifData.voiceSpeak === '0' ||
+    String(notifData.voiceSpeak || '').toLowerCase() === 'false' ||
+    notifData.threadType === 'TEACHER_CHAT' ||
+    String(targetUrl).includes('subTab=teacher');
+
   let openTargetUrl = targetUrl;
   try {
-    if (notifTitle || notifBody) {
+    if (!suppressVoice && (notifTitle || notifBody)) {
       const u = new URL(targetUrl, self.location.origin);
       if (notifTitle) u.searchParams.set('speakTitle', notifTitle.slice(0, 140));
       if (notifBody) u.searchParams.set('speakBody', notifBody.slice(0, 260));
@@ -143,6 +186,7 @@ self.addEventListener('notificationclick', (event) => {
               tab: notifData.tab || notifData.schoolTab || '',
               schoolTab: notifData.schoolTab || notifData.tab || '',
               threadType: notifData.threadType || '',
+              voiceSpeak: suppressVoice ? '0' : '1',
               classId: notifData.classId || '',
               teacherId: notifData.teacherId || '',
             });

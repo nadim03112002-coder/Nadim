@@ -19,6 +19,10 @@ import {
 import {
   resolveTelegramBotToken,
   resolveTelegramFilePath,
+  resolveTelegramStorageChatId,
+  discoverTelegramStorageChats,
+  readUploadPayloadFromRequest,
+  uploadBufferToTelegram,
   invalidateTelegramFilePathCache,
   isSafeTelegramFilePath,
   detectMimeType,
@@ -81,16 +85,6 @@ const RTDB_BASE_URL =
   process.env.FIREBASE_DATABASE_URL ||
   "https://nst2512-6a2e4-default-rtdb.asia-southeast1.firebasedatabase.app";
 const FIREBASE_PROJECT_ID = process.env.FIREBASE_PROJECT_ID || "nst2512-6a2e4";
-const TG_BOT_TOKEN = (
-  process.env.TELEGRAM_BOT_TOKEN ||
-  process.env.VITE_TELEGRAM_BOT_TOKEN ||
-  "8932524192:AAGVxYSuKPZX6sOQFkXz0U7ESVQ2NcHmJZw"
-).trim();
-const TG_CHAT_CHANNEL_ID = (
-  process.env.TELEGRAM_CHAT_CHANNEL_ID ||
-  process.env.VITE_TELEGRAM_CHAT_CHANNEL_ID ||
-  "-1004290996442"
-).trim();
 
 interface LinkedStudentPushMeta {
   id: string;
@@ -280,6 +274,8 @@ async function dispatchWebPush(
     title: string;
     body: string;
     type?: string;
+    threadType?: string;
+    voiceSpeak?: boolean | string;
     url?: string;
     studentId?: string;
     schoolId?: string;
@@ -291,6 +287,12 @@ async function dispatchWebPush(
   try {
     await ensureVapidConfigured();
     const effectiveIcon = payload.icon || payload.senderPhoto || "/icons/icon-192.png?v=3";
+    const suppressVoice =
+      payload.voiceSpeak === false ||
+      payload.voiceSpeak === "0" ||
+      String(payload.voiceSpeak ?? "").toLowerCase() === "false" ||
+      String(payload.threadType || "").toUpperCase() === "TEACHER_CHAT" ||
+      String(payload.url || "").includes("subTab=teacher");
     await webpush.sendNotification(
       record.subscription,
       JSON.stringify({
@@ -309,6 +311,8 @@ async function dispatchWebPush(
           title: payload.title,
           body: payload.body,
           type: payload.type || "SCHOOL_ALERT",
+          threadType: payload.threadType || "",
+          voiceSpeak: suppressVoice ? "0" : "1",
           url: payload.url || "/",
           studentId: payload.studentId || "",
           schoolId: payload.schoolId || "",
@@ -420,7 +424,7 @@ async function getFcmAccessToken(): Promise<string | null> {
 async function dispatchFcmToUsers(
   recipientIds: string[],
   broadcast: boolean,
-  payload: { id?: string; title: string; body: string; type?: string; url?: string; icon?: string },
+  payload: { id?: string; title: string; body: string; type?: string; threadType?: string; voiceSpeak?: boolean | string; url?: string; icon?: string },
   filter?: { schoolId?: string; classId?: string; className?: string }
 ): Promise<number> {
   const accessToken = await getFcmAccessToken();
@@ -492,16 +496,23 @@ async function dispatchFcmToUsers(
     Array.from(tokenTargets.entries()).map(async ([fcmToken, target]) => {
       const keys = target.keys;
       const isNativeAndroid = target.platform === "android_native";
+      const suppressVoice =
+        payload.voiceSpeak === false ||
+        payload.voiceSpeak === "0" ||
+        String(payload.voiceSpeak ?? "").toLowerCase() === "false" ||
+        String(payload.threadType || "").toUpperCase() === "TEACHER_CHAT" ||
+        String(payload.url || "").includes("subTab=teacher");
       const dataPayload = {
         id: String(payload.id || ""),
         title: payload.title,
         body: payload.body,
         type: String(payload.type || "DEFAULT"),
+        threadType: String(payload.threadType || ""),
         url: String(payload.url || "/"),
         icon: String(payload.icon || "/icons/icon-192.png?v=3"),
         studentId: String(target.studentId || ""),
         schoolId: String(filter?.schoolId || target.schoolId || ""),
-        voiceSpeak: "1",
+        voiceSpeak: suppressVoice ? "0" : "1",
         urgent: "1",
       };
 
@@ -786,6 +797,8 @@ export default async function handler(req: any, res: any) {
         title,
         body,
         type = "SCHOOL_NOTICE",
+        threadType = "",
+        voiceSpeak,
         url = "/?schoolPortal=1",
         urgent = true,
         icon,
@@ -855,6 +868,8 @@ export default async function handler(req: any, res: any) {
           title,
           body,
           type,
+          threadType,
+          voiceSpeak,
           url: targetUrl,
           studentId: matchedStudent?.id,
           schoolId: matchedStudent?.schoolId || schoolId,
@@ -889,7 +904,7 @@ export default async function handler(req: any, res: any) {
       const fcmDelivered = await dispatchFcmToUsers(
         fcmRecipients,
         isFcmBroadcast,
-        { id: notifId, title, body, type, url, icon: effectiveIcon },
+        { id: notifId, title, body, type, threadType, voiceSpeak, url, icon: effectiveIcon },
         { schoolId, classId, className }
       );
       delivered += fcmDelivered;
@@ -1014,7 +1029,7 @@ export default async function handler(req: any, res: any) {
     }
 
     if (method === "POST" && rawPath === "notifications/push") {
-      const { recipientIds = [], broadcast = false, title, body, url, type, icon } = req.body || {};
+      const { recipientIds = [], broadcast = false, title, body, url, type, threadType, voiceSpeak, icon } = req.body || {};
       let delivered = 0;
       if (title && body) {
         const subsObj = (await rtdbGet<Record<string, StoredPushSubscription>>("school_webpush_subs")) || {};
@@ -1028,32 +1043,70 @@ export default async function handler(req: any, res: any) {
             recipientIds.includes(record.userId) ||
             (record.students || []).some((s) => recipientIds.includes(s.id))
           ) {
-            const ok = await dispatchWebPush(record, { title, body, type, url, urgent: true });
+            const ok = await dispatchWebPush(record, { title, body, type, threadType, voiceSpeak, url, urgent: true });
             if (ok) delivered++;
           }
         }
         delivered += await dispatchFcmToUsers(
           Array.isArray(recipientIds) ? recipientIds : [],
           Boolean(broadcast),
-          { title, body, type, url, icon }
+          { title, body, type, threadType, voiceSpeak, url, icon }
         );
       }
       return res.status(200).json({ ok: true, delivered });
     }
 
     if (method === "GET" && rawPath === "telegram/health") {
-      const r = await fetch(`https://api.telegram.org/bot${TG_BOT_TOKEN}/getMe`);
-      const data = await r.json().catch(() => ({ ok: false }));
-      return res.status(r.ok ? 200 : 502).json({ ok: Boolean(data?.ok), bot: data?.result, error: data?.description });
+      const token = resolveTelegramBotToken();
+      if (!token) {
+        return res.status(503).json({
+          ok: false,
+          configured: false,
+          error: "Server par TELEGRAM_BOT_TOKEN set nahi hai. Vercel Environment Variables me TELEGRAM_BOT_TOKEN add karein.",
+        });
+      }
+      const r = await fetch(`https://api.telegram.org/bot${token}/getMe`);
+      const data = (await r.json().catch(() => ({ ok: false }))) as any;
+      const configuredChatId = String(
+        process.env.TELEGRAM_STORAGE_CHAT_ID || process.env.TELEGRAM_CHAT_CHANNEL_ID || ""
+      ).trim();
+      const discoveredChats =
+        !configuredChatId && data?.ok ? await discoverTelegramStorageChats(token) : [];
+      return res.status(r.ok ? 200 : 502).json({
+        ok: Boolean(data?.ok),
+        configured: true,
+        bot: data?.result ? { id: data.result.id, username: data.result.username, first_name: data.result.first_name } : undefined,
+        hasStorageChatId: Boolean(configuredChatId || discoveredChats.length > 0),
+        storageChatConfigured: Boolean(configuredChatId),
+        discoveredChats: discoveredChats.slice(0, 5),
+        error: data?.description,
+      });
+    }
+
+    if (method === "POST" && rawPath === "telegram/upload") {
+      const parsed = await readUploadPayloadFromRequest(req);
+      if ("error" in parsed) {
+        return res.status(parsed.status).json({ ok: false, error: parsed.error });
+      }
+      const result = await uploadBufferToTelegram(parsed);
+      return res.status(result.ok ? 200 : result.status).json(result);
     }
 
     if (method === "POST" && rawPath === "telegram/sendMessage") {
+      const token = resolveTelegramBotToken();
+      if (!token) {
+        return res.status(503).json({ ok: false, error: "TELEGRAM_BOT_TOKEN not configured on server" });
+      }
       const { text, chat_id, reply_to_message_id, parse_mode = "HTML" } = req.body || {};
-      const r = await fetch(`https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage`, {
+      const targetChatId = await resolveTelegramStorageChatId(token, chat_id);
+      if (!targetChatId) {
+        return res.status(400).json({ ok: false, error: "TELEGRAM_STORAGE_CHAT_ID / TELEGRAM_CHAT_CHANNEL_ID not configured" });
+      }
+      const r = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          chat_id: chat_id || TG_CHAT_CHANNEL_ID,
+          chat_id: targetChatId,
           text,
           reply_to_message_id,
           parse_mode,
@@ -1067,15 +1120,21 @@ export default async function handler(req: any, res: any) {
       const fileId = String(req.query?.fileId || req.query?.file_id || "").trim();
       let filePath = String(req.query?.path || "").trim();
       const fileName = String(req.query?.name || "").trim();
-      const token = resolveTelegramBotToken(req.query?.token ? String(req.query.token) : TG_BOT_TOKEN);
+      const token = resolveTelegramBotToken();
 
       res.setHeader("Access-Control-Allow-Origin", "*");
       res.setHeader("Access-Control-Expose-Headers", "Content-Range, Content-Length, Accept-Ranges, Content-Type");
+
+      if (!token) {
+        res.setHeader("Cache-Control", "no-store");
+        return res.status(503).json({ error: "TELEGRAM_BOT_TOKEN is not configured on the server" });
+      }
 
       let knownFileSize: number | undefined;
       if (fileId) {
         const resolved = await resolveTelegramFilePath(fileId, token);
         if ("error" in resolved) {
+          res.setHeader("Cache-Control", "no-store");
           return res.status(resolved.status).json({ error: resolved.error });
         }
         filePath = resolved.filePath;
@@ -1083,24 +1142,28 @@ export default async function handler(req: any, res: any) {
       }
 
       if (!isSafeTelegramFilePath(filePath)) {
+        res.setHeader("Cache-Control", "no-store");
         return res.status(400).json({ error: "Missing or invalid path" });
       }
 
-      // Vercel serverless responses cap around 4.5MB: stream directly for <=3.5MB files (all images, logos, PDFs, audio clips)
-      // so CORS works and the bot token is never exposed; for huge videos or byte-range streaming, redirect with short 5m cache.
-      const hasRangeHeader = Boolean(req.headers?.range);
       const isTooLargeForServerlessBuffer = typeof knownFileSize === "number" && knownFileSize > 3.5 * 1024 * 1024;
-      if (hasRangeHeader || isTooLargeForServerlessBuffer) {
-        res.setHeader("Cache-Control", "private, max-age=300");
+      if (isTooLargeForServerlessBuffer) {
+        // Never cache ephemeral Telegram CDN redirect URLs
+        res.setHeader("Cache-Control", "no-store");
         return res.redirect(302, `https://api.telegram.org/file/bot${token}/${filePath}`);
       }
 
       try {
         const fetchTarget = async (targetPath: string) => {
+          const headers: Record<string, string> = {};
+          if (req.headers?.range) {
+            headers["Range"] = String(req.headers.range);
+          }
           const controller = new AbortController();
           const timer = setTimeout(() => controller.abort(), 9000);
           try {
             const r = await fetch(`https://api.telegram.org/file/bot${token}/${targetPath}`, {
+              headers,
               signal: controller.signal,
             });
             clearTimeout(timer);
@@ -1112,7 +1175,7 @@ export default async function handler(req: any, res: any) {
         };
 
         let tgFileRes = await fetchTarget(filePath);
-        if (!tgFileRes.ok && fileId) {
+        if (!tgFileRes.ok && tgFileRes.status !== 206 && fileId) {
           invalidateTelegramFilePathCache(fileId, token);
           const refreshed = await resolveTelegramFilePath(fileId, token, true);
           if (!("error" in refreshed)) {
@@ -1121,13 +1184,14 @@ export default async function handler(req: any, res: any) {
           }
         }
 
-        if (!tgFileRes.ok) {
+        if (!tgFileRes.ok && tgFileRes.status !== 206) {
+          res.setHeader("Cache-Control", "no-store");
           return res.status(tgFileRes.status || 404).json({ error: "Telegram file unavailable" });
         }
 
         const contentLenHeader = Number(tgFileRes.headers.get("content-length") || 0);
         if (contentLenHeader > 3.5 * 1024 * 1024) {
-          res.setHeader("Cache-Control", "private, max-age=300");
+          res.setHeader("Cache-Control", "no-store");
           return res.redirect(302, `https://api.telegram.org/file/bot${token}/${filePath}`);
         }
 
@@ -1140,7 +1204,10 @@ export default async function handler(req: any, res: any) {
         });
 
         res.setHeader("Content-Type", contentType);
+        res.setHeader("Accept-Ranges", tgFileRes.headers.get("accept-ranges") || "bytes");
         res.setHeader("Content-Length", String(buf.length));
+        const contentRange = tgFileRes.headers.get("content-range");
+        if (contentRange) res.setHeader("Content-Range", contentRange);
         if (fileName) {
           const safeName = fileName.replace(/["\r\n]/g, "");
           res.setHeader("Content-Disposition", `inline; filename="${safeName}"`);
@@ -1149,10 +1216,10 @@ export default async function handler(req: any, res: any) {
           "Cache-Control",
           fileId ? "public, max-age=86400, stale-while-revalidate=604800" : "public, max-age=300"
         );
-        return res.status(200).send(buf);
-      } catch {
-        res.setHeader("Cache-Control", "private, max-age=300");
-        return res.redirect(302, `https://api.telegram.org/file/bot${token}/${filePath}`);
+        return res.status(tgFileRes.status === 206 ? 206 : 200).send(buf);
+      } catch (err: any) {
+        res.setHeader("Cache-Control", "no-store");
+        return res.status(502).json({ error: err?.message || "Failed to stream Telegram media" });
       }
     }
 

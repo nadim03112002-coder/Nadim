@@ -1,8 +1,7 @@
 import { toast } from "sonner";
-import { SUPPORT_PHONE } from "../constants";
 
-export const CENTRAL_SUPPORT_PHONE = SUPPORT_PHONE;
-export const CENTRAL_ADMIN_WHATSAPP_NUMBER = `91${SUPPORT_PHONE}`;
+export const CENTRAL_SUPPORT_PHONE = "8227070298";
+export const CENTRAL_ADMIN_WHATSAPP_NUMBER = `91${CENTRAL_SUPPORT_PHONE}`;
 
 /**
  * Computes the current Indian Academic Session label (April–March) dynamically,

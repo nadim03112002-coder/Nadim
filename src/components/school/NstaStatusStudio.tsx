@@ -223,8 +223,12 @@ export const NstaStatusStudio: React.FC<NstaStatusStudioProps> = ({
       toast.error("Kripya MP4 ya WebM video file chunein.");
       return;
     }
-    if (file.size > 75 * 1024 * 1024) {
-      toast.error("File size 75MB se kam hona chahiye.");
+    if (expected === "VIDEO" && file.size > 19.5 * 1024 * 1024) {
+      toast.error("Video size 19.5MB se kam hona chahiye (Telegram 20MB streaming limit).");
+      return;
+    }
+    if (expected === "IMAGE" && file.size > 15 * 1024 * 1024) {
+      toast.error("Photo size 15MB se kam hona chahiye.");
       return;
     }
     if (selectedMediaPreview) {
@@ -294,7 +298,14 @@ export const NstaStatusStudio: React.FC<NstaStatusStudioProps> = ({
           mediaType = "VIDEO";
           const res = await uploadToCloudinary(selectedMediaFile, "video", (pct) => setUploadProgress(pct));
           mediaUrl = res?.secure_url || res?.url || "";
+          if (!mediaUrl || mediaUrl.startsWith("blob:")) {
+            throw new Error("Video upload server se URL prapt nahi hui.");
+          }
         }
+      }
+
+      if ((mediaType === "IMAGE" || mediaType === "VIDEO") && (!mediaUrl || mediaUrl.startsWith("blob:"))) {
+        throw new Error("Media upload fail ho gaya. Kripya dubara try karein.");
       }
 
       const payload: NstaSchoolStatus = {

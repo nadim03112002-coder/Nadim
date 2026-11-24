@@ -261,6 +261,8 @@ export const dispatchAttendanceParentAlert = async (
         title: copy.pushTitle,
         body: copy.pushBody,
         type: copy.pushType,
+        threadType: "SCHOOL_DESK",
+        voiceSpeak: true,
         url: `/?schoolPortal=1&studentId=${encodeURIComponent(params.studentId)}&schoolTab=messenger&subTab=school`,
         urgent: true,
       })
@@ -372,6 +374,8 @@ export const dispatchAttendanceBatchAlerts = async (
           title: `🎒 विद्यालय उपस्थिति सूचना • ${params.className || "Class"}`,
           body: `आपका बच्चा आज (${date}) विद्यालय में उपस्थित (Present) दर्ज किया गया है। ✅`,
           type: "SCHOOL_NOTICE",
+          threadType: "SCHOOL_DESK",
+          voiceSpeak: true,
           url: `/?schoolPortal=1&classId=${encodeURIComponent(params.classId || "")}&schoolTab=messenger&subTab=school`,
           urgent: true,
         })
@@ -397,6 +401,8 @@ export const dispatchAttendanceBatchAlerts = async (
           title: `⚠️ विद्यालय अनुपस्थिति सूचना • ${params.className || "Class"}`,
           body: `आदरणीय अभिभावक, आपका बच्चा आज (${date}) विद्यालय में अनुपस्थित है। यदि कोई समस्या या अवकाश है तो कृपया सूचित करें।`,
           type: "SCHOOL_NOTICE",
+          threadType: "SCHOOL_DESK",
+          voiceSpeak: true,
           url: `/?schoolPortal=1&classId=${encodeURIComponent(params.classId || "")}&schoolTab=messenger&subTab=school`,
           urgent: true,
         })
@@ -422,6 +428,8 @@ export const dispatchAttendanceBatchAlerts = async (
           title: `🚪 विद्यालय प्रस्थान सूचना • ${params.className || "Class"}`,
           body: `आपका बच्चा आज (${date}) विद्यालय से प्रस्थान (Punch-Out) कर चुका है।`,
           type: "SCHOOL_NOTICE",
+          threadType: "SCHOOL_DESK",
+          voiceSpeak: true,
           url: `/?schoolPortal=1&classId=${encodeURIComponent(params.classId || "")}&schoolTab=messenger&subTab=school`,
           urgent: true,
         })

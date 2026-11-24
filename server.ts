@@ -23,6 +23,10 @@ import {
 import {
   resolveTelegramBotToken,
   resolveTelegramFilePath,
+  resolveTelegramStorageChatId,
+  discoverTelegramStorageChats,
+  readUploadPayloadFromRequest,
+  uploadBufferToTelegram,
   invalidateTelegramFilePathCache,
   isSafeTelegramFilePath,
   detectMimeType,
@@ -239,7 +243,7 @@ async function getCachedFcmTokens(): Promise<Record<string, any> | null> {
 async function dispatchFcmToUsers(
   recipientIds: string[],
   broadcast: boolean,
-  payload: { id?: string; title: string; body: string; type?: string; url?: string; icon?: string; senderId?: string; senderDeviceId?: string },
+  payload: { id?: string; title: string; body: string; type?: string; threadType?: string; voiceSpeak?: boolean | string; url?: string; icon?: string; senderId?: string; senderDeviceId?: string },
   filter?: { schoolId?: string; classId?: string; className?: string },
   exclude?: { senderIds?: string[]; senderFcmToken?: string; senderDeviceId?: string }
 ): Promise<number> {
@@ -318,18 +322,25 @@ async function dispatchFcmToUsers(
     Array.from(tokenTargets.entries()).map(async ([fcmToken, target]) => {
       const keys = target.keys;
       const isNativeAndroid = target.platform === "android_native";
+      const suppressVoice =
+        payload.voiceSpeak === false ||
+        payload.voiceSpeak === "0" ||
+        String(payload.voiceSpeak ?? "").toLowerCase() === "false" ||
+        String(payload.threadType || "").toUpperCase() === "TEACHER_CHAT" ||
+        String(payload.url || "").includes("subTab=teacher");
       const dataPayload = {
         id: String(payload.id || ""),
         title: payload.title,
         body: payload.body,
         type: String(payload.type || "DEFAULT"),
+        threadType: String(payload.threadType || ""),
         url: String(payload.url || "/"),
         icon: String(payload.icon || "/icons/icon-192.png?v=3"),
         senderId: String(payload.senderId || ""),
         senderDeviceId: String(payload.senderDeviceId || ""),
         studentId: String(target.studentId || ""),
         schoolId: String(filter?.schoolId || target.schoolId || ""),
-        voiceSpeak: "1",
+        voiceSpeak: suppressVoice ? "0" : "1",
         urgent: "1",
       };
 
@@ -717,6 +728,8 @@ async function dispatchWebPush(
     title: string;
     body: string;
     type?: string;
+    threadType?: string;
+    voiceSpeak?: boolean | string;
     url?: string;
     studentId?: string;
     schoolId?: string;
@@ -727,6 +740,12 @@ async function dispatchWebPush(
 ): Promise<boolean> {
   try {
     const effectiveIcon = payload.icon || payload.senderPhoto || "/icons/icon-192.png?v=3";
+    const suppressVoice =
+      payload.voiceSpeak === false ||
+      payload.voiceSpeak === "0" ||
+      String(payload.voiceSpeak ?? "").toLowerCase() === "false" ||
+      String(payload.threadType || "").toUpperCase() === "TEACHER_CHAT" ||
+      String(payload.url || "").includes("subTab=teacher");
     await webpush.sendNotification(
       record.subscription,
       JSON.stringify({
@@ -747,6 +766,8 @@ async function dispatchWebPush(
           title: payload.title,
           body: payload.body,
           type: payload.type || "SCHOOL_ALERT",
+          threadType: payload.threadType || "",
+          voiceSpeak: suppressVoice ? "0" : "1",
           url: payload.url || "/",
           studentId: payload.studentId || "",
           schoolId: payload.schoolId || "",
@@ -1205,6 +1226,8 @@ async function startServer() {
         title,
         body,
         type = "SCHOOL_NOTICE",
+        threadType = "",
+        voiceSpeak,
         url = "/?schoolPortal=1",
         urgent = true,
         icon,
@@ -1310,6 +1333,8 @@ async function startServer() {
           title,
           body,
           type,
+          threadType,
+          voiceSpeak,
           url: targetUrl,
           studentId: matchedStudent?.id,
           schoolId: matchedStudent?.schoolId || schoolId,
@@ -1362,6 +1387,8 @@ async function startServer() {
           title,
           body,
           type,
+          threadType,
+          voiceSpeak,
           url,
           icon: effectiveIcon,
           senderId: senderId ? String(senderId) : "",
@@ -1468,7 +1495,7 @@ async function startServer() {
 
   // Also handle /api/notifications/push via both Web Push and FCM HTTP v1
   app.post("/api/notifications/push", async (req, res) => {
-    const { recipientIds = [], broadcast = false, title, body, url, type, icon } = req.body || {};
+    const { recipientIds = [], broadcast = false, title, body, url, type, threadType, voiceSpeak, icon } = req.body || {};
     let delivered = 0;
     if (title && body) {
       await ensureFreshPushSubscriptions();
@@ -1480,14 +1507,14 @@ async function startServer() {
           recipientIds.includes(record.userId) ||
           record.students.some((s) => recipientIds.includes(s.id))
         ) {
-          const ok = await dispatchWebPush(record, { title, body, type, url, urgent: true });
+          const ok = await dispatchWebPush(record, { title, body, type, threadType, voiceSpeak, url, urgent: true });
           if (ok) delivered++;
         }
       }
       const fcmDelivered = await dispatchFcmToUsers(
         Array.isArray(recipientIds) ? recipientIds : [],
         Boolean(broadcast),
-        { title, body, type, url, icon }
+        { title, body, type, threadType, voiceSpeak, url, icon }
       );
       delivered += fcmDelivered;
     }
@@ -1614,25 +1641,68 @@ async function startServer() {
   // Telegram helper proxy routes (parity with serverless api/push-router.ts)
   app.get("/api/telegram/health", async (_req, res) => {
     const token = resolveTelegramBotToken();
+    if (!token) {
+      return res.status(503).json({
+        ok: false,
+        configured: false,
+        error: "Server par TELEGRAM_BOT_TOKEN set nahi hai. Settings -> Secrets me TELEGRAM_BOT_TOKEN add karein.",
+      });
+    }
     try {
       const r = await fetch(`https://api.telegram.org/bot${token}/getMe`);
       const data = (await r.json().catch(() => ({ ok: false }))) as any;
-      return res.status(r.ok ? 200 : 502).json({ ok: Boolean(data?.ok), bot: data?.result, error: data?.description });
+      const configuredChatId = String(
+        process.env.TELEGRAM_STORAGE_CHAT_ID || process.env.TELEGRAM_CHAT_CHANNEL_ID || ""
+      ).trim();
+      const discoveredChats =
+        !configuredChatId && data?.ok ? await discoverTelegramStorageChats(token) : [];
+      return res.status(r.ok ? 200 : 502).json({
+        ok: Boolean(data?.ok),
+        configured: true,
+        bot: data?.result ? { id: data.result.id, username: data.result.username, first_name: data.result.first_name } : undefined,
+        hasStorageChatId: Boolean(configuredChatId || discoveredChats.length > 0),
+        storageChatConfigured: Boolean(configuredChatId),
+        discoveredChats: discoveredChats.slice(0, 5),
+        error: data?.description,
+      });
     } catch (err: any) {
-      return res.status(502).json({ ok: false, error: err?.message || "Telegram health check failed" });
+      return res.status(502).json({ ok: false, configured: true, error: err?.message || "Telegram health check failed" });
     }
   });
 
+  app.post(
+    "/api/telegram/upload",
+    express.raw({ type: () => true, limit: "21mb" }),
+    async (req, res) => {
+      try {
+        const parsed = await readUploadPayloadFromRequest(req);
+        if ("error" in parsed) {
+          return res.status(parsed.status).json({ ok: false, error: parsed.error });
+        }
+        const result = await uploadBufferToTelegram(parsed);
+        return res.status(result.ok ? 200 : result.status).json(result);
+      } catch (err: any) {
+        return res.status(500).json({ ok: false, error: err?.message || "Telegram upload error" });
+      }
+    }
+  );
+
   app.post("/api/telegram/sendMessage", async (req, res) => {
     const token = resolveTelegramBotToken();
-    const defaultChatId = (process.env.TELEGRAM_CHAT_CHANNEL_ID || process.env.VITE_TELEGRAM_CHAT_CHANNEL_ID || "-1004290996442").trim();
+    if (!token) {
+      return res.status(503).json({ ok: false, error: "TELEGRAM_BOT_TOKEN not configured on server" });
+    }
     try {
       const { text, chat_id, reply_to_message_id, parse_mode = "HTML" } = req.body || {};
+      const targetChatId = await resolveTelegramStorageChatId(token, chat_id);
+      if (!targetChatId) {
+        return res.status(400).json({ ok: false, error: "TELEGRAM_STORAGE_CHAT_ID / TELEGRAM_CHAT_CHANNEL_ID not configured" });
+      }
       const r = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          chat_id: chat_id || defaultChatId,
+          chat_id: targetChatId,
           text,
           reply_to_message_id,
           parse_mode,
@@ -1656,21 +1726,28 @@ async function startServer() {
     const fileId = String(req.query?.fileId || req.query?.file_id || "").trim();
     const rawFilePath = String(req.query?.path || "").trim();
     const fileName = String(req.query?.name || "").trim();
-    const token = resolveTelegramBotToken(req.query?.token ? String(req.query.token) : undefined);
+    const token = resolveTelegramBotToken();
 
     res.setHeader("Access-Control-Allow-Origin", "*");
     res.setHeader("Access-Control-Expose-Headers", "Content-Range, Content-Length, Accept-Ranges, Content-Type");
+
+    if (!token) {
+      res.setHeader("Cache-Control", "no-store");
+      return res.status(503).json({ error: "TELEGRAM_BOT_TOKEN is not configured on the server" });
+    }
 
     let resolvedPath = rawFilePath;
     if (fileId) {
       const resolved = await resolveTelegramFilePath(fileId, token);
       if ("error" in resolved) {
+        res.setHeader("Cache-Control", "no-store");
         return res.status(resolved.status).json({ error: resolved.error });
       }
       resolvedPath = resolved.filePath;
     }
 
     if (!isSafeTelegramFilePath(resolvedPath)) {
+      res.setHeader("Cache-Control", "no-store");
       return res.status(400).json({ error: "Missing or invalid file path" });
     }
 
@@ -1708,6 +1785,7 @@ async function startServer() {
       }
 
       if (!tgRes.ok && tgRes.status !== 206) {
+        res.setHeader("Cache-Control", "no-store");
         return res.status(tgRes.status || 404).json({ error: "Telegram file unavailable" });
       }
 
@@ -1747,6 +1825,7 @@ async function startServer() {
       const buf = Buffer.from(await tgRes.arrayBuffer());
       return res.send(buf);
     } catch (err: any) {
+      res.setHeader("Cache-Control", "no-store");
       return res.status(502).json({ error: err?.message || "Failed to stream Telegram media" });
     }
   });
@@ -2031,13 +2110,29 @@ async function startServer() {
       appType: "spa",
     });
 
+    const devIndexPath = path.join(ROOT_DIR, "index.html");
+    let cachedDevTemplate = "";
+    let cachedDevMtime = 0;
+    const readDevTemplate = () => {
+      try {
+        const st = fs.statSync(devIndexPath);
+        if (!cachedDevTemplate || st.mtimeMs !== cachedDevMtime) {
+          cachedDevTemplate = fs.readFileSync(devIndexPath, "utf-8");
+          cachedDevMtime = st.mtimeMs;
+        }
+      } catch {
+        cachedDevTemplate = fs.readFileSync(devIndexPath, "utf-8");
+      }
+      return cachedDevTemplate;
+    };
+
     // Inject dynamic school OG/title/manifest/splash before Vite serves raw index.html
     app.use(async (req, res, next) => {
       if (!isSpaHtmlNavigationRequest(req)) return next();
       try {
         const origin = getServerRequestOrigin(req);
         const schoolQuery = String(req.query?.school || req.query?.schoolId || req.query?.s || "").trim();
-        const template = fs.readFileSync(path.join(ROOT_DIR, "index.html"), "utf-8");
+        const template = readDevTemplate();
         const [transformed, branding] = await Promise.all([
           vite.transformIndexHtml(req.originalUrl, template),
           resolveSchoolBranding({ origin, pathname: req.path, schoolQuery }),
@@ -2059,7 +2154,7 @@ async function startServer() {
       try {
         const origin = getServerRequestOrigin(req);
         const schoolQuery = String(req.query?.school || req.query?.schoolId || req.query?.s || "").trim();
-        const template = fs.readFileSync(path.join(ROOT_DIR, "index.html"), "utf-8");
+        const template = readDevTemplate();
         const [transformed, branding] = await Promise.all([
           vite.transformIndexHtml(req.originalUrl, template),
           resolveSchoolBranding({ origin, pathname: req.path, schoolQuery }),
@@ -2073,6 +2168,14 @@ async function startServer() {
     });
   } else {
     const distPath = path.join(ROOT_DIR, "dist");
+    const prodIndexPath = path.join(distPath, "index.html");
+    let cachedProdTemplate = "";
+    try {
+      if (fs.existsSync(prodIndexPath)) {
+        cachedProdTemplate = fs.readFileSync(prodIndexPath, "utf-8");
+      }
+    } catch {}
+
     app.use(express.static(distPath, { index: false }));
     app.use(async (req, res, next) => {
       if (req.method !== "GET" || req.path.startsWith("/api/")) {
@@ -2081,12 +2184,14 @@ async function startServer() {
       try {
         const origin = getServerRequestOrigin(req);
         const schoolQuery = String(req.query?.school || req.query?.schoolId || req.query?.s || "").trim();
-        const template = fs.readFileSync(path.join(distPath, "index.html"), "utf-8");
+        if (!cachedProdTemplate) {
+          cachedProdTemplate = fs.readFileSync(prodIndexPath, "utf-8");
+        }
         const branding = await resolveSchoolBranding({ origin, pathname: req.path, schoolQuery });
-        const brandedHtml = injectSchoolBrandingIntoHtml(template, branding);
+        const brandedHtml = injectSchoolBrandingIntoHtml(cachedProdTemplate, branding);
         res.status(200).set({ "Content-Type": "text/html; charset=utf-8" }).end(brandedHtml);
       } catch {
-        res.sendFile(path.join(distPath, "index.html"));
+        res.sendFile(prodIndexPath);
       }
     });
   }

@@ -3,7 +3,7 @@ import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { Volume2, VolumeX, Sparkles, Globe, LayoutGrid } from 'lucide-react';
 import { getOptimizedVideoUrl } from '../services/cloudinaryService';
 import { DEFAULT_LIFE_MAKER_SCHOOL, getLocalSchools } from '../school-firebase';
-import { getSavedSchoolLogo } from './school/feeReceiptUtils';
+import { getSavedSchoolLogo } from '../utils/schoolLogoUtils';
 
 export type SplashTransitionMode = 'boot' | 'to_app' | 'to_website';
 
@@ -106,8 +106,8 @@ export const AppLoadingScreen: React.FC<AppLoadingScreenProps> = ({
     setProgress(0);
     setIsExiting(false);
 
-    const totalDuration = transitionMode === 'boot' ? 1320 : 820;
-    const intervalMs = 20;
+    const totalDuration = transitionMode === 'boot' ? 420 : 320;
+    const intervalMs = 18;
     const steps = Math.max(1, Math.round(totalDuration / intervalMs));
     let currentStep = 0;
     let exitTimer: ReturnType<typeof setTimeout> | null = null;
@@ -121,8 +121,8 @@ export const AppLoadingScreen: React.FC<AppLoadingScreenProps> = ({
       if (currentStep >= steps) {
         clearInterval(timer);
         if (!isPreview) {
-          exitTimer = setTimeout(() => setIsExiting(true), 60);
-          doneTimer = setTimeout(() => onCompleteRef.current(), 240);
+          exitTimer = setTimeout(() => setIsExiting(true), 20);
+          doneTimer = setTimeout(() => onCompleteRef.current(), 110);
         }
       }
     }, intervalMs);
