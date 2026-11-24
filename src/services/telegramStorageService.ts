@@ -141,14 +141,13 @@ function parseServerUploadError(status: number, data: any): string {
  * Uploads binary payload via our secure server-side proxy (/api/telegram/upload).
  * Never exposes Telegram Bot Token in browser network requests or URLs.
  */
-async function uploadViaServerProxy(
+async function uploadViaServerProxyOnce(
   blob: Blob,
   fileName: string,
   targetChatId: string,
+  timeoutMs: number,
   opts: UploadOptions = {}
 ): Promise<TelegramUploadResult> {
-  const isLarge = blob.size > 2 * 1024 * 1024;
-  const timeoutMs = opts.timeoutMs || (isLarge ? 300000 : 120000);
   const mimeType = blob.type || 'application/octet-stream';
 
   if (typeof XMLHttpRequest !== 'undefined') {
@@ -156,12 +155,12 @@ async function uploadViaServerProxy(
       const xhr = new XMLHttpRequest();
       xhr.timeout = timeoutMs;
 
-      if (opts.onProgress) opts.onProgress(10);
+      if (opts.onProgress) opts.onProgress(15);
 
       if (xhr.upload && opts.onProgress) {
         xhr.upload.onprogress = (evt) => {
           if (evt.lengthComputable && evt.total > 0) {
-            const pct = Math.min(92, Math.max(12, Math.round((evt.loaded / evt.total) * 92)));
+            const pct = Math.min(92, Math.max(18, Math.round((evt.loaded / evt.total) * 92)));
             opts.onProgress!(pct);
           }
         };
@@ -185,16 +184,22 @@ async function uploadViaServerProxy(
             mimeType: data.mimeType || mimeType,
           });
         } else {
-          reject(new Error(parseServerUploadError(xhr.status, data)));
+          const err: any = new Error(parseServerUploadError(xhr.status, data));
+          err.status = xhr.status;
+          reject(err);
         }
       };
 
       xhr.onerror = () => {
-        reject(new Error('Storage server se sampark nahi ho saka. Kripya apna internet connection check karein.'));
+        const err: any = new Error('Storage server se sampark nahi ho saka. Kripya apna internet connection check karein.');
+        err.transient = true;
+        reject(err);
       };
 
       xhr.ontimeout = () => {
-        reject(new Error(`Upload time limit exceed ho gaya (${Math.round(timeoutMs / 1000)}s). Internet slow hai.`));
+        const err: any = new Error(`Upload time limit exceed ho gaya (${Math.round(timeoutMs / 1000)}s). Internet slow hai.`);
+        err.transient = true;
+        reject(err);
       };
 
       xhr.open('POST', '/api/telegram/upload', true);
@@ -238,7 +243,9 @@ async function uploadViaServerProxy(
     } catch {}
 
     if (!res.ok || !data?.ok || !data?.fileId) {
-      throw new Error(parseServerUploadError(res.status, data));
+      const err: any = new Error(parseServerUploadError(res.status, data));
+      err.status = res.status;
+      throw err;
     }
 
     const permanentUrl = data.url || buildPermanentTelegramUrl(data.fileId, data.fileName || fileName);
@@ -254,6 +261,29 @@ async function uploadViaServerProxy(
     };
   } catch (err) {
     clearTimeout(timeoutId);
+    throw err;
+  }
+}
+
+async function uploadViaServerProxy(
+  blob: Blob,
+  fileName: string,
+  targetChatId: string,
+  opts: UploadOptions = {}
+): Promise<TelegramUploadResult> {
+  const defaultTimeoutMs =
+    blob.size <= 1.5 * 1024 * 1024 ? 25000 : blob.size <= 5 * 1024 * 1024 ? 45000 : 120000;
+  const timeoutMs = opts.timeoutMs || defaultTimeoutMs;
+
+  try {
+    return await uploadViaServerProxyOnce(blob, fileName, targetChatId, timeoutMs, opts);
+  } catch (err: any) {
+    const status = Number(err?.status || 0);
+    const isTransient = Boolean(err?.transient) || status === 502 || status === 504;
+    if (isTransient && blob.size <= 2 * 1024 * 1024) {
+      await new Promise((r) => setTimeout(r, 450));
+      return await uploadViaServerProxyOnce(blob, fileName, targetChatId, timeoutMs, opts);
+    }
     throw err;
   }
 }

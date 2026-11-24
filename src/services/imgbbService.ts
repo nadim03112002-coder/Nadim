@@ -26,6 +26,132 @@ export interface UploadImageOptions {
   preservePng?: boolean;
 }
 
+function drawToScaledCanvas(
+  source: CanvasImageSource & { width: number; height: number },
+  maxWidth: number,
+  maxHeight: number,
+  isPng: boolean
+): HTMLCanvasElement {
+  const canvas = document.createElement('canvas');
+  let width = source.width || maxWidth;
+  let height = source.height || maxHeight;
+  if (width > maxWidth || height > maxHeight) {
+    const ratio = Math.min(maxWidth / width, maxHeight / height);
+    width = Math.max(1, Math.round(width * ratio));
+    height = Math.max(1, Math.round(height * ratio));
+  }
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext('2d');
+  if (ctx) {
+    if (!isPng) {
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, width, height);
+    }
+    ctx.drawImage(source, 0, 0, width, height);
+  }
+  return canvas;
+}
+
+function canvasToBlobFast(
+  canvas: HTMLCanvasElement,
+  mimeType: string,
+  quality: number
+): Promise<Blob> {
+  return new Promise((resolve, reject) => {
+    if (typeof canvas.toBlob === 'function') {
+      canvas.toBlob(
+        (blob) => {
+          if (blob && blob.size > 0) {
+            resolve(blob);
+          } else {
+            try {
+              resolve(dataUrlToBlob(canvas.toDataURL(mimeType, quality), mimeType));
+            } catch (err) {
+              reject(err);
+            }
+          }
+        },
+        mimeType,
+        quality
+      );
+      return;
+    }
+    try {
+      resolve(dataUrlToBlob(canvas.toDataURL(mimeType, quality), mimeType));
+    } catch (err) {
+      reject(err);
+    }
+  });
+}
+
+/**
+ * Fast binary image compression directly to Blob using createImageBitmap + canvas.toBlob.
+ * Avoids slow main-thread Base64 + atob byte-loop decoding for multi-megapixel camera photos.
+ */
+export async function compressImageToBlob(
+  file: File | Blob | string,
+  maxWidth = 1280,
+  maxHeight = 1280,
+  quality = 0.78,
+  preservePng = false
+): Promise<Blob> {
+  const isPng =
+    preservePng ||
+    (typeof file === 'string' && file.startsWith('data:image/png')) ||
+    (typeof file === 'object' && 'type' in file && file.type === 'image/png' && preservePng);
+  const outMime = isPng ? 'image/png' : 'image/jpeg';
+
+  if (typeof file === 'string') {
+    if (file.startsWith('data:image/')) {
+      const dataUrl = await compressImage(file, maxWidth, maxHeight, quality, isPng);
+      return dataUrlToBlob(dataUrl, outMime);
+    }
+    throw new Error('Invalid image string');
+  }
+
+  // Fast background-thread decode via createImageBitmap when available
+  if (typeof createImageBitmap === 'function') {
+    let bitmap: ImageBitmap | null = null;
+    try {
+      bitmap = await createImageBitmap(file);
+      const canvas = drawToScaledCanvas(bitmap, maxWidth, maxHeight, isPng);
+      bitmap.close();
+      bitmap = null;
+      return await canvasToBlobFast(canvas, outMime, quality);
+    } catch {
+      try {
+        bitmap?.close();
+      } catch {}
+    }
+  }
+
+  // Fallback to <img> + objectURL + canvas.toBlob
+  if (typeof URL !== 'undefined' && typeof URL.createObjectURL === 'function') {
+    const objectUrl = URL.createObjectURL(file);
+    try {
+      const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+        const el = new Image();
+        el.onload = () => resolve(el);
+        el.onerror = reject;
+        el.src = objectUrl;
+      });
+      const canvas = drawToScaledCanvas(
+        { width: img.naturalWidth || img.width, height: img.naturalHeight || img.height, ...img } as any,
+        maxWidth,
+        maxHeight,
+        isPng
+      );
+      return await canvasToBlobFast(canvas, outMime, quality);
+    } finally {
+      URL.revokeObjectURL(objectUrl);
+    }
+  }
+
+  const dataUrl = await compressImage(file, maxWidth, maxHeight, quality, isPng);
+  return dataUrlToBlob(dataUrl, outMime);
+}
+
 /**
  * Compresses an image File/Blob to high quality web JPEG or transparent PNG Base64.
  * Keeps size optimized (~100-300KB) for instant loading while preserving alpha channel for signatures.
@@ -46,25 +172,7 @@ export async function compressImage(
     if (typeof file === 'string' && file.startsWith('data:image/')) {
       const img = new Image();
       img.onload = () => {
-        const canvas = document.createElement('canvas');
-        let { width, height } = img;
-        if (width > maxWidth || height > maxHeight) {
-          const ratio = Math.min(maxWidth / width, maxHeight / height);
-          width = Math.round(width * ratio);
-          height = Math.round(height * ratio);
-        }
-        canvas.width = width;
-        canvas.height = height;
-        const ctx = canvas.getContext('2d');
-        if (!ctx) {
-          resolve(file);
-          return;
-        }
-        if (!isPng) {
-          ctx.fillStyle = '#ffffff';
-          ctx.fillRect(0, 0, width, height);
-        }
-        ctx.drawImage(img, 0, 0, width, height);
+        const canvas = drawToScaledCanvas(img, maxWidth, maxHeight, isPng);
         resolve(isPng ? canvas.toDataURL('image/png') : canvas.toDataURL('image/jpeg', quality));
       };
       img.onerror = () => resolve(file);
@@ -77,26 +185,7 @@ export async function compressImage(
       const img = new Image();
       img.onload = () => {
         try {
-          const canvas = document.createElement('canvas');
-          let { width, height } = img;
-          if (width > maxWidth || height > maxHeight) {
-            const ratio = Math.min(maxWidth / width, maxHeight / height);
-            width = Math.round(width * ratio);
-            height = Math.round(height * ratio);
-          }
-          canvas.width = width;
-          canvas.height = height;
-          const ctx = canvas.getContext('2d');
-          if (!ctx) {
-            URL.revokeObjectURL(objectUrl);
-            reject(new Error('Canvas context unavailable'));
-            return;
-          }
-          if (!isPng) {
-            ctx.fillStyle = '#ffffff';
-            ctx.fillRect(0, 0, width, height);
-          }
-          ctx.drawImage(img, 0, 0, width, height);
+          const canvas = drawToScaledCanvas(img, maxWidth, maxHeight, isPng);
           const resultUrl = isPng ? canvas.toDataURL('image/png') : canvas.toDataURL('image/jpeg', quality);
           URL.revokeObjectURL(objectUrl);
           resolve(resultUrl);
@@ -121,25 +210,7 @@ export async function compressImage(
       const dataUrl = e.target?.result as string;
       const img = new Image();
       img.onload = () => {
-        const canvas = document.createElement('canvas');
-        let { width, height } = img;
-        if (width > maxWidth || height > maxHeight) {
-          const ratio = Math.min(maxWidth / width, maxHeight / height);
-          width = Math.round(width * ratio);
-          height = Math.round(height * ratio);
-        }
-        canvas.width = width;
-        canvas.height = height;
-        const ctx = canvas.getContext('2d');
-        if (!ctx) {
-          resolve(dataUrl);
-          return;
-        }
-        if (!isPng) {
-          ctx.fillStyle = '#ffffff';
-          ctx.fillRect(0, 0, width, height);
-        }
-        ctx.drawImage(img, 0, 0, width, height);
+        const canvas = drawToScaledCanvas(img, maxWidth, maxHeight, isPng);
         resolve(isPng ? canvas.toDataURL('image/png') : canvas.toDataURL('image/jpeg', quality));
       };
       img.onerror = () => resolve(dataUrl);
@@ -174,27 +245,21 @@ export async function uploadImageToImgBB(
           name.toLowerCase().includes('sig_') ||
           name.toLowerCase().includes('stamp'))
     );
-  // Optimized resolution: 1280px provides crisp retina display on mobile & desktop, while keeping size under 200KB!
+  // Optimized resolution: 1280px provides crisp retina display on mobile & desktop, while keeping size under 180KB!
   const targetMaxWidth = (typeof options === 'object' && options?.maxWidth) ? options.maxWidth : isHd ? 1600 : 1280;
   const targetMaxHeight = (typeof options === 'object' && options?.maxHeight) ? options.maxHeight : isHd ? 1600 : 1280;
-  const targetQuality = (typeof options === 'object' && options?.quality) ? options.quality : isHd ? 0.85 : 0.80;
+  const targetQuality = (typeof options === 'object' && options?.quality) ? options.quality : isHd ? 0.84 : 0.78;
 
-  let base64Data = '';
   let compressedBlob: Blob | null = null;
   try {
-    // Compress first for fast network transit while preserving alpha channel for PNGs
-    base64Data = await compressImage(file, targetMaxWidth, targetMaxHeight, targetQuality, preservePng);
-    if (base64Data && base64Data.startsWith('data:')) {
-      compressedBlob = dataUrlToBlob(base64Data, preservePng ? 'image/png' : 'image/jpeg');
-    }
+    compressedBlob = await compressImageToBlob(file, targetMaxWidth, targetMaxHeight, targetQuality, preservePng);
   } catch (err) {
     console.warn('[Image Upload Service] Pre-compression skipped:', err);
   }
 
-  // ── Strategy 1: Telegram Cloud Storage (@nsta_vault_bot) with COMPRESSED BLOB ──
+  // ── Strategy 1: Telegram Cloud Storage with fast binary compressed Blob ──
   try {
-    // CRITICAL SPEED FIX: Upload the lightweight compressedBlob (100-250KB) instead of the heavy 10MB raw file!
-    const inputPayload = compressedBlob || (base64Data ? dataUrlToBlob(base64Data, preservePng ? 'image/png' : 'image/jpeg') : file);
+    const inputPayload = compressedBlob || file;
     const defaultExt = preservePng ? 'png' : 'jpg';
     const directTelegramUrl = await uploadImageToTelegram(
       inputPayload,
@@ -219,10 +284,6 @@ export async function uploadImageToImgBB(
     }
   } catch (compErr) {
     console.warn('[Image Upload Service] Fallback compression error:', compErr);
-  }
-
-  if (base64Data) {
-    return base64Data;
   }
 
   throw new Error('Photo process nahi ho payi. Kripya dobara koshish karein.');

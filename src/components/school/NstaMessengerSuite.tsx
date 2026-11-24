@@ -95,6 +95,7 @@ import {
 } from "../../school-firebase";
 import { loadSchoolSettingBlob } from "../../utils/schoolCloudSync";
 import { uploadToCloudinary } from "../../services/cloudinaryService";
+import { compressImageToBlob } from "../../services/imgbbService";
 import { formatMonthLabel } from "../../utils/feeFifoAllocation";
 import { getSchoolFeeDiscountSlabs, computeSlabDiscountAmount } from "../../utils/feeDiscountSlabs";
 import { sendSchoolPushNotification } from "../../utils/schoolPushClient";
@@ -916,6 +917,34 @@ export const NstaMessengerSuite: React.FC<Props> = ({
   const [imageCaption, setImageCaption] = useState<string>("");
   const [isUploadingMedia, setIsUploadingMedia] = useState(false);
   const [mediaUploadProgress, setMediaUploadProgress] = useState(0);
+  const precompressedImageRef = useRef<{ sourceFile: File; promise: Promise<File> } | null>(null);
+
+  const preparePrecompressedImage = (file: File) => {
+    const mime = (file.type || "").toLowerCase();
+    const name = (file.name || "").toLowerCase();
+    if (mime === "image/gif" || mime === "image/svg+xml" || file.size <= 90 * 1024) {
+      precompressedImageRef.current = { sourceFile: file, promise: Promise.resolve(file) };
+      return;
+    }
+    const promise = (async () => {
+      try {
+        const isSmallPng = (mime === "image/png" || name.endsWith(".png")) && file.size <= 220 * 1024;
+        let blob = await compressImageToBlob(file, 1280, 1280, 0.78, isSmallPng);
+        if (blob.size > 380 * 1024) {
+          blob = await compressImageToBlob(blob, 1024, 1024, 0.68, false);
+        }
+        if (blob.size > 0 && blob.size < file.size) {
+          const outName =
+            blob.type === "image/jpeg" && !/\.(jpe?g)$/i.test(file.name)
+              ? file.name.replace(/\.[^.]+$/, "") + ".jpg"
+              : file.name;
+          return new File([blob], outName, { type: blob.type || "image/jpeg" });
+        }
+      } catch {}
+      return file;
+    })();
+    precompressedImageRef.current = { sourceFile: file, promise };
+  };
 
   const [selectedVideoFile, setSelectedVideoFile] = useState<File | null>(null);
   const [videoPreviewUrl, setVideoPreviewUrl] = useState<string | null>(null);
@@ -2348,12 +2377,16 @@ export const NstaMessengerSuite: React.FC<Props> = ({
     canvas.toBlob((blob) => {
       if (!blob) return;
       const file = new File([blob], `camera_snap_${Date.now()}.jpg`, { type: "image/jpeg" });
+      if (imagePreviewUrl) {
+        try { URL.revokeObjectURL(imagePreviewUrl); } catch {}
+      }
       const preview = URL.createObjectURL(blob);
       setSelectedImageFile(file);
       setImagePreviewUrl(preview);
       setImageCaption("");
+      preparePrecompressedImage(file);
       stopInAppCamera();
-    }, "image/jpeg", 0.92);
+    }, "image/jpeg", 0.80);
   };
 
   useEffect(() => {
@@ -2378,10 +2411,14 @@ export const NstaMessengerSuite: React.FC<Props> = ({
       return;
     }
 
+    if (imagePreviewUrl) {
+      try { URL.revokeObjectURL(imagePreviewUrl); } catch {}
+    }
     const preview = URL.createObjectURL(file);
     setSelectedImageFile(file);
     setImagePreviewUrl(preview);
     setImageCaption("");
+    preparePrecompressedImage(file);
     e.target.value = "";
   };
 
@@ -2423,9 +2460,19 @@ export const NstaMessengerSuite: React.FC<Props> = ({
     setMediaUploadProgress(15);
 
     try {
-      const res = await uploadToCloudinary(selectedImageFile, "image", (pct) => {
-        setMediaUploadProgress(pct);
-      });
+      const readyFile =
+        precompressedImageRef.current?.sourceFile === selectedImageFile
+          ? await precompressedImageRef.current.promise
+          : selectedImageFile;
+
+      const res = await uploadToCloudinary(
+        readyFile,
+        "image",
+        (pct) => {
+          setMediaUploadProgress(pct);
+        },
+        readyFile !== selectedImageFile
+      );
       const uploadedUrl = res?.secure_url || res?.url;
       if (!uploadedUrl) {
         throw new Error("Telegram storage se photo URL prapt nahi hua.");
@@ -2457,8 +2504,15 @@ export const NstaMessengerSuite: React.FC<Props> = ({
         status: "sent"
       };
 
-      await saveNstaMessage(newMsg);
-      dispatchMessengerPush(newMsg, undefined, newMsg.text || "📷 Photo bheji gayi hai");
+      const savePromise = saveNstaMessage(newMsg).then(() => {
+        dispatchMessengerPush(newMsg, undefined, newMsg.text || "📷 Photo bheji gayi hai");
+      });
+      // Local state & event fire synchronously inside saveNstaMessage; wait briefly so network write is dispatched cleanly
+      await Promise.race([savePromise, new Promise((r) => setTimeout(r, 250))]);
+      if (imagePreviewUrl) {
+        try { URL.revokeObjectURL(imagePreviewUrl); } catch {}
+      }
+      precompressedImageRef.current = null;
       setSelectedImageFile(null);
       setImagePreviewUrl(null);
       setImageCaption("");

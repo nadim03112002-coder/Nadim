@@ -1,7 +1,12 @@
 import crypto from "crypto";
+import dns from "dns";
 import fs from "fs";
 import path from "path";
 import webpush from "web-push";
+
+try {
+  dns.setDefaultResultOrder("ipv4first");
+} catch {}
 import {
   getPublicRazorpayConfig,
   saveSchoolRazorpayConfig,
@@ -19,6 +24,8 @@ import {
 import {
   resolveTelegramBotToken,
   getTelegramTokenDiagnostics,
+  getConfiguredTelegramStorageChatId,
+  telegramBotApiRequest,
   resolveTelegramFilePath,
   resolveTelegramStorageChatId,
   discoverTelegramStorageChats,
@@ -1066,31 +1073,44 @@ export default async function handler(req: any, res: any) {
           configured: false,
           envPresent: diag.envPresent,
           reason: diag.reason,
+          ...(diag.hint ? { hint: diag.hint } : {}),
           error:
             diag.reason === "invalid_token_format"
               ? "TELEGRAM_BOT_TOKEN format galat hai (expected 123456789:AAH...). Vercel me BotFather token bina extra text ke dalein aur Redeploy karein."
               : "Server par TELEGRAM_BOT_TOKEN set nahi hai. Vercel Environment Variables me Production ke liye TELEGRAM_BOT_TOKEN add karke Redeploy karein.",
         });
       }
-      const r = await fetch(`https://api.telegram.org/bot${token}/getMe`);
-      const data = (await r.json().catch(() => ({ ok: false }))) as any;
-      const configuredChatId = String(
-        process.env.TELEGRAM_STORAGE_CHAT_ID ||
-          process.env.TELEGRAM_CHAT_CHANNEL_ID ||
-          process.env.VITE_TELEGRAM_STORAGE_CHAT_ID ||
-          ""
-      ).trim();
-      const discoveredChats =
-        !configuredChatId && data?.ok ? await discoverTelegramStorageChats(token) : [];
-      return res.status(r.ok ? 200 : 502).json({
-        ok: Boolean(data?.ok),
-        configured: true,
-        bot: data?.result ? { id: data.result.id, username: data.result.username, first_name: data.result.first_name } : undefined,
-        hasStorageChatId: Boolean(configuredChatId || discoveredChats.length > 0),
-        storageChatConfigured: Boolean(configuredChatId),
-        discoveredChats: discoveredChats.slice(0, 5),
-        error: data?.description,
-      });
+      try {
+        const { status: tgStatus, ok: tgOk, json: rawJson } = await telegramBotApiRequest<any>({
+          token,
+          methodPath: "getMe",
+          httpMethod: "GET",
+          timeoutMs: 10000,
+        });
+        const data = rawJson || { ok: false };
+        const configuredChatId = getConfiguredTelegramStorageChatId();
+        const discoveredChats =
+          !configuredChatId && data?.ok ? await discoverTelegramStorageChats(token) : [];
+        const status = tgOk ? 200 : tgStatus === 429 ? 429 : 502;
+        return res.status(status).json({
+          ok: Boolean(data?.ok),
+          configured: true,
+          bot: data?.result ? { id: data.result.id, username: data.result.username, first_name: data.result.first_name } : undefined,
+          hasStorageChatId: Boolean(configuredChatId || discoveredChats.length > 0),
+          storageChatConfigured: Boolean(configuredChatId),
+          discoveredChats: discoveredChats.slice(0, 5),
+          ...(data?.parameters?.retry_after ? { retryAfter: Number(data.parameters.retry_after) } : {}),
+          error: data?.description,
+        });
+      } catch (err: any) {
+        const isAbort = err?.name === "AbortError" || /abort/i.test(String(err?.message || ""));
+        return res.status(isAbort ? 504 : 502).json({
+          ok: false,
+          configured: true,
+          storageChatConfigured: Boolean(getConfiguredTelegramStorageChatId()),
+          error: isAbort ? "Telegram getMe timeout" : err?.message || "Telegram health check failed",
+        });
+      }
     }
 
     if (method === "POST" && rawPath === "telegram/upload") {
@@ -1112,18 +1132,28 @@ export default async function handler(req: any, res: any) {
       if (!targetChatId) {
         return res.status(400).json({ ok: false, error: "TELEGRAM_STORAGE_CHAT_ID / TELEGRAM_CHAT_CHANNEL_ID not configured" });
       }
-      const r = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          chat_id: targetChatId,
-          text,
-          reply_to_message_id,
-          parse_mode,
-        }),
-      });
-      const data = await r.json().catch(() => ({ ok: false }));
-      return res.status(r.ok ? 200 : 502).json(data);
+      try {
+        const { status: tgStatus, ok: tgOk, json } = await telegramBotApiRequest<any>({
+          token,
+          methodPath: "sendMessage",
+          httpMethod: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            chat_id: targetChatId,
+            text,
+            reply_to_message_id,
+            parse_mode,
+          }),
+          timeoutMs: 12000,
+        });
+        return res.status(tgOk ? 200 : tgStatus === 429 ? 429 : 502).json(json || { ok: false });
+      } catch (err: any) {
+        const isAbort = err?.name === "AbortError" || /abort/i.test(String(err?.message || ""));
+        return res.status(isAbort ? 504 : 502).json({
+          ok: false,
+          error: isAbort ? "Telegram sendMessage timeout" : err?.message || "Telegram sendMessage failed",
+        });
+      }
     }
 
     if (method === "GET" && rawPath === "telegram/file") {

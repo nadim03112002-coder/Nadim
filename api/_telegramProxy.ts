@@ -1,3 +1,121 @@
+import dns from "dns";
+import https from "https";
+import net from "net";
+
+try {
+  dns.setDefaultResultOrder("ipv4first");
+  if (typeof (net as any).setDefaultAutoSelectFamily === "function") {
+    (net as any).setDefaultAutoSelectFamily(false);
+  }
+} catch {}
+
+// Persistent IPv4-only keep-alive agent eliminates IPv6 Happy-Eyeballs stalls & TLS handshake latency
+const TELEGRAM_HTTPS_AGENT = new https.Agent({
+  keepAlive: true,
+  keepAliveMsecs: 30000,
+  maxSockets: 16,
+  family: 4,
+});
+
+export async function telegramBotApiRequest<T = any>(opts: {
+  token: string;
+  methodPath: string;
+  httpMethod?: "GET" | "POST";
+  body?: Buffer | string;
+  headers?: Record<string, string>;
+  timeoutMs?: number;
+}): Promise<{ status: number; ok: boolean; json: T | null }> {
+  const method = opts.httpMethod || (opts.body ? "POST" : "GET");
+  const timeoutMs = opts.timeoutMs || 12000;
+  const bodyBuf =
+    opts.body === undefined
+      ? undefined
+      : Buffer.isBuffer(opts.body)
+      ? opts.body
+      : Buffer.from(opts.body, "utf8");
+
+  return new Promise((resolve, reject) => {
+    const reqHeaders: Record<string, string | number> = {
+      ...(opts.headers || {}),
+    };
+    if (bodyBuf) {
+      reqHeaders["Content-Length"] = bodyBuf.length;
+    }
+
+    const req = https.request(
+      {
+        hostname: "api.telegram.org",
+        port: 443,
+        path: `/bot${opts.token}/${opts.methodPath}`,
+        method,
+        agent: TELEGRAM_HTTPS_AGENT,
+        family: 4,
+        headers: reqHeaders,
+      },
+      (res) => {
+        const chunks: Buffer[] = [];
+        res.on("data", (chunk) => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
+        res.on("end", () => {
+          const status = res.statusCode || 502;
+          const raw = Buffer.concat(chunks).toString("utf8");
+          let json: T | null = null;
+          try {
+            json = raw ? (JSON.parse(raw) as T) : null;
+          } catch {}
+          resolve({ status, ok: status >= 200 && status < 300, json });
+        });
+      }
+    );
+
+    req.setTimeout(timeoutMs, () => {
+      const err: any = new Error(`Telegram API timeout after ${timeoutMs}ms`);
+      err.name = "AbortError";
+      req.destroy(err);
+    });
+
+    req.on("error", (err) => {
+      reject(err);
+    });
+
+    if (bodyBuf) {
+      req.write(bodyBuf);
+    }
+    req.end();
+  });
+}
+
+function buildMultipartFormPayload(
+  fields: Array<{ name: string; value: string }>,
+  fileField?: { name: string; fileName: string; mimeType: string; buffer: Buffer }
+): { body: Buffer; contentType: string } {
+  const boundary = `----NstaTg${Date.now().toString(36)}${Math.random().toString(36).slice(2, 9)}`;
+  const chunks: Buffer[] = [];
+  for (const field of fields) {
+    chunks.push(
+      Buffer.from(
+        `--${boundary}\r\nContent-Disposition: form-data; name="${field.name}"\r\n\r\n${field.value}\r\n`,
+        "utf8"
+      )
+    );
+  }
+  if (fileField) {
+    const safeFileName = fileField.fileName.replace(/["\r\n]/g, "_");
+    chunks.push(
+      Buffer.from(
+        `--${boundary}\r\nContent-Disposition: form-data; name="${fileField.name}"; filename="${safeFileName}"\r\nContent-Type: ${fileField.mimeType}\r\n\r\n`,
+        "utf8"
+      )
+    );
+    chunks.push(fileField.buffer);
+    chunks.push(Buffer.from("\r\n", "utf8"));
+  }
+  chunks.push(Buffer.from(`--${boundary}--\r\n`, "utf8"));
+  return {
+    body: Buffer.concat(chunks),
+    contentType: `multipart/form-data; boundary=${boundary}`,
+  };
+}
+
 const FILE_PATH_CACHE = new Map<string, { filePath: string; fileSize?: number; expiresAt: number }>();
 const FILE_PATH_TTL_MS = 20 * 60 * 1000; // 20 minutes (safely inside Telegram's ~1 hour link window)
 
@@ -7,7 +125,8 @@ const DISCOVERED_CHAT_CACHE = new Map<
 >();
 const DISCOVERED_CHAT_TTL_MS = 10 * 60 * 1000;
 
-const BOT_TOKEN_RE = /^\d{6,15}:[A-Za-z0-9_-]{20,80}$/;
+const BOT_TOKEN_RE = /^\d{6,15}:[A-Za-z0-9_-]{20,100}$/;
+const BOT_TOKEN_EXTRACT_RE = /\d{6,15}:[A-Za-z0-9_-]{20,100}/;
 const FILE_ID_RE = /^[A-Za-z0-9_=-]{8,300}$/;
 const FILE_PATH_RE = /^[A-Za-z0-9_./-]{1,300}$/;
 const CHAT_ID_RE = /^-?\d{5,20}$|^@[A-Za-z][A-Za-z0-9_]{3,63}$/;
@@ -39,6 +158,14 @@ export function resolveTelegramBotToken(): string {
     if (cleaned && BOT_TOKEN_RE.test(cleaned)) {
       return cleaned;
     }
+    const extracted = cleaned.match(BOT_TOKEN_EXTRACT_RE)?.[0];
+    if (extracted && BOT_TOKEN_RE.test(extracted)) {
+      return extracted;
+    }
+    const compact = cleaned.replace(/\s+/g, "").replace(/^bot(?=\d+:)/i, "");
+    if (compact && BOT_TOKEN_RE.test(compact)) {
+      return compact;
+    }
   }
   return "";
 }
@@ -46,25 +173,68 @@ export function resolveTelegramBotToken(): string {
 export function getTelegramTokenDiagnostics(): {
   envPresent: boolean;
   reason: "ok" | "missing_in_runtime_env" | "invalid_token_format";
+  hint?: string;
 } {
   if (resolveTelegramBotToken()) {
     return { envPresent: true, reason: "ok" };
   }
-  const hasAnyRaw = [
+  const rawValues = [
     process.env.TELEGRAM_BOT_TOKEN,
     process.env.TELEGRAM_TOKEN,
     process.env.BOT_TOKEN,
     process.env.VITE_TELEGRAM_BOT_TOKEN,
-  ].some((v) => Boolean(cleanEnvValue(v)));
+  ]
+    .map((v) => cleanEnvValue(v))
+    .filter(Boolean);
+
+  if (rawValues.length === 0) {
+    return { envPresent: false, reason: "missing_in_runtime_env" };
+  }
+  const first = rawValues[0];
+  let hint = "expected_botfather_token";
+  if (first.startsWith("@") || /bot$/i.test(first)) {
+    hint = "looks_like_username_or_bot_name";
+  } else if (/^-?\d+$/.test(first)) {
+    hint = "looks_like_chat_id_not_token";
+  }
   return {
-    envPresent: hasAnyRaw,
-    reason: hasAnyRaw ? "invalid_token_format" : "missing_in_runtime_env",
+    envPresent: true,
+    reason: "invalid_token_format",
+    hint,
   };
 }
 
+export function normalizeTelegramChatId(chatId?: string | null): string {
+  const cleaned = cleanEnvValue(chatId);
+  if (!cleaned) return "";
+  // Telegram channels & supergroups always start with -100; recover common typo "1003945418652" -> "-1003945418652"
+  if (/^100\d{9,15}$/.test(cleaned)) {
+    return `-${cleaned}`;
+  }
+  return cleaned;
+}
+
 export function isValidTelegramChatId(chatId?: string | null): boolean {
-  const clean = String(chatId || "").trim();
+  const clean = normalizeTelegramChatId(chatId);
   return Boolean(clean && CHAT_ID_RE.test(clean));
+}
+
+export function getConfiguredTelegramStorageChatId(): string {
+  const envCandidates = [
+    process.env.TELEGRAM_STORAGE_CHAT_ID,
+    process.env.TELEGRAM_CHAT_CHANNEL_ID,
+    process.env.VITE_TELEGRAM_STORAGE_CHAT_ID,
+    process.env.VITE_TELEGRAM_CHAT_CHANNEL_ID,
+  ]
+    .map((raw) => normalizeTelegramChatId(raw))
+    .filter((id) => Boolean(id) && CHAT_ID_RE.test(id));
+
+  if (envCandidates.length === 0) return "";
+  // Prefer channel/supergroup IDs (-100...) over plain numeric IDs when multiple env vars are present
+  const channelId = envCandidates.find((id) => id.startsWith("-100"));
+  if (channelId) return channelId;
+  const negativeId = envCandidates.find((id) => id.startsWith("-"));
+  return negativeId || envCandidates[0];
 }
 
 export function isValidTelegramFileId(fileId?: string | null): boolean {
@@ -97,17 +267,14 @@ export async function discoverTelegramStorageChats(
   }
 
   try {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 5000);
     const allowed = encodeURIComponent(JSON.stringify(["channel_post", "my_chat_member", "message"]));
-    const res = await fetch(
-      `https://api.telegram.org/bot${token}/getUpdates?limit=30&allowed_updates=${allowed}`,
-      { signal: controller.signal }
-    );
-    clearTimeout(timer);
-    if (!res.ok) return [];
-    const json = (await res.json().catch(() => null)) as any;
-    if (!json?.ok || !Array.isArray(json.result)) return [];
+    const { ok, json } = await telegramBotApiRequest<any>({
+      token,
+      methodPath: `getUpdates?limit=30&allowed_updates=${allowed}`,
+      httpMethod: "GET",
+      timeoutMs: 5000,
+    });
+    if (!ok || !json?.ok || !Array.isArray(json.result)) return [];
 
     const byId = new Map<string, { id: string; title: string; type: string }>();
     for (const upd of json.result) {
@@ -140,19 +307,11 @@ export async function resolveTelegramStorageChatId(
   token: string,
   requestedChatId?: string | null
 ): Promise<string> {
-  const envCandidates = [
-    process.env.TELEGRAM_STORAGE_CHAT_ID,
-    process.env.TELEGRAM_CHAT_CHANNEL_ID,
-    process.env.VITE_TELEGRAM_STORAGE_CHAT_ID,
-    process.env.VITE_TELEGRAM_CHAT_CHANNEL_ID,
-  ];
-  for (const raw of envCandidates) {
-    const cleaned = cleanEnvValue(raw);
-    if (isValidTelegramChatId(cleaned)) return cleaned;
-  }
+  const configured = getConfiguredTelegramStorageChatId();
+  if (configured) return configured;
 
-  const candidate = cleanEnvValue(requestedChatId);
-  if (isValidTelegramChatId(candidate) && !LEGACY_CHAT_IDS.has(candidate)) {
+  const candidate = normalizeTelegramChatId(requestedChatId);
+  if (candidate && CHAT_ID_RE.test(candidate) && !LEGACY_CHAT_IDS.has(candidate)) {
     return candidate;
   }
 
@@ -186,35 +345,28 @@ export async function resolveTelegramFilePath(
   }
 
   const callGetFile = async () => {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 8000);
-    try {
-      const tgRes = await fetch(
-        `https://api.telegram.org/bot${token}/getFile?file_id=${encodeURIComponent(cleanId)}`,
-        { signal: controller.signal }
-      );
-      clearTimeout(timer);
-      const tgJson = (await tgRes.json().catch(() => null)) as any;
-      return { tgRes, tgJson };
-    } catch (err) {
-      clearTimeout(timer);
-      throw err;
-    }
+    const { status, ok, json } = await telegramBotApiRequest<any>({
+      token,
+      methodPath: `getFile?file_id=${encodeURIComponent(cleanId)}`,
+      httpMethod: "GET",
+      timeoutMs: 8000,
+    });
+    return { status, ok, tgJson: json };
   };
 
   try {
-    let { tgRes, tgJson } = await callGetFile();
+    let { status, ok, tgJson } = await callGetFile();
 
     // Auto-retry once on brief Telegram 429 rate-limit windows
-    if (tgRes.status === 429) {
+    if (status === 429) {
       const retrySec = Number(tgJson?.parameters?.retry_after || 1);
       if (retrySec > 0 && retrySec <= 3) {
         await sleep(retrySec * 1000 + 150);
-        ({ tgRes, tgJson } = await callGetFile());
+        ({ status, ok, tgJson } = await callGetFile());
       }
     }
 
-    if (!tgRes.ok || !tgJson?.ok || !tgJson?.result?.file_path) {
+    if (!ok || !tgJson?.ok || !tgJson?.result?.file_path) {
       const desc = String(tgJson?.description || "Telegram file not found");
       if (/file is too big/i.test(desc)) {
         return {
@@ -224,7 +376,7 @@ export async function resolveTelegramFilePath(
       }
       return {
         error: desc,
-        status: tgRes.status === 429 ? 429 : tgRes.status === 400 ? 404 : tgRes.status || 404,
+        status: status === 429 ? 429 : status === 400 ? 404 : status || 404,
       };
     }
 
@@ -420,55 +572,52 @@ export async function uploadBufferToTelegram(opts: {
     sampleBytes: opts.buffer,
   });
 
-  const sendAttempt = async () => {
-    const form = new FormData();
-    form.append("chat_id", targetChatId);
-    if (opts.caption) {
-      form.append("caption", String(opts.caption).slice(0, 1000));
-    }
-    const blob = new Blob([new Uint8Array(opts.buffer)], { type: detectedMime });
-    form.append("document", blob, safeName);
+  const fields: Array<{ name: string; value: string }> = [{ name: "chat_id", value: targetChatId }];
+  if (opts.caption) {
+    fields.push({ name: "caption", value: String(opts.caption).slice(0, 1000) });
+  }
+  const multipart = buildMultipartFormPayload(fields, {
+    name: "document",
+    fileName: safeName,
+    mimeType: detectedMime,
+    buffer: opts.buffer,
+  });
 
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 120000);
-    try {
-      const res = await fetch(`https://api.telegram.org/bot${token}/sendDocument`, {
-        method: "POST",
-        body: form,
-        signal: controller.signal,
-      });
-      clearTimeout(timer);
-      const json = (await res.json().catch(() => null)) as any;
-      return { res, json };
-    } catch (err) {
-      clearTimeout(timer);
-      throw err;
-    }
+  const sendAttempt = async () => {
+    return telegramBotApiRequest<any>({
+      token,
+      methodPath: "sendDocument",
+      httpMethod: "POST",
+      body: multipart.body,
+      headers: { "Content-Type": multipart.contentType },
+      timeoutMs: 22000,
+    });
   };
 
   try {
-    let { res, json } = await sendAttempt();
-    if (res.status === 429) {
-      const retrySec = Number(json?.parameters?.retry_after || 1);
-      if (retrySec > 0 && retrySec <= 3) {
+    let { status, ok, json } = await sendAttempt();
+    if (status === 429) {
+      const retrySec = Number(json?.parameters?.retry_after || 0);
+      if (retrySec > 0 && retrySec <= 2) {
         await sleep(retrySec * 1000 + 150);
-        ({ res, json } = await sendAttempt());
+        ({ status, ok, json } = await sendAttempt());
       }
     }
 
-    if (!res.ok || !json?.ok) {
-      const rawDesc = String(json?.description || `Telegram error (${res.status})`);
+    if (!ok || !json?.ok) {
+      const rawDesc = String(json?.description || `Telegram error (${status})`);
       let friendly = rawDesc;
       if (/chat not found|bot is not a member|need administrator rights|have no rights/i.test(rawDesc)) {
-        friendly = `Telegram channel permission error (${rawDesc}). Ensure karein ki @LmpsschoolappBot naye channel me Admin hai aur TELEGRAM_STORAGE_CHAT_ID sahi hai.`;
+        friendly = `Telegram channel permission error (${rawDesc}). Ensure karein ki @LmpsschoolappBot naye channel me Admin hai aur TELEGRAM_STORAGE_CHAT_ID sahi (-100...) hai.`;
       } else if (/unauthorized/i.test(rawDesc)) {
         friendly = "Telegram Bot Token invalid ya revoke ho gaya hai. Kripya server TELEGRAM_BOT_TOKEN check karein.";
-      } else if (res.status === 429) {
-        friendly = "Telegram par bahut zyada requests aa rahi hain (429). Kuch second baad dobara try karein.";
+      } else if (status === 429) {
+        const retrySec = Number(json?.parameters?.retry_after || 0);
+        friendly = `Telegram par bahut zyada requests aa rahi hain (429).${retrySec > 0 ? ` Kripya ${retrySec} second baad` : " Kuch second baad"} dobara try karein.`;
       }
       return {
         ok: false,
-        status: res.status === 429 ? 429 : res.status >= 400 ? res.status : 502,
+        status: status === 429 ? 429 : status >= 400 ? status : 502,
         error: friendly,
       };
     }
@@ -498,10 +647,13 @@ export async function uploadBufferToTelegram(opts: {
       mimeType: String(doc?.mime_type || detectedMime),
     };
   } catch (err: any) {
+    const isAbort = err?.name === "AbortError" || /abort/i.test(String(err?.message || ""));
     return {
       ok: false,
-      status: 502,
-      error: err?.message || "Telegram upload fail ho gaya.",
+      status: isAbort ? 504 : 502,
+      error: isAbort
+        ? "Telegram server se response lene me timeout ho gaya. Kripya dobara try karein."
+        : err?.message || "Telegram upload fail ho gaya.",
     };
   }
 }

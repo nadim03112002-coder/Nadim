@@ -1,5 +1,5 @@
-import { uploadToTelegramStorage, resolveTelegramUrl, dataUrlToBlob } from './telegramStorageService';
-import { compressImage } from './imgbbService';
+import { uploadToTelegramStorage, resolveTelegramUrl } from './telegramStorageService';
+import { compressImageToBlob } from './imgbbService';
 
 // Telegram Cloud Storage powered Media Service (Drop-in replacement for Cloudinary)
 // Provides unlimited free media hosting for Video, Audio, PDF, and Images
@@ -29,7 +29,8 @@ export type CloudinaryMediaKind = 'video' | 'audio' | 'pdf' | 'image' | 'auto';
 export const uploadToCloudinary = async (
   file: File,
   resourceType: CloudinaryMediaKind = 'auto',
-  onProgress?: (progressPercent: number) => void
+  onProgress?: (progressPercent: number) => void,
+  skipCompression = false
 ): Promise<CloudinaryUploadResult> => {
   const mime = (file.type || '').toLowerCase();
   const name = (file.name || '').toLowerCase();
@@ -46,22 +47,24 @@ export const uploadToCloudinary = async (
 
   const targetResourceType = isVideoOrAudio ? 'video' : isPdf ? 'pdf' : 'image';
 
-  // Instant client-side compression for images (>180KB) to reduce 10-16MB to ~150-300KB
+  // Fast single-pass client-side compression for images (>90KB, excluding animated GIF/SVG)
   let uploadPayload: File | Blob = file;
-  if (targetResourceType === 'image' && file.size > 180 * 1024) {
+  let uploadFileName = file.name;
+  const skipCompress =
+    skipCompression || mime === 'image/gif' || mime === 'image/svg+xml' || file.size <= 90 * 1024;
+  if (targetResourceType === 'image' && !skipCompress) {
     try {
       if (onProgress) onProgress(8);
-      const isPng = mime === 'image/png' || name.endsWith('.png');
-      const compressedData = await compressImage(file, 1400, 1400, 0.82, isPng);
-      if (compressedData && compressedData.startsWith('data:')) {
-        let compressedBlob = dataUrlToBlob(compressedData, isPng ? 'image/png' : 'image/jpeg');
-        if (compressedBlob.size > 1.5 * 1024 * 1024) {
-          const jpegData = await compressImage(file, 1280, 1280, 0.78, false);
-          if (jpegData && jpegData.startsWith('data:')) {
-            compressedBlob = dataUrlToBlob(jpegData, 'image/jpeg');
-          }
-        }
+      const isSmallPng = (mime === 'image/png' || name.endsWith('.png')) && file.size <= 220 * 1024;
+      let compressedBlob = await compressImageToBlob(file, 1280, 1280, 0.78, isSmallPng);
+      if (compressedBlob.size > 400 * 1024) {
+        compressedBlob = await compressImageToBlob(compressedBlob, 1024, 1024, 0.68, false);
+      }
+      if (compressedBlob.size > 0 && compressedBlob.size < file.size) {
         uploadPayload = compressedBlob;
+        if (compressedBlob.type === 'image/jpeg' && !/\.(jpe?g)$/i.test(uploadFileName)) {
+          uploadFileName = uploadFileName.replace(/\.[^.]+$/, '') + '.jpg';
+        }
       }
     } catch (cErr) {
       console.warn('[uploadToCloudinary] Pre-compression skipped:', cErr);
@@ -72,8 +75,8 @@ export const uploadToCloudinary = async (
     if (onProgress) onProgress(15);
 
     const tgRes = await uploadToTelegramStorage(uploadPayload, {
-      fileName: file.name,
-      caption: `NSTA ${targetResourceType.toUpperCase()}: ${file.name}`,
+      fileName: uploadFileName,
+      caption: `NSTA ${targetResourceType.toUpperCase()}: ${uploadFileName}`,
       onProgress: (pct) => {
         if (onProgress) onProgress(pct);
       },
