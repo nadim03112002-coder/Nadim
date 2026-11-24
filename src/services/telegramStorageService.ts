@@ -123,13 +123,16 @@ export function resolveTelegramUrl(rawUrl: string): string {
 
 function parseServerUploadError(status: number, data: any): string {
   if (status === 413) {
-    return data?.error || 'File size limit se badi hai. Kripya video compress karein ya 19.5MB se chhoti file upload karein.';
+    return data?.error || 'File size limit se badi hai (Vercel limit 4.5MB / Telegram 19.5MB). Kripya chhoti file ya compressed media upload karein.';
   }
   if (status === 503) {
     return data?.error || 'Server par TELEGRAM_BOT_TOKEN configure nahi hai.';
   }
   if (status === 429) {
     return data?.error || 'Telegram par abhi bahut requests aa rahi hain. 5-10 second baad dubara koshish karein.';
+  }
+  if (status >= 500 && !data?.error && !data?.description) {
+    return `Telegram storage server error (${status}). Vercel Env variables aur deployment check karein.`;
   }
   return data?.error || data?.description || `Upload server error (${status})`;
 }

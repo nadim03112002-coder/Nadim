@@ -12,14 +12,14 @@ import {
   createSchoolRazorpayOrder,
   verifySchoolRazorpayCheckout,
   handleSchoolRazorpayWebhook,
-} from "./api/_razorpay";
+} from "./api/_razorpay.js";
 import { Readable } from "stream";
 import {
   resolveSchoolBranding,
   buildSchoolWebManifest,
   injectSchoolBrandingIntoHtml,
   resolveSchoolAssetPayload,
-} from "./api/_schoolBranding";
+} from "./api/_schoolBranding.js";
 import {
   resolveTelegramBotToken,
   resolveTelegramFilePath,
@@ -30,7 +30,7 @@ import {
   invalidateTelegramFilePathCache,
   isSafeTelegramFilePath,
   detectMimeType,
-} from "./api/_telegramProxy";
+} from "./api/_telegramProxy.js";
 import {
   deleteFcmTokenFromSupabase,
   deleteWebpushSubFromSupabase,
@@ -42,7 +42,7 @@ import {
   upsertFcmTokenInSupabase,
   upsertWebpushDueInSupabase,
   upsertWebpushSubInSupabase,
-} from "./api/_supabaseServer";
+} from "./api/_supabaseServer.js";
 
 // Prevent transient socket resets (e.g. pre-warmer closing connections early)
 // or background async errors from terminating the dev/prod server process.

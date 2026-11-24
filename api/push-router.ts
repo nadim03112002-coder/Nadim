@@ -9,13 +9,13 @@ import {
   createSchoolRazorpayOrder,
   verifySchoolRazorpayCheckout,
   handleSchoolRazorpayWebhook,
-} from "./_razorpay";
+} from "./_razorpay.js";
 import {
   resolveSchoolBranding,
   buildSchoolWebManifest,
   injectSchoolBrandingIntoHtml,
   resolveSchoolAssetPayload,
-} from "./_schoolBranding";
+} from "./_schoolBranding.js";
 import {
   resolveTelegramBotToken,
   resolveTelegramFilePath,
@@ -26,7 +26,7 @@ import {
   invalidateTelegramFilePathCache,
   isSafeTelegramFilePath,
   detectMimeType,
-} from "./_telegramProxy";
+} from "./_telegramProxy.js";
 import {
   deleteFcmTokenFromSupabase,
   deleteWebpushSubFromSupabase,
@@ -38,7 +38,7 @@ import {
   upsertFcmTokenInSupabase,
   upsertWebpushDueInSupabase,
   upsertWebpushSubInSupabase,
-} from "./_supabaseServer";
+} from "./_supabaseServer.js";
 
 let cachedBuiltHtmlTemplate: string | null = null;
 
@@ -1231,7 +1231,7 @@ export default async function handler(req: any, res: any) {
       amount: number;
       monthLabel: string;
       receiptNo: string;
-      purpose?: "fee_payment" | "store_order";
+      purpose?: "admission_fee" | "fee_payment" | "store_order";
     }) => {
       const isStore = info.purpose === "store_order";
       const title = isStore

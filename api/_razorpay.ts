@@ -3,7 +3,7 @@ import {
   getKvDocFromSupabase,
   patchKvDocInSupabase,
   upsertKvDocInSupabase,
-} from "./_supabaseServer";
+} from "./_supabaseServer.js";
 
 const RTDB_BASE_URL =
   process.env.FIREBASE_DATABASE_URL ||

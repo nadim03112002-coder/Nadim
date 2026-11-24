@@ -2423,20 +2423,12 @@ export const NstaMessengerSuite: React.FC<Props> = ({
     setMediaUploadProgress(15);
 
     try {
-      let uploadedUrl = "";
-      try {
-        const res = await uploadToCloudinary(selectedImageFile, "image", (pct) => {
-          setMediaUploadProgress(pct);
-        });
-        uploadedUrl = res?.secure_url || res?.url;
-      } catch (uploadErr) {
-        console.warn("[NstaMessenger] Telegram/Cloudinary upload failed, falling back to base64:", uploadErr);
-        uploadedUrl = await new Promise<string>((resolve, reject) => {
-          const reader = new FileReader();
-          reader.onload = () => resolve(reader.result as string);
-          reader.onerror = reject;
-          reader.readAsDataURL(selectedImageFile);
-        });
+      const res = await uploadToCloudinary(selectedImageFile, "image", (pct) => {
+        setMediaUploadProgress(pct);
+      });
+      const uploadedUrl = res?.secure_url || res?.url;
+      if (!uploadedUrl) {
+        throw new Error("Telegram storage se photo URL prapt nahi hua.");
       }
 
       const targetThreadType: NstaThreadType =
@@ -2567,20 +2559,12 @@ export const NstaMessengerSuite: React.FC<Props> = ({
     setMediaUploadProgress(20);
 
     try {
-      let uploadedUrl = "";
-      try {
-        const res = await uploadToCloudinary(file, "auto", (pct) => {
-          setMediaUploadProgress(pct);
-        });
-        uploadedUrl = res?.secure_url || res?.url;
-      } catch (uploadErr) {
-        console.warn("[NstaMessenger] Cloudinary/Telegram file upload fallback to data URL:", uploadErr);
-        uploadedUrl = await new Promise<string>((resolve, reject) => {
-          const reader = new FileReader();
-          reader.onload = () => resolve(reader.result as string);
-          reader.onerror = reject;
-          reader.readAsDataURL(file);
-        });
+      const res = await uploadToCloudinary(file, "auto", (pct) => {
+        setMediaUploadProgress(pct);
+      });
+      const uploadedUrl = res?.secure_url || res?.url;
+      if (!uploadedUrl) {
+        throw new Error("Telegram storage se file URL prapt nahi hua.");
       }
 
       const ext = file.name.split(".").pop()?.toLowerCase() || "";
@@ -2643,17 +2627,10 @@ export const NstaMessengerSuite: React.FC<Props> = ({
         type: audioBlob.type || "audio/webm",
       });
 
-      let uploadedUrl = "";
-      try {
-        const res = await uploadToCloudinary(audioFile, "auto");
-        uploadedUrl = res?.secure_url || res?.url;
-      } catch {
-        uploadedUrl = await new Promise<string>((resolve, reject) => {
-          const reader = new FileReader();
-          reader.onload = () => resolve(reader.result as string);
-          reader.onerror = reject;
-          reader.readAsDataURL(audioBlob);
-        });
+      const res = await uploadToCloudinary(audioFile, "auto");
+      const uploadedUrl = res?.secure_url || res?.url;
+      if (!uploadedUrl) {
+        throw new Error("Telegram storage se voice note URL prapt nahi hua.");
       }
 
       const targetThreadType: NstaThreadType =
@@ -2797,17 +2774,10 @@ export const NstaMessengerSuite: React.FC<Props> = ({
     setToastNotification("🎙️ Audio note upload ho raha hai...");
 
     try {
-      let uploadedUrl = "";
-      try {
-        const res = await uploadToCloudinary(file, "audio");
-        uploadedUrl = res?.secure_url || res?.url;
-      } catch {
-        uploadedUrl = await new Promise<string>((resolve, reject) => {
-          const reader = new FileReader();
-          reader.onload = () => resolve(reader.result as string);
-          reader.onerror = reject;
-          reader.readAsDataURL(file);
-        });
+      const res = await uploadToCloudinary(file, "audio");
+      const uploadedUrl = res?.secure_url || res?.url;
+      if (!uploadedUrl) {
+        throw new Error("Telegram storage se audio URL prapt nahi hua.");
       }
 
       const targetThreadType: NstaThreadType =

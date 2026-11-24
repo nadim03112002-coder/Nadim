@@ -227,9 +227,19 @@ export async function readUploadPayloadFromRequest(req: any): Promise<{
     .split(";")[0]
     .trim();
 
-  if (Buffer.isBuffer(req.body)) {
+  if (Buffer.isBuffer(req.body) || req.body instanceof Uint8Array) {
     return {
-      buffer: req.body,
+      buffer: Buffer.from(req.body),
+      fileName: headerFileName || `upload_${Date.now()}.bin`,
+      mimeType: headerMime || "application/octet-stream",
+      caption: headerCaption,
+      chatId: headerChatId,
+    };
+  }
+
+  if (Buffer.isBuffer(req.rawBody) && headerMime !== "application/json") {
+    return {
+      buffer: req.rawBody,
       fileName: headerFileName || `upload_${Date.now()}.bin`,
       mimeType: headerMime || "application/octet-stream",
       caption: headerCaption,
@@ -249,6 +259,16 @@ export async function readUploadPayloadFromRequest(req: any): Promise<{
       mimeType,
       caption: req.body.caption ? String(req.body.caption) : headerCaption,
       chatId: req.body.chatId ? String(req.body.chatId).trim() : headerChatId,
+    };
+  }
+
+  if (typeof req.body === "string" && req.body.length > 0 && headerMime !== "application/json") {
+    return {
+      buffer: Buffer.from(req.body, "latin1"),
+      fileName: headerFileName || `upload_${Date.now()}.bin`,
+      mimeType: headerMime || "application/octet-stream",
+      caption: headerCaption,
+      chatId: headerChatId,
     };
   }
 

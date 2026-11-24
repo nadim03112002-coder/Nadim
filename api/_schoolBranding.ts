@@ -1,5 +1,5 @@
-import { extractTelegramParamsFromUrl, fetchTelegramFileBuffer } from "./_telegramProxy";
-import { fetchAllSchoolsFromSupabase, upsertSchoolInSupabase } from "./_supabaseServer";
+import { extractTelegramParamsFromUrl, fetchTelegramFileBuffer } from "./_telegramProxy.js";
+import { fetchAllSchoolsFromSupabase, upsertSchoolInSupabase } from "./_supabaseServer.js";
 
 const RTDB_BASE_URL =
   process.env.FIREBASE_DATABASE_URL ||
@@ -715,7 +715,6 @@ export async function resolveSchoolAssetPayload(opts: {
           fileId: parsed.fileId,
           filePath: parsed.path,
           fileName: parsed.name,
-          token: parsed.token,
           timeoutMs: 4500,
         });
         if (fetched && fetched.contentType.startsWith("image/") && !fetched.contentType.includes("svg") && fetched.buffer.length > 64) {

@@ -46,7 +46,7 @@ export const uploadToCloudinary = async (
 
   const targetResourceType = isVideoOrAudio ? 'video' : isPdf ? 'pdf' : 'image';
 
-  // Instant client-side compression for images (>180KB) to reduce 10MB to 150KB
+  // Instant client-side compression for images (>180KB) to reduce 10-16MB to ~150-300KB
   let uploadPayload: File | Blob = file;
   if (targetResourceType === 'image' && file.size > 180 * 1024) {
     try {
@@ -54,7 +54,14 @@ export const uploadToCloudinary = async (
       const isPng = mime === 'image/png' || name.endsWith('.png');
       const compressedData = await compressImage(file, 1400, 1400, 0.82, isPng);
       if (compressedData && compressedData.startsWith('data:')) {
-        uploadPayload = dataUrlToBlob(compressedData, isPng ? 'image/png' : 'image/jpeg');
+        let compressedBlob = dataUrlToBlob(compressedData, isPng ? 'image/png' : 'image/jpeg');
+        if (compressedBlob.size > 1.5 * 1024 * 1024) {
+          const jpegData = await compressImage(file, 1280, 1280, 0.78, false);
+          if (jpegData && jpegData.startsWith('data:')) {
+            compressedBlob = dataUrlToBlob(jpegData, 'image/jpeg');
+          }
+        }
+        uploadPayload = compressedBlob;
       }
     } catch (cErr) {
       console.warn('[uploadToCloudinary] Pre-compression skipped:', cErr);
