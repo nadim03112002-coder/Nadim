@@ -50,7 +50,8 @@ import type {
   SchoolAccountant, AccountantPermissions, SchoolExpenseVoucher,
   StudentAcknowledgedLeave, StudentAbsenteeCallLog,
   SchoolEvent, SchoolEventType,
-  AdminAttendanceRecord, StaffDailyAttendanceRecord, StaffDailyAttendanceEntry
+  AdminAttendanceRecord, StaffDailyAttendanceRecord, StaffDailyAttendanceEntry,
+  FeeCallFollowUpRecord
 } from "./school-types";
 import { sortSchoolClasses } from "./school-types";
 import {
@@ -9787,6 +9788,60 @@ export const subscribeToNstaStatuses = (
   };
 };
 
+export interface NstaStatusUserGroup {
+  userKey: string;
+  authorId: string;
+  authorName: string;
+  authorRole: "ADMIN" | "TEACHER";
+  authorPhoto?: string;
+  items: NstaSchoolStatus[];
+  latestStatus: NstaSchoolStatus;
+  latestCreatedAt: string;
+}
+
+export const groupNstaStatusesByUser = (statuses: NstaSchoolStatus[]): NstaStatusUserGroup[] => {
+  const groupsMap = new Map<string, NstaStatusUserGroup>();
+
+  for (const st of statuses) {
+    if (!st || !st.id) continue;
+    const rawAuthorId = String(st.authorId || "").trim();
+    const userKey = rawAuthorId
+      ? `uid:${rawAuthorId}`
+      : `name:${st.authorRole || "TEACHER"}:${String(st.authorName || "school").trim().toLowerCase()}`;
+
+    const existing = groupsMap.get(userKey);
+    if (!existing) {
+      groupsMap.set(userKey, {
+        userKey,
+        authorId: rawAuthorId || userKey,
+        authorName: st.authorName || (st.authorRole === "ADMIN" ? "School Admin" : "Teacher"),
+        authorRole: st.authorRole === "TEACHER" ? "TEACHER" : "ADMIN",
+        authorPhoto: st.authorPhoto,
+        items: [st],
+        latestStatus: st,
+        latestCreatedAt: st.createdAt || "",
+      });
+    } else {
+      existing.items.push(st);
+      if ((st.createdAt || "").localeCompare(existing.latestCreatedAt) > 0) {
+        existing.latestCreatedAt = st.createdAt || "";
+        existing.latestStatus = st;
+        if (st.authorName) existing.authorName = st.authorName;
+        if (st.authorPhoto) existing.authorPhoto = st.authorPhoto;
+      }
+    }
+  }
+
+  const groups = Array.from(groupsMap.values());
+  for (const g of groups) {
+    // Play each user's statuses sequentially from oldest to newest
+    g.items.sort((a, b) => (a.createdAt || "").localeCompare(b.createdAt || ""));
+    g.latestStatus = g.items[g.items.length - 1];
+  }
+  groups.sort((a, b) => (b.latestCreatedAt || "").localeCompare(a.latestCreatedAt || ""));
+  return groups;
+};
+
 // Check student's daily teacher query count (max 5)
 export const getStudentDailyTeacherQueryCount = (schoolId: string, studentId: string, dateStr?: string): number => {
   const targetDate = dateStr || new Date().toISOString().split("T")[0];
@@ -11510,5 +11565,337 @@ export const saveStaffMonthlyPolicyAdjustment = async (
 export const saveAttendanceDirectCloud = saveAttendance;
 export const replayOfflineStudentAttendancePunch = (payload: any) => markStudentQrAttendance(payload);
 export const replayOfflineStaffAttendancePunch = (payload: any) => markStaffAttendanceAtomic(payload);
+
+// ── FEE TAGADA OFFLINE CALLER & PROMISE-DATE FOLLOW-UP SYNC ─────────────────
+const FEE_FOLLOWUPS_CACHE_KEY = (schoolId: string) => `nst_school_fee_followups_${schoolId}`;
+const FEE_FOLLOWUPS_DIRTY_KEY = (schoolId: string) => `nst_school_fee_followups_dirty_${schoolId}`;
+
+const getDirtyFeeFollowUpIds = (schoolId: string): string[] => {
+  try {
+    const raw = localStorage.getItem(FEE_FOLLOWUPS_DIRTY_KEY(schoolId));
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.filter((x) => typeof x === "string") : [];
+  } catch {
+    return [];
+  }
+};
+
+const setDirtyFeeFollowUpIds = (schoolId: string, ids: string[]) => {
+  try {
+    const uniq = Array.from(new Set(ids.filter(Boolean)));
+    if (uniq.length === 0) {
+      localStorage.removeItem(FEE_FOLLOWUPS_DIRTY_KEY(schoolId));
+    } else {
+      localStorage.setItem(FEE_FOLLOWUPS_DIRTY_KEY(schoolId), JSON.stringify(uniq));
+    }
+  } catch {}
+};
+
+export const getLocalFeeCallFollowUps = (schoolId: string): FeeCallFollowUpRecord[] => {
+  if (!schoolId) return [];
+  const list = getSchoolCacheSync<FeeCallFollowUpRecord[]>(FEE_FOLLOWUPS_CACHE_KEY(schoolId), []);
+  return Array.isArray(list) ? list : [];
+};
+
+export const getPendingFeeFollowUpSyncCount = (schoolId: string): number => {
+  if (!schoolId) return 0;
+  return getDirtyFeeFollowUpIds(schoolId).length;
+};
+
+const writeFeeFollowUpToCloud = async (clean: FeeCallFollowUpRecord): Promise<boolean> => {
+  if (typeof navigator !== "undefined" && navigator.onLine === false) {
+    return false;
+  }
+  let ok = false;
+  if (db) {
+    try {
+      await withTimeout(
+        setDoc(d(`schools/${clean.schoolId}/fee_call_followups/${clean.studentId}`), clean, { merge: true }),
+        3500
+      );
+      ok = true;
+    } catch {}
+  }
+  if (rtdb) {
+    try {
+      await withTimeout(
+        set(ref(rtdb, `schools/${clean.schoolId}/fee_call_followups/${clean.studentId}`), clean),
+        2500
+      );
+      ok = true;
+    } catch {}
+  }
+  return ok;
+};
+
+export const saveFeeCallFollowUp = async (
+  record: FeeCallFollowUpRecord
+): Promise<{ synced: boolean }> => {
+  if (!record?.schoolId || !record?.studentId) return { synced: false };
+  const clean: FeeCallFollowUpRecord = sanitizeForFirestore({
+    ...record,
+    id: record.studentId,
+    updatedAt: record.updatedAt || new Date().toISOString(),
+  });
+
+  // 1. Always save locally first so offline calls & schedules are 100% preserved
+  const cacheKey = FEE_FOLLOWUPS_CACHE_KEY(clean.schoolId);
+  const current = getLocalFeeCallFollowUps(clean.schoolId);
+  const next = [clean, ...current.filter((item) => item?.studentId !== clean.studentId)];
+  setSchoolCacheSync(cacheKey, next);
+
+  const dirtyBefore = getDirtyFeeFollowUpIds(clean.schoolId);
+  setDirtyFeeFollowUpIds(clean.schoolId, [...dirtyBefore, clean.studentId]);
+
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(
+      new CustomEvent("fee-call-followups-updated", { detail: { schoolId: clean.schoolId, record: clean } })
+    );
+  }
+
+  // 2. Attempt cloud write; if offline, remains queued in dirty list for auto-replay
+  const synced = await writeFeeFollowUpToCloud(clean);
+  if (synced) {
+    const remainingDirty = getDirtyFeeFollowUpIds(clean.schoolId).filter((id) => id !== clean.studentId);
+    setDirtyFeeFollowUpIds(clean.schoolId, remainingDirty);
+    if (typeof window !== "undefined") {
+      window.dispatchEvent(
+        new CustomEvent("fee-call-followups-updated", { detail: { schoolId: clean.schoolId } })
+      );
+    }
+  }
+  return { synced };
+};
+
+export const syncPendingFeeCallFollowUps = async (schoolId: string): Promise<number> => {
+  if (!schoolId) return 0;
+  if (typeof navigator !== "undefined" && navigator.onLine === false) return 0;
+  const dirtyIds = getDirtyFeeFollowUpIds(schoolId);
+  if (dirtyIds.length === 0) return 0;
+
+  const localMap = new Map(getLocalFeeCallFollowUps(schoolId).map((r) => [r.studentId, r]));
+  const stillDirty: string[] = [];
+  let syncedCount = 0;
+
+  for (const stuId of dirtyIds) {
+    const rec = localMap.get(stuId);
+    if (!rec) continue;
+    const ok = await writeFeeFollowUpToCloud(rec);
+    if (ok) syncedCount++;
+    else stillDirty.push(stuId);
+  }
+
+  setDirtyFeeFollowUpIds(schoolId, stillDirty);
+  if (syncedCount > 0 && typeof window !== "undefined") {
+    window.dispatchEvent(new CustomEvent("fee-call-followups-updated", { detail: { schoolId } }));
+  }
+  return syncedCount;
+};
+
+export const saveFeeCallFollowUpBatch = async (
+  records: FeeCallFollowUpRecord[]
+): Promise<{ syncedCount: number; total: number }> => {
+  const valid = records.filter((r) => Boolean(r?.schoolId && r?.studentId));
+  if (valid.length === 0) return { syncedCount: 0, total: 0 };
+
+  let syncedCount = 0;
+  // Group by schoolId for atomic local cache update
+  const bySchool = new Map<string, FeeCallFollowUpRecord[]>();
+  for (const r of valid) {
+    const clean = sanitizeForFirestore({
+      ...r,
+      id: r.studentId,
+      updatedAt: r.updatedAt || new Date().toISOString(),
+    });
+    const arr = bySchool.get(clean.schoolId) || [];
+    arr.push(clean);
+    bySchool.set(clean.schoolId, arr);
+  }
+
+  for (const [schId, items] of bySchool.entries()) {
+    const cacheKey = FEE_FOLLOWUPS_CACHE_KEY(schId);
+    const current = getLocalFeeCallFollowUps(schId);
+    const itemMap = new Map(current.map((c) => [c.studentId, c]));
+    for (const clean of items) {
+      itemMap.set(clean.studentId, clean);
+    }
+    setSchoolCacheSync(cacheKey, Array.from(itemMap.values()));
+
+    const dirtyBefore = getDirtyFeeFollowUpIds(schId);
+    const dirtySet = new Set([...dirtyBefore, ...items.map((it) => it.studentId)]);
+    setDirtyFeeFollowUpIds(schId, Array.from(dirtySet));
+
+    if (typeof window !== "undefined") {
+      window.dispatchEvent(new CustomEvent("fee-call-followups-updated", { detail: { schoolId: schId } }));
+    }
+
+    for (const clean of items) {
+      const ok = await writeFeeFollowUpToCloud(clean);
+      if (ok) {
+        syncedCount++;
+        dirtySet.delete(clean.studentId);
+      }
+    }
+    setDirtyFeeFollowUpIds(schId, Array.from(dirtySet));
+    if (syncedCount > 0 && typeof window !== "undefined") {
+      window.dispatchEvent(new CustomEvent("fee-call-followups-updated", { detail: { schoolId: schId } }));
+    }
+  }
+
+  return { syncedCount, total: valid.length };
+};
+
+export const autoSettleFeeCallFollowUp = async (
+  schoolId: string,
+  studentId: string,
+  opts?: {
+    receiptNo?: string;
+    amountPaid?: number;
+    remainingDue?: number;
+    actorName?: string;
+    studentName?: string;
+    fatherName?: string;
+    classId?: string;
+    className?: string;
+    rollNo?: string;
+    phone?: string;
+  }
+): Promise<void> => {
+  if (!schoolId || !studentId) return;
+  const remainingDue = Math.max(0, Number(opts?.remainingDue ?? 0));
+  const local = getLocalFeeCallFollowUps(schoolId);
+  const existing = local.find((r) => r.studentId === studentId);
+  const nowIso = new Date().toISOString();
+
+  if (remainingDue <= 0) {
+    if (!existing) {
+      // Only create a compact settled record if this student actually paid via receipt
+      if (!opts?.receiptNo && !(opts?.amountPaid && opts.amountPaid > 0)) return;
+      const fresh: FeeCallFollowUpRecord = {
+        id: studentId,
+        schoolId,
+        studentId,
+        studentName: opts?.studentName || "Student",
+        fatherName: opts?.fatherName || "",
+        classId: opts?.classId || "",
+        className: opts?.className || "",
+        rollNo: opts?.rollNo || "",
+        phone: opts?.phone || "",
+        settled: true,
+        settledAt: nowIso,
+        settledReceiptNo: opts?.receiptNo,
+        settledAmount: opts?.amountPaid,
+        settledBy: opts?.actorName,
+        totalCallsCount: 0,
+        callHistory: [],
+        updatedAt: nowIso,
+      };
+      await saveFeeCallFollowUp(fresh);
+      return;
+    }
+
+    const updated: FeeCallFollowUpRecord = {
+      ...existing,
+      studentName: opts?.studentName || existing.studentName,
+      fatherName: opts?.fatherName ?? existing.fatherName,
+      classId: opts?.classId || existing.classId,
+      className: opts?.className || existing.className,
+      rollNo: opts?.rollNo ?? existing.rollNo,
+      phone: opts?.phone || existing.phone,
+      settled: true,
+      settledAt: nowIso,
+      settledReceiptNo: opts?.receiptNo || existing.settledReceiptNo,
+      settledAmount: opts?.amountPaid ?? existing.settledAmount,
+      settledBy: opts?.actorName || existing.settledBy,
+      nextCallDate: undefined,
+      updatedAt: nowIso,
+    };
+    await saveFeeCallFollowUp(updated);
+  } else if (existing && existing.settled) {
+    // Re-open if a partial payment or reversal left balance due
+    const reopened: FeeCallFollowUpRecord = {
+      ...existing,
+      settled: false,
+      settledAt: undefined,
+      updatedAt: nowIso,
+    };
+    await saveFeeCallFollowUp(reopened);
+  }
+};
+
+export const subscribeToFeeCallFollowUps = (
+  schoolId: string,
+  cb: (records: FeeCallFollowUpRecord[]) => void
+): (() => void) => {
+  if (!schoolId) {
+    cb([]);
+    return () => {};
+  }
+  const cacheKey = FEE_FOLLOWUPS_CACHE_KEY(schoolId);
+  let disposed = false;
+
+  const emitLocal = () => {
+    if (disposed) return;
+    const list = getLocalFeeCallFollowUps(schoolId);
+    cb([...list].sort((a, b) => (b.updatedAt || "").localeCompare(a.updatedAt || "")));
+  };
+
+  emitLocal();
+  whenSchoolIdbReady().then(() => { if (!disposed) emitLocal(); }).catch(() => {});
+  void syncPendingFeeCallFollowUps(schoolId);
+
+  const onCustomUpdate = (e: any) => {
+    if (!e?.detail?.schoolId || e.detail.schoolId === schoolId) emitLocal();
+  };
+  const onOnline = () => {
+    void syncPendingFeeCallFollowUps(schoolId);
+  };
+
+  if (typeof window !== "undefined") {
+    window.addEventListener("fee-call-followups-updated", onCustomUpdate);
+    window.addEventListener("school-idb-hydrated", emitLocal);
+    window.addEventListener("online", onOnline);
+  }
+
+  let unsubFs = () => {};
+  if (db) {
+    try {
+      const qFs = query(col(`schools/${schoolId}/fee_call_followups`), orderBy("updatedAt", "desc"), limit(500));
+      unsubFs = onSnapshot(qFs, (snap) => {
+        if (disposed) return;
+        const remoteList = snap.docs.map((docSnap) => docSnap.data() as FeeCallFollowUpRecord);
+        const dirtySet = new Set(getDirtyFeeFollowUpIds(schoolId));
+        const localCur = getLocalFeeCallFollowUps(schoolId);
+        const mergedMap = new Map<string, FeeCallFollowUpRecord>();
+
+        for (const r of remoteList) {
+          if (r?.studentId) mergedMap.set(r.studentId, r);
+        }
+        // Preserve dirty offline updates or newer local updates
+        for (const loc of localCur) {
+          if (!loc?.studentId) continue;
+          const rem = mergedMap.get(loc.studentId);
+          if (dirtySet.has(loc.studentId) || !rem || (loc.updatedAt || "").localeCompare(rem.updatedAt || "") > 0) {
+            mergedMap.set(loc.studentId, loc);
+          }
+        }
+        setSchoolCacheSync(cacheKey, Array.from(mergedMap.values()));
+        emitLocal();
+      });
+    } catch {}
+  }
+
+  return () => {
+    disposed = true;
+    if (typeof window !== "undefined") {
+      window.removeEventListener("fee-call-followups-updated", onCustomUpdate);
+      window.removeEventListener("school-idb-hydrated", emitLocal);
+      window.removeEventListener("online", onOnline);
+    }
+    unsubFs();
+  };
+};
+
 
 

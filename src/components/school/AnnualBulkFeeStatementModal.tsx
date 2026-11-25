@@ -25,6 +25,7 @@ import {
 } from "./feeReceiptUtils";
 import { printHtmlInIframe } from "./AdmissionFormPrintModal";
 import { safeOpenExternalUrl, getDynamicAcademicSessionLabel } from "../../utils/safeBrowserActions";
+import { formatCoveredMonthsList, formatMonthNameOnly, formatCompactDayMonth } from "../../utils/familyFeeEngine";
 
 interface Props {
   isOpen: boolean;
@@ -519,6 +520,18 @@ export const AnnualBulkFeeStatementModal: React.FC<Props> = ({
                           <td className="p-1.5 font-bold text-slate-900">
                             {monthDisplay}
                             {isPreAdm && <span className="text-[8px] text-slate-400 block font-normal">सत्र पूर्व / Pre-Admission (लागू नहीं)</span>}
+                            {Array.isArray(f.advanceCoveredMonths) && f.advanceCoveredMonths.length > 0 && (
+                              <span className="text-[8px] text-emerald-700 block font-bold">
+                                ✓ {formatCoveredMonthsList(f.advanceCoveredMonths)} Paid
+                                {f.advancePaidAt ? ` at ${formatCompactDayMonth(f.advancePaidAt)}` : ""}
+                                {f.nextFeeSlipMonth ? ` · Next Slip: ${formatMonthNameOnly(f.nextFeeSlipMonth)}` : ""}
+                              </span>
+                            )}
+                            {!isPreAdm && !isPaid && paid > 0 && remaining > 0 && (
+                              <span className="text-[8px] text-amber-800 block font-bold">
+                                आंशिक बकाया ₹{remaining.toLocaleString("en-IN")} → अगले माह जुड़ेगा
+                              </span>
+                            )}
                           </td>
                           <td className="p-1.5 text-right font-mono font-bold text-slate-800">
                             {isPreAdm ? "—" : `₹${billed.toLocaleString("en-IN")}`}

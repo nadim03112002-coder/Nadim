@@ -121,6 +121,7 @@ import {
 import { loadSchoolSettingBlob } from "../../utils/schoolCloudSync";
 import { getSessionMonthCodes } from "../../utils/reAdmissionUtils";
 import { getSavedSchoolLogo, getVisibleSchoolRegNo, isAppLogo, maskSensitive2Chars } from "./feeReceiptUtils";
+import { formatCoveredMonthsList, formatMonthNameOnly, formatCompactDayMonth } from "../../utils/familyFeeEngine";
 import { buildStudentIdCardQrUrl } from "../../utils/qrVerifyUrl";
 import { getDemoSchoolDataset, isHolidayDate, isDemoDataEnabled, setDemoDataEnabled } from "./demoDataStore";
 import { OfficialFeeReceiptModal } from "./OfficialFeeReceiptModal";
@@ -3919,6 +3920,9 @@ export const StudentSchoolPanel: React.FC<Props> = ({
                     </h3>
                     <p className="text-xs text-slate-400 mt-0.5">
                       छात्र: <strong className="text-slate-200">{activeStudent.name}</strong> • रोल: <strong className="text-slate-200">{activeStudent.rollNo || "—"}</strong> • कक्षा: <strong className="text-slate-200">{formatClassLabel(studentClassLabel)}</strong>
+                      {activeStudent.isSiblingMarked && (
+                        <span className="ml-2 text-indigo-300 font-bold">• 👨‍👩‍👧‍👦 Sibling Account Linked</span>
+                      )}
                     </p>
                   </div>
                 </div>
@@ -4168,6 +4172,29 @@ export const StudentSchoolPanel: React.FC<Props> = ({
                               </span>
                             </div>
                           )}
+
+                          {/* Advance Paid / Next Slip / Partial Due / Family Note */}
+                          {((Array.isArray(f.advanceCoveredMonths) && f.advanceCoveredMonths.length > 0) || isPartial || f.familyReceiptNo) && (
+                            <div className="text-[11px] mb-2.5 px-2.5 py-1.5 rounded-xl bg-slate-950/75 border border-slate-800/80 space-y-0.5">
+                              {Array.isArray(f.advanceCoveredMonths) && f.advanceCoveredMonths.length > 0 && (
+                                <p className="text-emerald-300 font-bold">
+                                  ✓ {formatCoveredMonthsList(f.advanceCoveredMonths)} Paid
+                                  {f.advancePaidAt ? ` at ${formatCompactDayMonth(f.advancePaidAt)}` : ""}
+                                  {f.nextFeeSlipMonth ? ` · अगली स्लिप: ${formatMonthNameOnly(f.nextFeeSlipMonth)}` : ""}
+                                </p>
+                              )}
+                              {isPartial && remaining > 0 && (
+                                <p className="text-amber-300 font-bold">
+                                  ⚠ आंशिक बकाया ₹{remaining.toLocaleString("en-IN")} (अगले माह में जुड़कर आएगा)
+                                </p>
+                              )}
+                              {f.familyReceiptNo && (
+                                <p className="text-indigo-300 font-medium text-[10px]">
+                                  👨‍👩‍👧‍👦 Combined Sibling Receipt: {f.familyReceiptNo}
+                                </p>
+                              )}
+                            </div>
+                          )}
                         </div>
 
                         {/* Direct Action Buttons: Always in the card, never scrolled out */}
@@ -4374,6 +4401,17 @@ export const StudentSchoolPanel: React.FC<Props> = ({
                                     ? "आगामी माह"
                                     : (f.payModeInfo?.payMode || f.paymentMode || (isPaid ? "Cash / Counter" : "Fee Counter"))}
                                 </span>
+                                {Array.isArray(f.advanceCoveredMonths) && f.advanceCoveredMonths.length > 0 && (
+                                  <span className="text-[10px] text-emerald-400 font-bold block">
+                                    Adv: {formatCoveredMonthsList(f.advanceCoveredMonths)}
+                                    {f.nextFeeSlipMonth ? ` · Next: ${formatMonthNameOnly(f.nextFeeSlipMonth)}` : ""}
+                                  </span>
+                                )}
+                                {isPartial && remaining > 0 && (
+                                  <span className="text-[10px] text-amber-400 font-bold block">
+                                    आंशिक ₹{remaining.toLocaleString("en-IN")} (अगले माह)
+                                  </span>
+                                )}
                               </td>
                               <td className="py-3 px-3 whitespace-nowrap">
                                 {isPreAdmission ? (

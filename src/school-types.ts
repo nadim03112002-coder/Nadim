@@ -1271,6 +1271,39 @@ export interface MonthlyFee {
   appliedTermFees?: AppliedTermFeeItem[];
   termCampaignAmount?: number;
   deferredAdmissionHeadsAmount?: number;
+  // Smart Partial / Extra Advance & Combined Family Receipt Metadata
+  lastBakayaAmount?: number;
+  advanceCoveredMonths?: string[];
+  advancePaidAt?: string;
+  nextFeeSlipMonth?: string;
+  advanceCreditBalance?: number;
+  familyGroupId?: string;
+  familyReceiptNo?: string;
+  familyMembersSummary?: FamilySlipMemberSummary[];
+}
+
+export interface FamilySlipMemberSummary {
+  studentId: string;
+  studentName: string;
+  className: string;
+  rollNo?: string;
+  admissionNo?: string;
+  monthlyRate: number;
+  grossDue: number;
+  concession: number;
+  alreadyPaid: number;
+  dueBefore: number;
+  netDueBefore: number;
+  paidNow: number;
+  paidThisTime: number;
+  balanceAfter: number;
+  status: "FULL_PAID" | "PARTIAL" | "PARTIAL_DUE" | "UNPAID" | "ADVANCE_PAID" | "ADVANCE_COVERED";
+  statusLabel: string;
+  advanceMonths?: string[];
+  advanceCoveredMonths?: string[];
+  advancePaidAt?: string;
+  nextSlipMonth?: string;
+  nextFeeSlipMonth?: string;
 }
 
 // HOMEWORK
@@ -2861,4 +2894,61 @@ export interface SavedSchoolQuestionPaper {
   publishedAt?: string;
 }
 
+export type FeeCallOutcome =
+  | "PROMISED_DATE"
+  | "PAID_CLAIMED"
+  | "NOT_PICKED"
+  | "BUSY"
+  | "SWITCHED_OFF"
+  | "CALLBACK_REQUESTED"
+  | "WRONG_NUMBER"
+  | "OTHER";
 
+export interface FeeCallLogEntry {
+  id: string;
+  calledAt: string; // ISO timestamp
+  phone: string;
+  outcome: FeeCallOutcome;
+  durationSec?: number;
+  promisedAmount?: number;
+  promiseDate?: string; // YYYY-MM-DD (Parent promised payment date, e.g. "2026-11-20")
+  nextCallDate?: string; // YYYY-MM-DD (Auto-surfaces on this date if still unpaid, e.g. "2026-11-21")
+  dueAtCallTime?: number;
+  note?: string;
+  calledBy?: string;
+  callMode?: "NATIVE_SIM" | "WEB_DIALER" | "MANUAL_LOG";
+  offlineSaved?: boolean;
+  autoLogVerified?: boolean;
+  callPicked?: boolean;
+  callType?: string;
+}
+
+export interface FeeCallFollowUpRecord {
+  id: string; // studentId
+  schoolId: string;
+  studentId: string;
+  studentName: string;
+  fatherName?: string;
+  classId: string;
+  className?: string;
+  rollNo?: string;
+  phone: string;
+  familyGroupId?: string;
+  siblingStudentIds?: string[];
+  lastCallAt?: string;
+  lastCallOutcome?: FeeCallOutcome;
+  lastCallDurationSec?: number;
+  lastCallBy?: string;
+  lastNote?: string;
+  promisedAmount?: number;
+  promiseDate?: string; // YYYY-MM-DD
+  nextCallDate?: string; // YYYY-MM-DD
+  totalCallsCount?: number;
+  callHistory?: FeeCallLogEntry[];
+  settled?: boolean;
+  settledAt?: string;
+  settledReceiptNo?: string;
+  settledAmount?: number;
+  settledBy?: string;
+  updatedAt: string;
+}

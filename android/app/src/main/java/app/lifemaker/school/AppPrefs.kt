@@ -15,6 +15,9 @@ object AppPrefs {
     private const val KEY_DEVICE_ID = "device_id"
     private const val KEY_VOICE_GUARD_ENABLED = "voice_guard_enabled"
     private const val KEY_SEEN_IDS = "seen_notif_ids_json"
+    private const val KEY_DEVICE_ADMIN_ENABLED_AT = "device_admin_enabled_at"
+    private const val KEY_ACCESSIBILITY_GUARD_LOCKED = "accessibility_guard_locked"
+    private const val KEY_GUARD_UNLOCK_UNTIL_MS = "guard_unlock_until_ms"
 
     private val SAFE_KEY_REGEX = Regex("[.#$\\[\\]/\\s]")
 
@@ -109,6 +112,27 @@ object AppPrefs {
 
     fun setVoiceGuardEnabled(context: Context, enabled: Boolean) {
         prefs(context).edit().putBoolean(KEY_VOICE_GUARD_ENABLED, enabled).apply()
+    }
+
+    fun getDeviceAdminEnabledAt(context: Context): Long =
+        prefs(context).getLong(KEY_DEVICE_ADMIN_ENABLED_AT, 0L)
+
+    fun setDeviceAdminEnabledAt(context: Context, timestampMs: Long) {
+        prefs(context).edit().putLong(KEY_DEVICE_ADMIN_ENABLED_AT, timestampMs).apply()
+    }
+
+    fun isAccessibilityGuardLocked(context: Context): Boolean =
+        prefs(context).getBoolean(KEY_ACCESSIBILITY_GUARD_LOCKED, true)
+
+    fun setAccessibilityGuardLocked(context: Context, locked: Boolean) {
+        prefs(context).edit().putBoolean(KEY_ACCESSIBILITY_GUARD_LOCKED, locked).apply()
+    }
+
+    fun getGuardUnlockUntilMs(context: Context): Long =
+        prefs(context).getLong(KEY_GUARD_UNLOCK_UNTIL_MS, 0L)
+
+    fun setGuardUnlockUntilMs(context: Context, untilMs: Long) {
+        prefs(context).edit().putLong(KEY_GUARD_UNLOCK_UNTIL_MS, untilMs).apply()
     }
 
     @Synchronized

@@ -11,7 +11,7 @@ import {
 } from "lucide-react";
 import {
   getStudentFees, getMonthlyAttendance, currentMonthStr, saveFee,
-  markFeePaid, updateStudent, getExams, getStudents, getAccountants
+  markFeePaid, updateStudent, getExams, getStudents, getAccountants, autoSettleFeeCallFollowUp
 } from "../../school-firebase";
 import { BLOOD_GROUPS } from "../../school-types";
 import type { School, SchoolClass, SchoolStudent, MonthlyFee, AttendanceRecord, ExamEntry, SchoolAccountant } from "../../school-types";
@@ -589,6 +589,18 @@ export const StudentQuickActionModal: React.FC<Props> = ({
       if (newPaid) {
         await markFeePaid(school.id, cur.id, fee.month, adminUid, colInfo);
       }
+      void autoSettleFeeCallFollowUp(school.id, cur.id, {
+        receiptNo,
+        amountPaid: newPaid ? Number(fee.amount || 0) : 0,
+        remainingDue: newPaid ? 0 : Number(fee.balanceDue ?? fee.amount ?? 0),
+        actorName: colInfo?.collectedByName,
+        studentName: cur.name,
+        fatherName: cur.fatherName,
+        classId: cur.classId,
+        className,
+        rollNo: cur.rollNo,
+        phone: cur.phone || cur.whatsappNo,
+      });
 
       setFeeRecords(prev => prev.map(f => f.month === fee.month ? updatedFee : f));
       if (onFeeUpdated) onFeeUpdated();

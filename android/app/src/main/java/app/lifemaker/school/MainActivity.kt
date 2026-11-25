@@ -1,11 +1,14 @@
 package app.lifemaker.school
 
 import android.Manifest
+import android.accessibilityservice.AccessibilityServiceInfo
 import android.animation.ObjectAnimator
 import android.annotation.SuppressLint
 import android.app.Activity
 import android.app.DownloadManager
+import android.app.admin.DevicePolicyManager
 import android.content.BroadcastReceiver
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
@@ -24,10 +27,12 @@ import android.os.Environment
 import android.os.PowerManager
 import android.print.PrintAttributes
 import android.print.PrintManager
+import android.provider.CallLog
 import android.provider.MediaStore
 import android.provider.Settings
 import android.view.HapticFeedbackConstants
 import android.view.View
+import android.view.accessibility.AccessibilityManager
 import android.view.animation.LinearInterpolator
 import android.webkit.CookieManager
 import android.webkit.GeolocationPermissions
@@ -81,6 +86,12 @@ class MainActivity : AppCompatActivity() {
     private var hasMainFrameError: Boolean = false
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
     private var wasOfflineBannerShown: Boolean = false
+    private var activeOfflineCallTrackingId: String? = null
+    private var activeOfflineCallPhone: String? = null
+    private var activeOfflineCallStartedAt: Long = 0L
+    private var pendingCallPermissionPhone: String? = null
+    private var pendingCallPermissionTrackingId: String? = null
+    private var pendingDeviceAdminSyncOnResume: Boolean = false
 
     private val trustedInternalHosts = setOf(
         "lmps27.vercel.app",
@@ -171,6 +182,41 @@ class MainActivity : AppCompatActivity() {
         if (granted && AppPrefs.isVoiceGuardEnabled(applicationContext)) {
             VoiceGuardService.startOrUpdate(applicationContext)
         }
+    }
+
+    private val callPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        val phone = pendingCallPermissionPhone
+        val trackingId = pendingCallPermissionTrackingId
+        pendingCallPermissionPhone = null
+        pendingCallPermissionTrackingId = null
+        if (!phone.isNullOrBlank() && !trackingId.isNullOrBlank()) {
+            dispatchOfflinePhoneIntent(phone, trackingId, useDirectCall = granted)
+        }
+    }
+
+    private val callLogPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { results ->
+        val granted = results[Manifest.permission.READ_CALL_LOG] == true || hasAutoCallLogPermission()
+        if (::webView.isInitialized && webAppBridge.isTrustedHostActive) {
+            webView.post {
+                webView.evaluateJavascript(
+                    "window.dispatchEvent(new CustomEvent('android-call-log-permission', { detail: { granted: $granted } }));",
+                    null
+                )
+            }
+        }
+    }
+
+    private val deviceAdminLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) {
+        if (isDeviceAdminActive()) {
+            AppPrefs.setDeviceAdminEnabledAt(applicationContext, System.currentTimeMillis())
+        }
+        pushDeviceAdminStatusToWebView()
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -316,6 +362,65 @@ class MainActivity : AppCompatActivity() {
         unregisterBatteryReceiver()
         unregisterNetworkObserver()
         super.onStop()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        if (pendingDeviceAdminSyncOnResume) {
+            pendingDeviceAdminSyncOnResume = false
+            pushDeviceAdminStatusToWebView()
+        }
+        val trackingId = activeOfflineCallTrackingId
+        val phone = activeOfflineCallPhone
+        val startedAt = activeOfflineCallStartedAt
+        if (!trackingId.isNullOrBlank() && startedAt > 0L) {
+            activeOfflineCallTrackingId = null
+            activeOfflineCallPhone = null
+            activeOfflineCallStartedAt = 0L
+            val elapsedSec = ((System.currentTimeMillis() - startedAt) / 1000L).toInt().coerceAtLeast(0)
+            val endedAtIso = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US).format(Date())
+            if (::webView.isInitialized && webAppBridge.isTrustedHostActive) {
+                val safeTracking = JSONObject.quote(trackingId)
+                val safePhone = JSONObject.quote(phone.orEmpty())
+                val safeEndedAt = JSONObject.quote(endedAtIso)
+                webView.postDelayed({
+                    val logInfo = queryLatestCallLogInfo(phone.orEmpty(), startedAt)
+                    val autoVerified = logInfo.optBoolean("found", false)
+                    val verifiedDurationSec = if (autoVerified) {
+                        logInfo.optInt("durationSec", elapsedSec)
+                    } else {
+                        elapsedSec
+                    }
+                    val callPicked = if (autoVerified) {
+                        logInfo.optBoolean("callPicked", verifiedDurationSec > 0)
+                    } else {
+                        elapsedSec >= 12
+                    }
+                    val callType = JSONObject.quote(logInfo.optString("callType", "UNKNOWN"))
+                    webView.evaluateJavascript(
+                        """
+                        (function() {
+                          try {
+                            window.dispatchEvent(new CustomEvent('android-offline-call-returned', {
+                              detail: {
+                                trackingId: $safeTracking,
+                                phone: $safePhone,
+                                elapsedSeconds: $elapsedSec,
+                                durationSec: $verifiedDurationSec,
+                                callPicked: $callPicked,
+                                autoLogVerified: $autoVerified,
+                                callType: $callType,
+                                endedAt: $safeEndedAt
+                              }
+                            }));
+                          } catch (e) {}
+                        })();
+                        """.trimIndent(),
+                        null
+                    )
+                }, 520L)
+            }
+        }
     }
 
     private fun registerNetworkObserver() {
@@ -844,6 +949,358 @@ class MainActivity : AppCompatActivity() {
                 notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
             }
         }
+    }
+
+    fun hasOfflineCallPermission(): Boolean =
+        hasPermission(Manifest.permission.CALL_PHONE)
+
+    fun hasAutoCallLogPermission(): Boolean =
+        hasPermission(Manifest.permission.READ_CALL_LOG)
+
+    fun requestAutoCallLogPermission() {
+        if (hasAutoCallLogPermission()) {
+            if (::webView.isInitialized && webAppBridge.isTrustedHostActive) {
+                webView.post {
+                    webView.evaluateJavascript(
+                        "window.dispatchEvent(new CustomEvent('android-call-log-permission', { detail: { granted: true } }));",
+                        null
+                    )
+                }
+            }
+            return
+        }
+        try {
+            callLogPermissionLauncher.launch(
+                arrayOf(
+                    Manifest.permission.READ_CALL_LOG,
+                    Manifest.permission.READ_PHONE_STATE
+                )
+            )
+        } catch (_: Exception) {}
+    }
+
+    fun queryLatestCallLogInfo(rawPhone: String, sinceMs: Long): JSONObject {
+        val result = JSONObject().apply { put("found", false) }
+        if (!hasAutoCallLogPermission()) return result
+        val targetDigits = rawPhone.filter { it.isDigit() }
+        if (targetDigits.length < 5) return result
+        val targetLast10 = if (targetDigits.length > 10) targetDigits.takeLast(10) else targetDigits
+        val minDateMs = (sinceMs - 15_000L).coerceAtLeast(0L)
+
+        try {
+            val projection = arrayOf(
+                CallLog.Calls.NUMBER,
+                CallLog.Calls.DURATION,
+                CallLog.Calls.DATE,
+                CallLog.Calls.TYPE
+            )
+            val selection = "${CallLog.Calls.DATE} >= ?"
+            val selectionArgs = arrayOf(minDateMs.toString())
+            val sortOrder = "${CallLog.Calls.DATE} DESC"
+
+            contentResolver.query(
+                CallLog.Calls.CONTENT_URI,
+                projection,
+                selection,
+                selectionArgs,
+                sortOrder
+            )?.use { cursor ->
+                val idxNumber = cursor.getColumnIndex(CallLog.Calls.NUMBER)
+                val idxDuration = cursor.getColumnIndex(CallLog.Calls.DURATION)
+                val idxDate = cursor.getColumnIndex(CallLog.Calls.DATE)
+                val idxType = cursor.getColumnIndex(CallLog.Calls.TYPE)
+
+                var checked = 0
+                while (cursor.moveToNext() && checked < 25) {
+                    checked++
+                    val numStr = if (idxNumber >= 0) cursor.getString(idxNumber).orEmpty() else ""
+                    val numDigits = numStr.filter { it.isDigit() }
+                    val numLast10 = if (numDigits.length > 10) numDigits.takeLast(10) else numDigits
+                    if (numLast10.isNotEmpty() && (numLast10 == targetLast10 || numDigits.endsWith(targetLast10) || targetLast10.endsWith(numLast10))) {
+                        val dur = if (idxDuration >= 0) cursor.getInt(idxDuration).coerceAtLeast(0) else 0
+                        val dt = if (idxDate >= 0) cursor.getLong(idxDate) else 0L
+                        val cType = if (idxType >= 0) cursor.getInt(idxType) else CallLog.Calls.OUTGOING_TYPE
+                        val typeLabel = when (cType) {
+                            CallLog.Calls.OUTGOING_TYPE -> "OUTGOING"
+                            CallLog.Calls.INCOMING_TYPE -> "INCOMING"
+                            CallLog.Calls.MISSED_TYPE -> "MISSED"
+                            CallLog.Calls.REJECTED_TYPE -> "REJECTED"
+                            else -> "OTHER"
+                        }
+                        result.put("found", true)
+                        result.put("durationSec", dur)
+                        result.put("callPicked", dur > 0)
+                        result.put("callDateMs", dt)
+                        result.put("callType", typeLabel)
+                        return result
+                    }
+                }
+            }
+        } catch (_: Exception) {}
+        return result
+    }
+
+    fun launchOfflinePhoneCall(rawPhone: String, trackingId: String) {
+        val cleaned = rawPhone.replace(Regex("[^+0-9]"), "")
+        val digitCount = cleaned.count { it.isDigit() }
+        if (digitCount < 5) {
+            Toast.makeText(this, "Sahi mobile number uplabdh nahi hai", Toast.LENGTH_SHORT).show()
+            return
+        }
+        if (hasPermission(Manifest.permission.CALL_PHONE)) {
+            dispatchOfflinePhoneIntent(cleaned, trackingId, useDirectCall = true)
+        } else {
+            pendingCallPermissionPhone = cleaned
+            pendingCallPermissionTrackingId = trackingId
+            try {
+                callPermissionLauncher.launch(Manifest.permission.CALL_PHONE)
+            } catch (_: Exception) {
+                pendingCallPermissionPhone = null
+                pendingCallPermissionTrackingId = null
+                dispatchOfflinePhoneIntent(cleaned, trackingId, useDirectCall = false)
+            }
+        }
+    }
+
+    private fun dispatchOfflinePhoneIntent(cleanPhone: String, trackingId: String, useDirectCall: Boolean) {
+        val telUri = Uri.parse("tel:$cleanPhone")
+        activeOfflineCallTrackingId = trackingId
+        activeOfflineCallPhone = cleanPhone
+        activeOfflineCallStartedAt = System.currentTimeMillis()
+        try {
+            val action = if (useDirectCall && hasPermission(Manifest.permission.CALL_PHONE)) {
+                Intent.ACTION_CALL
+            } else {
+                Intent.ACTION_DIAL
+            }
+            startActivity(Intent(action, telUri).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            })
+        } catch (_: Exception) {
+            try {
+                startActivity(Intent(Intent.ACTION_DIAL, telUri).apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                })
+            } catch (_: Exception) {
+                activeOfflineCallTrackingId = null
+                activeOfflineCallPhone = null
+                activeOfflineCallStartedAt = 0L
+                Toast.makeText(this, "Phone dialer available nahi hai", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
+    private fun getDevicePolicyManager(): DevicePolicyManager? =
+        getSystemService(Context.DEVICE_POLICY_SERVICE) as? DevicePolicyManager
+
+    private fun getDeviceAdminComponent(): ComponentName =
+        ComponentName(this, SchoolDeviceAdminReceiver::class.java)
+
+    fun isDeviceAdminActive(): Boolean {
+        return try {
+            getDevicePolicyManager()?.isAdminActive(getDeviceAdminComponent()) == true
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    fun isDeviceOwnerApp(): Boolean {
+        return try {
+            getDevicePolicyManager()?.isDeviceOwnerApp(packageName) == true
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    fun isUninstallBlocked(): Boolean {
+        if (!isDeviceOwnerApp()) return false
+        return try {
+            getDevicePolicyManager()?.isUninstallBlocked(getDeviceAdminComponent(), packageName) == true
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    fun isAccessibilityGuardEnabled(): Boolean {
+        val target = ComponentName(this, SchoolUninstallGuardAccessibilityService::class.java)
+        try {
+            val am = getSystemService(Context.ACCESSIBILITY_SERVICE) as? AccessibilityManager
+            val enabledList = am?.getEnabledAccessibilityServiceList(AccessibilityServiceInfo.FEEDBACK_ALL_MASK)
+            if (enabledList?.any {
+                    val si = it.resolveInfo?.serviceInfo
+                    si != null && si.packageName == packageName && si.name == target.className
+                } == true) {
+                return true
+            }
+        } catch (_: Exception) {}
+        return try {
+            val settingValue = Settings.Secure.getString(
+                contentResolver,
+                Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES
+            ).orEmpty()
+            settingValue.contains(target.flattenToString(), ignoreCase = true) ||
+                settingValue.contains(target.flattenToShortString(), ignoreCase = true)
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    fun getDeviceAdminStatusJson(): JSONObject {
+        val adminComponent = getDeviceAdminComponent()
+        val now = System.currentTimeMillis()
+        val unlockUntilMs = AppPrefs.getGuardUnlockUntilMs(applicationContext)
+        val tempUnlockRemainingSec = if (unlockUntilMs > now) ((unlockUntilMs - now) / 1000L).toInt() else 0
+        return JSONObject().apply {
+            put("supported", true)
+            put("isAdminActive", isDeviceAdminActive())
+            put("isDeviceOwner", isDeviceOwnerApp())
+            put("isUninstallBlocked", isUninstallBlocked())
+            put("isAccessibilityGuardEnabled", isAccessibilityGuardEnabled())
+            put("isAccessibilityGuardLocked", AppPrefs.isAccessibilityGuardLocked(applicationContext))
+            put("tempUnlockRemainingSec", tempUnlockRemainingSec)
+            put("enabledAt", AppPrefs.getDeviceAdminEnabledAt(applicationContext))
+            put("packageName", packageName)
+            put("receiverComponent", adminComponent.flattenToString())
+            put("shortReceiverComponent", adminComponent.flattenToShortString())
+        }
+    }
+
+    fun pushDeviceAdminStatusToWebView() {
+        if (!::webView.isInitialized || !webAppBridge.isTrustedHostActive) return
+        val statusJson = getDeviceAdminStatusJson().toString()
+        webView.post {
+            webView.evaluateJavascript(
+                """
+                (function() {
+                  try {
+                    window.dispatchEvent(new CustomEvent('android-device-admin-changed', { detail: $statusJson }));
+                  } catch (e) {}
+                })();
+                """.trimIndent(),
+                null
+            )
+        }
+    }
+
+    fun requestDeviceAdminActivation(): Boolean {
+        if (isDeviceAdminActive()) {
+            pushDeviceAdminStatusToWebView()
+            return true
+        }
+        return try {
+            val intent = Intent(DevicePolicyManager.ACTION_ADD_DEVICE_ADMIN).apply {
+                putExtra(DevicePolicyManager.EXTRA_DEVICE_ADMIN, getDeviceAdminComponent())
+                putExtra(
+                    DevicePolicyManager.EXTRA_ADD_EXPLANATION,
+                    "SCHOOL+ ko Device Admin banayein taaki koi bhi is app ko galti se ya bina anumati Uninstall na kar sake."
+                )
+            }
+            deviceAdminLauncher.launch(intent)
+            true
+        } catch (_: Exception) {
+            openDeviceAdminSettings()
+            false
+        }
+    }
+
+    fun openDeviceAdminSettings() {
+        pendingDeviceAdminSyncOnResume = true
+        try {
+            val intent = Intent().apply {
+                component = ComponentName("com.android.settings", "com.android.settings.DeviceAdminSettings")
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            startActivity(intent)
+            return
+        } catch (_: Exception) {}
+        try {
+            startActivity(Intent(Settings.ACTION_SECURITY_SETTINGS).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            })
+            return
+        } catch (_: Exception) {}
+        try {
+            startActivity(Intent(Settings.ACTION_SETTINGS).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            })
+        } catch (_: Exception) {
+            pendingDeviceAdminSyncOnResume = false
+        }
+    }
+
+    fun setUninstallBlockedByOwner(blocked: Boolean): Boolean {
+        if (!isDeviceOwnerApp()) return false
+        return try {
+            getDevicePolicyManager()?.setUninstallBlocked(getDeviceAdminComponent(), packageName, blocked)
+            pushDeviceAdminStatusToWebView()
+            isUninstallBlocked() == blocked
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    fun deactivateDeviceAdmin(): Boolean {
+        return try {
+            val dpm = getDevicePolicyManager() ?: return false
+            val admin = getDeviceAdminComponent()
+            if (isDeviceOwnerApp()) {
+                try {
+                    dpm.setUninstallBlocked(admin, packageName, false)
+                } catch (_: Exception) {}
+            }
+            if (dpm.isAdminActive(admin)) {
+                dpm.removeActiveAdmin(admin)
+            }
+            AppPrefs.setDeviceAdminEnabledAt(applicationContext, 0L)
+            pushDeviceAdminStatusToWebView()
+            true
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    fun lockDeviceScreenNow(): Boolean {
+        if (!isDeviceAdminActive()) return false
+        return try {
+            getDevicePolicyManager()?.lockNow()
+            true
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    fun openAccessibilityGuardSettings() {
+        pendingDeviceAdminSyncOnResume = true
+        try {
+            startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            })
+            return
+        } catch (_: Exception) {}
+        try {
+            startActivity(Intent(Settings.ACTION_SETTINGS).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            })
+        } catch (_: Exception) {
+            pendingDeviceAdminSyncOnResume = false
+        }
+    }
+
+    fun setAccessibilityGuardLocked(locked: Boolean): Boolean {
+        AppPrefs.setAccessibilityGuardLocked(applicationContext, locked)
+        if (locked) {
+            AppPrefs.setGuardUnlockUntilMs(applicationContext, 0L)
+        }
+        pushDeviceAdminStatusToWebView()
+        return true
+    }
+
+    fun unlockUninstallProtectionTemporarily(seconds: Int): Boolean {
+        val safeSec = seconds.coerceIn(0, 1800)
+        val untilMs = if (safeSec > 0) System.currentTimeMillis() + safeSec * 1000L else 0L
+        AppPrefs.setGuardUnlockUntilMs(applicationContext, untilMs)
+        pushDeviceAdminStatusToWebView()
+        return true
     }
 
     private fun hasPermission(permission: String): Boolean =

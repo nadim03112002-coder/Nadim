@@ -328,6 +328,13 @@ export const OfficialFeeReceiptModal: React.FC<Props> = ({
     lastPaidDate: fee.lastPaidDate || historySummary.lastPaidDate,
     lastDueAmount: fee.lastDueAmount !== undefined ? fee.lastDueAmount : historySummary.lastDueAmount,
     lastDueDate: fee.lastDueDate || historySummary.lastDueDate,
+    lastBakayaAmount: fee.lastBakayaAmount,
+    advanceCoveredMonths: fee.advanceCoveredMonths,
+    advancePaidAt: fee.advancePaidAt,
+    nextFeeSlipMonth: fee.nextFeeSlipMonth,
+    familyGroupId: fee.familyGroupId,
+    familyReceiptNo: fee.familyReceiptNo,
+    familyMembersSummary: fee.familyMembersSummary,
     fifoSummary: fee.note || undefined,
     earlyDiscount: Number(fee.earlyDiscount || fee.concession || 0) || undefined,
     payModeInfo: {

@@ -184,6 +184,133 @@ class WebAppBridge(private val activity: MainActivity) {
     }
 
     @JavascriptInterface
+    fun hasOfflineCallPermission(): Boolean {
+        if (!isTrustedHostActive) return false
+        return activity.hasOfflineCallPermission()
+    }
+
+    @JavascriptInterface
+    fun hasAutoCallLogPermission(): Boolean {
+        if (!isTrustedHostActive) return false
+        return activity.hasAutoCallLogPermission()
+    }
+
+    @JavascriptInterface
+    fun requestAutoCallLogPermission() {
+        if (!isTrustedHostActive) return
+        activity.runOnUiThread {
+            activity.requestAutoCallLogPermission()
+        }
+    }
+
+    @JavascriptInterface
+    fun getLatestCallLogInfo(phone: String?, sinceMs: Long): String {
+        if (!isTrustedHostActive) return """{"found":false}"""
+        val cleanPhone = phone?.trim().orEmpty()
+        if (cleanPhone.isEmpty()) return """{"found":false}"""
+        return activity.queryLatestCallLogInfo(cleanPhone, sinceMs).toString()
+    }
+
+    @JavascriptInterface
+    fun startOfflinePhoneCall(phone: String?, trackingId: String?): Boolean {
+        if (!isTrustedHostActive) return false
+        val cleanPhone = phone?.trim().orEmpty()
+        if (cleanPhone.isEmpty()) return false
+        val safeTrackingId = trackingId?.trim().orEmpty().ifBlank {
+            "call_${System.currentTimeMillis()}"
+        }
+        activity.runOnUiThread {
+            activity.launchOfflinePhoneCall(cleanPhone, safeTrackingId)
+        }
+        return true
+    }
+
+    @JavascriptInterface
+    fun getDeviceAdminStatus(): String {
+        if (!isTrustedHostActive) {
+            return """{"supported":false,"isAdminActive":false,"isDeviceOwner":false,"isUninstallBlocked":false}"""
+        }
+        return activity.getDeviceAdminStatusJson().toString()
+    }
+
+    @JavascriptInterface
+    fun isDeviceAdminActive(): Boolean {
+        if (!isTrustedHostActive) return false
+        return activity.isDeviceAdminActive()
+    }
+
+    @JavascriptInterface
+    fun isDeviceOwnerApp(): Boolean {
+        if (!isTrustedHostActive) return false
+        return activity.isDeviceOwnerApp()
+    }
+
+    @JavascriptInterface
+    fun requestDeviceAdmin(): Boolean {
+        if (!isTrustedHostActive) return false
+        activity.runOnUiThread {
+            activity.requestDeviceAdminActivation()
+        }
+        return true
+    }
+
+    @JavascriptInterface
+    fun deactivateDeviceAdmin(): Boolean {
+        if (!isTrustedHostActive) return false
+        return activity.deactivateDeviceAdmin()
+    }
+
+    @JavascriptInterface
+    fun openDeviceAdminSettings() {
+        if (!isTrustedHostActive) return
+        activity.runOnUiThread {
+            activity.openDeviceAdminSettings()
+        }
+    }
+
+    @JavascriptInterface
+    fun setUninstallBlocked(blocked: Boolean): Boolean {
+        if (!isTrustedHostActive) return false
+        return activity.setUninstallBlockedByOwner(blocked)
+    }
+
+    @JavascriptInterface
+    fun lockDeviceScreen(): Boolean {
+        if (!isTrustedHostActive) return false
+        if (!activity.isDeviceAdminActive()) return false
+        activity.runOnUiThread {
+            activity.lockDeviceScreenNow()
+        }
+        return true
+    }
+
+    @JavascriptInterface
+    fun isAccessibilityGuardEnabled(): Boolean {
+        if (!isTrustedHostActive) return false
+        return activity.isAccessibilityGuardEnabled()
+    }
+
+    @JavascriptInterface
+    fun openAccessibilityGuardSettings() {
+        if (!isTrustedHostActive) return
+        activity.runOnUiThread {
+            activity.openAccessibilityGuardSettings()
+        }
+    }
+
+    @JavascriptInterface
+    fun setAccessibilityGuardLocked(locked: Boolean): Boolean {
+        if (!isTrustedHostActive) return false
+        return activity.setAccessibilityGuardLocked(locked)
+    }
+
+    @JavascriptInterface
+    fun unlockUninstallProtectionTemporarily(seconds: Int): Boolean {
+        if (!isTrustedHostActive) return false
+        return activity.unlockUninstallProtectionTemporarily(seconds)
+    }
+
+    @JavascriptInterface
     fun saveBase64Download(base64Data: String, rawFileName: String?, rawMimeType: String?) {
         if (!isTrustedHostActive) return
         try {

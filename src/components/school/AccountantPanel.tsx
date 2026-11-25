@@ -104,6 +104,7 @@ import { loadMergedStoreSales } from "../../utils/schoolCloudSync";
 import { computePaymentBreakdown } from "../../utils/paymentBreakdown";
 import { toast } from "sonner";
 import { FeeManager } from "./FeeManager";
+import { getPendingActiveTagadaCall } from "./FeeTagadaCallerPage";
 const OnlineAdmissionManager = React.lazy(() => import("./OnlineAdmissionManager").then(m => ({ default: m.OnlineAdmissionManager })));
 import { AbsenteeActionPage } from "./AbsenteeActionPage";
 import { SiblingProfileManager } from "./SiblingProfileManager";
@@ -148,6 +149,7 @@ type AccountantTab =
   | "fee_alerts"
   | "class_rates"
   | "term_scheduler"
+  | "fee_tagada"
   | "receipt_header"
   | "receipt_cancellation"
   | "razorpay_setup"
@@ -229,7 +231,9 @@ export const AccountantPanel: React.FC<Props> = ({
     }
   }, [schoolId, accountantId]);
 
-  const [activeTab, setActiveTab] = useState<AccountantTab>("home");
+  const [activeTab, setActiveTab] = useState<AccountantTab>(() =>
+    getPendingActiveTagadaCall(schoolId) ? "fee_tagada" : "home"
+  );
   const [school, setSchool] = useState<School | null>(() => cachedBootstrap?.sch || null);
   const [classes, setClasses] = useState<SchoolClass[]>(() => cachedBootstrap?.clsFiltered || []);
   const [allClasses, setAllClasses] = useState<SchoolClass[]>(() => cachedBootstrap?.clsAll || []);
@@ -1116,6 +1120,18 @@ export const AccountantPanel: React.FC<Props> = ({
             )}
 
             <button
+              onClick={() => setActiveTab("fee_tagada")}
+              className={`w-full flex items-center gap-3 px-3 py-2 rounded-xl text-xs transition text-left cursor-pointer ${
+                activeTab === "fee_tagada"
+                  ? "bg-indigo-600 text-white font-semibold shadow-xs"
+                  : `${navInactiveCls} font-medium`
+              }`}
+            >
+              <PhoneCall className={`w-4 h-4 shrink-0 ${activeTab === "fee_tagada" ? "text-white" : "text-emerald-400"}`} />
+              <span className="flex-1 truncate">Fee Tagada • Offline Caller</span>
+            </button>
+
+            <button
               onClick={() => setActiveTab("receipt_header")}
               className={`w-full flex items-center gap-3 px-3 py-2 rounded-xl text-xs transition text-left cursor-pointer ${
                 activeTab === "receipt_header"
@@ -1503,6 +1519,19 @@ export const AccountantPanel: React.FC<Props> = ({
                     </button>
                   </>
                 )}
+
+                <button
+                  onClick={() => {
+                    setActiveTab("fee_tagada");
+                    setIsMobileMenuOpen(false);
+                  }}
+                  className={`w-full flex items-center gap-3 px-3 py-2 rounded-xl text-xs transition text-left ${
+                    activeTab === "fee_tagada" ? "bg-indigo-600 text-white font-semibold" : `${mobileNavInactiveCls} font-medium`
+                  }`}
+                >
+                  <PhoneCall className={`w-4 h-4 shrink-0 ${activeTab === "fee_tagada" ? "text-white" : "text-emerald-400"}`} />
+                  <span>Fee Tagada • Offline Caller</span>
+                </button>
 
                 <button
                   onClick={() => {
@@ -2713,6 +2742,7 @@ export const AccountantPanel: React.FC<Props> = ({
             activeTab === "fee_alerts" ||
             activeTab === "class_rates" ||
             activeTab === "term_scheduler" ||
+            activeTab === "fee_tagada" ||
             activeTab === "receipt_header") && (
             (activeTab === "class_rates" || activeTab === "term_scheduler") && !permissions.canEditFeeStructure ? (
               <div className="max-w-lg mx-auto my-8 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-6 text-center space-y-3">
@@ -2750,7 +2780,9 @@ export const AccountantPanel: React.FC<Props> = ({
                           ? "class_rates"
                           : activeTab === "term_scheduler"
                             ? "term_scheduler"
-                            : "header"
+                            : activeTab === "fee_tagada"
+                              ? "fee_tagada"
+                              : "header"
                   }
                   onBack={() => setActiveTab("fee_collection")}
                 />

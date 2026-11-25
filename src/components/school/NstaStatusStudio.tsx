@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef } from "react";
+import { createPortal } from "react-dom";
 import { toast } from "sonner";
 import {
   Plus,
@@ -37,6 +38,7 @@ import {
   saveClassLecture,
   extractYouTubeVideoId,
   generateId,
+  groupNstaStatusesByUser,
   NSTA_STATUS_TTL_MS,
 } from "../../school-firebase";
 import { uploadToCloudinary } from "../../services/cloudinaryService";
@@ -121,23 +123,16 @@ export const NstaStatusStudio: React.FC<NstaStatusStudioProps> = ({
   const imageFileRef = useRef<HTMLInputElement>(null);
   const videoFileRef = useRef<HTMLInputElement>(null);
 
-  // Fullscreen Viewer State
-  const [viewerIndex, setViewerIndex] = useState<number | null>(null);
+  // Group statuses by userId (authorId) so each teacher/user gets one bubble
+  const groupedStatuses = useMemo(() => groupNstaStatusesByUser(statuses), [statuses]);
+
+  // Fullscreen Viewer State (scoped to selected user's sequential status list)
+  const [viewerState, setViewerState] = useState<{ groupIndex: number; itemIndex: number } | null>(null);
   const [isPaused, setIsPaused] = useState(false);
   const [progressPct, setProgressPct] = useState(0);
   const [showAnalyticsSheet, setShowAnalyticsSheet] = useState(false);
   const [analyticsTab, setAnalyticsTab] = useState<"SEEN" | "UNSEEN">("SEEN");
   const [analyticsSearch, setAnalyticsSearch] = useState("");
-
-  useEffect(() => {
-    if (!requestedOpenStatusId) return;
-    const idx = statuses.findIndex((s) => s.id === requestedOpenStatusId);
-    if (idx >= 0) {
-      setShowAnalyticsSheet(false);
-      setViewerIndex(idx);
-    }
-    onClearRequestedOpenStatus?.();
-  }, [requestedOpenStatusId, statuses, onClearRequestedOpenStatus]);
 
   const safeViewerKey = useMemo(
     () => String(currentUserId || "anon").replace(/[.#$/[\]\s]/g, "_"),
@@ -149,7 +144,64 @@ export const NstaStatusStudio: React.FC<NstaStatusStudioProps> = ({
     return Boolean(st.viewers[safeViewerKey] || Object.values(st.viewers).some((v) => v.viewerId === currentUserId));
   };
 
-  const activeStatus = viewerIndex !== null && statuses[viewerIndex] ? statuses[viewerIndex] : null;
+  const openUserGroup = (groupIndex: number, forcedItemIndex?: number) => {
+    const grp = groupedStatuses[groupIndex];
+    if (!grp || grp.items.length === 0) return;
+    let targetItemIdx = forcedItemIndex;
+    if (targetItemIdx === undefined) {
+      const firstUnseenIdx = grp.items.findIndex((item) => !isStatusSeenByMe(item));
+      targetItemIdx = firstUnseenIdx >= 0 ? firstUnseenIdx : 0;
+    }
+    setShowAnalyticsSheet(false);
+    setViewerState({
+      groupIndex,
+      itemIndex: Math.max(0, Math.min(targetItemIdx, grp.items.length - 1)),
+    });
+  };
+
+  useEffect(() => {
+    if (!requestedOpenStatusId) return;
+    let foundGroup = -1;
+    let foundItem = -1;
+    groupedStatuses.some((grp, gIdx) => {
+      const iIdx = grp.items.findIndex((s) => s.id === requestedOpenStatusId);
+      if (iIdx >= 0) {
+        foundGroup = gIdx;
+        foundItem = iIdx;
+        return true;
+      }
+      return false;
+    });
+    if (foundGroup >= 0 && foundItem >= 0) {
+      setShowAnalyticsSheet(false);
+      setViewerState({ groupIndex: foundGroup, itemIndex: foundItem });
+    }
+    onClearRequestedOpenStatus?.();
+  }, [requestedOpenStatusId, groupedStatuses, onClearRequestedOpenStatus]);
+
+  const activeGroup =
+    viewerState !== null && groupedStatuses[viewerState.groupIndex]
+      ? groupedStatuses[viewerState.groupIndex]
+      : null;
+  const activeStatus =
+    activeGroup && viewerState !== null && activeGroup.items[viewerState.itemIndex]
+      ? activeGroup.items[viewerState.itemIndex]
+      : null;
+
+  const advanceToNextInGroup = () => {
+    if (!viewerState || !activeGroup) {
+      setViewerState(null);
+      return;
+    }
+    if (viewerState.itemIndex < activeGroup.items.length - 1) {
+      setViewerState({
+        groupIndex: viewerState.groupIndex,
+        itemIndex: viewerState.itemIndex + 1,
+      });
+    } else {
+      setViewerState(null);
+    }
+  };
 
   // Record view automatically when user views a status
   useEffect(() => {
@@ -167,9 +219,9 @@ export const NstaStatusStudio: React.FC<NstaStatusStudioProps> = ({
     void markNstaStatusViewed(safeSchoolId, activeStatus.id, viewerRecord);
   }, [activeStatus?.id, safeSchoolId, currentUserId, currentUserName, currentUserRole, student?.classId, student?.className, student?.rollNo, student?.photoUrl, currentUserPhoto]);
 
-  // Auto-advance timer for Image / Text statuses (pauses on video, hold, or analytics sheet)
+  // Auto-advance timer for Image / Text statuses (plays all of this user's statuses sequentially)
   useEffect(() => {
-    if (viewerIndex === null || !activeStatus) return;
+    if (viewerState === null || !activeStatus || !activeGroup) return;
     setProgressPct(0);
     if (
       isPaused ||
@@ -189,16 +241,27 @@ export const NstaStatusStudio: React.FC<NstaStatusStudioProps> = ({
       setProgressPct(pct);
       if (elapsed >= DURATION_MS) {
         window.clearInterval(timer);
-        if (viewerIndex < statuses.length - 1) {
-          setViewerIndex(viewerIndex + 1);
+        if (viewerState.itemIndex < activeGroup.items.length - 1) {
+          setViewerState({
+            groupIndex: viewerState.groupIndex,
+            itemIndex: viewerState.itemIndex + 1,
+          });
         } else {
-          setViewerIndex(null);
+          setViewerState(null);
         }
       }
     }, TICK_MS);
 
     return () => window.clearInterval(timer);
-  }, [viewerIndex, activeStatus?.id, activeStatus?.mediaType, isPaused, showAnalyticsSheet, statuses.length]);
+  }, [
+    viewerState?.groupIndex,
+    viewerState?.itemIndex,
+    activeStatus?.id,
+    activeStatus?.mediaType,
+    activeGroup?.items.length,
+    isPaused,
+    showAnalyticsSheet,
+  ]);
 
   const resetCreateForm = () => {
     setStatusTitle("");
@@ -386,10 +449,13 @@ export const NstaStatusStudio: React.FC<NstaStatusStudioProps> = ({
       await deleteNstaStatus(safeSchoolId, st.id);
       toast.success("Status hata diya gaya.");
       setShowAnalyticsSheet(false);
-      if (statuses.length <= 1) {
-        setViewerIndex(null);
-      } else if (viewerIndex !== null && viewerIndex >= statuses.length - 1) {
-        setViewerIndex(Math.max(0, statuses.length - 2));
+      if (!activeGroup || activeGroup.items.length <= 1) {
+        setViewerState(null);
+      } else if (viewerState && viewerState.itemIndex >= activeGroup.items.length - 1) {
+        setViewerState({
+          groupIndex: viewerState.groupIndex,
+          itemIndex: Math.max(0, activeGroup.items.length - 2),
+        });
       }
     } catch {
       toast.error("Status delete nahi ho saka.");
@@ -433,13 +499,20 @@ export const NstaStatusStudio: React.FC<NstaStatusStudioProps> = ({
   // If strip mode has nothing to show for students, keep UI ultra clean
   if (
     mode === "strip" &&
-    statuses.length === 0 &&
+    groupedStatuses.length === 0 &&
     !canPostStatus &&
     !showCreateModal &&
-    viewerIndex === null
+    viewerState === null
   ) {
     return null;
   }
+
+  const renderModalPortal = (node: React.ReactNode) => {
+    if (typeof document !== "undefined" && document.body) {
+      return createPortal(node, document.body);
+    }
+    return <>{node}</>;
+  };
 
   return (
     <>
@@ -533,7 +606,7 @@ export const NstaStatusStudio: React.FC<NstaStatusStudioProps> = ({
               </span>
             </div>
 
-            {statuses.length === 0 ? (
+            {groupedStatuses.length === 0 ? (
               <div className="rounded-2xl bg-slate-900/60 border border-slate-800 py-10 px-4 text-center space-y-2">
                 <Clock className="w-8 h-8 text-emerald-400/70 mx-auto" />
                 <p className="text-sm font-bold text-white">
@@ -547,27 +620,28 @@ export const NstaStatusStudio: React.FC<NstaStatusStudioProps> = ({
               </div>
             ) : (
               <div className="divide-y divide-slate-800/80 rounded-2xl border border-slate-800 bg-slate-900/50 overflow-hidden">
-                {statuses.map((st, idx) => {
-                  const seen = isStatusSeenByMe(st);
+                {groupedStatuses.map((group, gIdx) => {
+                  const previewSt =
+                    group.items.find((item) => !isStatusSeenByMe(item)) || group.latestStatus;
+                  const seen = group.items.every((item) => isStatusSeenByMe(item));
                   const isEvent = Boolean(
-                    st.isEventVideo || st.mediaType === "YOUTUBE_EVENT" || st.mediaType === "VIDEO"
+                    previewSt.isEventVideo ||
+                      previewSt.mediaType === "YOUTUBE_EVENT" ||
+                      previewSt.mediaType === "VIDEO"
                   );
-                  const ytThumb = st.youtubeVideoId
-                    ? `https://img.youtube.com/vi/${st.youtubeVideoId}/mqdefault.jpg`
+                  const ytThumb = previewSt.youtubeVideoId
+                    ? `https://img.youtube.com/vi/${previewSt.youtubeVideoId}/mqdefault.jpg`
                     : "";
-                  const viewCount = st.viewers ? Object.keys(st.viewers).length : 0;
+                  const viewCount = previewSt.viewers ? Object.keys(previewSt.viewers).length : 0;
 
                   return (
                     <div
-                      key={st.id}
+                      key={group.userKey}
                       className="p-3 flex items-center justify-between gap-3 hover:bg-slate-900/90 transition"
                     >
                       <button
                         type="button"
-                        onClick={() => {
-                          setShowAnalyticsSheet(false);
-                          setViewerIndex(idx);
-                        }}
+                        onClick={() => openUserGroup(gIdx)}
                         className="flex items-center gap-3 min-w-0 flex-1 text-left cursor-pointer"
                       >
                         <div
@@ -580,23 +654,23 @@ export const NstaStatusStudio: React.FC<NstaStatusStudioProps> = ({
                           }`}
                         >
                           <div className="w-full h-full rounded-full bg-slate-950 border-2 border-slate-950 overflow-hidden flex items-center justify-center">
-                            {st.mediaType === "IMAGE" && st.mediaUrl ? (
+                            {previewSt.mediaType === "IMAGE" && previewSt.mediaUrl ? (
                               <img
-                                src={st.mediaUrl}
-                                alt={st.caption || "Status"}
+                                src={previewSt.mediaUrl}
+                                alt={previewSt.caption || "Status"}
                                 referrerPolicy="no-referrer"
                                 className="w-full h-full object-cover"
                               />
                             ) : ytThumb ? (
                               <img
                                 src={ytThumb}
-                                alt={st.title || "Event Video"}
+                                alt={previewSt.title || "Event Video"}
                                 referrerPolicy="no-referrer"
                                 className="w-full h-full object-cover"
                               />
-                            ) : st.mediaType === "VIDEO" && st.mediaUrl ? (
+                            ) : previewSt.mediaType === "VIDEO" && previewSt.mediaUrl ? (
                               <video
-                                src={st.mediaUrl}
+                                src={previewSt.mediaUrl}
                                 muted
                                 playsInline
                                 preload="metadata"
@@ -605,9 +679,9 @@ export const NstaStatusStudio: React.FC<NstaStatusStudioProps> = ({
                             ) : (
                               <div
                                 className="w-full h-full flex items-center justify-center p-1 text-[9px] font-bold text-white text-center leading-tight line-clamp-2"
-                                style={{ background: st.bgColor || TEXT_STATUS_BACKGROUNDS[0].css }}
+                                style={{ background: previewSt.bgColor || TEXT_STATUS_BACKGROUNDS[0].css }}
                               >
-                                {(st.caption || "Notice").slice(0, 18)}
+                                {(previewSt.caption || "Notice").slice(0, 18)}
                               </div>
                             )}
                           </div>
@@ -621,8 +695,15 @@ export const NstaStatusStudio: React.FC<NstaStatusStudioProps> = ({
                         <div className="min-w-0 flex-1 space-y-0.5">
                           <div className="flex items-center gap-1.5">
                             <p className="text-sm font-bold text-white truncate">
-                              {st.title || st.caption || st.authorName}
+                              {group.items.length === 1 && isEvent
+                                ? previewSt.title || group.authorName
+                                : group.authorName}
                             </p>
+                            {group.items.length > 1 && (
+                              <span className="px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 text-[10px] font-bold shrink-0 tabular-nums">
+                                {group.items.length} updates
+                              </span>
+                            )}
                             {isEvent && (
                               <span className="px-1.5 py-0.5 rounded bg-rose-500/20 text-rose-300 border border-rose-500/30 text-[10px] font-bold shrink-0">
                                 Event Video
@@ -630,11 +711,11 @@ export const NstaStatusStudio: React.FC<NstaStatusStudioProps> = ({
                             )}
                           </div>
                           <p className="text-xs text-slate-400 truncate">
-                            {st.authorName} · {formatViewedTimestamp(st.createdAt)}
+                            {previewSt.caption || previewSt.title || group.authorName} · {formatViewedTimestamp(group.latestCreatedAt)}
                           </p>
                           <p className="text-[11px] text-emerald-400 font-medium flex items-center gap-1">
                             <Clock className="w-3 h-3 shrink-0" />
-                            <span>{formatRemainingTime(st.expiresAt)}</span>
+                            <span>{formatRemainingTime(previewSt.expiresAt)}</span>
                             {isEvent && (
                               <span className="text-slate-400 font-normal">
                                 · 24h baad Library me save hoga
@@ -649,7 +730,7 @@ export const NstaStatusStudio: React.FC<NstaStatusStudioProps> = ({
                           type="button"
                           onClick={() => {
                             setAnalyticsSearch("");
-                            setViewerIndex(idx);
+                            openUserGroup(gIdx, group.items.length - 1);
                             setShowAnalyticsSheet(true);
                           }}
                           className="min-h-[38px] px-2.5 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 text-emerald-300 text-xs font-bold flex items-center gap-1.5 shrink-0 cursor-pointer"
@@ -725,50 +806,99 @@ export const NstaStatusStudio: React.FC<NstaStatusStudioProps> = ({
               </button>
             )}
 
-            {/* Active 24h Status Circles (All added in ONE horizontal row) */}
-            {statuses.map((st, idx) => {
-              const seen = isStatusSeenByMe(st);
-              const isEvent = Boolean(st.isEventVideo || st.mediaType === "YOUTUBE_EVENT" || st.mediaType === "VIDEO");
-              const ytThumb = st.youtubeVideoId
-                ? `https://img.youtube.com/vi/${st.youtubeVideoId}/mqdefault.jpg`
+            {/* Active 24h Status Circles (Grouped strictly by userId — 1 circle per teacher/author) */}
+            {groupedStatuses.map((group, gIdx) => {
+              const previewSt =
+                group.items.find((item) => !isStatusSeenByMe(item)) || group.latestStatus;
+              const allSeen = group.items.every((item) => isStatusSeenByMe(item));
+              const hasEvent = group.items.some((item) =>
+                Boolean(item.isEventVideo || item.mediaType === "YOUTUBE_EVENT" || item.mediaType === "VIDEO")
+              );
+              const ytThumb = previewSt.youtubeVideoId
+                ? `https://img.youtube.com/vi/${previewSt.youtubeVideoId}/mqdefault.jpg`
                 : "";
-              const viewCount = st.viewers ? Object.keys(st.viewers).length : 0;
+              const viewCount = previewSt.viewers ? Object.keys(previewSt.viewers).length : 0;
+              const multiCount = group.items.length;
+              const segCircumference = 2 * Math.PI * 22;
+              const segGap = multiCount > 1 ? 5 : 0;
+              const segDash = Math.max(4, (segCircumference - multiCount * segGap) / multiCount);
 
               return (
                 <button
-                  key={st.id}
+                  key={group.userKey}
                   type="button"
-                  onClick={() => setViewerIndex(idx)}
+                  onClick={() => openUserGroup(gIdx)}
                   className="flex flex-col items-center gap-1 w-14 shrink-0 group cursor-pointer"
-                  title={st.title || st.caption || st.authorName}
+                  title={`${group.authorName}${multiCount > 1 ? ` (${multiCount} statuses)` : ""}`}
                 >
-                  <div
-                    className={`relative w-12 h-12 rounded-full p-[2px] transition-transform group-active:scale-95 ${
-                      seen
-                        ? "bg-slate-600"
-                        : isEvent
-                        ? "bg-gradient-to-tr from-amber-500 via-rose-500 to-emerald-400"
-                        : "bg-gradient-to-tr from-emerald-500 to-teal-400"
-                    }`}
-                  >
-                    <div className="w-full h-full rounded-full bg-slate-950 border-2 border-slate-950 overflow-hidden flex items-center justify-center">
-                      {st.mediaType === "IMAGE" && st.mediaUrl ? (
+                  <div className="relative w-12 h-12 flex items-center justify-center transition-transform group-active:scale-95">
+                    {multiCount > 1 ? (
+                      <svg
+                        viewBox="0 0 48 48"
+                        className="absolute inset-0 w-12 h-12 -rotate-90 pointer-events-none"
+                        aria-hidden="true"
+                      >
+                        {group.items.map((item, segIdx) => {
+                          const itemSeen = isStatusSeenByMe(item);
+                          const isItemEvent = Boolean(
+                            item.isEventVideo ||
+                              item.mediaType === "YOUTUBE_EVENT" ||
+                              item.mediaType === "VIDEO"
+                          );
+                          const strokeColor = itemSeen
+                            ? "#475569"
+                            : isItemEvent
+                            ? "#f43f5e"
+                            : "#10b981";
+                          const offset = -(segIdx * (segDash + segGap));
+                          return (
+                            <circle
+                              key={item.id}
+                              cx="24"
+                              cy="24"
+                              r="22"
+                              fill="none"
+                              stroke={strokeColor}
+                              strokeWidth="2.5"
+                              strokeLinecap="round"
+                              strokeDasharray={`${segDash} ${segCircumference - segDash}`}
+                              strokeDashoffset={offset}
+                            />
+                          );
+                        })}
+                      </svg>
+                    ) : (
+                      <div
+                        className={`absolute inset-0 rounded-full p-[2px] ${
+                          allSeen
+                            ? "bg-slate-600"
+                            : hasEvent
+                            ? "bg-gradient-to-tr from-amber-500 via-rose-500 to-emerald-400"
+                            : "bg-gradient-to-tr from-emerald-500 to-teal-400"
+                        }`}
+                      >
+                        <div className="w-full h-full rounded-full bg-slate-950" />
+                      </div>
+                    )}
+
+                    <div className="relative w-[42px] h-[42px] rounded-full bg-slate-950 border-2 border-slate-950 overflow-hidden flex items-center justify-center">
+                      {previewSt.mediaType === "IMAGE" && previewSt.mediaUrl ? (
                         <img
-                          src={st.mediaUrl}
-                          alt={st.caption || "Status"}
+                          src={previewSt.mediaUrl}
+                          alt={previewSt.caption || "Status"}
                           referrerPolicy="no-referrer"
                           className="w-full h-full object-cover"
                         />
                       ) : ytThumb ? (
                         <img
                           src={ytThumb}
-                          alt={st.title || "Event Video"}
+                          alt={previewSt.title || "Event Video"}
                           referrerPolicy="no-referrer"
                           className="w-full h-full object-cover"
                         />
-                      ) : st.mediaType === "VIDEO" && st.mediaUrl ? (
+                      ) : previewSt.mediaType === "VIDEO" && previewSt.mediaUrl ? (
                         <video
-                          src={st.mediaUrl}
+                          src={previewSt.mediaUrl}
                           muted
                           playsInline
                           preload="metadata"
@@ -777,14 +907,20 @@ export const NstaStatusStudio: React.FC<NstaStatusStudioProps> = ({
                       ) : (
                         <div
                           className="w-full h-full flex items-center justify-center p-1 text-[8px] font-bold text-white text-center leading-tight line-clamp-2"
-                          style={{ background: st.bgColor || TEXT_STATUS_BACKGROUNDS[0].css }}
+                          style={{ background: previewSt.bgColor || TEXT_STATUS_BACKGROUNDS[0].css }}
                         >
-                          {(st.caption || "Notice").slice(0, 20)}
+                          {(previewSt.caption || "Notice").slice(0, 20)}
                         </div>
                       )}
                     </div>
 
-                    {isEvent ? (
+                    {multiCount > 1 && (
+                      <span className="absolute -top-0.5 -right-0.5 min-w-[16px] h-[16px] px-1 rounded-full bg-emerald-600 text-white text-[9px] font-mono font-extrabold flex items-center justify-center border border-slate-900 shadow">
+                        {multiCount}
+                      </span>
+                    )}
+
+                    {hasEvent && multiCount === 1 ? (
                       <span className="absolute -bottom-0.5 -right-0.5 w-4.5 h-4.5 rounded-full bg-rose-600 text-white flex items-center justify-center border-2 border-slate-900 shadow">
                         <Film className="w-2.5 h-2.5" />
                       </span>
@@ -797,10 +933,12 @@ export const NstaStatusStudio: React.FC<NstaStatusStudioProps> = ({
 
                   <span
                     className={`text-[10px] truncate w-full text-center ${
-                      seen ? "text-slate-400 font-normal" : "text-white font-semibold"
+                      allSeen ? "text-slate-400 font-normal" : "text-white font-semibold"
                     }`}
                   >
-                    {isEvent ? (st.title || "Event") : st.authorName.split(" ")[0]}
+                    {hasEvent && multiCount === 1
+                      ? previewSt.title || "Event"
+                      : group.authorName.split(" ")[0]}
                   </span>
                 </button>
               );
@@ -810,8 +948,8 @@ export const NstaStatusStudio: React.FC<NstaStatusStudioProps> = ({
       ) : null}
 
       {/* ── MODAL: CREATE 24-HOUR STATUS OR EVENT VIDEO (ADMIN / TEACHER) ── */}
-      {showCreateModal && canPostStatus && (
-        <div className="fixed inset-0 z-[70] bg-black/80 backdrop-blur-sm flex items-center justify-center p-3 sm:p-4 animate-in fade-in">
+      {showCreateModal && canPostStatus && renderModalPortal(
+        <div className="nst-isolated-modal fixed inset-0 z-[9995] bg-black/80 backdrop-blur-sm flex items-center justify-center p-3 sm:p-4 animate-in fade-in">
           <div className="bg-slate-900 border border-slate-800 rounded-3xl max-w-lg w-full shadow-2xl overflow-hidden flex flex-col max-h-[92vh]">
             {/* Header */}
             <div className="px-5 py-4 border-b border-slate-800 flex items-center justify-between">
@@ -1132,21 +1270,21 @@ export const NstaStatusStudio: React.FC<NstaStatusStudioProps> = ({
       )}
 
       {/* ── MODAL: FULLSCREEN WHATSAPP-STYLE STATUS VIEWER + VIEW ANALYTICS ── */}
-      {viewerIndex !== null && activeStatus && (
-        <div className="fixed inset-0 z-[80] bg-black flex flex-col justify-between select-none animate-in fade-in duration-150">
+      {viewerState !== null && activeGroup && activeStatus && renderModalPortal(
+        <div className="nst-isolated-modal fixed inset-0 z-[9996] bg-black flex flex-col justify-between select-none animate-in fade-in duration-150">
           {/* Top Progress Bars & Author Header */}
           <div className="relative z-20 p-3 sm:p-4 bg-gradient-to-b from-black/85 via-black/45 to-transparent space-y-2.5">
-            {/* Segmented Story Progress */}
+            {/* Segmented Story Progress (Strictly for this user's sequential statuses) */}
             <div className="flex items-center gap-1">
-              {statuses.map((st, idx) => (
+              {activeGroup.items.map((st, idx) => (
                 <div key={st.id} className="h-1 flex-1 rounded-full bg-white/25 overflow-hidden">
                   <div
                     className="h-full bg-white transition-all duration-75"
                     style={{
                       width:
-                        idx < viewerIndex
+                        idx < viewerState.itemIndex
                           ? "100%"
-                          : idx === viewerIndex
+                          : idx === viewerState.itemIndex
                           ? activeStatus.mediaType === "VIDEO" || activeStatus.mediaType === "YOUTUBE_EVENT"
                             ? "100%"
                             : `${progressPct}%`
@@ -1228,7 +1366,7 @@ export const NstaStatusStudio: React.FC<NstaStatusStudioProps> = ({
                   type="button"
                   onClick={() => {
                     setShowAnalyticsSheet(false);
-                    setViewerIndex(null);
+                    setViewerState(null);
                   }}
                   className="min-h-[40px] min-w-[40px] rounded-full bg-white/10 hover:bg-white/20 text-white flex items-center justify-center cursor-pointer"
                   title="Close"
@@ -1241,20 +1379,25 @@ export const NstaStatusStudio: React.FC<NstaStatusStudioProps> = ({
 
           {/* Center Media Canvas */}
           <div className="relative flex-1 flex items-center justify-center overflow-hidden px-3">
-            {/* Previous / Next Navigation Buttons */}
-            {viewerIndex > 0 && (
+            {/* Previous / Next Navigation Buttons within this teacher/user's statuses */}
+            {viewerState.itemIndex > 0 && (
               <button
                 type="button"
-                onClick={() => setViewerIndex(viewerIndex - 1)}
+                onClick={() =>
+                  setViewerState({
+                    groupIndex: viewerState.groupIndex,
+                    itemIndex: viewerState.itemIndex - 1,
+                  })
+                }
                 className="absolute left-2 sm:left-4 z-20 w-10 h-10 rounded-full bg-black/60 hover:bg-black/80 text-white flex items-center justify-center cursor-pointer border border-white/15"
               >
                 <ChevronLeft className="w-5 h-5" />
               </button>
             )}
-            {viewerIndex < statuses.length - 1 && (
+            {viewerState.itemIndex < activeGroup.items.length - 1 && (
               <button
                 type="button"
-                onClick={() => setViewerIndex(viewerIndex + 1)}
+                onClick={advanceToNextInGroup}
                 className="absolute right-2 sm:right-4 z-20 w-10 h-10 rounded-full bg-black/60 hover:bg-black/80 text-white flex items-center justify-center cursor-pointer border border-white/15"
               >
                 <ChevronRight className="w-5 h-5" />
@@ -1284,6 +1427,7 @@ export const NstaStatusStudio: React.FC<NstaStatusStudioProps> = ({
                 controls
                 autoPlay
                 playsInline
+                onEnded={advanceToNextInGroup}
                 className="max-h-[72vh] max-w-full rounded-2xl bg-black shadow-2xl"
               />
             ) : (
@@ -1337,7 +1481,7 @@ export const NstaStatusStudio: React.FC<NstaStatusStudioProps> = ({
 
           {/* ── SLIDE-UP VIEWER ANALYTICS SHEET (SEEN + TIMESTAMP vs NOT SEEN) ── */}
           {showAnalyticsSheet && canPostStatus && (
-            <div className="fixed inset-0 z-[90] bg-black/75 backdrop-blur-xs flex items-end sm:items-center justify-center sm:p-4">
+            <div className="nst-isolated-modal fixed inset-0 z-[9997] bg-black/75 backdrop-blur-xs flex items-end sm:items-center justify-center sm:p-4">
               <div className="bg-slate-900 border border-slate-800 rounded-t-3xl sm:rounded-3xl w-full max-w-lg max-h-[82vh] flex flex-col shadow-2xl overflow-hidden animate-in slide-in-from-bottom-4 duration-200">
                 <div className="w-10 h-1.5 bg-slate-700 rounded-full mx-auto mt-3 sm:hidden" />
 

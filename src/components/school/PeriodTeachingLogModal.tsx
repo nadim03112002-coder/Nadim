@@ -120,10 +120,53 @@ export const PeriodTeachingLogModal: React.FC<Props> = ({
   const [savedLogId, setSavedLogId] = useState<string | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const wasOpenRef = useRef(false);
+  const lastPrefillSigRef = useRef<string>("");
 
-  // Initialize from prefill on open
+  // Initialize from prefill ONLY on fresh open (or when switching to a genuinely different slot/school),
+  // never when parent re-renders pass new `classes` / `prefill` object references while typing.
   useEffect(() => {
-    if (!isOpen) return;
+    if (!isOpen) {
+      wasOpenRef.current = false;
+      lastPrefillSigRef.current = "";
+      return;
+    }
+
+    const prefillSig = JSON.stringify({
+      schoolId,
+      classId: prefill?.classId || "",
+      className: prefill?.className || "",
+      section: prefill?.section || "",
+      subjectName: prefill?.subjectName || "",
+      periodNumber: prefill?.periodNumber || 1,
+      periodTime: prefill?.periodTime || "",
+      teacherId: prefill?.teacherId || "",
+      teacherName: prefill?.teacherName || "",
+      date: prefill?.date || "",
+      initialMode: prefill?.initialMode || "lesson_teaching",
+    });
+
+    const isFreshOpen = !wasOpenRef.current || lastPrefillSigRef.current !== prefillSig;
+    wasOpenRef.current = true;
+    lastPrefillSigRef.current = prefillSig;
+
+    const resolvedCls =
+      classes.find(
+        (c) =>
+          (prefill?.classId && c.id === prefill.classId) ||
+          (prefill?.className &&
+            normalizeKeyText(c.name) === normalizeKeyText(prefill.className))
+      ) || classes[0];
+
+    if (!isFreshOpen) {
+      // If classes loaded asynchronously after open and classId was still blank, fill only classId/section.
+      if (!classId && resolvedCls?.id) {
+        setClassId(resolvedCls.id);
+        setSection((prev) => prev || resolvedCls.section || "A");
+      }
+      return;
+    }
+
     setStep(1);
     setSavedLogId(null);
     setSelectedTopicIds([]);
@@ -133,16 +176,11 @@ export const PeriodTeachingLogModal: React.FC<Props> = ({
     setHomeworkText("");
     setShowQuickAddLesson(false);
     setShowQuickAddTopic(false);
+    setQuickLessonTitle("");
+    setQuickLessonTopicsText("");
+    setQuickTopicText("");
     setMode(prefill?.initialMode || "lesson_teaching");
     setDate(prefill?.date || getTodayIsoDate());
-
-    const resolvedCls =
-      classes.find(
-        (c) =>
-          (prefill?.classId && c.id === prefill.classId) ||
-          (prefill?.className &&
-            normalizeKeyText(c.name) === normalizeKeyText(prefill.className))
-      ) || classes[0];
 
     setClassId(resolvedCls?.id || prefill?.classId || "");
     setSection(prefill?.section || resolvedCls?.section || "A");
@@ -160,7 +198,7 @@ export const PeriodTeachingLogModal: React.FC<Props> = ({
         setAllLogs(lg);
       });
     }
-  }, [isOpen, prefill, schoolId, classes, defaultTeacherName]);
+  }, [isOpen, prefill, schoolId, classes, defaultTeacherName, classId]);
 
   const currentClass = useMemo(
     () => classes.find((c) => c.id === classId) || null,

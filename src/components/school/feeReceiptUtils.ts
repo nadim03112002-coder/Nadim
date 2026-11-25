@@ -3,6 +3,7 @@
 // student photo, high-definition vector QR, and 4-in-1 A4 sheet printing (4 receipts per A4 page).
 
 import type { Student, SchoolConfig } from '../../types';
+import type { FamilySlipMemberSummary } from '../../school-types';
 import { getSchoolCacheSync } from '../../utils/schoolIndexedDb';
 import {
   isAppLogo,
@@ -12,6 +13,11 @@ import {
 } from '../../utils/schoolLogoUtils';
 import { getSchoolFeeDiscountSlabs, formatSlabsHeadline } from '../../utils/feeDiscountSlabs';
 import { buildFeeReceiptQrUrl } from '../../utils/qrVerifyUrl';
+import {
+  formatCoveredMonthsList,
+  formatMonthNameOnly,
+  formatCompactDayMonth,
+} from '../../utils/familyFeeEngine';
 import {
   getLayoutArchitecture,
   resolveActiveDocumentTemplate,
@@ -225,6 +231,13 @@ export interface DpsReceiptData {
   lastPaidDate?: string;
   lastDueAmount?: number;
   lastDueDate?: string;
+  lastBakayaAmount?: number;
+  advanceCoveredMonths?: string[];
+  advancePaidAt?: string;
+  nextFeeSlipMonth?: string;
+  familyGroupId?: string;
+  familyReceiptNo?: string;
+  familyMembersSummary?: FamilySlipMemberSummary[];
   nextMonthEstimatedFee?: number;
   fifoSummary?: string;
   earlyDiscount?: number;
@@ -982,29 +995,99 @@ export function generateDpsReceiptHtml(
       </div>
     </div>
 
+    ${(() => {
+      const famMembers = Array.isArray(data.familyMembersSummary) ? data.familyMembersSummary : [];
+      const isFamilySlip = famMembers.length > 1;
+      const advMonths = Array.isArray(data.advanceCoveredMonths) ? data.advanceCoveredMonths : [];
+      const advMonthsText = advMonths.length > 0 ? formatCoveredMonthsList(advMonths) : "";
+      const advDateText = data.advancePaidAt
+        ? formatCompactDayMonth(data.advancePaidAt)
+        : (effectiveLastPaidDate ? formatCompactDayMonth(effectiveLastPaidDate) : cleanDateShort);
+      const nextSlipText = data.nextFeeSlipMonth ? formatMonthNameOnly(data.nextFeeSlipMonth) : "";
+      const lastBakaya = Number(data.lastBakayaAmount !== undefined ? data.lastBakayaAmount : effectiveLastDueAmount) || 0;
+      const showPaidMiniStatement = !isDemandNote && (
+        lastBakaya > 0 ||
+        advMonths.length > 0 ||
+        Boolean(nextSlipText) ||
+        calculatedBalDue > 0 ||
+        totalPaid > 0
+      );
+
+      return `
+    ${isFamilySlip ? `
+    <div class="dps-family-table-wrap">
+      <div class="dps-family-table-hdr">
+        <span>👨‍👩‍👧‍👦 SIBLING FAMILY SUMMARY (${famMembers.length} Children)</span>
+        <span>${data.familyReceiptNo ? `Ref: ${escapeHtml(data.familyReceiptNo)}` : "1 COMBINED SLIP"}</span>
+      </div>
+      <table class="dps-family-table">
+        <thead>
+          <tr>
+            <th>Student Name</th>
+            <th>Class</th>
+            <th class="num">Due</th>
+            <th class="num">Paid</th>
+            <th class="num">Status / Bal</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${famMembers.map((fm) => {
+            const stBal = Number(fm.balanceAfter || 0);
+            const stAdv = Array.isArray(fm.advanceMonths) && fm.advanceMonths.length > 0;
+            const statusText = fm.status === "FULL_PAID"
+              ? (stAdv ? `Adv (${formatCoveredMonthsList(fm.advanceMonths!)})` : "Full Paid")
+              : fm.status === "PARTIAL"
+              ? `आंशिक बकाया ₹${stBal.toLocaleString("en-IN")}`
+              : fm.status === "ADVANCE_COVERED"
+              ? "Adv Covered"
+              : `Due ₹${stBal.toLocaleString("en-IN")}`;
+            return `
+            <tr>
+              <td class="fname">${escapeHtml(fm.studentName)}</td>
+              <td>${escapeHtml(fm.className || "—")}</td>
+              <td class="num">₹${Number(fm.dueBefore || 0).toLocaleString("en-IN")}</td>
+              <td class="num paid-c">₹${Number(fm.paidNow || 0).toLocaleString("en-IN")}</td>
+              <td class="num ${stBal > 0 ? "due-c" : "ok-c"}">${escapeHtml(statusText)}</td>
+            </tr>`;
+          }).join("")}
+        </tbody>
+      </table>
+    </div>
+    ` : ""}
     ${isDemandNote ? `
     <!-- Previous Payment & Previous Due Summary Strip (With Dates) -->
     <div class="dps-history-strip">
       <div class="dps-history-cell dps-history-paid">
-        <div class="dps-history-kicker">पिछला जमा • LAST PAID</div>
+        <div class="dps-history-kicker">पिछला जमा • LAST PAY</div>
         <div class="dps-history-main">
           <span class="dps-history-amt">₹${effectiveLastPaidAmount.toLocaleString("en-IN")}</span>
           <span class="dps-history-date">${effectiveLastPaidAmount > 0
-            ? `Date: ${escapeHtml(effectiveLastPaidDate || "Recorded")}`
+            ? `${escapeHtml(effectiveLastPaidDate || "Recorded")}`
             : "कोई पिछला जमा नहीं"}</span>
         </div>
       </div>
-      <div class="dps-history-cell dps-history-due ${effectiveLastDueAmount > 0 ? "has-due" : "is-clear"}">
-        <div class="dps-history-kicker">पिछला बकाया • LAST DUE</div>
+      <div class="dps-history-cell dps-history-due ${lastBakaya > 0 ? "has-due" : "is-clear"}">
+        <div class="dps-history-kicker">पिछला बकाया • LAST BAKAYA</div>
         <div class="dps-history-main">
-          <span class="dps-history-amt">₹${effectiveLastDueAmount.toLocaleString("en-IN")}</span>
-          <span class="dps-history-date">${effectiveLastDueAmount > 0
-            ? `${escapeHtml(effectiveLastDueDate)}`
+          <span class="dps-history-amt">₹${lastBakaya.toLocaleString("en-IN")}</span>
+          <span class="dps-history-date">${lastBakaya > 0
+            ? `${escapeHtml(effectiveLastDueDate || "Carried Forward")}`
             : "पिछला बकाया शून्य (Clear)"}</span>
         </div>
       </div>
     </div>
+    ` : showPaidMiniStatement ? `
+    <!-- Mini-Statement Ribbon on Paid / Advance / Partial Receipts -->
+    <div class="dps-mini-statement">
+      ${lastBakaya > 0 ? `<span class="dps-ms-chip ms-due">Last Bakaya: <strong>₹${lastBakaya.toLocaleString("en-IN")}</strong></span>` : ""}
+      <span class="dps-ms-chip ms-paid">Last Pay: <strong>₹${(totalPaid > 0 ? totalPaid : effectiveLastPaidAmount).toLocaleString("en-IN")}</strong> (${escapeHtml(advDateText)})</span>
+      ${advMonthsText ? `<span class="dps-ms-chip ms-adv">✓ <strong>${escapeHtml(advMonthsText)} Paid at ${escapeHtml(advDateText)}</strong></span>` : ""}
+      ${nextSlipText ? `<span class="dps-ms-chip ms-next">Next Slip in <strong>${escapeHtml(nextSlipText)}</strong></span>` : ""}
+      ${calculatedBalDue > 0 ? `<span class="dps-ms-chip ms-due">आंशिक बकाया: <strong>₹${calculatedBalDue.toLocaleString("en-IN")}</strong> → अगले माह जुड़ेगा</span>` : ""}
+    </div>
     ` : ""}
+      `;
+    })()}
 
     <!-- Itemized Fee Table (Elastic Full-Height Ledger — Eliminates Dead Blank Space) -->
     <div class="dps-table-container">
@@ -1942,6 +2025,87 @@ export const DPS_RECEIPT_CSS = `
     font-size: 9px;
     color: #b91c1c;
     font-weight: 700;
+  }
+
+  /* Smart Mini-Statement Ribbon & Family Breakdown Table */
+  .dps-mini-statement {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 4px 8px;
+    padding: 4px 12px;
+    background: #f8fafc;
+    border-bottom: 1px solid #0f172a;
+    font-size: 8.8px;
+    line-height: 1.3;
+    color: #0f172a;
+  }
+  .dps-ms-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    font-weight: 600;
+  }
+  .dps-ms-chip.ms-adv { color: #065f46; }
+  .dps-ms-chip.ms-next { color: #1d4ed8; }
+  .dps-ms-chip.ms-due { color: #b91c1c; }
+  .dps-ms-chip.ms-paid { color: #0f172a; }
+  .dps-family-table-wrap {
+    border-bottom: 1.2px solid #0f172a;
+    background: #ffffff;
+  }
+  .dps-family-table-hdr {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 2.5px 10px;
+    background: #eef2ff;
+    color: #312e81;
+    font-size: 8.2px;
+    font-weight: 900;
+    border-bottom: 1px solid #cbd5e1;
+  }
+  .dps-family-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 8.2px;
+    line-height: 1.25;
+  }
+  .dps-family-table th {
+    background: #f8fafc;
+    color: #334155;
+    font-weight: 800;
+    padding: 2px 6px;
+    text-align: left;
+    border-bottom: 1px solid #cbd5e1;
+  }
+  .dps-family-table th.num, .dps-family-table td.num {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+  }
+  .dps-family-table td {
+    padding: 2px 6px;
+    border-bottom: 1px solid #e2e8f0;
+    color: #0f172a;
+  }
+  .dps-family-table td.fname { font-weight: 800; }
+  .dps-family-table td.paid-c { color: #047857; font-weight: 800; }
+  .dps-family-table td.ok-c { color: #065f46; font-weight: 800; }
+  .dps-family-table td.due-c { color: #b91c1c; font-weight: 800; }
+  .is-compact .dps-mini-statement {
+    padding: 2.5px 7px;
+    gap: 2px 6px;
+    font-size: 7.4px;
+  }
+  .is-compact .dps-family-table-hdr {
+    padding: 2px 6px;
+    font-size: 7px;
+  }
+  .is-compact .dps-family-table {
+    font-size: 7px;
+  }
+  .is-compact .dps-family-table th, .is-compact .dps-family-table td {
+    padding: 1.5px 4px;
   }
 
   /* Parent Payment Promise Box (Demand Slips Only) */
@@ -3846,7 +4010,7 @@ export function generatePosSlipHtml(
         <span class="pos-meta-val">${escapeHtml(data.installment)}</span>
       </div>
 
-      ${(!isFullPaid && !isPartial) ? (() => {
+      ${(() => {
         const posHist = computeStudentFeeHistorySummary({
           studentId: data.studentId,
           schoolId: data.schoolId,
@@ -3854,22 +4018,52 @@ export function generatePosSlipHtml(
         const posLastPaid = data.lastPaidAmount !== undefined ? Number(data.lastPaidAmount) : posHist.lastPaidAmount;
         const posLastPaidDate = (data.lastPaidDate || posHist.lastPaidDate || "").trim();
         const posArrearsItem = data.items.find(it => it.id === "arrears" || /arrears|back due/i.test(it.description || ""));
-        const posLastDue = data.lastDueAmount !== undefined
+        const posLastDue = data.lastBakayaAmount !== undefined
+          ? Number(data.lastBakayaAmount)
+          : data.lastDueAmount !== undefined
           ? Number(data.lastDueAmount)
           : (posArrearsItem ? Number(posArrearsItem.due || 0) : posHist.lastDueAmount);
         const posLastDueDate = (data.lastDueDate || posHist.lastDueDate || "").trim();
+        const posAdvMonths = Array.isArray(data.advanceCoveredMonths) && data.advanceCoveredMonths.length > 0
+          ? formatCoveredMonthsList(data.advanceCoveredMonths)
+          : "";
+        const posAdvDate = data.advancePaidAt ? formatCompactDayMonth(data.advancePaidAt) : (posLastPaidDate ? formatCompactDayMonth(posLastPaidDate) : String(data.receiptDate || "").split("(")[0].trim());
+        const posNextSlip = data.nextFeeSlipMonth ? formatMonthNameOnly(data.nextFeeSlipMonth) : "";
+        const posFamMembers = Array.isArray(data.familyMembersSummary) ? data.familyMembersSummary : [];
+        const showPosSummary = (!isFullPaid && !isPartial) || posLastDue > 0 || Boolean(posAdvMonths) || Boolean(posNextSlip) || posFamMembers.length > 1;
+        if (!showPosSummary) return "";
         return `
           <div class="pos-divider-single"></div>
+          ${posFamMembers.length > 1 ? `
+          <div style="font-size:8.5px;font-weight:900;margin-bottom:1mm;">👨‍👩‍👧‍👦 SIBLING FAMILY (${posFamMembers.length} Children):</div>
+          ${posFamMembers.map(fm => `
+            <div class="pos-meta-row" style="font-size:8.2px;">
+              <span>${escapeHtml(fm.studentName)} (${escapeHtml(fm.className)})</span>
+              <span>Paid ₹${Number(fm.paidNow || 0).toLocaleString("en-IN")}${Number(fm.balanceAfter || 0) > 0 ? ` · Due ₹${Number(fm.balanceAfter).toLocaleString("en-IN")}` : " ✓"}</span>
+            </div>
+          `).join("")}
+          <div class="pos-divider-single"></div>
+          ` : ""}
           <div class="pos-meta-row">
-            <span class="pos-meta-label">Last Paid (पिछला जमा):</span>
-            <span class="pos-meta-val">₹${posLastPaid.toLocaleString("en-IN")}${posLastPaid > 0 && posLastPaidDate ? ` (${escapeHtml(posLastPaidDate)})` : ""}</span>
+            <span class="pos-meta-label">Last Pay:</span>
+            <span class="pos-meta-val">₹${(totalPaid > 0 ? totalPaid : posLastPaid).toLocaleString("en-IN")}${posAdvDate ? ` (${escapeHtml(posAdvDate)})` : ""}</span>
           </div>
           <div class="pos-meta-row">
-            <span class="pos-meta-label">Last Due (पिछला बकाया):</span>
+            <span class="pos-meta-label">Last Bakaya:</span>
             <span class="pos-meta-val">₹${posLastDue.toLocaleString("en-IN")}${posLastDue > 0 && posLastDueDate ? ` (${escapeHtml(posLastDueDate)})` : " (Clear)"}</span>
           </div>
+          ${posAdvMonths ? `
+          <div class="pos-meta-row" style="color:#047857;font-weight:800;">
+            <span class="pos-meta-label">Advance Paid:</span>
+            <span class="pos-meta-val">${escapeHtml(posAdvMonths)} at ${escapeHtml(posAdvDate)}</span>
+          </div>` : ""}
+          ${posNextSlip ? `
+          <div class="pos-meta-row" style="color:#1d4ed8;font-weight:800;">
+            <span class="pos-meta-label">Next Slip In:</span>
+            <span class="pos-meta-val">${escapeHtml(posNextSlip)}</span>
+          </div>` : ""}
         `;
-      })() : ""}
+      })()}
 
       <div class="pos-divider-single"></div>
 

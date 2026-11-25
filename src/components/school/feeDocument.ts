@@ -19,6 +19,7 @@ import {
 } from "./feeReceiptUtils";
 import { safeOpenExternalUrl, getDynamicAcademicSessionLabel } from "../../utils/safeBrowserActions";
 import { getSchoolFeeDiscountSlabs, computeSlabDiscountAmount } from "../../utils/feeDiscountSlabs";
+import { formatCoveredMonthsList, formatMonthNameOnly, formatCompactDayMonth } from "../../utils/familyFeeEngine";
 
 interface FeeDocumentOptions {
   fee: MonthlyFee;
@@ -167,6 +168,13 @@ export function buildDpsReceiptData({
     lastPaidDate: fee.lastPaidDate || histSummary.lastPaidDate,
     lastDueAmount: fee.lastDueAmount !== undefined ? fee.lastDueAmount : histSummary.lastDueAmount,
     lastDueDate: fee.lastDueDate || histSummary.lastDueDate,
+    lastBakayaAmount: fee.lastBakayaAmount,
+    advanceCoveredMonths: fee.advanceCoveredMonths,
+    advancePaidAt: fee.advancePaidAt,
+    nextFeeSlipMonth: fee.nextFeeSlipMonth,
+    familyGroupId: fee.familyGroupId,
+    familyReceiptNo: fee.familyReceiptNo,
+    familyMembersSummary: fee.familyMembersSummary,
     fifoSummary: fee.note,
 
     payModeInfo: fee.payModeInfo || {
@@ -463,6 +471,35 @@ export function buildWhatsAppReceiptMessage(
     return `  ${idx + 1}. ${it.description}: ${amountStr}`;
   }).join("\n");
 
+  const familyBlock =
+    Array.isArray(receiptData.familyMembersSummary) && receiptData.familyMembersSummary.length > 1
+      ? `👨‍👩‍👧‍👦 *Sibling Family (${receiptData.familyMembersSummary.length} Children):*\n` +
+        receiptData.familyMembersSummary
+          .map((fm, idx) => {
+            const rem = Number(fm.balanceAfter || 0);
+            const advTxt = Array.isArray(fm.advanceMonths) && fm.advanceMonths.length > 0
+              ? ` | Adv: ${formatCoveredMonthsList(fm.advanceMonths)}`
+              : "";
+            const stTxt = rem > 0 ? `आंशिक बकाया ₹${rem.toLocaleString("en-IN")}` : `✓ Full Paid${advTxt}`;
+            return `  ${idx + 1}. *${fm.studentName}* (${fm.className}) — Paid ₹${Number(fm.paidNow || 0).toLocaleString("en-IN")} (${stTxt})`;
+          })
+          .join("\n") +
+        `\n--------------------------------\n`
+      : "";
+
+  const advCovered = Array.isArray(receiptData.advanceCoveredMonths) && receiptData.advanceCoveredMonths.length > 0
+    ? formatCoveredMonthsList(receiptData.advanceCoveredMonths)
+    : "";
+  const advDateTxt = receiptData.advancePaidAt
+    ? formatCompactDayMonth(receiptData.advancePaidAt)
+    : (receiptData.lastPaidDate ? formatCompactDayMonth(receiptData.lastPaidDate) : receiptData.receiptDate.split("(")[0].trim());
+  const nextSlipTxt = receiptData.nextFeeSlipMonth ? formatMonthNameOnly(receiptData.nextFeeSlipMonth) : "";
+  const lastBakayaVal = Number(receiptData.lastBakayaAmount !== undefined ? receiptData.lastBakayaAmount : receiptData.lastDueAmount || 0);
+  const advanceMiniBlock =
+    (lastBakayaVal > 0 ? `📌 *Last Bakaya:* ₹${lastBakayaVal.toLocaleString("en-IN")}\n` : "") +
+    (advCovered ? `🎉 *Advance Paid:* ${advCovered} Paid at ${advDateTxt}\n` : "") +
+    (nextSlipTxt ? `📅 *Next Fee Slip:* ${nextSlipTxt}\n` : "");
+
   let message = "";
 
   // 1. DEDICATED POS THERMAL RECEIPT WHATSAPP FORMAT
@@ -504,6 +541,7 @@ export function buildWhatsAppReceiptMessage(
         `💳 *Pay Mode:* ${receiptData.payModeInfo.payMode || "Cash"}\n` +
         `🧾 *Collected By:* ${receiptData.collectedByRole === "manager" ? `Manager (${receiptData.collectedByName || receiptData.managerName || "Manager"})` : `Accountant (${receiptData.collectedByName || receiptData.accountantName || "Accountant"})`}\n` +
         `--------------------------------\n` +
+        familyBlock +
         `*FEE HEADS / मद विवरण:*\n` +
         `${itemLines}\n` +
         `--------------------------------\n` +
@@ -515,7 +553,8 @@ export function buildWhatsAppReceiptMessage(
               ? `🎁 *Sibling Concession (भाई-बहन छूट):* -₹${Number(options.fee.earlyDiscount || options.fee.concession).toLocaleString("en-IN")}\n`
               : `🎁 *5% Early Bird Concession:* -₹${Number(options.fee.earlyDiscount || options.fee.concession).toLocaleString("en-IN")}\n`) : "") +
         `✅ *NET PAID (जमा राशि):* *₹${paidAmount.toLocaleString("en-IN")}*\n` +
-        `⚠️ *Balance Due (शेष):* ₹${balanceDue.toLocaleString("en-IN")}${balanceDue <= 0 ? " (FULL PAID ✓)" : ""}\n` +
+        `⚠️ *Balance Due (शेष):* ₹${balanceDue.toLocaleString("en-IN")}${balanceDue <= 0 ? " (FULL PAID ✓)" : " (आंशिक बकाया → अगले माह जुड़ेगा)"}\n` +
+        advanceMiniBlock +
         `================================\n` +
         `✍️ *Authority:* ${receiptData.signatoryTitle || "Principal / Cashier"} (VERIFIED)\n` +
         `*Computer Generated Official POS Slip*\n` +
@@ -550,11 +589,13 @@ export function buildWhatsAppReceiptMessage(
         `📚 *Class:* ${receiptData.className}\n` +
         `🧾 *Slip No:* ${receiptData.receiptNo} • *Date:* ${receiptData.receiptDate}\n` +
         `----------------------------------------\n` +
+        familyBlock +
         `*FEE PARTICULARS:*\n${itemLines}\n` +
         `----------------------------------------\n` +
-        `✅ *Last Paid (पिछला जमा):* ₹${lastPaidAmt.toLocaleString("en-IN")}${lastPaidAmt > 0 && lastPaidDt ? ` (${lastPaidDt})` : " (कोई पिछला जमा नहीं)"}\n` +
-        `📌 *Last Due (पिछला बकाया):* ₹${lastDueAmt.toLocaleString("en-IN")}${lastDueAmt > 0 && lastDueDt ? ` (${lastDueDt})` : " (Clear)"}\n` +
+        `✅ *Last Pay (पिछला जमा):* ₹${lastPaidAmt.toLocaleString("en-IN")}${lastPaidAmt > 0 && lastPaidDt ? ` (${lastPaidDt})` : " (कोई पिछला जमा नहीं)"}\n` +
+        `📌 *Last Bakaya (पिछला बकाया):* ₹${Math.max(lastBakayaVal, lastDueAmt).toLocaleString("en-IN")}${lastDueAmt > 0 && lastDueDt ? ` (${lastDueDt})` : " (Clear)"}\n` +
         `💰 *Gross Total Due (स्लिप पर कुल देय):* ₹${netPayableTotal.toLocaleString("en-IN")}\n` +
+        (nextSlipTxt ? `📅 *Next Slip Month:* ${nextSlipTxt}\n` : "") +
         (slabOfferLines
           ? `${slabOfferLines}⚠️ _तय तिथि के बाद जमा करने पर पूरा भुगतान ₹${netPayableTotal.toLocaleString("en-IN")} देय होगा।_\n`
           : "") +
@@ -578,16 +619,20 @@ export function buildWhatsAppReceiptMessage(
         `📅 *Date & Time:* ${receiptData.receiptDate}\n` +
         `💳 *Payment Mode:* ${receiptData.payModeInfo.payMode || "Cash"}\n` +
         `----------------------------------------\n` +
+        familyBlock +
         `*FEE PARTICULARS:*\n${itemLines}\n` +
         `----------------------------------------\n` +
         `💰 *Gross Bill (कुल शुल्क):* ₹${totalBill.toLocaleString("en-IN")}\n` +
         (earlyDiscountAmt > 0 ? `${discountLabel} -₹${earlyDiscountAmt.toLocaleString("en-IN")}\n` : "") +
         `✅ *Amount Paid (जमा राशि):* *₹${paidAmount.toLocaleString("en-IN")}*\n` +
         `⚠️ *Remaining Balance (शेष बकाया):* ₹${balanceDue.toLocaleString("en-IN")}${balanceDue <= 0 ? " (FULL PAID ✓)" : ""}\n` +
+        advanceMiniBlock +
         `----------------------------------------\n` +
         (balanceDue > 0
-          ? `📌 *शेष बकाया ₹${balanceDue.toLocaleString("en-IN")} अगले महीने के बिल में जुड़ेगा।*\n`
-          : `🎉 *सत्र का यह शुल्क 5% अर्ली बर्ड छूट के साथ पूर्णतः जमा (Full Paid) हो चुका है।*\n`) +
+          ? `📌 *आंशिक बकाया ₹${balanceDue.toLocaleString("en-IN")} अगले महीने के बिल में जुड़ेगा।*\n`
+          : advCovered
+          ? `🎉 *${advCovered} तक का शुल्क पूर्णतः जमा हो चुका है! अगली स्लिप ${nextSlipTxt || "अगले माह"} में आएगी।*\n`
+          : `🎉 *सत्र का यह शुल्क पूर्णतः जमा (Full Paid) हो चुका है।*\n`) +
         `📄 *Official DPS Format PDF Receipt downloaded to your device.*`;
     }
   }

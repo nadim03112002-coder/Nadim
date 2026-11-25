@@ -1,12 +1,13 @@
 // @ts-nocheck
 import React, { useState, useEffect } from "react";
 import {
-  getStudents, getMonthlyFees, getClasses, saveFee, markFeePaid, currentMonthStr, getSchoolFeeHistory, isStudentInClass, updateStudent, getLocalFees, isDemoRecord, getAccountants, autoSendFeeSlipToSchoolDesk, getSchool
+  getStudents, getMonthlyFees, getClasses, saveFee, markFeePaid, currentMonthStr, getSchoolFeeHistory, isStudentInClass, updateStudent, getLocalFees, isDemoRecord, getAccountants, autoSendFeeSlipToSchoolDesk, getSchool, subscribeToFeeCallFollowUps, autoSettleFeeCallFollowUp
 } from "../../school-firebase";
 import { toast } from "sonner";
-import type { SchoolStudent, SchoolClass, MonthlyFee, School, SchoolDocumentPrintFields, SchoolAccountant, FeeTermCampaign, AppliedTermFeeItem } from "../../school-types";
+import type { SchoolStudent, SchoolClass, MonthlyFee, School, SchoolDocumentPrintFields, SchoolAccountant, FeeTermCampaign, AppliedTermFeeItem, FeeCallFollowUpRecord } from "../../school-types";
 import { schoolPrintFieldEnabled } from "../../school-types";
-import { CheckCircle, Clock, Download, ChevronLeft, ChevronRight, ChevronDown, IndianRupee, Users, TrendingUp, AlertCircle, Printer, MessageCircle, MessageSquare, ReceiptText, Building2, Sparkles, X, Check, RotateCcw, CheckCircle2, ShieldCheck, ToggleLeft, ToggleRight, Bus, QrCode, Search, Filter, Loader2, Bell, FileSpreadsheet, FileText, Plus, Trash2, CreditCard, Palette, CalendarClock } from "lucide-react";
+import { CheckCircle, Clock, Download, ChevronLeft, ChevronRight, ChevronDown, IndianRupee, Users, TrendingUp, AlertCircle, Printer, MessageCircle, MessageSquare, ReceiptText, Building2, Sparkles, X, Check, RotateCcw, CheckCircle2, ShieldCheck, ToggleLeft, ToggleRight, Bus, QrCode, Search, Filter, Loader2, Bell, FileSpreadsheet, FileText, Plus, Trash2, CreditCard, Palette, CalendarClock, PhoneCall } from "lucide-react";
+import { FeeTagadaCallerPage, buildFamilyTagadaGroups, getLocalTodayYmd, getPendingActiveTagadaCall, type TagadaStudentFeeRow } from "./FeeTagadaCallerPage";
 import { FeeTermSchedulerModal } from "./FeeTermSchedulerModal";
 import { resolveScheduledFeesForStudentMonth, mergeSettlementAfterPayment } from "../../utils/feeTermScheduler";
 import { DocumentTemplateStudioModal } from "./DocumentTemplateStudioModal";
@@ -71,6 +72,23 @@ import {
   formatSlabsHeadline,
 } from "../../utils/feeDiscountSlabs";
 import type { FeeDiscountSlab } from "../../school-types";
+import { jsPDF } from "jspdf";
+import { renderHtmlToCanvasSafe } from "../../utils/safePdfCapture";
+import { groupAllSchoolSiblings } from "../../utils/schoolReferralSiblingEngine";
+import {
+  computePermanentSiblingDiscount,
+  computeSingleStudentAdvancePlan,
+  calculateFamilyHorizontalSettlement,
+  resolveAdvanceMetadataForFee,
+  mergeBatchReceiptsByFamily,
+  formatCoveredMonthsList,
+  formatMonthNameOnly,
+  formatMonthShort,
+  formatCompactDayMonth,
+  type SingleAdvancePlanResult,
+  type FamilySettlementResult,
+  type FamilySiblingInput,
+} from "../../utils/familyFeeEngine";
 
 interface Props {
   schoolId: string;
@@ -85,7 +103,7 @@ interface Props {
   allowDiscountOverride?: boolean;
   maxDiscountLimitPct?: number;
   onBack?: () => void;
-  initialTool?: "qr_scanner" | "bus" | "admission_receipt" | "class_rates" | "fee_alert" | "header" | "razorpay" | "cancel_receipt" | "term_scheduler";
+  initialTool?: "qr_scanner" | "bus" | "admission_receipt" | "class_rates" | "fee_alert" | "header" | "razorpay" | "cancel_receipt" | "term_scheduler" | "fee_tagada";
   exitOnToolClose?: boolean;
 }
 
@@ -141,6 +159,8 @@ export const FeeManager: React.FC<Props> = ({ schoolId, classId, className, scho
   const [showRazorpaySettingsModal, setShowRazorpaySettingsModal] = useState<boolean>(false);
   const [showTemplateStudio, setShowTemplateStudio] = useState<boolean>(false);
   const [showTermSchedulerModal, setShowTermSchedulerModal] = useState<boolean>(false);
+  const [showFeeTagadaModal, setShowFeeTagadaModal] = useState<boolean>(false);
+  const [feeCallFollowUps, setFeeCallFollowUps] = useState<FeeCallFollowUpRecord[]>([]);
   const [liveSchool, setLiveSchool] = useState<School | undefined>(school);
   const [termCampaigns, setTermCampaigns] = useState<FeeTermCampaign[]>(() => school?.feeTermCampaigns || []);
   const [templateTick, setTemplateTick] = useState<number>(0);
@@ -178,6 +198,11 @@ export const FeeManager: React.FC<Props> = ({ schoolId, classId, className, scho
   const [customChequeNo, setCustomChequeNo] = useState<string>("");
   const [customConcession, setCustomConcession] = useState<string>("");
   const [customPaymentDate, setCustomPaymentDate] = useState<string>(() => new Date().toISOString().slice(0, 10));
+  const [bulkFamilyMerge, setBulkFamilyMerge] = useState<boolean>(true);
+  const [downloadingBulkPdf, setDownloadingBulkPdf] = useState<boolean>(false);
+  const [familyModeEnabled, setFamilyModeEnabled] = useState<boolean>(false);
+  const [familySelectedIds, setFamilySelectedIds] = useState<string[]>([]);
+  const [familyOrderIds, setFamilyOrderIds] = useState<string[]>([]);
   const [feeDiscountSlabs, setFeeDiscountSlabs] = useState<FeeDiscountSlab[]>(() =>
     getSchoolFeeDiscountSlabs(schoolId, school)
   );
@@ -294,6 +319,10 @@ export const FeeManager: React.FC<Props> = ({ schoolId, classId, className, scho
   }, [school?.id, schoolId]);
 
   useEffect(() => {
+    return subscribeToFeeCallFollowUps(schoolId, setFeeCallFollowUps);
+  }, [schoolId]);
+
+  useEffect(() => {
     if (initialTool === "qr_scanner") setShowQrScannerModal(true);
     else if (initialTool === "bus") setShowBusModal(true);
     else if (initialTool === "admission_receipt") openAdmissionModalForStudent();
@@ -303,6 +332,8 @@ export const FeeManager: React.FC<Props> = ({ schoolId, classId, className, scho
     else if (initialTool === "razorpay") setShowRazorpaySettingsModal(true);
     else if (initialTool === "cancel_receipt") setShowReceiptCancellationModal(true);
     else if (initialTool === "term_scheduler") setShowTermSchedulerModal(true);
+    else if (initialTool === "fee_tagada") setShowFeeTagadaModal(true);
+    else if (getPendingActiveTagadaCall(schoolId)) setShowFeeTagadaModal(true);
 
     const handleOpenTool = (e: any) => {
       const tool = e?.detail?.tool;
@@ -315,6 +346,7 @@ export const FeeManager: React.FC<Props> = ({ schoolId, classId, className, scho
       else if (tool === "razorpay") setShowRazorpaySettingsModal(true);
       else if (tool === "cancel_receipt") setShowReceiptCancellationModal(true);
       else if (tool === "term_scheduler") setShowTermSchedulerModal(true);
+      else if (tool === "fee_tagada") setShowFeeTagadaModal(true);
     };
     window.addEventListener("open-fee-tool", handleOpenTool);
     return () => window.removeEventListener("open-fee-tool", handleOpenTool);
@@ -531,7 +563,8 @@ export const FeeManager: React.FC<Props> = ({ schoolId, classId, className, scho
             campaigns: activeCampaigns,
             feeHistory: history,
           });
-          const basePriorDue = paidAtAdmissionMonth ? 0 : monthlyBaseRate;
+          const priorPermDisc = computePermanentSiblingDiscount(student, monthlyBaseRate);
+          const basePriorDue = paidAtAdmissionMonth ? 0 : Math.max(0, monthlyBaseRate - priorPermDisc);
           const extraPriorDue = priorTermRes.totalExtraHeadsAmount;
           if (basePriorDue + extraPriorDue > 0) {
             calculatedArrears += basePriorDue + extraPriorDue;
@@ -691,6 +724,20 @@ export const FeeManager: React.FC<Props> = ({ schoolId, classId, className, scho
         feeHistory: history,
       });
 
+      const advMeta = resolveAdvanceMetadataForFee({
+        currentFee: {
+          ...(existing || {}),
+          studentId: student.id,
+          month,
+          paid: isPaid && balanceDue === 0,
+          paidAmount,
+          balanceDue,
+          arrearsAmount: effectiveArrears,
+          arrearsMonths: effectiveArrearsMonths,
+        },
+        feeHistory: history,
+      });
+
       return {
         ...(existing || {}),
         lastReceiptPaidAmount,
@@ -698,6 +745,7 @@ export const FeeManager: React.FC<Props> = ({ schoolId, classId, className, scho
         lastPaidDate: histSummary.lastPaidDate,
         lastDueAmount: histSummary.lastDueAmount,
         lastDueDate: histSummary.lastDueDate,
+        ...advMeta,
         schoolId,
         sessionId: student.sessionId || sessionId,
         studentId: student.id,
@@ -817,8 +865,23 @@ export const FeeManager: React.FC<Props> = ({ schoolId, classId, className, scho
             await updateStudent(schoolId, targetStudent.id, settlePatch).catch(() => {});
           }
         }
+        void autoSettleFeeCallFollowUp(schoolId, fee.studentId, {
+          receiptNo,
+          amountPaid: total,
+          remainingDue: 0,
+          actorName: collectorInfo?.collectedByName || actorName,
+          studentName: targetStudent?.name || fee.studentName,
+          fatherName: targetStudent?.fatherName,
+          classId: fee.classId,
+          className: classNames[fee.classId] || targetStudent?.className || "",
+          rollNo: targetStudent?.rollNo || fee.rollNo,
+          phone: targetStudent?.phone || targetStudent?.whatsappNo || "",
+        });
       } else {
         await saveFee(updatedFee);
+        void autoSettleFeeCallFollowUp(schoolId, fee.studentId, {
+          remainingDue: total,
+        });
       }
       await loadData(true);
     } catch (error) {
@@ -858,10 +921,37 @@ export const FeeManager: React.FC<Props> = ({ schoolId, classId, className, scho
     }
   };
 
-  const handleOpenPaymentModal = (fee: MonthlyFee) => {
+  const handleOpenPaymentModal = (fee: MonthlyFee, options?: { startFamilyMode?: boolean; selectedSiblingIds?: string[] }) => {
     const targetClass = rawClasses.find(c => c.id === fee.classId);
     const struct = targetClass?.feeStructure;
     const student = students.find(s => s.id === fee.studentId);
+
+    // Initialize sibling family selection state
+    const { families: sibGroups } = groupAllSchoolSiblings(students);
+    const matchedFam = sibGroups.find((g) => g.students.some((m) => m.id === fee.studentId));
+    if (matchedFam && matchedFam.students.length > 1) {
+      const ordered = [
+        fee.studentId,
+        ...matchedFam.students.map((m) => m.id).filter((id) => id !== fee.studentId),
+      ];
+      setFamilyOrderIds(ordered);
+      if (options?.selectedSiblingIds && options.selectedSiblingIds.length > 0) {
+        setFamilySelectedIds(ordered.filter((id) => options.selectedSiblingIds!.includes(id)));
+      } else {
+        const unpaidIds = ordered.filter((id) => {
+          const mf = fees.find((x) => x.studentId === id);
+          if (!mf) return true;
+          return !mf.paid || Number(mf.balanceDue || 0) > 0;
+        });
+        setFamilySelectedIds(unpaidIds.length > 0 ? unpaidIds : ordered);
+      }
+      setFamilyModeEnabled(Boolean(options?.startFamilyMode));
+    } else {
+      setFamilyOrderIds([fee.studentId]);
+      setFamilySelectedIds([fee.studentId]);
+      setFamilyModeEnabled(false);
+    }
+
     setCollectingFee(fee);
     setCustomIncludeAdmissionFee(Boolean(fee.includeAdmissionFee ?? false));
     setCustomIncludeCautionMoney(Boolean(fee.includeCautionMoney ?? false));
@@ -904,11 +994,25 @@ export const FeeManager: React.FC<Props> = ({ schoolId, classId, className, scho
     const termExtra = Number(fee.termCampaignAmount || 0) + Number(fee.deferredAdmissionHeadsAmount || 0);
     const autoNetPayable = arrears + Math.max(0, baseMonthly + termExtra - effectiveConcession);
 
-    // Auto pre-fill with net payable (e.g. 300 arrears + 360 current = 660) if new collection, or prior paidAmount
-    const initialPaid = fee.paid && Number(fee.paidAmount || 0) > 0
-      ? String(fee.paidAmount)
+    // If launched directly in Family Mode, prefill with combined unpaid due of selected siblings
+    let finalInitialPaid = fee.paid && Number(fee.paidAmount || 0) > 0
+      ? autoNetPayable > 0 ? String(fee.paidAmount) : String(fee.paidAmount)
       : String(autoNetPayable);
-    setCustomPaidAmount(initialPaid);
+    if (options?.startFamilyMode && matchedFam && matchedFam.students.length > 1) {
+      const targetIds = options.selectedSiblingIds?.length
+        ? options.selectedSiblingIds
+        : matchedFam.students.map((m) => m.id);
+      const sumFamily = matchedFam.students
+        .filter((m) => targetIds.includes(m.id))
+        .reduce((sum, m) => {
+          const mf = fees.find((x) => x.studentId === m.id);
+          if (!mf) return sum;
+          if (mf.paid && (!mf.balanceDue || mf.balanceDue <= 0)) return sum;
+          return sum + Math.max(0, Number(mf.balanceDue ?? mf.amount ?? 0) + Number(mf.arrearsAmount || 0));
+        }, 0);
+      if (sumFamily > 0) finalInitialPaid = String(sumFamily);
+    }
+    setCustomPaidAmount(finalInitialPaid);
 
     setCustomPayMode(fee.payModeInfo?.payMode || "Cash");
     setCustomBankName(fee.payModeInfo?.bank || "");
@@ -1395,11 +1499,209 @@ export const FeeManager: React.FC<Props> = ({ schoolId, classId, className, scho
       })
       .filter(item => item.totalDue > 0 || item.month === fee.month);
 
-    const fifoResult = calculateFifoAllocation({
+    // ── COMBINED SIBLING FAMILY SETTLEMENT PATH ──
+    if (familyModeEnabled && modalFamilySettlement && modalFamilySiblingsInputs.length > 1) {
+      const famReceiptNo = `FAM-RCP-${Math.floor(10000 + Math.random() * 90000)}`;
+      const collectorInfoFam = effectivePaid > 0 ? resolveActiveCollector() : undefined;
+      const settledFam = calculateFamilyHorizontalSettlement({
+        siblings: modalFamilySiblingsInputs,
+        paymentAmount: effectivePaid,
+        currentMonth: fee.month,
+        paidAtIso: paidDate,
+        familyReceiptNo: famReceiptNo,
+        feeHistory,
+      });
+
+      const famGroup = groupAllSchoolSiblings(students).families.find((g) => g.students.some((m) => m.id === fee.studentId));
+      const famGroupKey = famGroup?.id || `fam_${fee.studentId}`;
+
+      try {
+        for (const childRes of settledFam.perSiblingResults) {
+          const sibStudent = students.find((s) => s.id === childRes.studentId);
+          const sibFee = fees.find((f) => f.studentId === childRes.studentId);
+          const sibCls = rawClasses.find((c) => c.id === (sibStudent?.classId || sibFee?.classId));
+          const sibMonthly = Number(sibFee?.monthlyAmount ?? sibCls?.feeStructure?.tuitionFee ?? monthlyAmount);
+          const sibBus = sibFee?.includeBusFee ? Number(sibFee?.busFeeAmount || sibStudent?.busFee || 0) : 0;
+
+          // Save regular & prior FIFO allocations for this sibling
+          for (const alloc of childRes.allocations) {
+            if (alloc.month === "0000-BACK-DUE" || alloc.month === "0001-ADM-DUE" || alloc.month === "0002-DEFERRED-TUITION") continue;
+            const existingRec = localFeeList.find((h) => h.studentId === childRes.studentId && h.month === alloc.month)
+              || feeHistory.find((h) => h.studentId === childRes.studentId && h.month === alloc.month);
+            const isCur = alloc.month === fee.month;
+            const sibRecord: MonthlyFee = {
+              ...(existingRec || (isCur && sibFee ? sibFee : {})),
+              schoolId,
+              sessionId: sibStudent?.sessionId || sessionId,
+              studentId: childRes.studentId,
+              studentName: childRes.studentName,
+              rollNo: sibStudent?.rollNo || sibFee?.rollNo || "",
+              classId: sibStudent?.classId || sibFee?.classId || fee.classId,
+              month: alloc.month,
+              monthlyAmount: isCur ? sibMonthly : (existingRec?.monthlyAmount ?? sibMonthly),
+              includeBusFee: Boolean(sibFee?.includeBusFee || sibStudent?.usesBus),
+              busFeeAmount: sibBus,
+              amount: isCur ? (sibFee?.amount ?? alloc.originalDue) : (existingRec?.amount ?? alloc.originalDue),
+              paid: alloc.status === "PAID",
+              paidAmount: alloc.totalPaidAfter,
+              balanceDue: alloc.balanceDueAfter,
+              paidDate: alloc.allocatedThisTime > 0 ? paidDate : existingRec?.paidDate,
+              paidBy: alloc.allocatedThisTime > 0 ? adminId : existingRec?.paidBy,
+              collectedBy: alloc.allocatedThisTime > 0 ? collectorInfoFam?.collectedBy : existingRec?.collectedBy,
+              collectedByRole: alloc.allocatedThisTime > 0 ? collectorInfoFam?.collectedByRole : existingRec?.collectedByRole,
+              collectedByName: alloc.allocatedThisTime > 0 ? collectorInfoFam?.collectedByName : existingRec?.collectedByName,
+              collectorSignatureUrl: alloc.allocatedThisTime > 0 ? collectorInfoFam?.collectorSignatureUrl : existingRec?.collectorSignatureUrl,
+              receiptNo: alloc.allocatedThisTime > 0 ? (isCur ? famReceiptNo : `FIFO-${alloc.month}-${famReceiptNo}`) : existingRec?.receiptNo,
+              payModeInfo: alloc.allocatedThisTime > 0 ? payModeInfo : existingRec?.payModeInfo,
+              familyGroupId: famGroupKey,
+              familyReceiptNo: famReceiptNo,
+              lastBakayaAmount: childRes.summaryItem.dueBefore,
+              lastReceiptPaidAmount: alloc.allocatedThisTime > 0 ? childRes.totalPaidNow : existingRec?.lastReceiptPaidAmount,
+              advanceCoveredMonths: childRes.advanceMonths,
+              advancePaidAt: childRes.advanceMonths.length > 0 ? paidDate : existingRec?.advancePaidAt,
+              nextFeeSlipMonth: childRes.nextSlipMonth,
+              note: alloc.status === "PAID"
+                ? `Family Paid (${famReceiptNo})${childRes.advanceMonths.length > 0 ? ` · Adv: ${formatCoveredMonthsList(childRes.advanceMonths)}` : ""}`
+                : alloc.status === "PARTIAL"
+                ? `आंशिक बकाया ₹${alloc.balanceDueAfter} (${famReceiptNo})`
+                : "Unpaid Due",
+            } as MonthlyFee;
+            await saveFee(sibRecord).catch(() => {});
+            if (isCur && alloc.status === "PAID") {
+              await markFeePaid(schoolId, childRes.studentId, fee.month, adminId, collectorInfoFam).catch(() => {});
+            }
+          }
+
+          // Save future advance months for this sibling horizontally
+          for (const adv of childRes.advanceMonthAllocations) {
+            const existingFuture = localFeeList.find((h) => h.studentId === childRes.studentId && h.month === adv.month)
+              || feeHistory.find((h) => h.studentId === childRes.studentId && h.month === adv.month);
+            const advRecord: MonthlyFee = {
+              ...(existingFuture || {}),
+              schoolId,
+              sessionId: sibStudent?.sessionId || sessionId,
+              studentId: childRes.studentId,
+              studentName: childRes.studentName,
+              rollNo: sibStudent?.rollNo || sibFee?.rollNo || "",
+              classId: sibStudent?.classId || sibFee?.classId || fee.classId,
+              month: adv.month,
+              monthlyAmount: sibMonthly,
+              includeBusFee: Boolean(sibStudent?.usesBus),
+              busFeeAmount: sibBus,
+              amount: adv.dueBefore,
+              paid: adv.status === "PAID",
+              paidAmount: adv.paidNow,
+              balanceDue: adv.balanceAfter,
+              paidDate,
+              paidBy: adminId,
+              collectedBy: collectorInfoFam?.collectedBy,
+              collectedByRole: collectorInfoFam?.collectedByRole,
+              collectedByName: collectorInfoFam?.collectedByName,
+              collectorSignatureUrl: collectorInfoFam?.collectorSignatureUrl,
+              receiptNo: `ADV-${adv.month}-${famReceiptNo}`,
+              payModeInfo,
+              familyGroupId: famGroupKey,
+              familyReceiptNo: famReceiptNo,
+              advanceCoveredMonths: childRes.advanceMonths,
+              advancePaidAt: paidDate,
+              nextFeeSlipMonth: childRes.nextSlipMonth,
+              lastBakayaAmount: childRes.summaryItem.dueBefore,
+              lastReceiptPaidAmount: adv.paidNow,
+              note: adv.status === "PAID"
+                ? `Advance Paid at ${formatCompactDayMonth(paidDate)} (${famReceiptNo})`
+                : `Advance Credit ₹${adv.paidNow} (आंशिक बकाया ₹${adv.balanceAfter})`,
+            } as MonthlyFee;
+            await saveFee(advRecord).catch(() => {});
+          }
+
+          // Sync student-level due fields & Tagada auto-settle
+          if (sibStudent) {
+            const sp: Partial<SchoolStudent> = {};
+            const backAlloc = childRes.allocations.find((a) => a.month === "0000-BACK-DUE");
+            if (backAlloc) sp.previousSessionDue = Math.max(0, Number(backAlloc.balanceDueAfter || 0));
+            const admAllocSib = childRes.allocations.find((a) => a.month === "0001-ADM-DUE");
+            if (admAllocSib) sp.admissionDueBalance = Math.max(0, Number(admAllocSib.balanceDueAfter || 0));
+            if (Object.keys(sp).length > 0) {
+              await updateStudent(schoolId, sibStudent.id, sp).catch(() => {});
+            }
+          }
+          if (childRes.totalPaidNow > 0) {
+            void autoSettleFeeCallFollowUp(schoolId, childRes.studentId, {
+              receiptNo: famReceiptNo,
+              amountPaid: childRes.totalPaidNow,
+              remainingDue: childRes.remainingBalanceAfter,
+              actorName: collectorInfoFam?.collectedByName || actorName,
+              studentName: childRes.studentName,
+              fatherName: sibStudent?.fatherName,
+              classId: sibStudent?.classId || fee.classId,
+              className: childRes.className,
+              rollNo: sibStudent?.rollNo,
+              phone: sibStudent?.phone || sibStudent?.whatsappNo || "",
+            });
+          }
+        }
+
+        const combinedSnapshot: MonthlyFee = {
+          ...fee,
+          receiptNo: famReceiptNo,
+          familyGroupId: famGroupKey,
+          familyReceiptNo: famReceiptNo,
+          studentName: `${settledFam.familyMembersSummary.map((m) => m.studentName).join(" & ")} (Family)`,
+          className: Array.from(new Set(settledFam.familyMembersSummary.map((m) => m.className))).join(" / "),
+          amount: settledFam.totalFamilyDueBefore,
+          paid: settledFam.totalFamilyRemainingAfter === 0 && settledFam.totalPaidNow > 0,
+          paidAmount: settledFam.totalPaidNow,
+          lastReceiptPaidAmount: settledFam.totalPaidNow,
+          balanceDue: settledFam.totalFamilyRemainingAfter,
+          arrearsAmount: 0,
+          paidDate,
+          payModeInfo,
+          collectedByRole: collectorInfoFam?.collectedByRole || "accountant",
+          collectedByName: collectorInfoFam?.collectedByName,
+          collectorSignatureUrl: collectorInfoFam?.collectorSignatureUrl,
+          items: settledFam.receiptItems,
+          lastBakayaAmount: settledFam.totalFamilyDueBefore,
+          advanceCoveredMonths: settledFam.advanceCoveredMonths,
+          advancePaidAt: settledFam.advanceCoveredMonths.length > 0 ? paidDate : undefined,
+          nextFeeSlipMonth: settledFam.nextFeeSlipMonth,
+          familyMembersSummary: settledFam.familyMembersSummary,
+          note: settledFam.summaryHindi,
+        } as MonthlyFee;
+
+        setCollectingFee(null);
+        await loadData(true);
+        toast.success(
+          settledFam.advanceCoveredMonths.length > 0
+            ? `Family Fee & Advance Saved! Next Slip: ${formatMonthNameOnly(settledFam.nextFeeSlipMonth)}`
+            : settledFam.totalFamilyRemainingAfter > 0
+            ? `Family Partial Saved (आंशिक बकाया ₹${settledFam.totalFamilyRemainingAfter.toLocaleString("en-IN")})`
+            : `Combined Family Fee Paid ✓ (${famReceiptNo})`
+        );
+        if (openDpsReceipt && effectivePaid > 0) {
+          setDpsReceiptFee(combinedSnapshot);
+        }
+      } catch (err) {
+        console.error("Family payment error:", err);
+        setFeeError("Combined family fee save करने में त्रुटि आई। कृपया पुनः प्रयास करें।");
+      } finally {
+        setSaving(null);
+      }
+      return;
+    }
+
+    const singleAdvPlan = computeSingleStudentAdvancePlan({
+      studentId: fee.studentId,
       unpaidMonths: dueItems,
       paymentAmount: markUnpaidDirectly ? 0 : effectivePaid,
-      upcomingMonthRate: monthlyAmount,
+      upcomingMonthRate: Math.max(0, monthlyAmount + busAmount - computePermanentSiblingDiscount(student, monthlyAmount)),
+      currentMonth: fee.month,
+      paidAtIso: paidDate,
+      initialArrears: arrearsAmount,
+      feeHistory,
     });
+    const fifoResult = singleAdvPlan.fifoResult;
+    const advCoveredForSingle = singleAdvPlan.advanceMonths.filter((a) => a.status === "PAID").map((a) => a.month);
+    const allCoveredForSingle = singleAdvPlan.advanceMonths.map((a) => a.month);
 
     const collectorInfo = effectivePaid > 0 ? resolveActiveCollector() : undefined;
 
@@ -1443,10 +1745,14 @@ export const FeeManager: React.FC<Props> = ({ schoolId, classId, className, scho
         collectorSignatureUrl: alloc.allocatedThisTime > 0 ? collectorInfo?.collectorSignatureUrl : existingRecord?.collectorSignatureUrl,
         receiptNo: alloc.allocatedThisTime > 0 ? (isCurrentMonthRecord ? receiptNo : `FIFO-${alloc.month}-${receiptNo}`) : existingRecord?.receiptNo,
         payModeInfo: alloc.allocatedThisTime > 0 ? payModeInfo : existingRecord?.payModeInfo,
+        lastBakayaAmount: singleAdvPlan.lastBakayaAmount,
+        advanceCoveredMonths: advCoveredForSingle,
+        advancePaidAt: advCoveredForSingle.length > 0 ? paidDate : existingRecord?.advancePaidAt,
+        nextFeeSlipMonth: singleAdvPlan.nextFeeSlipMonth,
         note: alloc.status === "PAID"
           ? `Full Paid (Receipt: ${receiptNo})`
           : alloc.status === "PARTIAL"
-          ? `Partial Paid ₹${alloc.allocatedThisTime} (Balance due: ₹${alloc.balanceDueAfter}) (Receipt: ${receiptNo})`
+          ? `आंशिक बकाया ₹${alloc.balanceDueAfter} • Partial Paid ₹${alloc.allocatedThisTime} (Receipt: ${receiptNo})`
           : "Unpaid Due",
       };
 
@@ -1454,6 +1760,53 @@ export const FeeManager: React.FC<Props> = ({ schoolId, classId, className, scho
         await saveFee(recordToSave);
       } catch (saveErr) {
         console.warn(`Could not save month ${alloc.month} record:`, saveErr);
+      }
+    }
+
+    // Persist extra / advance future month settlements when surplus paid > totalBill
+    for (const adv of singleAdvPlan.advanceMonths) {
+      const existingFuture = localFeeList.find(h => h.studentId === fee.studentId && h.month === adv.month)
+        || feeHistory.find(h => h.studentId === fee.studentId && h.month === adv.month);
+      const permDiscSib = computePermanentSiblingDiscount(student, monthlyAmount);
+      const netFutureMonthly = Math.max(0, monthlyAmount - permDiscSib);
+      const futureRec: MonthlyFee = {
+        ...(existingFuture || {}),
+        schoolId,
+        sessionId: student?.sessionId || sessionId,
+        studentId: fee.studentId,
+        studentName: fee.studentName,
+        rollNo: fee.rollNo,
+        classId: fee.classId,
+        month: adv.month,
+        monthlyAmount: netFutureMonthly,
+        includeBusFee: customIncludeBusFee,
+        busFeeAmount: customIncludeBusFee ? busAmount : 0,
+        busRoute: student?.busRoute || fee.busRoute || "Route 1",
+        amount: adv.dueBefore,
+        paid: adv.status === "PAID",
+        paidAmount: adv.paidNow,
+        balanceDue: adv.balanceAfter,
+        paidDate,
+        paidBy: adminId,
+        collectedBy: collectorInfo?.collectedBy,
+        collectedByRole: collectorInfo?.collectedByRole,
+        collectedByName: collectorInfo?.collectedByName,
+        collectorSignatureUrl: collectorInfo?.collectorSignatureUrl,
+        receiptNo: `ADV-${adv.month}-${receiptNo}`,
+        payModeInfo,
+        lastBakayaAmount: singleAdvPlan.lastBakayaAmount,
+        lastReceiptPaidAmount: effectivePaid,
+        advanceCoveredMonths: advCoveredForSingle,
+        advancePaidAt: paidDate,
+        nextFeeSlipMonth: singleAdvPlan.nextFeeSlipMonth,
+        note: adv.status === "PAID"
+          ? `Advance Paid at ${formatCompactDayMonth(paidDate)} (${receiptNo})`
+          : `Advance Partial Paid ₹${adv.paidNow} (आंशिक बकाया ₹${adv.balanceAfter})`,
+      } as MonthlyFee;
+      try {
+        await saveFee(futureRec);
+      } catch (saveErr) {
+        console.warn(`Could not save advance month ${adv.month}:`, saveErr);
       }
     }
 
@@ -1473,8 +1826,9 @@ export const FeeManager: React.FC<Props> = ({ schoolId, classId, className, scho
     const isSingleCurrentMonthFifo =
       priorRemainingArrears === 0 &&
       arrearsAmount === 0 &&
+      allCoveredForSingle.length === 0 &&
       termExtraItems.length > 0;
-    let itemizedReceiptLines = fifoResult.receiptItems.length > 0 ? fifoResult.receiptItems : [];
+    let itemizedReceiptLines = singleAdvPlan.receiptItems.length > 0 ? singleAdvPlan.receiptItems : fifoResult.receiptItems;
     if (isSingleCurrentMonthFifo) {
       const singleLines: NonNullable<MonthlyFee["items"]> = [];
       let remItemPay = currentMonthPaidAmount;
@@ -1527,8 +1881,14 @@ export const FeeManager: React.FC<Props> = ({ schoolId, classId, className, scho
       collectorSignatureUrl: effectivePaid > 0 ? collectorInfo?.collectorSignatureUrl : undefined,
       receiptNo: effectivePaid > 0 ? receiptNo : undefined,
       payModeInfo,
+      lastBakayaAmount: singleAdvPlan.lastBakayaAmount,
+      advanceCoveredMonths: advCoveredForSingle,
+      advancePaidAt: advCoveredForSingle.length > 0 ? paidDate : undefined,
+      nextFeeSlipMonth: singleAdvPlan.nextFeeSlipMonth,
       items: itemizedReceiptLines,
-      note: earlyDiscount > 0
+      note: advCoveredForSingle.length > 0
+        ? `${formatCoveredMonthsList(advCoveredForSingle)} Paid at ${formatCompactDayMonth(paidDate)} • Next Slip in ${formatMonthNameOnly(singleAdvPlan.nextFeeSlipMonth)} (${receiptNo})`
+        : earlyDiscount > 0
         ? `Paid on day ${paymentDay} (${slabResolution.label || "Date Offer"}) (-₹${earlyDiscount}) (Receipt: ${receiptNo})`
         : `${fifoResult.summaryHindi} (Receipt: ${receiptNo})`,
     } as MonthlyFee;
@@ -1539,6 +1899,10 @@ export const FeeManager: React.FC<Props> = ({ schoolId, classId, className, scho
       paidAmount: effectivePaid,
       balanceDue: fifoResult.totalOutstandingDueAfter,
       earlyDiscount: earlyDiscount,
+      lastBakayaAmount: singleAdvPlan.lastBakayaAmount,
+      advanceCoveredMonths: advCoveredForSingle,
+      advancePaidAt: advCoveredForSingle.length > 0 ? paidDate : undefined,
+      nextFeeSlipMonth: singleAdvPlan.nextFeeSlipMonth,
     };
 
     // Optimistic UI update
@@ -1647,6 +2011,18 @@ export const FeeManager: React.FC<Props> = ({ schoolId, classId, className, scho
       await loadData(true);
       if (effectivePaid > 0) {
         const remAfter = Math.max(0, Number(fifoResult.totalOutstandingDueAfter || 0));
+        void autoSettleFeeCallFollowUp(schoolId, fee.studentId, {
+          receiptNo,
+          amountPaid: effectivePaid,
+          remainingDue: remAfter,
+          actorName: collectorInfo?.collectedByName || actorName,
+          studentName: student?.name || fee.studentName,
+          fatherName: student?.fatherName,
+          classId: fee.classId,
+          className: classNames[fee.classId] || student?.className || "",
+          rollNo: student?.rollNo || fee.rollNo,
+          phone: student?.phone || student?.whatsappNo || "",
+        });
         void sendSchoolPushNotification({
           schoolId,
           studentIds: [fee.studentId],
@@ -1655,7 +2031,7 @@ export const FeeManager: React.FC<Props> = ({ schoolId, classId, className, scho
           senderName: `${schoolDetails.schoolName || "School"} Fee Counter`,
           type: "FEE_RECEIPT",
           title: `✅ ${schoolDetails.schoolName || "School"} • शुल्क जमा रसीद`,
-          body: `${fee.studentName} का ₹${effectivePaid.toLocaleString("en-IN")} शुल्क जमा हो गया है (रसीद: ${receiptNo})। ${remAfter > 0 ? `शेष बकाया: ₹${remAfter.toLocaleString("en-IN")}` : "कोई बकाया नहीं!"}`,
+          body: `${fee.studentName} का ₹${effectivePaid.toLocaleString("en-IN")} शुल्क जमा हो गया है (रसीद: ${receiptNo})। ${remAfter > 0 ? `आंशिक बकाया: ₹${remAfter.toLocaleString("en-IN")}` : advCoveredForSingle.length > 0 ? `Advance Paid (${formatCoveredMonthsList(advCoveredForSingle)}) • Next Slip: ${formatMonthNameOnly(singleAdvPlan.nextFeeSlipMonth)}` : "कोई बकाया नहीं!"}`,
           url: `/?schoolPortal=1&studentId=${encodeURIComponent(fee.studentId)}&schoolTab=fees`,
           urgent: true,
         });
@@ -2062,6 +2438,13 @@ export const FeeManager: React.FC<Props> = ({ schoolId, classId, className, scho
       lastPaidDate: fee.lastPaidDate || histSummary.lastPaidDate,
       lastDueAmount: fee.lastDueAmount !== undefined ? fee.lastDueAmount : histSummary.lastDueAmount,
       lastDueDate: fee.lastDueDate || histSummary.lastDueDate,
+      lastBakayaAmount: fee.lastBakayaAmount,
+      advanceCoveredMonths: fee.advanceCoveredMonths,
+      advancePaidAt: fee.advancePaidAt,
+      nextFeeSlipMonth: fee.nextFeeSlipMonth,
+      familyGroupId: fee.familyGroupId,
+      familyReceiptNo: fee.familyReceiptNo,
+      familyMembersSummary: fee.familyMembersSummary,
       payModeInfo: fee.payModeInfo || {
         payMode: fee.paid ? "Cash" : "Payment Pending / Due Slip",
         date: paidDate,
@@ -2098,11 +2481,20 @@ export const FeeManager: React.FC<Props> = ({ schoolId, classId, className, scho
     printPosSlipDirect(dpsData, 80);
   };
 
+  const buildMergedBatchDpsList = (receiptFees: MonthlyFee[]): DpsReceiptData[] => {
+    return mergeBatchReceiptsByFamily({
+      receiptFees,
+      allStudents: students,
+      buildReceipt: getDpsDataForFee,
+      mergeFamilies: bulkFamilyMerge,
+    });
+  };
+
   const printDpsReceipts = (receiptFees: MonthlyFee[], layoutMode: "4in1" | "a6" | "full" = "4in1") => {
     if (!receiptFees.length) return;
-    const dpsList = receiptFees.map(f => getDpsDataForFee(f));
+    const dpsList = buildMergedBatchDpsList(receiptFees);
 
-    if (layoutMode === "a6" || (receiptFees.length === 1 && !receiptFees[0].paid && layoutMode !== "full")) {
+    if (layoutMode === "a6" || (dpsList.length === 1 && !receiptFees[0].paid && layoutMode !== "full")) {
       printA6SlipDirect(dpsList[0]);
       return;
     }
@@ -2139,6 +2531,41 @@ export const FeeManager: React.FC<Props> = ({ schoolId, classId, className, scho
         </body>
       </html>`;
     printReceiptHtmlInIframe(markup);
+  };
+
+  const downloadBulkDpsPdf = async (receiptFees: MonthlyFee[], fileTag: string) => {
+    if (!receiptFees.length || downloadingBulkPdf) return;
+    setDownloadingBulkPdf(true);
+    try {
+      const dpsList = buildMergedBatchDpsList(receiptFees);
+      const pdf = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
+      let addedPage = false;
+      for (let i = 0; i < dpsList.length; i += 4) {
+        const chunk = dpsList.slice(i, i + 4).map((data) => ({ data }));
+        const pageHtml = generate4in1A4PageHtml(chunk);
+        const canvas = await renderHtmlToCanvasSafe(pageHtml, DPS_RECEIPT_CSS, {
+          widthPx: 794,
+          scale: 2,
+          backgroundColor: "#ffffff",
+        });
+        const imgData = canvas.toDataURL("image/jpeg", 0.94);
+        if (addedPage) pdf.addPage();
+        pdf.addImage(imgData, "JPEG", 0, 0, 210, 297);
+        addedPage = true;
+      }
+      const clsSafe = (className || "All").replace(/[^a-z0-9-_]+/gi, "_");
+      pdf.save(`${fileTag}_${clsSafe}_${month}_${bulkFamilyMerge ? "FamilyMerged" : "Individual"}.pdf`);
+      toast.success(
+        bulkFamilyMerge
+          ? `${dpsList.length} Slips (Siblings Merged) PDF downloaded!`
+          : `${dpsList.length} Individual Slips PDF downloaded!`
+      );
+    } catch (err) {
+      console.error("Bulk PDF download error:", err);
+      toast.error("Bulk PDF तैयार करने में समस्या आई, Print विकल्प उपयोग करें।");
+    } finally {
+      setDownloadingBulkPdf(false);
+    }
   };
 
   const whatsappTargetOptions = React.useMemo(() => {
@@ -2540,7 +2967,154 @@ td{padding:8px 10px;border-bottom:1px solid #e2e8f0}</style></head>
     });
   }, [collectingFee, modalUnpaidMonths, enteredPaid, modalMonthly]);
 
+  const modalAdvancePlan = React.useMemo<SingleAdvancePlanResult | null>(() => {
+    if (!collectingFee || modalUnpaidMonths.length === 0) return null;
+    const permDisc = computePermanentSiblingDiscount(modalStudent, modalMonthly);
+    const futureRate = Math.max(0, modalMonthly + modalBus - permDisc);
+    return computeSingleStudentAdvancePlan({
+      studentId: collectingFee.studentId,
+      unpaidMonths: modalUnpaidMonths,
+      paymentAmount: enteredPaid,
+      upcomingMonthRate: futureRate,
+      currentMonth: collectingFee.month,
+      paidAtIso: customPaymentDate,
+      initialArrears: modalArrears,
+      feeHistory,
+    });
+  }, [collectingFee, modalUnpaidMonths, enteredPaid, modalStudent, modalMonthly, modalBus, customPaymentDate, modalArrears, feeHistory]);
+
+  const modalFamilyGroup = React.useMemo(() => {
+    if (!collectingFee) return null;
+    const { families: groups } = groupAllSchoolSiblings(students);
+    return groups.find((g) => g.students.some((m) => m.id === collectingFee.studentId)) || null;
+  }, [collectingFee, students]);
+
+  const modalFamilySiblingsInputs = React.useMemo<FamilySiblingInput[]>(() => {
+    if (!collectingFee || !modalFamilyGroup || modalFamilyGroup.students.length < 2) return [];
+    const activeIds = familyOrderIds.filter((id) => familySelectedIds.includes(id));
+    const localFeeList = getLocalFees(schoolId);
+    const out: FamilySiblingInput[] = [];
+    for (const sid of activeIds) {
+      const st = students.find((s) => s.id === sid);
+      if (!st) continue;
+      const sibFee = fees.find((f) => f.studentId === sid);
+      const cls = rawClasses.find((c) => c.id === st.classId);
+      const struct = cls?.feeStructure;
+      const baseM = Number(sibFee?.monthlyAmount ?? struct?.tuitionFee ?? cls?.defaultFee ?? 2000);
+      const permD = computePermanentSiblingDiscount(st, baseM);
+      const busAmt = sibFee?.includeBusFee || st.usesBus ? Number(sibFee?.busFeeAmount || st.busFee || struct?.busFee || 1000) : 0;
+      const upcRate = Math.max(0, baseM - permD + busAmt);
+
+      const mSet = new Set<string>(sibFee?.arrearsMonths || []);
+      mSet.add(collectingFee.month);
+      const sortedM = Array.from(mSet).sort();
+      const curDueAmt = sibFee
+        ? (sibFee.paid && (!sibFee.balanceDue || sibFee.balanceDue <= 0) ? 0 : Math.max(0, Number(sibFee.balanceDue ?? Math.max(0, Number(sibFee.amount || upcRate) - Number(sibFee.arrearsAmount || 0)))))
+        : upcRate;
+
+      const uMonths: MonthDueItem[] = sortedM
+        .map((m) => {
+          if (m === collectingFee.month) {
+            return {
+              month: m,
+              label: formatMonthLabel(m),
+              monthlyAmount: baseM,
+              totalDue: curDueAmt,
+              alreadyPaid: Number(sibFee?.paidAmount || 0),
+              totalBill: curDueAmt,
+            };
+          }
+          if (m === "0000-BACK-DUE") {
+            const v = Math.max(0, Number(st.previousSessionDue || 0));
+            return { month: m, label: formatMonthLabel(m), monthlyAmount: v, totalDue: v, alreadyPaid: 0, totalBill: v };
+          }
+          if (m === "0001-ADM-DUE") {
+            const v = Math.max(0, Number(st.admissionDueBalance || 0));
+            return { month: m, label: formatMonthLabel(m), monthlyAmount: v, totalDue: v, alreadyPaid: 0, totalBill: v };
+          }
+          const hist = localFeeList.find((h) => h.studentId === sid && h.month === m) || feeHistory.find((h) => h.studentId === sid && h.month === m);
+          const dueVal = hist?.balanceDue !== undefined ? Number(hist.balanceDue) : (hist?.paid ? 0 : upcRate);
+          return {
+            month: m,
+            label: formatMonthLabel(m),
+            monthlyAmount: baseM,
+            totalDue: dueVal,
+            alreadyPaid: Number(hist?.paidAmount || 0),
+            totalBill: dueVal,
+          };
+        })
+        .filter((item) => item.totalDue > 0 || (item.month === collectingFee.month && curDueAmt > 0));
+
+      out.push({
+        student: st,
+        className: classNames[st.classId] || st.className || "Class",
+        unpaidMonths: uMonths,
+        upcomingMonthRate: upcRate,
+        concessionThisCycle: Number(sibFee?.concession || permD),
+      });
+    }
+    return out;
+  }, [collectingFee, modalFamilyGroup, familyOrderIds, familySelectedIds, schoolId, students, fees, rawClasses, feeHistory, classNames]);
+
+  const modalFamilySettlement = React.useMemo<FamilySettlementResult | null>(() => {
+    if (!collectingFee || !familyModeEnabled || modalFamilySiblingsInputs.length === 0) return null;
+    return calculateFamilyHorizontalSettlement({
+      siblings: modalFamilySiblingsInputs,
+      paymentAmount: enteredPaid,
+      currentMonth: collectingFee.month,
+      paidAtIso: customPaymentDate,
+      feeHistory,
+    });
+  }, [collectingFee, familyModeEnabled, modalFamilySiblingsInputs, enteredPaid, customPaymentDate, feeHistory]);
+
   const admCurrentStudent = students.find((st) => st.id === admSelectedStudentId);
+
+  const tagadaRows = React.useMemo<TagadaStudentFeeRow[]>(() => {
+    const feeByStu = new Map<string, MonthlyFee>();
+    for (const f of fees) {
+      if (f?.studentId) feeByStu.set(f.studentId, f);
+    }
+    return students
+      .filter((st) => {
+        if (!st?.id) return false;
+        if (classId && classId !== "All Classes") {
+          return isStudentInClass(st, classId, classNames);
+        }
+        return true;
+      })
+      .map((st) => {
+        const fee = feeByStu.get(st.id) || null;
+        const dueAmount = fee
+          ? fee.paid && (!fee.balanceDue || fee.balanceDue <= 0)
+            ? 0
+            : Math.max(0, Number(fee.balanceDue ?? fee.amount ?? 0))
+          : 0;
+        const resolvedClassName =
+          classNames[st.classId] || st.className || fee?.className || "Class";
+        const phone = String(st.phone || st.whatsappNo || (fee as any)?.phone || "").trim();
+        const unpaidMonthsCount =
+          dueAmount > 0 ? (fee?.arrearsMonths?.length || 0) + 1 : 0;
+        return {
+          student: st,
+          fee,
+          className: resolvedClassName,
+          phone,
+          dueAmount,
+          unpaidMonthsCount,
+        };
+      });
+  }, [students, fees, classId, classNames]);
+
+  const tagadaCallTodayCount = React.useMemo(() => {
+    const todayYmd = getLocalTodayYmd();
+    const recMap = new Map(feeCallFollowUps.map((r) => [r.studentId, r]));
+    const familyGroups = buildFamilyTagadaGroups(tagadaRows, recMap, todayYmd);
+    let count = 0;
+    for (const g of familyGroups) {
+      if (g.bucket === "BROKEN_PROMISE" || g.bucket === "CALL_TODAY") count++;
+    }
+    return count;
+  }, [tagadaRows, feeCallFollowUps]);
 
   if (showClassFeeAlertModal) {
     return (
@@ -2644,9 +3218,75 @@ td{padding:8px 10px;border-bottom:1px solid #e2e8f0}</style></head>
     );
   }
 
+  if (showFeeTagadaModal) {
+    return (
+      <>
+        <FeeTagadaCallerPage
+          asPage={true}
+          schoolId={schoolId}
+          schoolName={schoolDetails.schoolName || schoolName || school?.name || "School"}
+          actorName={actorName}
+          classes={rawClasses}
+          rows={tagadaRows}
+          onBack={() => {
+            setShowFeeTagadaModal(false);
+            if (exitOnToolClose && initialTool === "fee_tagada" && onBack) onBack();
+          }}
+          onCollectFee={(row) => {
+            setShowFeeTagadaModal(false);
+            if (row.fee) {
+              handleOpenPaymentModal(row.fee);
+            } else {
+              toast.info("Iss student ka current month fee card open karein.");
+            }
+          }}
+          onCollectFamily={(selectedRows) => {
+            const firstWithFee = selectedRows.find((r) => r.fee) || selectedRows[0];
+            if (!firstWithFee) return;
+            const targetFee = firstWithFee.fee || fees.find((f) => f.studentId === firstWithFee.student.id);
+            if (!targetFee) {
+              toast.info("Pehle fee list load hone dein.");
+              return;
+            }
+            setShowFeeTagadaModal(false);
+            handleOpenPaymentModal(targetFee, {
+              startFamilyMode: true,
+              selectedSiblingIds: selectedRows.map((r) => r.student.id),
+            });
+          }}
+          onOpenWhatsApp={(row) => {
+            if (row.fee) {
+              sendDueSlipOnWhatsApp(row.fee);
+            }
+          }}
+        />
+        {whatsappModalTarget && whatsappTargetOptions && whatsappTargetMeta && (
+          <WhatsAppShareModal
+            isOpen={Boolean(whatsappModalTarget)}
+            onClose={() => setWhatsappModalTarget(null)}
+            studentName={whatsappModalTarget.student?.name || whatsappModalTarget.fee.studentName || "Student"}
+            parentPhone={whatsappTargetMeta.rawPhone || whatsappModalTarget.student?.phone || ""}
+            className={whatsappTargetOptions.className}
+            rollNo={whatsappModalTarget.student?.rollNo || whatsappModalTarget.fee.rollNo}
+            admissionNo={whatsappModalTarget.student?.admissionNo}
+            fatherName={whatsappModalTarget.student?.fatherName}
+            receiptNo={whatsappModalTarget.fee.receiptNo || whatsappTargetMeta.receiptData.receiptNo}
+            title={whatsappModalTarget.isDueDemand ? "Fee Due Demand Slip (बकाया पर्ची)" : "Official Fee Payment Receipt (रसीद)"}
+            formattedMessage={whatsappTargetMeta.message}
+            isDueDemand={whatsappModalTarget.isDueDemand}
+            totalAmount={whatsappTargetMeta.totalBill}
+            paidAmount={whatsappTargetMeta.paidAmount}
+            balanceDue={whatsappTargetMeta.balanceDue}
+            generatePdfBlob={() => generateFeeDocumentPdfBlob(whatsappTargetOptions)}
+          />
+        )}
+      </>
+    );
+  }
+
   return (
     <div className="min-h-screen bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100">
-      <div className="sticky top-0 z-20 bg-white/95 dark:bg-slate-900/95 backdrop-blur border-b border-slate-200 dark:border-slate-800 px-4 py-3 flex items-center gap-3">
+      <div className="sticky top-0 z-20 bg-white/95 dark:bg-slate-900/95 backdrop-blur border-b border-slate-200 dark:border-slate-800 px-4 py-3 flex flex-wrap sm:flex-nowrap items-center gap-2.5 sm:gap-3">
         {onBack && (
           <button
             type="button"
@@ -2657,7 +3297,7 @@ td{padding:8px 10px;border-bottom:1px solid #e2e8f0}</style></head>
             <ChevronLeft className="w-4 h-4" />
           </button>
         )}
-        <div className="flex-1 min-w-0">
+        <div className="flex-1 min-w-[160px]">
           <h2 className="text-sm sm:text-base font-bold tracking-tight text-slate-900 dark:text-white truncate">
             {className || "All Classes"} — Fee Management
           </h2>
@@ -2665,7 +3305,7 @@ td{padding:8px 10px;border-bottom:1px solid #e2e8f0}</style></head>
             {students.length} students enrolled
           </p>
         </div>
-        <div className="flex items-center gap-2 relative shrink-0">
+        <div className="flex flex-wrap sm:flex-nowrap items-center gap-2 relative w-full sm:w-auto justify-end">
           {/* Quick Search */}
           <div className="relative hidden sm:block">
             <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
@@ -2677,6 +3317,22 @@ td{padding:8px 10px;border-bottom:1px solid #e2e8f0}</style></head>
               className="pl-8 pr-3 py-1.5 rounded-lg text-xs bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 text-slate-900 dark:text-white placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-slate-900/15 dark:focus:ring-white/20 w-40 lg:w-52"
             />
           </div>
+
+          {/* Quick Fee Tagada Offline Caller */}
+          <button
+            type="button"
+            onClick={() => setShowFeeTagadaModal(true)}
+            className="inline-flex items-center gap-1.5 px-2.5 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold transition-colors active:scale-95 cursor-pointer whitespace-nowrap shadow-xs"
+            title="Offline Fee Tagada Caller & Promise Date Scheduler"
+          >
+            <PhoneCall className="w-3.5 h-3.5 shrink-0" />
+            <span className="whitespace-nowrap">Fee Tagada</span>
+            {tagadaCallTodayCount > 0 && (
+              <span className="font-mono text-[10px] bg-rose-600 text-white px-1.5 py-0.2 rounded-full">
+                {tagadaCallTodayCount}
+              </span>
+            )}
+          </button>
 
           {/* Quick Fee Types & Term Planner Launcher */}
           <button
@@ -2867,6 +3523,19 @@ td{padding:8px 10px;border-bottom:1px solid #e2e8f0}</style></head>
                 <div className="flex items-center gap-1.5 shrink-0">
                   <button
                     type="button"
+                    onClick={() => setBulkFamilyMerge((v) => !v)}
+                    className={`px-2.5 py-1.5 rounded-lg border text-xs font-semibold transition-colors inline-flex items-center gap-1.5 whitespace-nowrap cursor-pointer ${
+                      bulkFamilyMerge
+                        ? "bg-emerald-600 text-white border-emerald-600"
+                        : "bg-white hover:bg-slate-50 dark:bg-slate-900 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200 border-slate-200 dark:border-slate-700"
+                    }`}
+                    title="Ek hi parivar ke bhai-bahano ki alag-alag slips ko 1 combined family slip me merge karein"
+                  >
+                    <Users className="w-3.5 h-3.5 shrink-0" />
+                    <span>{bulkFamilyMerge ? "Family Merge ON (1 Slip)" : "Individual Slips"}</span>
+                  </button>
+                  <button
+                    type="button"
                     onClick={() => setShowDuesBreakdownTable(!showDuesBreakdownTable)}
                     className={`px-3 py-1.5 rounded-lg border text-xs font-semibold transition-colors inline-flex items-center gap-1.5 whitespace-nowrap cursor-pointer ${
                       showDuesBreakdownTable
@@ -2887,8 +3556,8 @@ td{padding:8px 10px;border-bottom:1px solid #e2e8f0}</style></head>
                 </div>
               </div>
 
-              {/* Action Buttons for Printing Dues */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+              {/* Action Buttons for Printing & Downloading Dues */}
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
                 <button
                   type="button"
                   onClick={() => printReceipts(unpaidFees, "4in1")}
@@ -2896,7 +3565,7 @@ td{padding:8px 10px;border-bottom:1px solid #e2e8f0}</style></head>
                   title="Sabhi pending fees ke DPS slips 4-in-1 A4 paper par print karein"
                 >
                   <Printer className="w-4 h-4 shrink-0" />
-                  <span>Print All Due (4-in-1 A4 DPS)</span>
+                  <span>Print All Due ({buildMergedBatchDpsList(unpaidFees).length} Slips)</span>
                 </button>
 
                 <button
@@ -2908,6 +3577,22 @@ td{padding:8px 10px;border-bottom:1px solid #e2e8f0}</style></head>
                 >
                   <Printer className="w-3.5 h-3.5 shrink-0" />
                   <span>Print Selected ({selectedDueSlipIds.length})</span>
+                </button>
+
+                <button
+                  type="button"
+                  disabled={downloadingBulkPdf}
+                  onClick={() => downloadBulkDpsPdf(
+                    selectedDueSlipIds.length > 0
+                      ? unpaidFees.filter(fee => selectedDueSlipIds.includes(fee.studentId))
+                      : unpaidFees,
+                    "Due_Demand_Slips"
+                  )}
+                  className="py-2.5 px-3 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white rounded-xl font-semibold flex items-center justify-center gap-1.5 text-xs sm:text-sm whitespace-nowrap transition-colors cursor-pointer"
+                  title="Bulk Fee Demand Slips PDF download karein (Siblings merged)"
+                >
+                  {downloadingBulkPdf ? <Loader2 className="w-4 h-4 animate-spin shrink-0" /> : <Download className="w-4 h-4 shrink-0" />}
+                  <span>Download Bulk PDF</span>
                 </button>
               </div>
 
@@ -3055,37 +3740,73 @@ td{padding:8px 10px;border-bottom:1px solid #e2e8f0}</style></head>
                     4 receipts per A4 page · Select paid students to print
                   </p>
                 </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setBulkFamilyMerge((v) => !v)}
+                    className={`px-2.5 py-1.5 rounded-lg border text-xs font-semibold transition-colors inline-flex items-center gap-1.5 whitespace-nowrap cursor-pointer ${
+                      bulkFamilyMerge
+                        ? "bg-emerald-600 text-white border-emerald-600"
+                        : "bg-slate-50 hover:bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200 border-slate-200 dark:border-slate-700"
+                    }`}
+                  >
+                    <Users className="w-3.5 h-3.5 shrink-0" />
+                    <span>{bulkFamilyMerge ? "Family Merge ON" : "Individual"}</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setSelectedReceiptIds(selectedReceiptIds.length === paidFees.length ? [] : paidFees.map(fee => fee.studentId))}
+                    className="px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 hover:bg-slate-100 dark:bg-slate-800 dark:hover:bg-slate-700 text-xs font-semibold text-slate-700 dark:text-slate-200 whitespace-nowrap cursor-pointer transition-colors"
+                  >
+                    {selectedReceiptIds.length === paidFees.length ? "Deselect All" : "Select All Paid"}
+                  </button>
+                </div>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                 <button
                   type="button"
-                  onClick={() => setSelectedReceiptIds(selectedReceiptIds.length === paidFees.length ? [] : paidFees.map(fee => fee.studentId))}
-                  className="px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 hover:bg-slate-100 dark:bg-slate-800 dark:hover:bg-slate-700 text-xs font-semibold text-slate-700 dark:text-slate-200 whitespace-nowrap cursor-pointer transition-colors"
+                  onClick={() => printDpsReceipts(paidFees.filter(fee => selectedReceiptIds.includes(fee.studentId)), "4in1")}
+                  disabled={!selectedReceiptIds.length}
+                  className="w-full py-2.5 px-3 bg-blue-600 hover:bg-blue-700 disabled:bg-slate-100 disabled:text-slate-500 disabled:border disabled:border-slate-200 dark:disabled:bg-slate-800 dark:disabled:text-slate-400 dark:disabled:border-slate-700 text-white rounded-xl font-semibold flex items-center justify-center gap-2 text-xs whitespace-nowrap transition-colors cursor-pointer disabled:cursor-not-allowed tabular-nums"
+                  title="Ek A4 paper par 4 receipts print karein"
                 >
-                  {selectedReceiptIds.length === paidFees.length ? "Deselect All" : "Select All Paid"}
+                  <Printer className="w-4 h-4 shrink-0" />
+                  <span>Print 4-in-1 A4 Receipts ({selectedReceiptIds.length})</span>
+                </button>
+                <button
+                  type="button"
+                  disabled={!selectedReceiptIds.length || downloadingBulkPdf}
+                  onClick={() => downloadBulkDpsPdf(paidFees.filter(fee => selectedReceiptIds.includes(fee.studentId)), "Paid_Receipts")}
+                  className="w-full py-2.5 px-3 bg-emerald-600 hover:bg-emerald-700 disabled:bg-slate-100 disabled:text-slate-500 disabled:border disabled:border-slate-200 dark:disabled:bg-slate-800 dark:disabled:text-slate-400 text-white rounded-xl font-semibold flex items-center justify-center gap-2 text-xs whitespace-nowrap transition-colors cursor-pointer disabled:cursor-not-allowed"
+                >
+                  {downloadingBulkPdf ? <Loader2 className="w-4 h-4 animate-spin shrink-0" /> : <Download className="w-4 h-4 shrink-0" />}
+                  <span>Download Bulk Paid PDF</span>
                 </button>
               </div>
-              <button
-                type="button"
-                onClick={() => printDpsReceipts(paidFees.filter(fee => selectedReceiptIds.includes(fee.studentId)), "4in1")}
-                disabled={!selectedReceiptIds.length}
-                className="w-full py-2.5 px-3 bg-blue-600 hover:bg-blue-700 disabled:bg-slate-100 disabled:text-slate-500 disabled:border disabled:border-slate-200 dark:disabled:bg-slate-800 dark:disabled:text-slate-400 dark:disabled:border-slate-700 text-white rounded-xl font-semibold flex items-center justify-center gap-2 text-xs whitespace-nowrap transition-colors cursor-pointer disabled:cursor-not-allowed tabular-nums"
-                title="Ek A4 paper par 4 receipts print karein"
-              >
-                <Printer className="w-4 h-4 shrink-0" />
-                <span>Print 4-in-1 A4 Receipts ({selectedReceiptIds.length})</span>
-              </button>
             </div>
           )}
 
           {!classId && fees.length > 0 && (
-            <button
-              type="button"
-              onClick={() => printDpsReceipts(fees.filter(f => f.paid), "4in1")}
-              className="w-full py-2.5 px-4 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl font-semibold flex items-center justify-center gap-2 text-xs whitespace-nowrap transition-colors cursor-pointer tabular-nums shadow-xs"
-              title="Ek A4 paper par 4 receipts print karein"
-            >
-              <Printer className="w-4 h-4 shrink-0" />
-              <span>Print All 4-in-1 A4 Receipts ({fees.filter(f => f.paid).length} Paid)</span>
-            </button>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={() => printDpsReceipts(fees.filter(f => f.paid), "4in1")}
+                className="w-full py-2.5 px-4 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl font-semibold flex items-center justify-center gap-2 text-xs whitespace-nowrap transition-colors cursor-pointer tabular-nums shadow-xs"
+                title="Ek A4 paper par 4 receipts print karein"
+              >
+                <Printer className="w-4 h-4 shrink-0" />
+                <span>Print All 4-in-1 A4 Receipts ({buildMergedBatchDpsList(fees.filter(f => f.paid)).length} {bulkFamilyMerge ? "Family" : "Paid"})</span>
+              </button>
+              <button
+                type="button"
+                disabled={downloadingBulkPdf}
+                onClick={() => downloadBulkDpsPdf(fees.filter(f => f.paid), "All_Paid_Receipts")}
+                className="w-full py-2.5 px-4 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white rounded-xl font-semibold flex items-center justify-center gap-2 text-xs whitespace-nowrap transition-colors cursor-pointer shadow-xs"
+              >
+                {downloadingBulkPdf ? <Loader2 className="w-4 h-4 animate-spin shrink-0" /> : <Download className="w-4 h-4 shrink-0" />}
+                <span>Download All Paid PDF ({bulkFamilyMerge ? "Family Merged" : "Individual"})</span>
+              </button>
+            </div>
           )}
 
           {/* ── SEARCH & DUES QUICK FILTER ── */}
@@ -3367,6 +4088,24 @@ td{padding:8px 10px;border-bottom:1px solid #e2e8f0}</style></head>
                       <>
                         <span aria-hidden="true">·</span>
                         <span className="font-mono">Rcpt #{fee.receiptNo}</span>
+                      </>
+                    )}
+                    {isPartial && dueAmt > 0 && (
+                      <>
+                        <span aria-hidden="true">·</span>
+                        <span className="font-semibold text-amber-700 dark:text-amber-300">
+                          आंशिक बकाया ₹{dueAmt.toLocaleString("en-IN")} → अगले माह जुड़ेगा
+                        </span>
+                      </>
+                    )}
+                    {Array.isArray(fee.advanceCoveredMonths) && fee.advanceCoveredMonths.length > 0 && (
+                      <>
+                        <span aria-hidden="true">·</span>
+                        <span className="font-semibold text-emerald-700 dark:text-emerald-300">
+                          ✓ {formatCoveredMonthsList(fee.advanceCoveredMonths)} Paid
+                          {fee.advancePaidAt ? ` at ${formatCompactDayMonth(fee.advancePaidAt)}` : ""}
+                          {fee.nextFeeSlipMonth ? ` · Next Slip: ${formatMonthNameOnly(fee.nextFeeSlipMonth)}` : ""}
+                        </span>
                       </>
                     )}
                   </div>
@@ -4014,15 +4753,139 @@ td{padding:8px 10px;border-bottom:1px solid #e2e8f0}</style></head>
                 </div>
               )}
 
+              {/* Combined Sibling Family Mode Switcher & Child Checkboxes */}
+              {modalFamilyGroup && modalFamilyGroup.students.length > 1 && (
+                <div className="p-3 rounded-xl border border-indigo-200 dark:border-indigo-800/70 bg-indigo-50/70 dark:bg-indigo-950/30 space-y-2.5">
+                  <div className="flex items-center justify-between gap-2 flex-wrap">
+                    <div className="flex items-center gap-2">
+                      <Users className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
+                      <span className="text-xs font-black text-indigo-950 dark:text-indigo-100">
+                        Sibling Account ({modalFamilyGroup.students.length} Children linked)
+                      </span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const nextMode = !familyModeEnabled;
+                        setFamilyModeEnabled(nextMode);
+                        if (nextMode) {
+                          const totalFam = modalFamilyGroup.students
+                            .filter((m) => familySelectedIds.includes(m.id))
+                            .reduce((sum, m) => {
+                              const mf = fees.find((x) => x.studentId === m.id);
+                              if (!mf) return sum;
+                              if (mf.paid && (!mf.balanceDue || mf.balanceDue <= 0)) return sum;
+                              return sum + Math.max(0, Number(mf.balanceDue ?? mf.amount ?? 0) + Number(mf.arrearsAmount || 0));
+                            }, 0);
+                          if (totalFam > 0) setCustomPaidAmount(String(totalFam));
+                        } else {
+                          setCustomPaidAmount(String(modalTotalBill));
+                        }
+                      }}
+                      className={`px-2.5 py-1 rounded-lg text-[11px] font-black transition cursor-pointer ${
+                        familyModeEnabled
+                          ? "bg-indigo-600 text-white shadow-xs"
+                          : "bg-white dark:bg-slate-800 text-indigo-700 dark:text-indigo-300 border border-indigo-300 dark:border-indigo-700"
+                      }`}
+                    >
+                      {familyModeEnabled ? "✓ Combined Family Mode ON" : "Collect All Siblings Together"}
+                    </button>
+                  </div>
+
+                  {familyModeEnabled && (
+                    <div className="space-y-1.5">
+                      <div className="flex items-center justify-between text-[11px] text-slate-600 dark:text-slate-300">
+                        <span>जिन बच्चों की फीस जमा करनी है उन्हें चुनें (☑) व क्रम बदलें:</span>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const allIds = modalFamilyGroup.students.map((m) => m.id);
+                            setFamilySelectedIds(familySelectedIds.length === allIds.length ? [collectingFee.studentId] : allIds);
+                          }}
+                          className="font-bold text-indigo-600 dark:text-indigo-400 hover:underline cursor-pointer"
+                        >
+                          {familySelectedIds.length === modalFamilyGroup.students.length ? "Only Current" : "Select All Kids"}
+                        </button>
+                      </div>
+                      <div className="divide-y divide-indigo-200/70 dark:divide-indigo-800/60 rounded-lg border border-indigo-200 dark:border-indigo-800 bg-white dark:bg-slate-900">
+                        {familyOrderIds.map((sid, idx) => {
+                          const st = students.find((x) => x.id === sid);
+                          if (!st) return null;
+                          const mf = fees.find((x) => x.studentId === sid);
+                          const sibDue = mf
+                            ? (mf.paid && (!mf.balanceDue || mf.balanceDue <= 0) ? 0 : Math.max(0, Number(mf.balanceDue ?? mf.amount ?? 0) + Number(mf.arrearsAmount || 0)))
+                            : Number(st.monthlyFee || 0);
+                          const isChecked = familySelectedIds.includes(sid);
+                          return (
+                            <div key={sid} className="px-2.5 py-2 flex items-center justify-between gap-2 text-xs">
+                              <label className="flex items-center gap-2 min-w-0 cursor-pointer flex-1">
+                                <input
+                                  type="checkbox"
+                                  checked={isChecked}
+                                  onChange={() => {
+                                    setFamilySelectedIds((prev) => {
+                                      const next = prev.includes(sid) ? prev.filter((x) => x !== sid) : [...prev, sid];
+                                      return next.length > 0 ? next : prev;
+                                    });
+                                  }}
+                                  className="h-4 w-4 accent-indigo-600 rounded cursor-pointer shrink-0"
+                                />
+                                <div className="min-w-0">
+                                  <span className="font-bold text-slate-900 dark:text-white truncate block">
+                                    {idx + 1}. {st.name} <span className="text-slate-500 font-normal">({classNames[st.classId] || st.className || "Class"})</span>
+                                  </span>
+                                  {mf?.advanceCoveredMonths?.length ? (
+                                    <span className="text-[10px] text-emerald-700 dark:text-emerald-400 font-semibold">
+                                      Adv Paid: {formatCoveredMonthsList(mf.advanceCoveredMonths)}
+                                    </span>
+                                  ) : null}
+                                </div>
+                              </label>
+                              <div className="flex items-center gap-1.5 shrink-0">
+                                <span className={`font-mono font-bold tabular-nums ${sibDue > 0 ? "text-rose-600 dark:text-rose-400" : "text-emerald-600 dark:text-emerald-400"}`}>
+                                  {sibDue > 0 ? `₹${sibDue.toLocaleString("en-IN")}` : "Clear"}
+                                </span>
+                                {idx > 0 && (
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setFamilyOrderIds((prev) => {
+                                        const arr = [...prev];
+                                        [arr[idx - 1], arr[idx]] = [arr[idx], arr[idx - 1]];
+                                        return arr;
+                                      });
+                                    }}
+                                    className="px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-[10px] font-bold text-slate-600 dark:text-slate-300 cursor-pointer"
+                                    title="Priority up"
+                                  >
+                                    ▲
+                                  </button>
+                                )}
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
               {/* Total Calculated Bill Overview */}
               <div className="p-3 bg-indigo-700 text-white rounded-xl flex items-center justify-between shadow-xs">
                 <div>
-                  <span className="text-[11px] text-indigo-100 font-bold block uppercase tracking-wider">Kul Deen (Total Payable):</span>
+                  <span className="text-[11px] text-indigo-100 font-bold block uppercase tracking-wider">
+                    {familyModeEnabled && modalFamilySettlement
+                      ? `Family Kul Deen (${modalFamilySiblingsInputs.length} Selected):`
+                      : "Kul Deen (Total Payable):"}
+                  </span>
                   <div className="flex items-baseline gap-2">
                     <span className="text-xl font-black font-mono tabular-nums text-amber-300">
-                      ₹{modalTotalBill.toLocaleString("en-IN")}
+                      ₹{(familyModeEnabled && modalFamilySettlement
+                        ? modalFamilySettlement.totalFamilyDueBefore
+                        : modalTotalBill).toLocaleString("en-IN")}
                     </span>
-                    {effectiveEarlyDiscount > 0 && (
+                    {!familyModeEnabled && effectiveEarlyDiscount > 0 && (
                       <span className="text-xs text-indigo-200 line-through font-mono tabular-nums">
                         ₹{modalGrossTotalBeforeDiscount.toLocaleString("en-IN")}
                       </span>
@@ -4106,8 +4969,82 @@ td{padding:8px 10px;border-bottom:1px solid #e2e8f0}</style></head>
                     />
                   </div>
 
-                  {/* ── LIVE FIFO ALLOCATION SIMULATOR CARD ── */}
-                  {modalFifoResult && (
+                  {/* ── LIVE HORIZONTAL FAMILY / FIFO + ADVANCE SIMULATOR CARD ── */}
+                  {familyModeEnabled && modalFamilySettlement ? (
+                    <div className="mt-3 p-3 rounded-xl border border-indigo-200 dark:border-indigo-800/60 bg-gradient-to-b from-indigo-50/70 to-blue-50/50 dark:from-indigo-950/30 dark:to-slate-900/40 space-y-2.5">
+                      <div className="flex items-center justify-between flex-wrap gap-1">
+                        <span className="font-black text-xs text-indigo-900 dark:text-indigo-200">
+                          👨‍👩‍👧‍👦 Family Smart Settlement ({modalFamilySiblingsInputs.length} Siblings)
+                        </span>
+                        <span className="text-[10px] font-bold text-indigo-700 dark:text-indigo-300">
+                          {modalFamilySettlement.advanceCoveredMonths.length > 0
+                            ? `Advance: ${formatCoveredMonthsList(modalFamilySettlement.advanceCoveredMonths)}`
+                            : modalFamilySettlement.totalFamilyRemainingAfter > 0
+                            ? `आंशिक बकाया: ₹${modalFamilySettlement.totalFamilyRemainingAfter.toLocaleString("en-IN")}`
+                            : "Full Family Settled ✓"}
+                        </span>
+                      </div>
+                      <div className="overflow-x-auto rounded-lg border border-indigo-200 dark:border-indigo-800 bg-white dark:bg-slate-800">
+                        <table className="w-full text-left text-[11px] border-collapse">
+                          <thead className="bg-slate-100 dark:bg-slate-700 text-slate-700 dark:text-slate-200 text-[10px]">
+                            <tr>
+                              <th className="p-1.5">Student</th>
+                              <th className="p-1.5 text-right">Due</th>
+                              <th className="p-1.5 text-right">Paid Now</th>
+                              <th className="p-1.5 text-right">Balance / Adv</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-100 dark:divide-slate-700 tabular-nums">
+                            {modalFamilySettlement.familyMembersSummary.map((fm) => (
+                              <tr key={fm.studentId}>
+                                <td className="p-1.5 font-bold text-slate-900 dark:text-white">
+                                  {fm.studentName} <span className="text-[10px] font-normal text-slate-500">({fm.className})</span>
+                                </td>
+                                <td className="p-1.5 text-right">₹{fm.dueBefore.toLocaleString("en-IN")}</td>
+                                <td className="p-1.5 text-right font-bold text-emerald-600 dark:text-emerald-400">
+                                  ₹{fm.paidNow.toLocaleString("en-IN")}
+                                </td>
+                                <td className="p-1.5 text-right font-bold">
+                                  {fm.balanceAfter > 0 ? (
+                                    <span className="text-amber-600 dark:text-amber-400">
+                                      आंशिक बकाया ₹{fm.balanceAfter.toLocaleString("en-IN")}
+                                    </span>
+                                  ) : fm.advanceMonths && fm.advanceMonths.length > 0 ? (
+                                    <span className="text-emerald-600 dark:text-emerald-400">
+                                      ✓ Adv ({formatCoveredMonthsList(fm.advanceMonths)})
+                                    </span>
+                                  ) : (
+                                    <span className="text-emerald-600 dark:text-emerald-400">✓ Full Paid</span>
+                                  )}
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                      <div className="p-2.5 rounded-lg bg-indigo-700 text-white space-y-1 text-xs">
+                        <div className="flex items-center justify-between">
+                          <span>Total Family Paid:</span>
+                          <strong className="font-mono text-emerald-300">₹{modalFamilySettlement.totalPaidNow.toLocaleString("en-IN")}</strong>
+                        </div>
+                        {modalFamilySettlement.advanceCoveredMonths.length > 0 ? (
+                          <div className="flex items-center justify-between border-t border-indigo-500/60 pt-1 text-emerald-200">
+                            <span>🎉 {formatCoveredMonthsList(modalFamilySettlement.advanceCoveredMonths)} Paid at {formatCompactDayMonth(customPaymentDate)}</span>
+                            <strong>Next Slip: {formatMonthNameOnly(modalFamilySettlement.nextFeeSlipMonth)}</strong>
+                          </div>
+                        ) : (
+                          <div className="flex items-center justify-between border-t border-indigo-500/60 pt-1">
+                            <span>{modalFamilySettlement.totalFamilyRemainingAfter > 0 ? "आंशिक बकाया (अगले माह जुड़ेगा):" : "Next Fee Slip:"}</span>
+                            <strong className="font-mono text-amber-300">
+                              {modalFamilySettlement.totalFamilyRemainingAfter > 0
+                                ? `₹${modalFamilySettlement.totalFamilyRemainingAfter.toLocaleString("en-IN")}`
+                                : formatMonthNameOnly(modalFamilySettlement.nextFeeSlipMonth)}
+                            </strong>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  ) : modalFifoResult && (
                     <div className="mt-3 p-3 rounded-xl border border-indigo-200 dark:border-indigo-800/60 bg-gradient-to-b from-indigo-50/70 to-blue-50/50 dark:from-indigo-950/30 dark:to-slate-900/40 space-y-2.5">
                       <div className="flex items-center justify-between flex-wrap gap-1">
                         <div className="flex items-center gap-1.5 font-black text-xs text-indigo-900 dark:text-indigo-200">
@@ -4115,7 +5052,7 @@ td{padding:8px 10px;border-bottom:1px solid #e2e8f0}</style></head>
                           <span>FIFO Month-by-Month Fill-up (शुरू से महीने भरते जाएंगे):</span>
                         </div>
                         <span className="text-[10px] px-2 py-0.5 rounded-full font-bold bg-indigo-200 text-indigo-900 dark:bg-indigo-900 dark:text-indigo-200">
-                          {modalFifoResult.fullyPaidMonths.length} Paid • {modalFifoResult.partialMonth ? "1 Partial" : "0 Partial"} • {modalFifoResult.unpaidMonths.length} Unpaid
+                          {modalFifoResult.fullyPaidMonths.length} Paid • {modalFifoResult.partialMonth ? "1 आंशिक बकाया" : "0 Partial"} • {modalFifoResult.unpaidMonths.length} Unpaid
                         </span>
                       </div>
 
@@ -4148,7 +5085,28 @@ td{padding:8px 10px;border-bottom:1px solid #e2e8f0}</style></head>
                                 </td>
                                 <td className="p-1.5">
                                   <span className={`px-1.5 py-0.5 rounded text-[9px] font-black border ${alloc.badgeClass}`}>
-                                    {alloc.status === "PAID" ? "✓ Full Paid" : alloc.status === "PARTIAL" ? "⚠️ Partial" : "✗ Unpaid"}
+                                    {alloc.status === "PAID" ? "✓ Full Paid" : alloc.status === "PARTIAL" ? "⚠️ आंशिक बकाया" : "✗ Unpaid"}
+                                  </span>
+                                </td>
+                              </tr>
+                            ))}
+                            {modalAdvancePlan && modalAdvancePlan.advanceMonths.map((adv) => (
+                              <tr key={`adv-${adv.month}`} className="bg-emerald-50/80 dark:bg-emerald-950/30">
+                                <td className="p-1.5 border-r dark:border-slate-700 font-bold text-emerald-800 dark:text-emerald-300">
+                                  ⚡ {formatMonthShort(adv.month)} (Advance)
+                                </td>
+                                <td className="p-1.5 border-r dark:border-slate-700">
+                                  ₹{adv.dueBefore.toLocaleString("en-IN")}
+                                </td>
+                                <td className="p-1.5 border-r dark:border-slate-700 font-bold text-emerald-600 dark:text-emerald-400">
+                                  ₹{adv.paidNow.toLocaleString("en-IN")}
+                                </td>
+                                <td className="p-1.5 border-r dark:border-slate-700 font-bold text-slate-500">
+                                  ₹{adv.balanceAfter.toLocaleString("en-IN")}
+                                </td>
+                                <td className="p-1.5">
+                                  <span className="px-1.5 py-0.5 rounded text-[9px] font-black bg-emerald-100 text-emerald-800 border border-emerald-300">
+                                    {adv.status === "PAID" ? "✓ Adv Full Paid" : "⚡ Adv Credit"}
                                   </span>
                                 </td>
                               </tr>
@@ -4157,24 +5115,41 @@ td{padding:8px 10px;border-bottom:1px solid #e2e8f0}</style></head>
                         </table>
                       </div>
 
+                      {/* Advance Paid / Next Slip / Partial Summary Banner */}
+                      {modalAdvancePlan && modalAdvancePlan.advanceMonths.filter((a) => a.status === "PAID").length > 0 && (
+                        <div className="p-2.5 rounded-lg bg-emerald-700 text-white text-xs flex flex-wrap items-center justify-between gap-2">
+                          <span>
+                            🎉 <strong>{formatCoveredMonthsList(modalAdvancePlan.advanceMonths.filter((a) => a.status === "PAID").map((a) => a.month))} Paid at {formatCompactDayMonth(customPaymentDate)}</strong> (कोई स्लिप नहीं बनेगी)
+                          </span>
+                          <span className="font-bold bg-emerald-800 px-2 py-0.5 rounded">
+                            Next Slip: {formatMonthNameOnly(modalAdvancePlan.nextFeeSlipMonth)}
+                          </span>
+                        </div>
+                      )}
+
                       {/* Next Billing & Print Due Summary Banner */}
                       <div className="p-2.5 rounded-lg bg-indigo-700 text-white space-y-1.5 text-xs shadow-sm">
                         <div className="flex items-center justify-between text-indigo-100">
                           <span>Total Paid Now (अभी जमा हुआ):</span>
-                          <strong className="text-emerald-300 font-mono tabular-nums font-black text-sm">₹{modalFifoResult.totalAllocated.toLocaleString("en-IN")}</strong>
+                          <strong className="text-emerald-300 font-mono tabular-nums font-black text-sm">₹{enteredPaid.toLocaleString("en-IN")}</strong>
                         </div>
                         <div className="flex items-center justify-between text-indigo-100 border-t border-indigo-500/60 pt-1">
-                          <span>Remaining Balance Due (कुल बाकी बकाया):</span>
+                          <span>{modalFifoResult.totalOutstandingDueAfter > 0 ? "आंशिक बकाया (अगले माह जुड़ेगा):" : "Remaining Balance Due:"}</span>
                           <strong className="text-amber-300 font-mono tabular-nums font-black text-sm">₹{modalFifoResult.totalOutstandingDueAfter.toLocaleString("en-IN")}</strong>
                         </div>
                         <div className="flex items-center justify-between text-indigo-100 border-t border-indigo-500/60 pt-1">
-                          <span>Next Bill &amp; Print Due (+ अगला नया महीना ₹{modalMonthly.toLocaleString("en-IN")}):</span>
+                          <span>Next Slip / Next Bill ({modalAdvancePlan ? formatMonthNameOnly(modalAdvancePlan.nextFeeSlipMonth) : "Next Month"}):</span>
                           <strong className="text-white font-mono tabular-nums font-black text-sm bg-indigo-600 px-2 py-0.5 rounded">
                             ₹{modalFifoResult.nextBillingTotalWithUpcoming.toLocaleString("en-IN")}
                           </strong>
                         </div>
                         <p className="text-[10px] text-indigo-100/90 pt-0.5 italic">
-                          💡 <strong>अगली बार जब रसीद प्रिंट होगी:</strong> {modalFifoResult.partialMonth ? `${modalFifoResult.partialMonth.label} का बचा ₹${modalFifoResult.partialMonth.balanceDueAfter.toLocaleString("en-IN")}` : "बकाया"} + बाकी {modalFifoResult.unpaidMonths.length} महीने + अगला नया महीना सब जुड़कर रसीद पर प्रिंट होगा।
+                          💡 <strong>स्लिप नियम:</strong>{" "}
+                          {modalAdvancePlan && modalAdvancePlan.advanceMonths.length > 0
+                            ? `एडवांस महीनों की स्लिप नहीं आएगी — अगली स्लिप सीधे ${formatMonthNameOnly(modalAdvancePlan.nextFeeSlipMonth)} में दिखेगी।`
+                            : modalFifoResult.partialMonth
+                            ? `${modalFifoResult.partialMonth.label} का आंशिक बकाया ₹${modalFifoResult.partialMonth.balanceDueAfter.toLocaleString("en-IN")} अगले माह में जुड़कर आएगा।`
+                            : "पिछला बकाया + चालू माह सेटल होकर अगली रसीद तैयार होगी।"}
                         </p>
                       </div>
                     </div>

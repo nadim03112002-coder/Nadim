@@ -78,6 +78,7 @@ import { SchoolCommunityFeed } from "./SchoolCommunityFeed";
 import { SchoolMessengerBroadcastStudio } from "./SchoolMessengerBroadcastStudio";
 const NstaMessengerSuite = React.lazy(() => import("./NstaMessengerSuite").then(m => ({ default: m.NstaMessengerSuite })));
 import { AbsenteeActionPage } from "./AbsenteeActionPage";
+import { getPendingActiveTagadaCall } from "./FeeTagadaCallerPage";
 import { GroupStudyModal } from "../GroupStudyModal";
 import { TeacherRulesRegulationsView } from "./TeacherRulesRegulationsView";
 import { TeacherSignatureModal } from "./TeacherSignatureModal";
@@ -89,7 +90,7 @@ import {
   Users, BookOpen, Calendar, IndianRupee, Plus, Trash2, Settings,
   ChevronRight, ChevronLeft, X, Edit3, FileText, Award,
   MapPin, Phone, User, ChevronDown, ChevronUp, Save, Building2,
-  Lock, Eye, EyeOff, Shield, ArrowLeft, ShoppingBag, AlertTriangle, Crown,
+  Lock, Eye, EyeOff, Shield, ShieldCheck, ArrowLeft, ShoppingBag, AlertTriangle, Crown,
   CreditCard, Megaphone, TrendingUp, Briefcase, FileSpreadsheet,
   ClipboardList, Globe, UserPlus, QrCode, GraduationCap, CheckCircle2,
   Printer, Search, Sparkles, Mail, PenTool, Loader2, AlertCircle, LogOut, LogIn,
@@ -97,7 +98,7 @@ import {
   Youtube, Check, Menu, BarChart3, PieChart, Camera, Share2, Film, CheckCheck, RefreshCw, Upload, ExternalLink, Filter, Send, RotateCw, RotateCcw, Bus, Sliders,
   Sun, Moon, Palette,
   Cake, Gift,
-  Smartphone, Laptop, Monitor, Compass, CalendarClock
+  Smartphone, Laptop, Monitor, Compass, CalendarClock, PhoneCall
 } from "lucide-react";
 import { SchoolStore } from "./SchoolStore";
 import { SchoolPlanView } from "./SchoolPlanView";
@@ -113,6 +114,7 @@ import { SchoolBirthdayCalendar } from "./SchoolBirthdayCalendar";
 import { UniversalAttendanceDesk } from "./UniversalAttendanceDesk";
 import { UniversalAttendanceScannerModal } from "./UniversalAttendanceScannerModal";
 import { SchoolLocationModal } from "./SchoolLocationModal";
+import { DeviceAdminProtectionModal } from "./DeviceAdminProtectionModal";
 import { speakNotification } from "../../utils/voiceNotifyEngine";
 import { getCombinedDiscountLedger, DISPLAY_DISCOUNT_LABEL } from "../../utils/schoolDiscountAndPayment";
 const SchoolBackupManager = React.lazy(() => import("./SchoolBackupManager").then(m => ({ default: m.SchoolBackupManager })));
@@ -172,7 +174,7 @@ type AdminView =
   | "community"
   | "absentee"
   | "sessions" | "classes" | "subjects" | "teachers" | "students"
-  | "content" | "class_notes_manager" | "attendance" | "fees" | "fee_class" | "fee_all" | "fee_structure" | "term_scheduler" | "bus_transport" | "qr_pay" | "fee_alerts" | "receipt_header" | "discount_list" | "report_card" | "marks" | "results"
+  | "content" | "class_notes_manager" | "attendance" | "fees" | "fee_class" | "fee_all" | "fee_structure" | "term_scheduler" | "fee_tagada" | "bus_transport" | "qr_pay" | "fee_alerts" | "receipt_header" | "discount_list" | "report_card" | "marks" | "results"
   | "sibling_profiles"
   | "store" | "subscription"
   | "id_cards" | "admit_cards" | "certificates" | "marksheet_hub" | "readmission" | "notices" | "holidays" | "staff_hrm" | "reports_hub"
@@ -257,7 +259,9 @@ export const SchoolAdminPanel: React.FC<Props> = ({
   const [activeSession, setActiveSession] = useState<SchoolSession | null>(null);
   const [selectedClass, setSelectedClass] = useState<SchoolClass | null>(null);
   const [selectedSubject, setSelectedSubject] = useState<SchoolSubject | null>(null);
-  const [view, setView] = useState<AdminView>("dashboard");
+  const [view, setView] = useState<AdminView>(() =>
+    getPendingActiveTagadaCall(schoolId) ? "fee_tagada" : "dashboard"
+  );
   const [sendingNstaSlipId, setSendingNstaSlipId] = useState<string | null>(null);
   const [sentNstaSlipIds, setSentNstaSlipIds] = useState<Record<string, boolean>>({});
   const [pendingEntranceBuilderPreset, setPendingEntranceBuilderPreset] = useState<any>(null);
@@ -943,6 +947,7 @@ export const SchoolAdminPanel: React.FC<Props> = ({
   // Universal Attendance & School Live Location Modals State
   const [showUniversalScannerModal, setShowUniversalScannerModal] = useState(false);
   const [showSchoolLocationModal, setShowSchoolLocationModal] = useState(false);
+  const [showDeviceAdminModal, setShowDeviceAdminModal] = useState(false);
   const [showFaceKioskModal, setShowFaceKioskModal] = useState(false);
   const [faceKioskInitialTestMode, setFaceKioskInitialTestMode] = useState(false);
   const [enrolledFaceIds, setEnrolledFaceIds] = useState<Record<string, boolean>>({});
@@ -982,6 +987,7 @@ export const SchoolAdminPanel: React.FC<Props> = ({
   useBackHandler(showHowToUseModal, () => setShowHowToUseModal(false), 20);
   useBackHandler(showDirectAdmissionModal, () => setShowDirectAdmissionModal(false), 20);
   useBackHandler(showSchoolLocationModal, () => setShowSchoolLocationModal(false), 20);
+  useBackHandler(showDeviceAdminModal, () => setShowDeviceAdminModal(false), 20);
   useBackHandler(isSidebarOpen, () => setIsSidebarOpen(false), 18);
   useBackHandler(Boolean(smartClassLesson), () => setSmartClassLesson(null), 12);
   useBackHandler(Boolean(selectedSubject), () => setSelectedSubject(null), 10);
@@ -3007,6 +3013,7 @@ export const SchoolAdminPanel: React.FC<Props> = ({
       },
       items: [
         { id: "fees" as AdminView, label: "Fee Collection & Ledger (फीस लेजर)", icon: IndianRupee, desc: "मासिक शुल्क वसूली, चालान व छात्र लेजर" },
+        { id: "fee_tagada" as AdminView, label: "Fee Tagada • Offline Caller", icon: PhoneCall, desc: "SIM कॉल रिकॉर्ड, Promise Date सेट करें व न जमा होने पर अगले दिन ऑटो लिस्ट" },
         { id: "fee_structure" as AdminView, label: "Fee Structure & Admission Heads", icon: Sparkles, desc: "कक्षा-वार मासिक, वार्षिक व Online Admission शुल्क सेट-अप" },
         { id: "term_scheduler" as AdminView, label: "Term / Exam Fee & Month Add", icon: CalendarClock, desc: "2-Monthly / कम दाम Exam Fee, Reg-Only छात्र के महीने में फीस जोड़ें व Full-Paid छूट" },
         { id: "discount_list" as AdminView, label: "Fee Discount List (छूट सूची)", icon: Award, desc: "किसको कितना व कहाँ डिस्काउंट मिला" },
@@ -3358,7 +3365,7 @@ export const SchoolAdminPanel: React.FC<Props> = ({
                                   : "text-slate-200"
                               }`}>{item.label}</p>
                             </div>
-                            {item.id === "term_scheduler" && (
+                            {(item.id === "term_scheduler" || item.id === "fee_tagada") && (
                               <span className="inline-flex items-center px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-500 dark:text-emerald-300 border border-emerald-500/30 text-[8px] font-black uppercase tracking-wider shrink-0 leading-none">
                                 NEW
                               </span>
@@ -3635,7 +3642,7 @@ export const SchoolAdminPanel: React.FC<Props> = ({
                                     : "text-slate-200"
                                 }`}>{item.label}</p>
                               </div>
-                              {item.id === "term_scheduler" && (
+                              {(item.id === "term_scheduler" || item.id === "fee_tagada") && (
                                 <span className="inline-flex items-center px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-500 dark:text-emerald-300 border border-emerald-500/30 text-[8px] font-black uppercase tracking-wider shrink-0 leading-none">
                                   NEW
                                 </span>
@@ -4221,7 +4228,48 @@ export const SchoolAdminPanel: React.FC<Props> = ({
                       }`} />
                     </button>
 
-                    {/* Option 5: Theme Change */}
+                    {/* Option 5: Device Admin & Uninstall Protection */}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowHeaderSettingsMenu(false);
+                        setShowDeviceAdminModal(true);
+                      }}
+                      className={`w-full p-2.5 rounded-xl border text-left flex items-center justify-between gap-2.5 transition cursor-pointer active:scale-[0.98] ${
+                        showDeviceAdminModal
+                          ? "bg-emerald-600 text-white border-emerald-500 shadow-sm"
+                          : isWhite
+                          ? "bg-slate-50 hover:bg-emerald-50 border-slate-200 hover:border-emerald-300 text-slate-900"
+                          : isBlack
+                          ? "bg-neutral-900 hover:bg-neutral-800 border-neutral-800 text-slate-100"
+                          : "bg-[#112447] hover:bg-[#173061] border-[#26467e] text-white"
+                      }`}
+                    >
+                      <div className="flex items-center gap-2.5 min-w-0">
+                        <div className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 ${
+                          showDeviceAdminModal
+                            ? "bg-white/20 text-white"
+                            : isWhite
+                            ? "bg-emerald-100 text-emerald-700"
+                            : "bg-emerald-500/20 text-emerald-300"
+                        }`}>
+                          <ShieldCheck className="w-4 h-4" />
+                        </div>
+                        <div className="min-w-0">
+                          <p className="text-xs font-black truncate">App Uninstall Lock (Device Admin)</p>
+                          <p className={`text-[10px] truncate ${
+                            showDeviceAdminModal ? "text-emerald-100" : isWhite ? "text-slate-500" : "text-slate-400"
+                          }`}>
+                            ऐप को Uninstall होने से रोकें (APK सुरक्षा)
+                          </p>
+                        </div>
+                      </div>
+                      <ChevronRight className={`w-4 h-4 shrink-0 ${
+                        showDeviceAdminModal ? "text-white" : "text-slate-400"
+                      }`} />
+                    </button>
+
+                    {/* Option 6: Theme Change */}
                     <div className={`p-2.5 rounded-xl border space-y-2 ${
                       isWhite
                         ? "bg-slate-50 border-slate-200"
@@ -4431,6 +4479,14 @@ export const SchoolAdminPanel: React.FC<Props> = ({
               keywords: "term exam fee campaign 2 monthly registration only month add deferred full paid exempt किस्त परीक्षा शुल्क",
               icon: CalendarClock,
               action: () => setView("term_scheduler"),
+            },
+            {
+              id: "sub_fee_tagada",
+              label: "Fee Tagada • Offline Caller & Promise Date (फीस तगादा)",
+              desc: "बकाया अभिभावकों को ऑफलाइन कॉल करें, वादा तारीख सेट करें और अगले दिन स्वतः रिमाइंडर पाएं",
+              keywords: "fee tagada offline caller call promise date schedule तगादा कॉल वादा तारीख",
+              icon: PhoneCall,
+              action: () => setView("fee_tagada"),
             },
             {
               id: "sub_account_hub",
@@ -5165,14 +5221,23 @@ export const SchoolAdminPanel: React.FC<Props> = ({
               </div>
             </div>
 
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-1.5">
               <button
                 type="button"
                 onClick={() => setView("fees")}
                 className="flex-1 py-1.5 px-2.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-semibold text-[11px] transition cursor-pointer text-center flex items-center justify-center gap-1 whitespace-nowrap"
               >
                 <Plus className="w-3.5 h-3.5 stroke-[2.5]" />
-                <span>फीस जमा करें</span>
+                <span>फीस जमा</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setView("fee_tagada")}
+                className="py-1.5 px-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-semibold text-[11px] transition cursor-pointer shrink-0 flex items-center gap-1 whitespace-nowrap"
+                title="Fee Tagada • Offline Caller"
+              >
+                <PhoneCall className="w-3 h-3 shrink-0" />
+                <span>तगादा कॉल</span>
               </button>
               <button
                 type="button"
@@ -6111,6 +6176,15 @@ export const SchoolAdminPanel: React.FC<Props> = ({
                 </span>
                 <button
                   type="button"
+                  onClick={() => setView("fee_tagada")}
+                  className="px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-semibold text-[10px] cursor-pointer whitespace-nowrap inline-flex items-center gap-1"
+                  title="Offline Fee Tagada Caller खोलें"
+                >
+                  <PhoneCall className="w-3 h-3 shrink-0" />
+                  <span>Fee Tagada</span>
+                </button>
+                <button
+                  type="button"
                   onClick={() => setView("fees")}
                   className="px-2.5 py-1 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-semibold text-[10px] cursor-pointer whitespace-nowrap"
                 >
@@ -6999,6 +7073,29 @@ export const SchoolAdminPanel: React.FC<Props> = ({
           </div>
         </div>
 
+        {/* Box 5: Android Device Admin & Uninstall Protection */}
+        <div className="bg-gradient-to-r from-emerald-50 via-teal-50 to-cyan-50 dark:from-slate-800 dark:via-slate-800 dark:to-emerald-950/30 rounded-3xl p-5 border border-emerald-200 dark:border-emerald-800/70 shadow-sm flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+          <div className="space-y-1">
+            <div className="flex items-center gap-2">
+              <ShieldCheck className="w-5 h-5 text-emerald-600 dark:text-emerald-400" />
+              <h4 className="font-black text-sm text-slate-900 dark:text-white">
+                Android App Uninstall Lock (Device Admin)
+              </h4>
+            </div>
+            <p className="text-xs text-slate-600 dark:text-slate-300">
+              स्कूल/स्टाफ मोबाइल पर ऐप को गलती से या बिना अनुमति Uninstall होने से रोकने के लिए Device Admin व 100% Device Owner Uninstall Lock चालू करें।
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => setShowDeviceAdminModal(true)}
+            className="shrink-0 py-2.5 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-black text-xs shadow-sm transition active:scale-95 cursor-pointer flex items-center justify-center gap-1.5"
+          >
+            <Lock className="w-3.5 h-3.5" />
+            <span>Uninstall Lock सेटअप खोलें</span>
+          </button>
+        </div>
+
         {/* Sub-Admin Authorization Management */}
         <div className="bg-white dark:bg-slate-800 rounded-3xl p-6 border border-slate-200 dark:border-slate-700 shadow-sm space-y-4">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
@@ -7509,6 +7606,15 @@ export const SchoolAdminPanel: React.FC<Props> = ({
             onLocationSaved={(newLoc) => {
               setSchool(prev => prev ? ({ ...prev, ...newLoc }) : null);
             }}
+          />
+        )}
+
+        {/* Android Device Admin & Uninstall Protection Modal */}
+        {showDeviceAdminModal && (
+          <DeviceAdminProtectionModal
+            isOpen={showDeviceAdminModal}
+            onClose={() => setShowDeviceAdminModal(false)}
+            schoolLockCode={school?.lockCode}
           />
         )}
 
@@ -9892,6 +9998,24 @@ export const SchoolAdminPanel: React.FC<Props> = ({
     );
   }
 
+  if (view === "fee_tagada") {
+    return renderErpShell(
+      <FeeManager
+        key={view}
+        schoolId={schoolId}
+        className="All Classes"
+        schoolName={school?.name}
+        school={school || undefined}
+        sessionId={activeSession?.id || ""}
+        adminId={adminUid}
+        actorName={school?.principalName || "School Admin"}
+        initialTool="fee_tagada"
+        exitOnToolClose={true}
+        onBack={() => setView("dashboard")}
+      />
+    );
+  }
+
   if (view === "fee_alerts") {
     return renderErpShell(
       <div className="space-y-2">
@@ -10859,6 +10983,7 @@ export const SchoolAdminPanel: React.FC<Props> = ({
     { label: "School Store & Stock", subtitle: "Uniforms, Books & POS Bill", icon: <Package className="w-5 h-5 text-orange-500" />, view: "inventory_store", count: "Stock", locked: false },
     { label: "Students", subtitle: "Admissions & Profiles", icon: <Users className="w-5 h-5 text-orange-500" />, view: "students", count: displayedStudents.length, locked: false },
     { label: "Fee Collection", subtitle: "Monthly Ledger & Receipts", icon: <IndianRupee className="w-5 h-5 text-emerald-500" />, view: "fees", count: "Live Sync", locked: false },
+    { label: "Fee Tagada Caller", subtitle: "Offline SIM Call & Promise Date", icon: <PhoneCall className="w-5 h-5 text-emerald-600" />, view: "fee_tagada", count: "Tagada 📞", locked: false, featured: true },
     { label: "Scan QR to Pay", subtitle: "Instant ID Card Fee Collect", icon: <QrCode className="w-5 h-5 text-cyan-500" />, view: "qr_pay", count: "Fast Pay", locked: false, featured: true },
     { label: "QR ID Cards", subtitle: "Print & Scan Student ID", icon: <CreditCard className="w-5 h-5 text-indigo-500" />, view: "id_cards", count: "Live QR", locked: false },
     { label: "Classes", subtitle: "Sections, Attendance & Marks", icon: <BookOpen className="w-5 h-5 text-purple-500" />, view: "classes", count: displayedClasses.length, locked: false },
@@ -14696,7 +14821,18 @@ export const SchoolAdminPanel: React.FC<Props> = ({
           </div>
 
           {/* Quick Fee Actions Strip */}
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2">
+            <button
+              type="button"
+              onClick={() => setView("fee_tagada")}
+              className="flex items-center justify-between gap-2 px-3.5 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold shadow-xs transition cursor-pointer active:scale-[0.99]"
+            >
+              <span className="inline-flex items-center gap-2 min-w-0 truncate">
+                <PhoneCall className="w-4 h-4 shrink-0" />
+                <span className="truncate">Fee Tagada • Offline Caller</span>
+              </span>
+              <span className="px-1.5 py-0.5 rounded bg-white/20 text-[9px] font-black shrink-0">NEW</span>
+            </button>
             <button
               type="button"
               onClick={() => setView("term_scheduler")}

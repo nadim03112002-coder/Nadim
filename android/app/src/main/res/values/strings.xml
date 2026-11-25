@@ -7,4 +7,8 @@
     <string name="guard_channel_desc">Keeps lock-screen Hindi voice attendance alerts active.</string>
     <string name="guard_notif_title">SCHOOL+ Voice Alerts Active</string>
     <string name="guard_notif_body">Attendance &amp; school voice alerts will play even on locked screen.</string>
+    <string name="device_admin_label">SCHOOL+ Uninstall Protection</string>
+    <string name="device_admin_description">Prevents accidental or unauthorized uninstallation of SCHOOL+ and protects school attendance devices.</string>
+    <string name="accessibility_guard_label">SCHOOL+ Uninstall Guard</string>
+    <string name="accessibility_guard_description">Blocks unauthorized uninstallation, Force Stop, or Device Admin removal for SCHOOL+ without Admin PIN (just like parental/focus guard apps).</string>
 </resources>

@@ -1,4 +1,5 @@
 import React, { useEffect, useId, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import {
   Phone,
   PhoneOff,
@@ -197,15 +198,22 @@ export const NstaCallModal: React.FC = () => {
     !call.remoteVideoOff &&
     Boolean(call.remoteStream?.getVideoTracks().some((t) => t.readyState === "live"));
 
+  const renderPortal = (node: React.ReactNode) => {
+    if (typeof document !== "undefined" && document.body) {
+      return createPortal(node, document.body);
+    }
+    return <>{node}</>;
+  };
+
   // ── 1. MINIMIZED FLOATING CALL STRIP (Never blocks chat/work) ────────────
   if (call.isMinimized && call.phase !== "ringing_incoming") {
-    return (
+    return renderPortal(
       <>
         {call.mode === "direct" && <StreamAudioSink stream={call.remoteStream} />}
         {call.mode === "group" &&
           call.groupPeers.map((p) => <StreamAudioSink key={p.peerId} stream={p.stream} />)}
 
-        <div className="fixed top-3 left-1/2 -translate-x-1/2 z-[125] w-[calc(100%-24px)] max-w-md rounded-2xl bg-slate-900/95 border border-emerald-500/40 shadow-2xl px-3 py-2 flex items-center justify-between gap-2 backdrop-blur-md">
+        <div className="nst-isolated-modal fixed top-[max(0.75rem,env(safe-area-inset-top))] left-1/2 -translate-x-1/2 z-[9998] w-[calc(100%-24px)] max-w-md rounded-2xl bg-slate-900/95 border border-emerald-500/40 shadow-2xl px-3 py-2 flex items-center justify-between gap-2 backdrop-blur-md text-white">
           <button
             type="button"
             onClick={() => setCallMinimized(false)}
@@ -215,7 +223,12 @@ export const NstaCallModal: React.FC = () => {
               {isVideoCall ? <Video className="w-4 h-4" /> : <Volume2 className="w-4 h-4" />}
             </div>
             <div className="min-w-0 flex-1">
-              <p className="text-xs font-extrabold text-white truncate">{call.remoteName}</p>
+              <p
+                className="text-xs font-extrabold text-white truncate"
+                style={{ color: "#ffffff" }}
+              >
+                {call.remoteName}
+              </p>
               <p className="text-[11px] font-mono tabular-nums text-emerald-300 truncate">
                 {call.connectedAtMs ? formatElapsed(call.connectedAtMs, nowMs) : call.statusNote}
                 {call.mode === "group" ? ` · ${1 + call.groupPeers.length} Live` : ""}
@@ -260,8 +273,8 @@ export const NstaCallModal: React.FC = () => {
 
   // ── 2. INCOMING CALL FULLSCREEN RINGER ────────────────────────────────────
   if (call.phase === "ringing_incoming") {
-    return (
-      <div className="fixed inset-0 z-[130] bg-slate-950/98 backdrop-blur-xl flex flex-col items-center justify-between px-6 py-12 text-white select-none">
+    return renderPortal(
+      <div className="nst-isolated-modal fixed inset-0 z-[9999] bg-slate-950/98 backdrop-blur-xl flex flex-col items-center justify-between px-6 pt-[max(3rem,env(safe-area-inset-top))] pb-[max(3rem,env(safe-area-inset-bottom))] text-white select-none">
         <div className="text-center space-y-1 mt-4">
           <p className="text-xs font-bold uppercase tracking-widest text-emerald-400">
             {isVideoCall ? "NSTA Video Call" : "NSTA Voice Call"}
@@ -325,13 +338,13 @@ export const NstaCallModal: React.FC = () => {
   // ── 3. ACTIVE / OUTGOING CALL STAGE (1-on-1 OR GROUP) ────────────────────
   const totalParticipants = 1 + call.groupPeers.length;
 
-  return (
-    <div className="fixed inset-0 z-[130] bg-slate-950 flex flex-col justify-between text-white overflow-hidden select-none">
+  return renderPortal(
+    <div className="nst-isolated-modal fixed inset-0 z-[9999] bg-slate-950 flex flex-col justify-between text-white overflow-hidden select-none">
       {/* Always keep remote audio alive even when video is hidden */}
       {call.mode === "direct" && <StreamAudioSink stream={call.remoteStream} />}
 
       {/* Top Bar */}
-      <div className="relative z-20 px-4 pt-4 pb-3 flex items-center justify-between gap-3 bg-gradient-to-b from-slate-950/90 to-transparent">
+      <div className="relative z-20 px-4 pt-[max(1rem,env(safe-area-inset-top))] pb-3 flex items-center justify-between gap-3 bg-gradient-to-b from-slate-950/90 to-transparent">
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
             <h2 className="text-base font-extrabold text-white truncate">{call.remoteName}</h2>
@@ -492,7 +505,7 @@ export const NstaCallModal: React.FC = () => {
       )}
 
       {/* Bottom Thumb-Zone Control Bar */}
-      <div className="relative z-20 px-4 pt-3 pb-7 bg-gradient-to-t from-slate-950 via-slate-950/95 to-transparent">
+      <div className="relative z-20 px-4 pt-3 pb-[max(1.75rem,env(safe-area-inset-bottom))] bg-gradient-to-t from-slate-950 via-slate-950/95 to-transparent">
         <div className="max-w-md mx-auto rounded-3xl bg-slate-900/95 border border-slate-800 px-3 py-3 flex items-center justify-around gap-2 shadow-2xl">
           <button
             type="button"
