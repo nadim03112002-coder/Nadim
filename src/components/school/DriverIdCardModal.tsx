@@ -12,6 +12,7 @@ import { printElementInIframe } from "./AdmissionFormPrintModal";
 import { safeOpenExternalUrl } from "../../utils/safeBrowserActions";
 import { buildDriverIdCardQrUrl } from "../../utils/qrVerifyUrl";
 import { exportElementToPdf } from "../../utils/universalPdfExport";
+import { EasyScanQrPanel } from "./EasyScanQrPanel";
 
 export interface DriverIdCardData {
   busId: string;
@@ -445,8 +446,19 @@ export const DriverIdCardModal: React.FC<Props> = ({
             </div>
           </div>
 
+          {/* 512x512 Easy-Scan QR Panel (Excluded from Print / PDF) */}
+          <EasyScanQrPanel
+            qrValue={qrVerifyPayload}
+            personName={driverName}
+            personRoleLabel={`Bus: ${busNumber}`}
+            identifierLabel={`Driver ID: ${driverIdCode}${phone ? ` · ${phone}` : ""}`}
+            scanInstruction="Driver GPS console login ke liye 512×512 Easy-Scan QR"
+            downloadFileName={`Driver_QR_512x512_${driverName}_${driverIdCode}`}
+            accent="amber"
+          />
+
           {/* Driver QR Login Details Box */}
-          <div className="bg-white dark:bg-slate-800 rounded-2xl p-4 border border-slate-200 dark:border-slate-700 shadow-sm space-y-3">
+          <div className="print:hidden bg-white dark:bg-slate-800 rounded-2xl p-4 border border-slate-200 dark:border-slate-700 shadow-sm space-y-3">
             <div className="flex items-center gap-2">
               <div className="w-8 h-8 rounded-xl bg-amber-500/15 text-amber-600 dark:text-amber-400 flex items-center justify-center">
                 <QrCode className="w-4 h-4" />

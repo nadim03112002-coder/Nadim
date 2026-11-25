@@ -190,6 +190,53 @@ object NotificationHelper {
         NotificationManagerCompat.from(context).notify(reqCode, notification)
     }
 
+    fun showMissedSchoolCallBanner(
+        context: Context,
+        match: CallerDirectoryMatch,
+        callDateMs: Long = System.currentTimeMillis()
+    ) {
+        ensureChannels(context)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            val granted = ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.POST_NOTIFICATIONS
+            ) == PackageManager.PERMISSION_GRANTED
+            if (!granted) return
+        }
+
+        val targetUrl = sanitizeAppUrl("/?missedSchoolCall=1")
+        val launchIntent = Intent(context, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
+            putExtra(EXTRA_TARGET_URL, targetUrl)
+        }
+        val reqCode = (("missed_school_${match.last10}_${callDateMs / 15000L}").hashCode() and 0x7FFFFFFF)
+        val pendingIntent = PendingIntent.getActivity(
+            context,
+            reqCode,
+            launchIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val roleText = match.role.ifBlank { "School Staff" }
+        val title = "📵 Missed School Call • ${match.name}"
+        val body = "${match.schoolName} ($roleText) se call aaya tha — NSTA Messenger par message karne ke liye tap karein."
+
+        val notification = NotificationCompat.Builder(context, CHANNEL_ALERTS)
+            .setSmallIcon(R.drawable.ic_stat_notification)
+            .setColor(ContextCompat.getColor(context, R.color.brand_accent))
+            .setContentTitle(title)
+            .setContentText(body)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(body))
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setCategory(NotificationCompat.CATEGORY_MISSED_CALL)
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+            .setAutoCancel(true)
+            .setContentIntent(pendingIntent)
+            .build()
+
+        NotificationManagerCompat.from(context).notify(reqCode, notification)
+    }
+
     fun showIncomingParentCallBanner(
         context: Context,
         notifKey: String,

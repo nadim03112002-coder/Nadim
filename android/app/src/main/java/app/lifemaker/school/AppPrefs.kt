@@ -35,7 +35,10 @@ data class CallerDirectoryMatch(
 ) {
     fun toJson(
         receivedAtMs: Long = System.currentTimeMillis(),
-        postCall: Boolean = false
+        postCall: Boolean = false,
+        direction: String = "INCOMING",
+        durationSec: Int = 0,
+        callType: String = ""
     ): JSONObject = JSONObject().apply {
         put("phone", last10)
         put("name", name)
@@ -62,6 +65,9 @@ data class CallerDirectoryMatch(
         put("enquiryNote", enquiryNote)
         put("counsellorName", counsellorName)
         put("postCall", postCall)
+        put("direction", direction.ifBlank { "INCOMING" })
+        put("durationSec", durationSec.coerceAtLeast(0))
+        put("callType", callType.ifBlank { direction.ifBlank { "INCOMING" } })
         put("receivedAtMs", receivedAtMs)
     }
 }
@@ -80,9 +86,15 @@ object AppPrefs {
     private const val KEY_PARENT_SCHEDULE_VOICE_ENABLED = "parent_schedule_voice_enabled"
     private const val KEY_PARENT_CARD_POPUP_ENABLED = "parent_card_popup_enabled"
     private const val KEY_PARENT_OVERLAY_ENABLED = "parent_overlay_enabled_v1"
+    private const val KEY_OUTGOING_CALL_ID_ENABLED = "outgoing_parent_call_id_enabled_v1"
+    private const val KEY_AUTO_CALL_LOG_SYNC_ENABLED = "auto_sim_call_log_sync_v1"
     private const val KEY_LAST_INCOMING_PARENT_CALL = "last_incoming_parent_call_v1"
     private const val KEY_ACTIVE_RINGING_CALLER_JSON = "active_ringing_caller_v1"
+    private const val KEY_ACTIVE_RINGING_CALL_DIRECTION = "active_ringing_call_direction_v1"
     private const val KEY_ACTIVE_RINGING_CALLER_AT_MS = "active_ringing_caller_at_ms"
+    private const val KEY_ACTIVE_CALL_WAS_ANSWERED = "active_call_was_answered_v1"
+    private const val KEY_RECENT_MATCHED_SIM_CALLS = "recent_matched_sim_calls_v1"
+    private const val KEY_MISSED_SCHOOL_CALLS = "missed_school_calls_v1"
     private const val KEY_CALLER_DIR_JSON = "school_caller_directory_v1"
     private const val KEY_CALLER_DIR_SCHOOL = "school_caller_directory_school"
     private const val KEY_SEEN_IDS = "seen_notif_ids_json"
@@ -289,6 +301,12 @@ object AppPrefs {
     fun isParentOverlayEnabled(context: Context): Boolean =
         prefs(context).getBoolean(KEY_PARENT_OVERLAY_ENABLED, true)
 
+    fun isOutgoingCallIdEnabled(context: Context): Boolean =
+        prefs(context).getBoolean(KEY_OUTGOING_CALL_ID_ENABLED, true)
+
+    fun isAutoCallLogSyncEnabled(context: Context): Boolean =
+        prefs(context).getBoolean(KEY_AUTO_CALL_LOG_SYNC_ENABLED, true)
+
     fun saveParentCallerIdOptions(context: Context, jsonStr: String) {
         try {
             val obj = JSONObject(jsonStr)
@@ -307,6 +325,12 @@ object AppPrefs {
             }
             if (obj.has("overlayEnabled")) {
                 editor.putBoolean(KEY_PARENT_OVERLAY_ENABLED, obj.optBoolean("overlayEnabled", true))
+            }
+            if (obj.has("outgoingCallEnabled")) {
+                editor.putBoolean(KEY_OUTGOING_CALL_ID_ENABLED, obj.optBoolean("outgoingCallEnabled", true))
+            }
+            if (obj.has("autoCallLogSyncEnabled")) {
+                editor.putBoolean(KEY_AUTO_CALL_LOG_SYNC_ENABLED, obj.optBoolean("autoCallLogSyncEnabled", true))
             }
             editor.apply()
         } catch (_: Exception) {}
@@ -384,10 +408,25 @@ object AppPrefs {
         }
     }
 
-    fun saveLastIncomingParentCall(context: Context, match: CallerDirectoryMatch, postCall: Boolean = false) {
+    fun saveLastIncomingParentCall(
+        context: Context,
+        match: CallerDirectoryMatch,
+        postCall: Boolean = false,
+        direction: String = "INCOMING",
+        durationSec: Int = 0,
+        callType: String = ""
+    ) {
         try {
             prefs(context).edit()
-                .putString(KEY_LAST_INCOMING_PARENT_CALL, match.toJson(postCall = postCall).toString())
+                .putString(
+                    KEY_LAST_INCOMING_PARENT_CALL,
+                    match.toJson(
+                        postCall = postCall,
+                        direction = direction,
+                        durationSec = durationSec,
+                        callType = callType
+                    ).toString()
+                )
                 .apply()
         } catch (_: Exception) {}
     }
@@ -399,14 +438,33 @@ object AppPrefs {
         prefs(context).edit().remove(KEY_LAST_INCOMING_PARENT_CALL).apply()
     }
 
-    fun setActiveRingingCaller(context: Context, match: CallerDirectoryMatch) {
+    fun setActiveRingingCaller(
+        context: Context,
+        match: CallerDirectoryMatch,
+        direction: String = "INCOMING"
+    ) {
         try {
             prefs(context).edit()
-                .putString(KEY_ACTIVE_RINGING_CALLER_JSON, match.toJson().toString())
+                .putString(KEY_ACTIVE_RINGING_CALLER_JSON, match.toJson(direction = direction).toString())
+                .putString(KEY_ACTIVE_RINGING_CALL_DIRECTION, direction.ifBlank { "INCOMING" })
                 .putLong(KEY_ACTIVE_RINGING_CALLER_AT_MS, System.currentTimeMillis())
+                .putBoolean(KEY_ACTIVE_CALL_WAS_ANSWERED, direction.equals("OUTGOING", ignoreCase = true))
                 .apply()
         } catch (_: Exception) {}
     }
+
+    fun setActiveCallWasAnswered(context: Context, answered: Boolean) {
+        prefs(context).edit().putBoolean(KEY_ACTIVE_CALL_WAS_ANSWERED, answered).apply()
+    }
+
+    fun wasActiveCallAnswered(context: Context): Boolean =
+        prefs(context).getBoolean(KEY_ACTIVE_CALL_WAS_ANSWERED, false)
+
+    fun getActiveRingingCallDirection(context: Context): String =
+        prefs(context).getString(KEY_ACTIVE_RINGING_CALL_DIRECTION, "INCOMING")?.ifBlank { "INCOMING" } ?: "INCOMING"
+
+    fun getActiveRingingCallStartedAtMs(context: Context): Long =
+        prefs(context).getLong(KEY_ACTIVE_RINGING_CALLER_AT_MS, 0L)
 
     fun getActiveRingingCaller(context: Context, maxAgeMs: Long = 20 * 60 * 1000L): CallerDirectoryMatch? {
         return try {
@@ -455,8 +513,138 @@ object AppPrefs {
     fun clearActiveRingingCaller(context: Context) {
         prefs(context).edit()
             .remove(KEY_ACTIVE_RINGING_CALLER_JSON)
+            .remove(KEY_ACTIVE_RINGING_CALL_DIRECTION)
             .remove(KEY_ACTIVE_RINGING_CALLER_AT_MS)
+            .remove(KEY_ACTIVE_CALL_WAS_ANSWERED)
             .apply()
+    }
+
+    @Synchronized
+    fun appendMissedSchoolCall(
+        context: Context,
+        match: CallerDirectoryMatch,
+        callDateMs: Long = System.currentTimeMillis()
+    ) {
+        try {
+            val p = prefs(context)
+            val raw = p.getString(KEY_MISSED_SCHOOL_CALLS, "[]") ?: "[]"
+            val arr = try { JSONArray(raw) } catch (_: Exception) { JSONArray() }
+            val next = JSONArray()
+            val entry = JSONObject().apply {
+                put("phone", match.last10)
+                put("name", match.name)
+                put("role", match.role.ifBlank { "School Staff" })
+                put("schoolName", match.schoolName)
+                put("callDateMs", callDateMs)
+            }
+            next.put(entry)
+            var added = 1
+            for (i in 0 until arr.length()) {
+                if (added >= 20) break
+                val item = arr.optJSONObject(i) ?: continue
+                val existingPhone = item.optString("phone", "")
+                val existingTime = item.optLong("callDateMs", 0L)
+                if (existingPhone == match.last10 && kotlin.math.abs(existingTime - callDateMs) < 15_000L) {
+                    continue
+                }
+                next.put(item)
+                added++
+            }
+            p.edit().putString(KEY_MISSED_SCHOOL_CALLS, next.toString()).apply()
+        } catch (_: Exception) {}
+    }
+
+    fun getMissedSchoolCallsJson(context: Context): String =
+        prefs(context).getString(KEY_MISSED_SCHOOL_CALLS, "[]") ?: "[]"
+
+    @Synchronized
+    fun dismissMissedSchoolCall(context: Context, phone: String?, callDateMs: Long) {
+        try {
+            val cleanPhone = normalizePhoneMatchKey(phone)
+            val p = prefs(context)
+            val raw = p.getString(KEY_MISSED_SCHOOL_CALLS, "[]") ?: "[]"
+            val arr = JSONArray(raw)
+            val next = JSONArray()
+            for (i in 0 until arr.length()) {
+                val item = arr.optJSONObject(i) ?: continue
+                val itemPhone = item.optString("phone", "")
+                val itemDate = item.optLong("callDateMs", 0L)
+                if (itemDate == callDateMs && (cleanPhone.isEmpty() || itemPhone == cleanPhone)) {
+                    continue
+                }
+                next.put(item)
+            }
+            p.edit().putString(KEY_MISSED_SCHOOL_CALLS, next.toString()).apply()
+        } catch (_: Exception) {}
+    }
+
+    fun clearAllMissedSchoolCalls(context: Context) {
+        prefs(context).edit().putString(KEY_MISSED_SCHOOL_CALLS, "[]").apply()
+    }
+
+    @Synchronized
+    fun appendRecentMatchedSimCall(
+        context: Context,
+        match: CallerDirectoryMatch,
+        direction: String,
+        callType: String,
+        durationSec: Int,
+        callDateMs: Long
+    ) {
+        try {
+            val p = prefs(context)
+            val raw = p.getString(KEY_RECENT_MATCHED_SIM_CALLS, "[]") ?: "[]"
+            val arr = try { JSONArray(raw) } catch (_: Exception) { JSONArray() }
+            val next = JSONArray()
+            val entry = JSONObject().apply {
+                put("phone", match.last10)
+                put("direction", direction.ifBlank { "INCOMING" })
+                put("callType", callType.ifBlank { direction.ifBlank { "INCOMING" } })
+                put("durationSec", durationSec.coerceAtLeast(0))
+                put("callDateMs", callDateMs)
+                put("kind", match.kind)
+                put("name", match.name)
+                put("studentSummary", match.studentSummary)
+                put("relationLabel", match.relationLabel)
+                put("fatherName", match.fatherName)
+                put("primaryStudentId", match.primaryStudentId)
+                put("dueAmount", match.dueAmount)
+                put("absentToday", match.absentToday)
+                put("enquiryId", match.enquiryId)
+                put("schoolName", match.schoolName)
+            }
+            next.put(entry)
+            var added = 1
+            for (i in 0 until arr.length()) {
+                if (added >= 60) break
+                val item = arr.optJSONObject(i) ?: continue
+                val existingPhone = item.optString("phone", "")
+                val existingTime = item.optLong("callDateMs", 0L)
+                if (existingPhone == match.last10 && kotlin.math.abs(existingTime - callDateMs) < 12_000L) {
+                    continue
+                }
+                next.put(item)
+                added++
+            }
+            p.edit().putString(KEY_RECENT_MATCHED_SIM_CALLS, next.toString()).apply()
+        } catch (_: Exception) {}
+    }
+
+    fun getRecentMatchedSimCalls(context: Context, sinceMs: Long = 0L): JSONArray {
+        val out = JSONArray()
+        return try {
+            val raw = prefs(context).getString(KEY_RECENT_MATCHED_SIM_CALLS, "[]") ?: "[]"
+            val arr = JSONArray(raw)
+            for (i in 0 until arr.length()) {
+                val item = arr.optJSONObject(i) ?: continue
+                if (sinceMs <= 0L || item.optLong("callDateMs", 0L) >= sinceMs) {
+                    out.put(item)
+                }
+            }
+            out
+        } catch (_: Exception) {
+            out
+        }
     }
 
     fun formatIndianRupees(amount: Long): String {

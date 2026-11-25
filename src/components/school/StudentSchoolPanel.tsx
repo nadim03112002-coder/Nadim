@@ -55,6 +55,7 @@ import {
   ShoppingBag,
   Zap,
   Globe,
+  PhoneMissed,
 } from "lucide-react";
 import { toast } from "sonner";
 import QRCode from "react-qr-code";
@@ -129,6 +130,7 @@ import {
   getAccountants,
   getStaffEmployees,
   saveFeeCallFollowUp,
+  subscribeSchoolUpiProofs,
 } from "../../school-firebase";
 import { loadSchoolSettingBlob } from "../../utils/schoolCloudSync";
 import { getSessionMonthCodes } from "../../utils/reAdmissionUtils";
@@ -138,6 +140,7 @@ import { buildStudentIdCardQrUrl } from "../../utils/qrVerifyUrl";
 import { getDemoSchoolDataset, isHolidayDate, isDemoDataEnabled, setDemoDataEnabled } from "./demoDataStore";
 import { OfficialFeeReceiptModal } from "./OfficialFeeReceiptModal";
 import { AdmissionFormPrintModal } from "./AdmissionFormPrintModal";
+import { EasyScanQrPanel } from "./EasyScanQrPanel";
 import { AnnualBulkFeeStatementModal } from "./AnnualBulkFeeStatementModal";
 import { QrAttendanceScannerModal } from "./QrAttendanceScannerModal";
 import { SchoolCommunityFeed } from "./SchoolCommunityFeed";
@@ -146,8 +149,19 @@ const NstaMessengerSuite = lazyWithRetry(loadNstaMessengerSuite, "NSTA Messenger
 import { SchoolWelcomeModal } from "./SchoolWelcomeModal";
 import { SchoolBirthdayModal } from "./SchoolBirthdayModal";
 import { NstaCallPortalHost } from "./NstaCallModal";
+import { ScreenInfoGuideButton } from "./ScreenInfoGuideButton";
+import { getScreenFeatureGuide } from "../../utils/screenInfoCatalog";
 import { CallerIdSettingsCard } from "./CallerIdSettingsCard";
-import { syncSchoolDirectoryToAndroid } from "../../utils/schoolCallerId";
+import { CallSetupChecklistBanner } from "./CallSetupChecklistBanner";
+import { ApkUpdateBanner } from "./ApkUpdateBanner";
+import {
+  syncSchoolDirectoryToAndroid,
+  getNativeMissedSchoolCalls,
+  dismissNativeMissedSchoolCall,
+  clearAllNativeMissedSchoolCalls,
+  normalizePhoneLast10,
+  type MissedSchoolCallRecord,
+} from "../../utils/schoolCallerId";
 const StudentSchoolStore = lazyWithRetry(loadStudentSchoolStore, "School Store");
 const StudentQuestionBankView = lazyWithRetry(loadStudentQuestionBankView, "Question Bank");
 import { AccountRecoveryCard } from "./AccountRecoveryCard";
@@ -185,6 +199,10 @@ import {
   DEFAULT_OUT_START_TIME,
 } from "../../utils/schoolAttendanceSchedule";
 import { useBackHandler } from "../../utils/backNavigation";
+import { LanguageToggleButton } from "./LanguageToggleButton";
+import { StudentUpiPayUploadModal } from "./StudentUpiPayUploadModal";
+import { pickLang, useAppLang } from "../../utils/appLang";
+import type { UpiPaymentProofRecord } from "../../school-types";
 
 interface Props {
   uid?: string;
@@ -304,10 +322,23 @@ export const StudentSchoolPanel: React.FC<Props> = ({
   };
 
   const [activeTab, setActiveTab] = useState<TabType>(() => normalizeTab(initialTab));
+  const [lang] = useAppLang();
+  const [upiProofs, setUpiProofs] = useState<UpiPaymentProofRecord[]>([]);
+  const [upiPayTarget, setUpiPayTarget] = useState<{
+    month: string;
+    monthLabel: string;
+    exactAmount: number;
+    feeItem: any;
+  } | null>(null);
   const [advanceTab, setAdvanceTab] = useState<"classwork" | "academic" | "online_test" | "question_bank" | "videos">("classwork");
   const [classworkDateFilter, setClassworkDateFilter] = useState<string>("ALL");
   const [classworkSubjectFilter, setClassworkSubjectFilter] = useState<string>("ALL");
   const [communityInitialFilter, setCommunityInitialFilter] = useState<"ALL" | "HOLIDAY" | "NOTICE" | "EVENT_MEDIA" | "HOMEWORK">("ALL");
+
+  useEffect(() => {
+    if (!schoolId) return;
+    return subscribeSchoolUpiProofs(schoolId, setUpiProofs);
+  }, [schoolId]);
 
   useEffect(() => {
     if (typeof window !== "undefined") {
@@ -316,6 +347,14 @@ export const StudentSchoolPanel: React.FC<Props> = ({
         if (sp.get("openFeeReminder") === "1") {
           setActiveTab("fees");
           sp.delete("openFeeReminder");
+          const q = sp.toString();
+          window.history.replaceState({}, "", `${window.location.pathname}${q ? `?${q}` : ""}${window.location.hash}`);
+          return;
+        }
+        if (sp.get("missedSchoolCall") === "1") {
+          setMissedSchoolCalls(getNativeMissedSchoolCalls());
+          setShowNotificationModal(true);
+          sp.delete("missedSchoolCall");
           const q = sp.toString();
           window.history.replaceState({}, "", `${window.location.pathname}${q ? `?${q}` : ""}${window.location.hash}`);
           return;
@@ -571,8 +610,36 @@ export const StudentSchoolPanel: React.FC<Props> = ({
 
   // ── Notification and Student Switcher Modals
   const [showNotificationModal, setShowNotificationModal] = useState<boolean>(false);
+  const [missedSchoolCalls, setMissedSchoolCalls] = useState<MissedSchoolCallRecord[]>(() =>
+    getNativeMissedSchoolCalls()
+  );
   const [showStudentSwitcherModal, setShowStudentSwitcherModal] = useState<boolean>(false);
   const [welcomeModalData, setWelcomeModalData] = useState<NstaWelcomeData | null>(null);
+
+  useEffect(() => {
+    const refreshMissed = () => setMissedSchoolCalls(getNativeMissedSchoolCalls());
+    const onMissedCallEvent = (ev: Event) => {
+      refreshMissed();
+      const detail = (ev as CustomEvent)?.detail;
+      if (detail?.openModal) {
+        setActiveTab("overview");
+        setShowNotificationModal(true);
+      }
+    };
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") refreshMissed();
+    };
+    window.addEventListener("focus", refreshMissed);
+    document.addEventListener("visibilitychange", onVisibility);
+    window.addEventListener("android-caller-id-status", refreshMissed as EventListener);
+    window.addEventListener("android-missed-school-call", onMissedCallEvent as EventListener);
+    return () => {
+      window.removeEventListener("focus", refreshMissed);
+      document.removeEventListener("visibilitychange", onVisibility);
+      window.removeEventListener("android-caller-id-status", refreshMissed as EventListener);
+      window.removeEventListener("android-missed-school-call", onMissedCallEvent as EventListener);
+    };
+  }, []);
 
   // ── Face ID 30-Day Biometric State
   const [showFaceIdModal, setShowFaceIdModal] = useState<boolean>(false);
@@ -1580,7 +1647,25 @@ export const StudentSchoolPanel: React.FC<Props> = ({
   const [teacherSearch, setTeacherSearch] = useState<string>("");
   const [teacherRosterScope, setTeacherRosterScope] = useState<"ROUTINE" | "ALL">("ROUTINE");
   const [requestedTeacherChatId, setRequestedTeacherChatId] = useState<string | null>(null);
+  const [requestedMessengerThread, setRequestedMessengerThread] = useState<"school" | "class" | "teacher" | "friend" | null>(null);
   const [studentTimetableSchedules, setStudentTimetableSchedules] = useState<Record<string, Record<string, any[]>>>({});
+
+  const openMessengerForMissedCall = (mc: MissedSchoolCallRecord) => {
+    const targetLast10 = normalizePhoneLast10(mc.phone);
+    const targetName = String(mc.name || "").trim().toLowerCase();
+    const matchedTeacher =
+      schoolTeachers.find((t) => targetLast10 && normalizePhoneLast10(t.phone) === targetLast10) ||
+      schoolTeachers.find((t) => targetName && String(t.name || "").trim().toLowerCase() === targetName);
+
+    if (matchedTeacher?.id) {
+      setRequestedMessengerThread(null);
+      setRequestedTeacherChatId(matchedTeacher.id);
+    } else {
+      setRequestedTeacherChatId(null);
+      setRequestedMessengerThread("school");
+    }
+    setActiveTab("channel");
+  };
 
   useEffect(() => {
     if (!schoolId) return;
@@ -1623,6 +1708,7 @@ export const StudentSchoolPanel: React.FC<Props> = ({
           teachers: schoolTeachers,
           accountants: accs || [],
           staffEmployees: stfs || [],
+          respectTeacherPrivacy: true,
         });
       })
       .catch(() => {
@@ -1631,6 +1717,7 @@ export const StudentSchoolPanel: React.FC<Props> = ({
           school,
           schoolName: schoolDisplayName,
           teachers: schoolTeachers,
+          respectTeacherPrivacy: true,
         });
       });
     return () => {
@@ -3153,14 +3240,18 @@ export const StudentSchoolPanel: React.FC<Props> = ({
                         ? "bg-emerald-100 text-emerald-800 border-emerald-300"
                         : "bg-emerald-500/20 text-emerald-300 border-emerald-400/35"
                     }`}>
-                      Student Portal
+                      {pickLang(lang, "छात्र पोर्टल", "Student Portal")}
                     </span>
                   </div>
-                  <p className={`text-[10px] ${studentTheme === "white" ? "text-slate-600" : "text-slate-300"}`}>Official Student &amp; Parent Digital Campus</p>
+                  <p className={`text-[10px] ${studentTheme === "white" ? "text-slate-600" : "text-slate-300"}`}>
+                    {pickLang(lang, "आधिकारिक छात्र एवं अभिभावक पोर्टल", "Official Student & Parent Digital Campus")}
+                  </p>
                 </div>
               </div>
 
               <div className="flex items-center gap-2 shrink-0">
+                <LanguageToggleButton tone={studentTheme} compact />
+                <ScreenInfoGuideButton portal="student" screenKey="overview" tone={studentTheme} />
                 <button
                   type="button"
                   onClick={() => setShowNotificationModal(true)}
@@ -3252,7 +3343,9 @@ export const StudentSchoolPanel: React.FC<Props> = ({
                   }`}
                   title="View full attendance details"
                 >
-                  <span className={`text-[10px] block ${studentTheme === "white" ? "text-slate-600" : "text-slate-300"}`}>Attendance</span>
+                  <span className={`text-[10px] block ${studentTheme === "white" ? "text-slate-600" : "text-slate-300"}`}>
+                    {pickLang(lang, "उपस्थिति", "Attendance")}
+                  </span>
                   <span className={`text-sm font-bold tabular-nums block ${studentTheme === "white" ? "text-emerald-700" : "text-emerald-400"}`}>
                     {attendanceStats.percentage}%
                   </span>
@@ -3269,13 +3362,15 @@ export const StudentSchoolPanel: React.FC<Props> = ({
                   }`}
                   title="View full fee passbook & dues"
                 >
-                  <span className={`text-[10px] block ${studentTheme === "white" ? "text-slate-600" : "text-slate-300"}`}>Fee Dues</span>
+                  <span className={`text-[10px] block ${studentTheme === "white" ? "text-slate-600" : "text-slate-300"}`}>
+                    {pickLang(lang, "बकाया शुल्क", "Fee Dues")}
+                  </span>
                   <span className={`text-sm font-bold tabular-nums block ${
                     pendingDues === 0
                       ? studentTheme === "white" ? "text-emerald-700" : "text-emerald-400"
                       : studentTheme === "white" ? "text-amber-700" : "text-amber-400"
                   }`}>
-                    {pendingDues === 0 ? "Cleared" : `₹${pendingDues.toLocaleString("en-IN")}`}
+                    {pendingDues === 0 ? pickLang(lang, "चुकता", "Cleared") : `₹${pendingDues.toLocaleString("en-IN")}`}
                   </span>
                 </button>
                 <button
@@ -3290,9 +3385,11 @@ export const StudentSchoolPanel: React.FC<Props> = ({
                   }`}
                   title="View exam results & report card"
                 >
-                  <span className={`text-[10px] block ${studentTheme === "white" ? "text-slate-600" : "text-slate-300"}`}>Result</span>
+                  <span className={`text-[10px] block ${studentTheme === "white" ? "text-slate-600" : "text-slate-300"}`}>
+                    {pickLang(lang, "परिणाम", "Result")}
+                  </span>
                   <span className={`text-sm font-bold tabular-nums block ${studentTheme === "white" ? "text-indigo-700" : "text-indigo-300"}`}>
-                    {latestExamSummary.hasMarks ? `${latestExamSummary.percentage}%` : "Active"}
+                    {latestExamSummary.hasMarks ? `${latestExamSummary.percentage}%` : pickLang(lang, "सक्रिय", "Active")}
                   </span>
                 </button>
               </div>
@@ -3334,9 +3431,114 @@ export const StudentSchoolPanel: React.FC<Props> = ({
 
       {/* ── MAIN TAB CONTENT CONTAINER ─────────────────────────────────────── */}
       <main className="flex-1 max-w-6xl w-full mx-auto p-4 sm:p-6 pb-28 space-y-6">
+        {activeTab !== "overview" && (
+          <div className={`flex items-center justify-between gap-2 px-3 py-2 rounded-2xl border ${
+            studentTheme === "white"
+              ? "bg-white border-slate-200 text-slate-900 shadow-xs"
+              : studentTheme === "black"
+              ? "bg-[#0a0a0a] border-neutral-800 text-white"
+              : "bg-[#0d2042]/90 border-[#1e3a6e] text-white"
+          }`}>
+            <div className="flex items-center gap-2 min-w-0">
+              <button
+                type="button"
+                onClick={() => setActiveTab("overview")}
+                className={`inline-flex items-center gap-1 px-2.5 py-1.5 rounded-xl text-xs font-bold transition cursor-pointer shrink-0 ${
+                  studentTheme === "white"
+                    ? "bg-slate-100 hover:bg-slate-200 text-slate-700"
+                    : "bg-white/10 hover:bg-white/15 text-slate-200"
+                }`}
+              >
+                <ArrowLeft className="w-3.5 h-3.5" />
+                <span>{pickLang(lang, "होम", "Home")}</span>
+              </button>
+              <h2 className="text-xs sm:text-sm font-black truncate">
+                {getScreenFeatureGuide("student", activeTab, lang).title}
+              </h2>
+            </div>
+            <div className="flex items-center gap-1.5 shrink-0">
+              <LanguageToggleButton tone={studentTheme} compact />
+              <ScreenInfoGuideButton portal="student" screenKey={activeTab} tone={studentTheme} />
+            </div>
+          </div>
+        )}
+
         {/* TAB 1: UNIFIED APP LAUNCHPAD HOME & PROFILE ──────────────────────────── */}
         {activeTab === "overview" && (
           <div className="space-y-6">
+            <ApkUpdateBanner school={school} />
+            <CallSetupChecklistBanner mode="student" schoolName={schoolDisplayName} />
+
+            {missedSchoolCalls.length > 0 && (() => {
+              const latestMissed = missedSchoolCalls[0];
+              const callTimeStr = latestMissed.callDateMs
+                ? new Date(latestMissed.callDateMs).toLocaleString("en-IN", {
+                    day: "numeric",
+                    month: "short",
+                    hour: "numeric",
+                    minute: "2-digit",
+                  })
+                : "";
+              return (
+                <div className="rounded-2xl border border-rose-300 dark:border-rose-500/35 bg-gradient-to-r from-rose-50 via-amber-50 to-white dark:from-rose-950/40 dark:via-slate-900 dark:to-slate-900 p-3.5 sm:p-4 shadow-xs">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                    <div className="flex items-start gap-2.5 min-w-0">
+                      <div className="w-9 h-9 rounded-xl bg-rose-600 text-white flex items-center justify-center shrink-0 shadow-xs">
+                        <PhoneMissed className="w-4.5 h-4.5" />
+                      </div>
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <h3 className="text-xs sm:text-sm font-black text-slate-900 dark:text-white">
+                            School se call aaya tha — Missed Call ({latestMissed.name})
+                          </h3>
+                          {missedSchoolCalls.length > 1 && (
+                            <span className="px-2 py-0.5 rounded-md text-[10px] font-bold bg-rose-100 dark:bg-rose-500/20 text-rose-700 dark:text-rose-300">
+                              +{missedSchoolCalls.length - 1} aur
+                            </span>
+                          )}
+                        </div>
+                        <p className="text-[11px] text-slate-600 dark:text-slate-300 mt-0.5">
+                          {latestMissed.role} · {latestMissed.schoolName}
+                          {callTimeStr ? ` · ${callTimeStr}` : ""}
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-2 shrink-0 self-end sm:self-center">
+                      <button
+                        type="button"
+                        onClick={() => openMessengerForMissedCall(latestMissed)}
+                        className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 active:scale-95 text-white text-xs font-black shadow-xs transition cursor-pointer"
+                      >
+                        <MessageCircle className="w-3.5 h-3.5" />
+                        <span>NSTA Chat par Message</span>
+                      </button>
+                      {missedSchoolCalls.length > 1 && (
+                        <button
+                          type="button"
+                          onClick={() => setShowNotificationModal(true)}
+                          className="px-2.5 py-2 rounded-xl bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 text-xs font-bold cursor-pointer"
+                        >
+                          Sab Dekhein
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => {
+                          dismissNativeMissedSchoolCall(latestMissed.phone, latestMissed.callDateMs);
+                          setMissedSchoolCalls(getNativeMissedSchoolCalls());
+                        }}
+                        className="p-2 rounded-xl text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-white hover:bg-slate-200/70 dark:hover:bg-slate-800 cursor-pointer"
+                        title="Dismiss"
+                      >
+                        <X className="w-4 h-4" />
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              );
+            })()}
+
             {/* ── UNIFIED PARENT TRUST DASHBOARD & LIVE BUS / SAFETY SNAPSHOT ── */}
             <ParentTrustDashboardCard
               schoolId={schoolId}
@@ -3709,6 +3911,8 @@ export const StudentSchoolPanel: React.FC<Props> = ({
                 fees={allStudentFees}
                 initialTeacherId={requestedTeacherChatId}
                 onClearInitialTeacher={() => setRequestedTeacherChatId(null)}
+                initialThread={requestedMessengerThread}
+                onClearInitialThread={() => setRequestedMessengerThread(null)}
                 onBack={() => setActiveTab("overview")}
                 onOpenFeeReceipt={(f) => {
                   const isA6Demand = f?.type === "A6_DEMAND_SLIP" || f?.slipType === "A6_DEMAND_SLIP" || f?.isDueDemand || (f?.paid === false && Number(f?.paidAmount || 0) === 0);
@@ -4251,6 +4455,9 @@ export const StudentSchoolPanel: React.FC<Props> = ({
                     const isPartial = !isPreAdmission && !isPaid && !isUpcoming && paid > 0 && remaining > 0;
                     const rNo = isPreAdmission ? "—" : (isPaid || paid > 0 ? (f.receiptNo || `DPS-26-${String(idx + 1).padStart(4, "0")}`) : "—");
                     const dtInfo = formatPaymentDateTime(f.paidDate || f.paymentDate);
+                    const latestProof = upiProofs.find(
+                      (p) => p.studentId === activeStudent?.id && p.month === monthCode
+                    );
 
                     return (
                       <div
@@ -4495,45 +4702,76 @@ export const StudentSchoolPanel: React.FC<Props> = ({
                               सत्र अनुसार आगामी माह (अभी देय नहीं)
                             </div>
                           ) : (
-                            <div className="flex items-center gap-2 flex-wrap">
-                              {razorpayConfig?.enabled && remaining > 0 && (
+                            <div className="space-y-2">
+                              {latestProof?.status === "PENDING" && (
+                                <div className="px-2.5 py-1.5 rounded-xl bg-amber-500/15 border border-amber-500/35 text-[11px] font-bold text-amber-300 flex items-center justify-between gap-2">
+                                  <span>{pickLang(lang, "UPI सत्यापन लंबित", "UPI Proof Pending")}</span>
+                                  <span className="font-mono text-[10px]">UTR: {latestProof.utrNumber}</span>
+                                </div>
+                              )}
+                              {latestProof?.status === "REJECTED" && (
+                                <div className="px-2.5 py-1.5 rounded-xl bg-rose-500/15 border border-rose-500/35 text-[11px] font-semibold text-rose-300">
+                                  {pickLang(lang, "अस्वीकृत:", "Rejected:")} {latestProof.rejectionReason}
+                                </div>
+                              )}
+                              <div className="flex items-center gap-2 flex-wrap">
+                                {razorpayConfig?.enabled && remaining > 0 && (
+                                  <button
+                                    type="button"
+                                    onClick={() => handlePayFeeViaRazorpay(f, remaining, monthDisplay)}
+                                    disabled={payingFeeKey === (f.id || f.month)}
+                                    className="flex-1 min-w-[120px] py-2 px-2.5 rounded-xl bg-gradient-to-r from-indigo-600 to-blue-600 hover:from-indigo-500 hover:to-blue-500 text-white text-xs font-black transition flex items-center justify-center gap-1.5 active:scale-95 cursor-pointer shadow-sm disabled:opacity-50"
+                                    title="Razorpay UPI / Card se turant online fee jama karein"
+                                  >
+                                    <Zap className="w-3.5 h-3.5 text-amber-300" />
+                                    <span>
+                                      {payingFeeKey === (f.id || f.month)
+                                        ? "Opening..."
+                                        : `Pay ₹${remaining.toLocaleString("en-IN")}`}
+                                    </span>
+                                  </button>
+                                )}
+                                {remaining > 0 && latestProof?.status !== "PENDING" && (
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      setUpiPayTarget({
+                                        month: monthCode,
+                                        monthLabel: monthDisplay,
+                                        exactAmount: remaining,
+                                        feeItem: f,
+                                      })
+                                    }
+                                    className="flex-1 min-w-[130px] py-2 px-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-black transition flex items-center justify-center gap-1.5 active:scale-95 cursor-pointer shadow-xs"
+                                    title={pickLang(lang, "UPI QR से भुगतान करें व स्क्रीनशॉट भेजें", "Pay via School UPI QR & Upload Screenshot")}
+                                  >
+                                    <QrCode className="w-3.5 h-3.5" />
+                                    <span>{pickLang(lang, "UPI QR / अपलोड", "UPI QR / Upload")}</span>
+                                  </button>
+                                )}
                                 <button
                                   type="button"
-                                  onClick={() => handlePayFeeViaRazorpay(f, remaining, monthDisplay)}
-                                  disabled={payingFeeKey === (f.id || f.month)}
-                                  className="flex-1 min-w-[120px] py-2 px-2.5 rounded-xl bg-gradient-to-r from-indigo-600 to-blue-600 hover:from-indigo-500 hover:to-blue-500 text-white text-xs font-black transition flex items-center justify-center gap-1.5 active:scale-95 cursor-pointer shadow-sm disabled:opacity-50"
-                                  title="Razorpay UPI / Card se turant online fee jama karein"
+                                  onClick={() => {
+                                    setFeeModalFormat("a6");
+                                    setSelectedFeeForReceipt(f);
+                                  }}
+                                  className="flex-1 py-2 px-2.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-bold transition flex items-center justify-center gap-1.5 active:scale-95 cursor-pointer shadow-xs"
+                                  title="आधिकारिक फीस मांग पर्ची (Demand Slip) देखें"
                                 >
-                                  <Zap className="w-3.5 h-3.5 text-amber-300" />
-                                  <span>
-                                    {payingFeeKey === (f.id || f.month)
-                                      ? "Opening..."
-                                      : `Pay ₹${remaining.toLocaleString("en-IN")}`}
-                                  </span>
+                                  <FileText className="w-3.5 h-3.5 text-slate-950" />
+                                  <span>{pickLang(lang, "फीस मांग पर्ची", "Demand Slip")}</span>
                                 </button>
-                              )}
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  setFeeModalFormat("a6");
-                                  setSelectedFeeForReceipt(f);
-                                }}
-                                className="flex-1 py-2 px-2.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-bold transition flex items-center justify-center gap-1.5 active:scale-95 cursor-pointer shadow-xs"
-                                title="आधिकारिक फीस मांग पर्ची (Demand Slip) देखें"
-                              >
-                                <FileText className="w-3.5 h-3.5 text-slate-950" />
-                                <span>फीस मांग पर्ची (Slip)</span>
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => handleDownloadStudentPdf(f)}
-                                disabled={downloadingFeeId === (f.id || f.month)}
-                                className="py-2 px-3 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs font-bold transition flex items-center justify-center gap-1 active:scale-95 cursor-pointer disabled:opacity-50"
-                                title="मांग पर्ची PDF डाउनलोड करें"
-                              >
-                                <Download className="w-3.5 h-3.5" />
-                                <span>PDF स्लिप</span>
-                              </button>
+                                <button
+                                  type="button"
+                                  onClick={() => handleDownloadStudentPdf(f)}
+                                  disabled={downloadingFeeId === (f.id || f.month)}
+                                  className="py-2 px-3 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs font-bold transition flex items-center justify-center gap-1 active:scale-95 cursor-pointer disabled:opacity-50"
+                                  title="मांग पर्ची PDF डाउनलोड करें"
+                                >
+                                  <Download className="w-3.5 h-3.5" />
+                                  <span>PDF</span>
+                                </button>
+                              </div>
                             </div>
                           )}
                         </div>
@@ -4762,6 +5000,23 @@ export const StudentSchoolPanel: React.FC<Props> = ({
                                           >
                                             <Zap className="w-3 h-3 text-amber-300" />
                                             <span>Pay ₹{remaining.toLocaleString("en-IN")}</span>
+                                          </button>
+                                        )}
+                                        {!isUpcoming && remaining > 0 && (
+                                          <button
+                                            type="button"
+                                            onClick={() =>
+                                              setUpiPayTarget({
+                                                month: monthCode,
+                                                monthLabel: monthDisplay,
+                                                exactAmount: remaining,
+                                                feeItem: f,
+                                              })
+                                            }
+                                            className="px-2 py-1 rounded-lg bg-emerald-600/25 hover:bg-emerald-600 text-emerald-300 hover:text-white border border-emerald-500/40 text-[11px] font-bold transition flex items-center gap-1 cursor-pointer"
+                                          >
+                                            <QrCode className="w-3 h-3" />
+                                            <span>{pickLang(lang, "UPI / अपलोड", "UPI / Upload")}</span>
                                           </button>
                                         )}
                                         <button
@@ -5396,6 +5651,16 @@ export const StudentSchoolPanel: React.FC<Props> = ({
                 </div>
               </div>
             </div>
+
+            <EasyScanQrPanel
+              qrValue={qrStudentPayload}
+              personName={activeStudent.name}
+              personRoleLabel={formatClassLabel(studentClassLabel)}
+              identifierLabel={`Roll #${activeStudent.rollNo || "—"} · Adm: ${activeStudent.admissionNo || "—"}`}
+              scanInstruction="Attendance ya verification ke liye 512×512 Easy-Scan QR (Print ID Card apne original CR80 size me rahega)"
+              downloadFileName={`Student_QR_512x512_${activeStudent.name}_${activeStudent.admissionNo || activeStudent.id}`}
+              accent="blue"
+            />
           </div>
         )}
 
@@ -7073,6 +7338,74 @@ export const StudentSchoolPanel: React.FC<Props> = ({
                 </h4>
 
                 <div className="space-y-2.5">
+                  {missedSchoolCalls.length > 0 && (
+                    <div className="p-3 rounded-xl bg-rose-50 dark:bg-rose-500/10 border border-rose-200 dark:border-rose-500/30 space-y-2">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-[10px] font-black px-2 py-0.5 rounded-full bg-rose-100 dark:bg-rose-500/20 text-rose-800 dark:text-rose-300 flex items-center gap-1">
+                          <PhoneMissed className="w-3 h-3" />
+                          <span>Missed School Calls ({missedSchoolCalls.length})</span>
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            clearAllNativeMissedSchoolCalls();
+                            setMissedSchoolCalls([]);
+                          }}
+                          className="text-[10px] font-bold text-rose-700 dark:text-rose-300 hover:underline cursor-pointer"
+                        >
+                          Clear All
+                        </button>
+                      </div>
+                      {missedSchoolCalls.map((mc, idx) => (
+                        <div
+                          key={`${mc.phone}_${mc.callDateMs}_${idx}`}
+                          className="p-2.5 rounded-xl bg-white dark:bg-slate-900 border border-rose-200/80 dark:border-rose-500/25 flex items-center justify-between gap-2"
+                        >
+                          <div className="min-w-0">
+                            <p className="text-xs font-bold text-slate-900 dark:text-white truncate">
+                              {mc.name} <span className="text-[10px] font-semibold text-slate-500">({mc.role})</span>
+                            </p>
+                            <p className="text-[10px] text-slate-500 dark:text-slate-400">
+                              {mc.schoolName} ·{" "}
+                              {mc.callDateMs
+                                ? new Date(mc.callDateMs).toLocaleString("en-IN", {
+                                    day: "numeric",
+                                    month: "short",
+                                    hour: "numeric",
+                                    minute: "2-digit",
+                                  })
+                                : ""}
+                            </p>
+                          </div>
+                          <div className="flex items-center gap-1.5 shrink-0">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setShowNotificationModal(false);
+                                openMessengerForMissedCall(mc);
+                              }}
+                              className="px-2.5 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-[10px] font-bold flex items-center gap-1 cursor-pointer"
+                            >
+                              <MessageCircle className="w-3 h-3" />
+                              <span>NSTA Chat par Reply</span>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                dismissNativeMissedSchoolCall(mc.phone, mc.callDateMs);
+                                setMissedSchoolCalls(getNativeMissedSchoolCalls());
+                              }}
+                              className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 dark:hover:text-white cursor-pointer"
+                              title="Dismiss"
+                            >
+                              <X className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
                   {/* Automated Fee Due Alert */}
                   {pendingDues > 0 ? (
                     <div className="p-3 rounded-xl bg-amber-50 dark:bg-amber-500/10 border border-amber-200 dark:border-amber-500/30">
@@ -7313,6 +7646,37 @@ export const StudentSchoolPanel: React.FC<Props> = ({
             </div>
           </div>
         </div>
+      )}
+
+      {/* ── SCHOOL UPI QR PAY & SCREENSHOT UPLOAD MODAL ── */}
+      {upiPayTarget && activeStudent && (
+        <StudentUpiPayUploadModal
+          isOpen={Boolean(upiPayTarget)}
+          onClose={() => setUpiPayTarget(null)}
+          schoolId={schoolId}
+          sessionId={activeStudent.sessionId || sessionId || ""}
+          schoolName={schoolDisplayName}
+          upiId={school?.upiId || ""}
+          student={{
+            id: activeStudent.id,
+            name: activeStudent.name,
+            fatherName: activeStudent.fatherName,
+            classId: activeStudent.classId,
+            className: formatClassLabel(studentClassLabel),
+            rollNo: activeStudent.rollNo,
+            phone: activeStudent.phone || activeStudent.mobile,
+          }}
+          month={upiPayTarget.month}
+          monthLabel={upiPayTarget.monthLabel}
+          exactAmount={upiPayTarget.exactAmount}
+          razorpayEnabled={Boolean(razorpayConfig?.enabled)}
+          onSwitchToRazorpay={() => {
+            const target = upiPayTarget;
+            if (target) {
+              handlePayFeeViaRazorpay(target.feeItem, target.exactAmount, target.monthLabel);
+            }
+          }}
+        />
       )}
 
       {/* ── CELEBRATORY SCHOOL WELCOME MODAL ── */}

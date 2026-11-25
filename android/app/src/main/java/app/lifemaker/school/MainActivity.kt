@@ -62,6 +62,7 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.swiperefreshlayout.widget.SwipeRefreshLayout
 import com.google.firebase.FirebaseApp
 import com.google.firebase.messaging.FirebaseMessaging
+import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.text.SimpleDateFormat
@@ -129,6 +130,14 @@ class MainActivity : AppCompatActivity() {
             if (payload.isNotBlank()) {
                 pushIncomingParentCallToWebView(payload)
             }
+        }
+    }
+
+    private val missedSchoolCallReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            if (intent?.action != ParentCallerAlertHelper.ACTION_MISSED_SCHOOL_CALL) return
+            val payload = intent.getStringExtra(ParentCallerAlertHelper.EXTRA_MISSED_CALL_PAYLOAD).orEmpty()
+            pushMissedSchoolCallToWebView(payload, openModal = false)
         }
     }
 
@@ -226,6 +235,17 @@ class MainActivity : AppCompatActivity() {
     private val callScreeningRoleLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) {
+        if (!hasCallerIdPhonePerms()) {
+            try {
+                callLogPermissionLauncher.launch(
+                    arrayOf(
+                        Manifest.permission.READ_PHONE_STATE,
+                        Manifest.permission.READ_CALL_LOG
+                    )
+                )
+                return@registerForActivityResult
+            } catch (_: Exception) {}
+        }
         pushCallerIdStatusToWebView()
     }
 
@@ -366,12 +386,15 @@ class MainActivity : AppCompatActivity() {
         super.onStart()
         val filter = IntentFilter(LifeMakerMessagingService.ACTION_NEW_FCM_TOKEN)
         val parentCallFilter = IntentFilter(ParentCallerAlertHelper.ACTION_INCOMING_PARENT_CALL)
+        val missedCallFilter = IntentFilter(ParentCallerAlertHelper.ACTION_MISSED_SCHOOL_CALL)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             registerReceiver(fcmTokenReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
             registerReceiver(incomingParentCallReceiver, parentCallFilter, Context.RECEIVER_NOT_EXPORTED)
+            registerReceiver(missedSchoolCallReceiver, missedCallFilter, Context.RECEIVER_NOT_EXPORTED)
         } else {
             registerReceiver(fcmTokenReceiver, filter)
             registerReceiver(incomingParentCallReceiver, parentCallFilter)
+            registerReceiver(missedSchoolCallReceiver, missedCallFilter)
         }
         registerBatteryReceiver()
         registerNetworkObserver()
@@ -383,6 +406,9 @@ class MainActivity : AppCompatActivity() {
         } catch (_: Exception) {}
         try {
             unregisterReceiver(incomingParentCallReceiver)
+        } catch (_: Exception) {}
+        try {
+            unregisterReceiver(missedSchoolCallReceiver)
         } catch (_: Exception) {}
         unregisterBatteryReceiver()
         unregisterNetworkObserver()
@@ -521,6 +547,7 @@ class MainActivity : AppCompatActivity() {
             val incomingParentCall = parsed?.getQueryParameter("incomingParentCall")?.trim().orEmpty()
             val isPostCall = parsed?.getQueryParameter("postCall")?.trim() == "1"
             val openWalkie = parsed?.getQueryParameter("openWalkie")?.trim() == "1"
+            val isMissedSchoolCall = parsed?.getQueryParameter("missedSchoolCall")?.trim() == "1"
             val basePrefix = BuildConfig.APP_BASE_URL.trimEnd('/')
             val isWebLoaded =
                 ::webView.isInitialized &&
@@ -535,6 +562,8 @@ class MainActivity : AppCompatActivity() {
                         null
                     )
                 }
+            } else if (isMissedSchoolCall && isWebLoaded) {
+                pushMissedSchoolCallToWebView("", openModal = true)
             } else if (incomingParentPhone.isNotEmpty() && incomingParentCall == "1" && isWebLoaded) {
                 val matchJson = AppPrefs.findCallerEntry(applicationContext, incomingParentPhone)
                     ?.toJson(postCall = isPostCall)
@@ -1129,6 +1158,96 @@ class MainActivity : AppCompatActivity() {
         return result
     }
 
+    fun queryMatchedSchoolCallLogs(sinceMs: Long, limitCount: Int = 80): JSONArray {
+        val merged = JSONArray()
+        val seenKeys = mutableListOf<Pair<String, Long>>()
+
+        fun isDuplicate(phone: String, dateMs: Long): Boolean =
+            seenKeys.any { (p, t) -> p == phone && kotlin.math.abs(t - dateMs) < 12_000L }
+
+        if (hasAutoCallLogPermission()) {
+            try {
+                val projection = arrayOf(
+                    CallLog.Calls.NUMBER,
+                    CallLog.Calls.DURATION,
+                    CallLog.Calls.DATE,
+                    CallLog.Calls.TYPE
+                )
+                val effectiveSince = if (sinceMs > 0L) sinceMs else (System.currentTimeMillis() - 7L * 24L * 60L * 60L * 1000L)
+                contentResolver.query(
+                    CallLog.Calls.CONTENT_URI,
+                    projection,
+                    "${CallLog.Calls.DATE} >= ?",
+                    arrayOf(effectiveSince.toString()),
+                    "${CallLog.Calls.DATE} DESC"
+                )?.use { cursor ->
+                    val idxNum = cursor.getColumnIndex(CallLog.Calls.NUMBER)
+                    val idxDur = cursor.getColumnIndex(CallLog.Calls.DURATION)
+                    val idxDate = cursor.getColumnIndex(CallLog.Calls.DATE)
+                    val idxType = cursor.getColumnIndex(CallLog.Calls.TYPE)
+
+                    var scanned = 0
+                    while (cursor.moveToNext() && scanned < 250 && merged.length() < limitCount) {
+                        scanned++
+                        val rawNum = if (idxNum >= 0) cursor.getString(idxNum).orEmpty() else ""
+                        val match = AppPrefs.findCallerEntry(applicationContext, rawNum) ?: continue
+                        if (!match.kind.equals("PARENT", true) && !match.kind.equals("ENQUIRY", true)) continue
+
+                        val dur = if (idxDur >= 0) cursor.getInt(idxDur).coerceAtLeast(0) else 0
+                        val dt = if (idxDate >= 0) cursor.getLong(idxDate) else 0L
+                        if (dt <= 0L || isDuplicate(match.last10, dt)) continue
+
+                        val cType = if (idxType >= 0) cursor.getInt(idxType) else CallLog.Calls.INCOMING_TYPE
+                        val typeLabel = when (cType) {
+                            CallLog.Calls.OUTGOING_TYPE -> "OUTGOING"
+                            CallLog.Calls.INCOMING_TYPE -> "INCOMING"
+                            CallLog.Calls.MISSED_TYPE -> "MISSED"
+                            CallLog.Calls.REJECTED_TYPE -> "REJECTED"
+                            else -> "INCOMING"
+                        }
+                        val dir = if (cType == CallLog.Calls.OUTGOING_TYPE) "OUTGOING" else "INCOMING"
+
+                        seenKeys.add(match.last10 to dt)
+                        merged.put(JSONObject().apply {
+                            put("phone", match.last10)
+                            put("direction", dir)
+                            put("callType", typeLabel)
+                            put("durationSec", dur)
+                            put("callDateMs", dt)
+                            put("kind", match.kind)
+                            put("name", match.name)
+                            put("studentSummary", match.studentSummary)
+                            put("relationLabel", match.relationLabel)
+                            put("fatherName", match.fatherName)
+                            put("primaryStudentId", match.primaryStudentId)
+                            put("dueAmount", match.dueAmount)
+                            put("absentToday", match.absentToday)
+                            put("enquiryId", match.enquiryId)
+                            put("schoolName", match.schoolName)
+                        })
+                    }
+                }
+            } catch (_: Exception) {}
+        }
+
+        // Also include locally tracked matched calls (works even when CallLog permission isn't granted)
+        try {
+            val localArr = AppPrefs.getRecentMatchedSimCalls(applicationContext, sinceMs)
+            for (i in 0 until localArr.length()) {
+                if (merged.length() >= limitCount) break
+                val item = localArr.optJSONObject(i) ?: continue
+                val p = item.optString("phone", "")
+                val dt = item.optLong("callDateMs", 0L)
+                if (p.isNotEmpty() && dt > 0L && !isDuplicate(p, dt)) {
+                    seenKeys.add(p to dt)
+                    merged.put(item)
+                }
+            }
+        } catch (_: Exception) {}
+
+        return merged
+    }
+
     fun launchOfflinePhoneCall(rawPhone: String, trackingId: String) {
         val cleaned = rawPhone.replace(Regex("[^+0-9]"), "")
         val digitCount = cleaned.count { it.isDigit() }
@@ -1416,11 +1535,19 @@ class MainActivity : AppCompatActivity() {
     fun getCallerIdStatusJson(): JSONObject {
         val roleHeld = isCallScreeningRoleHeld()
         val phonePerms = hasCallerIdPhonePerms()
+        val hasPhoneState = hasPermission(Manifest.permission.READ_PHONE_STATE)
+        val isReady = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            (roleHeld && hasPhoneState) || phonePerms
+        } else {
+            phonePerms
+        }
         return JSONObject().apply {
             put("supported", true)
             put("isRoleHeld", roleHeld)
             put("hasPhonePerms", phonePerms)
-            put("isReady", roleHeld || phonePerms)
+            put("hasPhoneStatePerm", hasPhoneState)
+            put("hasCallLogPerm", hasAutoCallLogPermission())
+            put("isReady", isReady)
             put("cachedCount", AppPrefs.getCallerDirectoryCount(applicationContext))
             put("schoolName", AppPrefs.getCallerDirectorySchoolName(applicationContext))
             put("voiceEnabled", AppPrefs.isCallerVoiceAnnounceEnabled(applicationContext))
@@ -1430,6 +1557,8 @@ class MainActivity : AppCompatActivity() {
             put("parentScheduleVoiceEnabled", AppPrefs.isParentScheduleVoiceEnabled(applicationContext))
             put("parentCardPopupEnabled", AppPrefs.isParentCardPopupEnabled(applicationContext))
             put("parentOverlayEnabled", AppPrefs.isParentOverlayEnabled(applicationContext))
+            put("outgoingCallEnabled", AppPrefs.isOutgoingCallIdEnabled(applicationContext))
+            put("autoCallLogSyncEnabled", AppPrefs.isAutoCallLogSyncEnabled(applicationContext))
             put("canDrawOverlays", ParentCallOverlayService.canDrawOverlays(applicationContext))
         }
     }
@@ -1467,6 +1596,23 @@ class MainActivity : AppCompatActivity() {
                 (function() {
                   try {
                     window.dispatchEvent(new CustomEvent('android-incoming-parent-call', { detail: $payloadJson }));
+                  } catch (e) {}
+                })();
+                """.trimIndent(),
+                null
+            )
+        }
+    }
+
+    fun pushMissedSchoolCallToWebView(payloadJson: String, openModal: Boolean = false) {
+        if (!::webView.isInitialized || !webAppBridge.isTrustedHostActive) return
+        val callObj = payloadJson.takeIf { it.isNotBlank() } ?: "null"
+        webView.post {
+            webView.evaluateJavascript(
+                """
+                (function() {
+                  try {
+                    window.dispatchEvent(new CustomEvent('android-missed-school-call', { detail: { openModal: $openModal, call: $callObj } }));
                   } catch (e) {}
                 })();
                 """.trimIndent(),

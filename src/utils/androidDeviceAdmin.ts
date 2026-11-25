@@ -38,10 +38,58 @@ const DEFAULT_PACKAGE = "app.lifemaker.school";
 const DEFAULT_SHORT_RECEIVER = "app.lifemaker.school/.SchoolDeviceAdminReceiver";
 const DEFAULT_RECEIVER = "app.lifemaker.school/app.lifemaker.school.SchoolDeviceAdminReceiver";
 const ADMIN_PIN_HASH_STORAGE_KEY = "lm_device_admin_pin_hash_v1";
+const SCHOOL_PIN_HASH_PREFIX = "lm_school_admin_pin_hash_";
 
 function getBridge(): LifeMakerDeviceAdminBridge | undefined {
   if (typeof window === "undefined") return undefined;
   return (window as unknown as { LifeMakerAndroid?: LifeMakerDeviceAdminBridge }).LifeMakerAndroid;
+}
+
+export function getCachedSchoolAdminPinHash(schoolId?: string): string {
+  if (typeof window === "undefined") return "";
+  try {
+    if (schoolId) {
+      const schHash = localStorage.getItem(`${SCHOOL_PIN_HASH_PREFIX}${schoolId}`);
+      if (schHash && schHash.trim()) return schHash.trim();
+    }
+    return (localStorage.getItem(ADMIN_PIN_HASH_STORAGE_KEY) || "").trim();
+  } catch {
+    return "";
+  }
+}
+
+export function syncSchoolAdminPinHashToNative(
+  pinHash?: string | null,
+  schoolId?: string,
+  options?: { clearIfEmpty?: boolean }
+): void {
+  const bridge = getBridge();
+  const clean = (pinHash || "").trim();
+  if (!clean) {
+    if (options?.clearIfEmpty) {
+      try {
+        localStorage.removeItem(ADMIN_PIN_HASH_STORAGE_KEY);
+        if (schoolId) {
+          localStorage.removeItem(`${SCHOOL_PIN_HASH_PREFIX}${schoolId}`);
+        }
+      } catch {}
+      try {
+        bridge?.syncAdminPinHash?.("");
+      } catch {}
+    }
+    return;
+  }
+
+  try {
+    localStorage.setItem(ADMIN_PIN_HASH_STORAGE_KEY, clean);
+    if (schoolId) {
+      localStorage.setItem(`${SCHOOL_PIN_HASH_PREFIX}${schoolId}`, clean);
+    }
+  } catch {}
+
+  try {
+    bridge?.syncAdminPinHash?.(clean);
+  } catch {}
 }
 
 export function syncStoredAdminPinToNative(): void {
@@ -55,21 +103,28 @@ export function syncStoredAdminPinToNative(): void {
   } catch {}
 }
 
-export async function syncRawPinFallbackToNativeIfMissing(rawPin?: string): Promise<void> {
+export async function syncRawPinFallbackToNativeIfMissing(
+  rawPin?: string,
+  schoolId?: string
+): Promise<string> {
   const bridge = getBridge();
-  if (!bridge || typeof bridge.syncAdminPinHash !== "function") return;
   try {
+    const clean = (rawPin || "").trim();
+    if (!clean) return "";
+    const hash = await sha256Hex(clean);
     const hasCustom = Boolean(localStorage.getItem(ADMIN_PIN_HASH_STORAGE_KEY));
     if (hasCustom) {
       syncStoredAdminPinToNative();
-      return;
+      return localStorage.getItem(ADMIN_PIN_HASH_STORAGE_KEY) || hash;
     }
-    const clean = (rawPin || "").trim();
-    if (!clean) return;
-    if (bridge.hasNativeAdminPin?.()) return;
-    const hash = await sha256Hex(clean);
-    bridge.syncAdminPinHash(hash);
-  } catch {}
+    if (bridge?.hasNativeAdminPin?.()) {
+      return hash;
+    }
+    syncSchoolAdminPinHashToNative(hash, schoolId);
+    return hash;
+  } catch {
+    return "";
+  }
 }
 
 export function getAndroidDeviceAdminStatus(): AndroidDeviceAdminStatus {
@@ -203,6 +258,12 @@ async function sha256Hex(text: string): Promise<string> {
   return `fnv_${(h >>> 0).toString(16)}`;
 }
 
+export async function computeDeviceAdminPinHash(pin: string): Promise<string> {
+  const clean = pin.trim();
+  if (!clean) return "";
+  return sha256Hex(clean);
+}
+
 export function hasCustomDeviceAdminPin(): boolean {
   if (typeof window === "undefined") return false;
   try {
@@ -212,34 +273,28 @@ export function hasCustomDeviceAdminPin(): boolean {
   }
 }
 
-export async function saveCustomDeviceAdminPin(pin: string): Promise<void> {
+export async function saveCustomDeviceAdminPin(pin: string, schoolId?: string): Promise<string> {
   const clean = pin.trim();
-  const bridge = getBridge();
   if (!clean) {
-    try {
-      localStorage.removeItem(ADMIN_PIN_HASH_STORAGE_KEY);
-    } catch {}
-    try {
-      bridge?.syncAdminPinHash?.("");
-    } catch {}
-    return;
+    syncSchoolAdminPinHashToNative("", schoolId, { clearIfEmpty: true });
+    return "";
   }
   const hash = await sha256Hex(clean);
-  try {
-    localStorage.setItem(ADMIN_PIN_HASH_STORAGE_KEY, hash);
-  } catch {}
-  try {
-    bridge?.syncAdminPinHash?.(hash);
-  } catch {}
+  syncSchoolAdminPinHashToNative(hash, schoolId);
+  return hash;
 }
 
-export async function verifyCustomDeviceAdminPin(pin: string): Promise<boolean> {
+export async function verifyAgainstPinHash(pin: string, expectedHash?: string | null): Promise<boolean> {
   try {
-    const stored = localStorage.getItem(ADMIN_PIN_HASH_STORAGE_KEY);
-    if (!stored) return true;
+    const target = (expectedHash || localStorage.getItem(ADMIN_PIN_HASH_STORAGE_KEY) || "").trim();
+    if (!target) return true;
     const candidate = await sha256Hex(pin.trim());
-    return candidate === stored;
+    return candidate === target;
   } catch {
     return false;
   }
+}
+
+export async function verifyCustomDeviceAdminPin(pin: string): Promise<boolean> {
+  return verifyAgainstPinHash(pin);
 }

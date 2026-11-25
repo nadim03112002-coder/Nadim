@@ -13,6 +13,7 @@ import { printElementInIframe } from "./AdmissionFormPrintModal";
 import { safeOpenExternalUrl } from "../../utils/safeBrowserActions";
 import { buildStaffIdCardQrUrl } from "../../utils/qrVerifyUrl";
 import { exportElementToPdf } from "../../utils/universalPdfExport";
+import { EasyScanQrPanel } from "./EasyScanQrPanel";
 
 interface Props {
   isOpen: boolean;
@@ -20,6 +21,7 @@ interface Props {
   teacher: SchoolTeacher | StaffEmployee | null;
   school: School | null;
   onOpenTeacherPortal?: (teacher: SchoolTeacher | StaffEmployee) => void;
+  onOpenTestPortal?: (teacher: SchoolTeacher | StaffEmployee) => void;
 }
 
 export const TeacherIdCardModal: React.FC<Props> = ({
@@ -28,6 +30,7 @@ export const TeacherIdCardModal: React.FC<Props> = ({
   teacher,
   school,
   onOpenTeacherPortal,
+  onOpenTestPortal,
 }) => {
   const [orientation, setOrientation] = useState<"landscape" | "portrait">("landscape");
   const [copiedField, setCopiedField] = useState<string | null>(null);
@@ -456,8 +459,19 @@ export const TeacherIdCardModal: React.FC<Props> = ({
             </div>
           </div>
 
+          {/* 512x512 Easy-Scan On-Screen QR Panel (Excluded from Print / PDF) */}
+          <EasyScanQrPanel
+            qrValue={qrVerifyUrl}
+            personName={teacherName}
+            personRoleLabel={designation}
+            identifierLabel={`Emp ID: ${empId}${phone ? ` · ${phone}` : ""}`}
+            scanInstruction="Naye teacher ka login ya attendance scan karne ke liye 512×512 Easy-Scan QR"
+            downloadFileName={`Teacher_QR_512x512_${teacherName}_${empId}`}
+            accent="purple"
+          />
+
           {/* Teacher Login Credentials Card */}
-          <div className="bg-white dark:bg-slate-800 rounded-2xl p-4 border border-slate-200 dark:border-slate-700 shadow-sm space-y-3">
+          <div className="print:hidden bg-white dark:bg-slate-800 rounded-2xl p-4 border border-slate-200 dark:border-slate-700 shadow-sm space-y-3">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <div className="w-8 h-8 rounded-xl bg-purple-500/10 text-purple-600 dark:text-purple-400 flex items-center justify-center font-bold">
@@ -473,10 +487,10 @@ export const TeacherIdCardModal: React.FC<Props> = ({
                 </div>
               </div>
 
-              {onOpenTeacherPortal && (
+              {(onOpenTeacherPortal || onOpenTestPortal) && (
                 <button
                   type="button"
-                  onClick={() => onOpenTeacherPortal(teacher)}
+                  onClick={() => (onOpenTeacherPortal || onOpenTestPortal)?.(teacher)}
                   className="px-3 py-1.5 rounded-xl bg-purple-600 hover:bg-purple-700 text-white font-bold text-xs flex items-center gap-1.5 shadow-sm transition active:scale-95 cursor-pointer"
                 >
                   <ExternalLink className="w-3.5 h-3.5" />

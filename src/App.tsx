@@ -15,6 +15,7 @@ import {
 import { auth, logoutUser, getFreshUserData, getUserData, getUserByEmail, getUserByLinkedGoogleUid, saveUserToLive, ensureFirebaseAuthSession } from './firebase';
 import { onAuthStateChanged } from 'firebase/auth';
 import { AppLoadingScreen } from './components/AppLoadingScreen';
+import { DevelopedByCredit } from './components/school/DevelopedByFooter';
 import {
   DEFAULT_LIFE_MAKER_SCHOOL,
   DEFAULT_SCHOOL_ID,
@@ -1347,6 +1348,7 @@ export function App() {
                   <Loader2 className="w-4 h-4 animate-spin text-emerald-400" />
                   <span>Verifying Official Document...</span>
                 </div>
+                <DevelopedByCredit tone="dark" />
               </div>
             }
           >
@@ -1416,6 +1418,7 @@ export function App() {
                 <Loader2 className="w-4 h-4 animate-spin text-amber-400" />
                 <span>Loading Driver GPS Dashboard...</span>
               </div>
+              <DevelopedByCredit tone="dark" />
             </div>
           }
         >
@@ -1520,6 +1523,7 @@ export function App() {
           <Loader2 className="w-4 h-4 animate-spin text-amber-400" />
           <span>{subtitle}</span>
         </div>
+        <DevelopedByCredit tone={lightBg ? 'auto' : 'dark'} />
       </div>
     );
   };
@@ -1793,6 +1797,7 @@ export function App() {
             />
           ) : (
             <SchoolEcosystem
+              key={user.uid || user.id || 'school-ecosystem'}
               uid={user.uid || user.id || 'admin_uid'}
               email={user.email || ''}
               displayName={user.name || (user.role === 'TEACHER' ? 'Teacher' : isSchoolAdminEmail(user.email) || user.role === 'SCHOOL_ADMIN' ? 'SHAHID KHAN SIR (Principal & School Admin)' : 'Student')}

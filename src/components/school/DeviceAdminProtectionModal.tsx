@@ -17,8 +17,10 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import {
+  computeDeviceAdminPinHash,
   deactivateAndroidDeviceAdmin,
   getAndroidDeviceAdminStatus,
+  getCachedSchoolAdminPinHash,
   hasCustomDeviceAdminPin,
   lockAndroidDeviceScreen,
   openAndroidAccessibilityGuardSettings,
@@ -27,29 +29,46 @@ import {
   saveCustomDeviceAdminPin,
   setAndroidAccessibilityGuardLocked,
   setAndroidUninstallBlocked,
-  syncRawPinFallbackToNativeIfMissing,
+  syncSchoolAdminPinHashToNative,
   syncStoredAdminPinToNative,
   unlockAndroidProtectionTemporarily,
-  verifyCustomDeviceAdminPin,
+  verifyAgainstPinHash,
   type AndroidDeviceAdminStatus,
 } from "../../utils/androidDeviceAdmin";
+import { updateSchool } from "../../school-firebase";
 
 interface DeviceAdminProtectionModalProps {
   isOpen: boolean;
   onClose: () => void;
+  schoolId?: string;
+  schoolName?: string;
+  schoolPinHash?: string;
   schoolLockCode?: string;
+  canEditPin?: boolean;
+  onSchoolPinChanged?: (nextHash: string) => void;
 }
 
 export const DeviceAdminProtectionModal: React.FC<DeviceAdminProtectionModalProps> = ({
   isOpen,
   onClose,
+  schoolId,
+  schoolName,
+  schoolPinHash,
   schoolLockCode,
+  canEditPin = true,
+  onSchoolPinChanged,
 }) => {
   const [status, setStatus] = useState<AndroidDeviceAdminStatus>(() =>
     getAndroidDeviceAdminStatus()
   );
-  const [hasPin, setHasPin] = useState<boolean>(() => hasCustomDeviceAdminPin());
+  const [resolvedCloudHash, setResolvedCloudHash] = useState<string>(() =>
+    (schoolPinHash || getCachedSchoolAdminPinHash(schoolId) || "").trim()
+  );
+  const [hasPin, setHasPin] = useState<boolean>(() =>
+    Boolean((schoolPinHash || "").trim() || hasCustomDeviceAdminPin())
+  );
   const [newPin, setNewPin] = useState("");
+  const [savingPin, setSavingPin] = useState(false);
   const [verifyPinInput, setVerifyPinInput] = useState("");
   const [showPinSetup, setShowPinSetup] = useState(false);
   const [pendingAdminAction, setPendingAdminAction] = useState<
@@ -58,17 +77,47 @@ export const DeviceAdminProtectionModal: React.FC<DeviceAdminProtectionModalProp
 
   const refreshStatus = () => {
     setStatus(getAndroidDeviceAdminStatus());
-    setHasPin(hasCustomDeviceAdminPin());
+    const effective =
+      (schoolPinHash || "").trim() ||
+      resolvedCloudHash ||
+      getCachedSchoolAdminPinHash(schoolId);
+    setHasPin(Boolean(effective) || hasCustomDeviceAdminPin());
   };
 
   useEffect(() => {
     if (!isOpen) return;
-    syncStoredAdminPinToNative();
-    if (schoolLockCode) {
-      void syncRawPinFallbackToNativeIfMissing(schoolLockCode).then(() => {
-        setStatus(getAndroidDeviceAdminStatus());
-      });
-    }
+    let cancelled = false;
+
+    const syncCentralPin = async () => {
+      let targetHash = (schoolPinHash || "").trim();
+      if (!targetHash && schoolLockCode && schoolLockCode.trim().length > 0) {
+        targetHash = await computeDeviceAdminPinHash(schoolLockCode.trim());
+      }
+      // Migrate legacy local-only Admin PIN into School cloud record automatically when Admin opens setup
+      if (!targetHash && canEditPin && schoolId) {
+        const legacyLocal = getCachedSchoolAdminPinHash(schoolId);
+        if (legacyLocal) {
+          targetHash = legacyLocal;
+          updateSchool(schoolId, {
+            uninstallGuardPinHash: legacyLocal,
+            uninstallGuardPinUpdatedAt: new Date().toISOString(),
+          }).catch(() => {});
+          onSchoolPinChanged?.(legacyLocal);
+        }
+      }
+
+      if (cancelled) return;
+      if (targetHash) {
+        setResolvedCloudHash(targetHash);
+        syncSchoolAdminPinHashToNative(targetHash, schoolId);
+        setHasPin(true);
+      } else {
+        syncStoredAdminPinToNative();
+      }
+      setStatus(getAndroidDeviceAdminStatus());
+    };
+
+    void syncCentralPin();
     refreshStatus();
 
     const handleNativeChange = () => {
@@ -96,33 +145,33 @@ export const DeviceAdminProtectionModal: React.FC<DeviceAdminProtectionModalProp
     }, 1000);
 
     return () => {
+      cancelled = true;
       window.removeEventListener("android-device-admin-changed", handleNativeChange);
       document.removeEventListener("visibilitychange", handleVisibility);
       window.clearInterval(timer);
     };
-  }, [isOpen, schoolLockCode]);
+  }, [isOpen, schoolId, schoolPinHash, schoolLockCode, canEditPin]);
 
   if (!isOpen) return null;
 
+  const activeHash = (schoolPinHash || resolvedCloudHash || getCachedSchoolAdminPinHash(schoolId) || "").trim();
   const requiresPinOrSchoolCode =
-    hasPin || Boolean(schoolLockCode && schoolLockCode.trim().length > 0);
+    hasPin || Boolean(activeHash) || Boolean(schoolLockCode && schoolLockCode.trim().length > 0);
 
   const checkAdminPin = async (entered: string): Promise<boolean> => {
     const clean = entered.trim();
-    if (hasPin) {
-      const ok = await verifyCustomDeviceAdminPin(clean);
-      if (!ok) {
-        toast.error("Galat Security PIN!");
-        return false;
-      }
-      return true;
+    if (activeHash) {
+      const ok = await verifyAgainstPinHash(clean, activeHash);
+      if (ok) return true;
     }
     if (schoolLockCode && schoolLockCode.trim().length > 0) {
-      if (clean !== schoolLockCode.trim()) {
-        toast.error("Galat School Lock Code!");
-        return false;
+      if (clean === schoolLockCode.trim()) {
+        return true;
       }
-      return true;
+    }
+    if (activeHash || (schoolLockCode && schoolLockCode.trim().length > 0)) {
+      toast.error("Galat School Security PIN!");
+      return false;
     }
     return true;
   };
@@ -159,30 +208,63 @@ export const DeviceAdminProtectionModal: React.FC<DeviceAdminProtectionModalProp
   };
 
   const handleSavePin = async () => {
-    const clean = newPin.trim();
-    if (clean.length < 4) {
-      toast.error("Kam se kam 4 digit ka Admin PIN daalein.");
+    if (!canEditPin) {
+      toast.error("Sirf School Admin hi School Security PIN badal sakte hain.");
       return;
     }
-    await saveCustomDeviceAdminPin(clean);
-    setHasPin(true);
-    setNewPin("");
-    setShowPinSetup(false);
-    toast.success("Admin Security PIN save ho gaya!");
+    const clean = newPin.trim();
+    if (clean.length < 4) {
+      toast.error("Kam se kam 4 digit ka School PIN daalein.");
+      return;
+    }
+    setSavingPin(true);
+    try {
+      const hash = await saveCustomDeviceAdminPin(clean, schoolId);
+      setResolvedCloudHash(hash);
+      if (schoolId) {
+        await updateSchool(schoolId, {
+          uninstallGuardPinHash: hash,
+          uninstallGuardPinUpdatedAt: new Date().toISOString(),
+        });
+        onSchoolPinChanged?.(hash);
+      }
+      setHasPin(true);
+      setNewPin("");
+      setShowPinSetup(false);
+      setStatus(getAndroidDeviceAdminStatus());
+      toast.success("School Security PIN save ho gaya! Ab sabhi Student/Staff devices isi PIN se unlock honge.");
+    } catch {
+      toast.error("School PIN cloud me save karne me samasya aayi, local phone par set kar diya gaya hai.");
+    } finally {
+      setSavingPin(false);
+    }
   };
 
   const handleClearPin = async () => {
-    if (hasPin) {
-      const ok = await verifyCustomDeviceAdminPin(verifyPinInput);
+    if (!canEditPin) {
+      toast.error("Sirf School Admin hi School PIN hata sakte hain.");
+      return;
+    }
+    if (activeHash) {
+      const ok = await verifyAgainstPinHash(verifyPinInput, activeHash);
       if (!ok) {
-        toast.error("Pehle sahi purana PIN daalein.");
+        toast.error("Pehle confirm karne ke liye sahi purana School PIN daalein.");
         return;
       }
     }
-    await saveCustomDeviceAdminPin("");
-    setHasPin(false);
+    await saveCustomDeviceAdminPin("", schoolId);
+    setResolvedCloudHash("");
+    if (schoolId) {
+      await updateSchool(schoolId, {
+        uninstallGuardPinHash: "",
+        uninstallGuardPinUpdatedAt: new Date().toISOString(),
+      }).catch(() => {});
+      onSchoolPinChanged?.("");
+    }
+    setHasPin(Boolean(schoolLockCode && schoolLockCode.trim().length > 0));
     setVerifyPinInput("");
-    toast.success("Custom PIN hata diya gaya.");
+    setShowPinSetup(false);
+    toast.success("School Security PIN hata diya gaya.");
   };
 
   const executeProtectedAction = async () => {
@@ -530,16 +612,29 @@ export const DeviceAdminProtectionModal: React.FC<DeviceAdminProtectionModalProp
               </div>
             </div>
 
-            {/* Admin Security PIN & Settings Row */}
+            {/* School Security PIN & Settings Row */}
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-              <button
-                type="button"
-                onClick={() => setShowPinSetup((p) => !p)}
-                className="py-2.5 px-3 rounded-xl bg-amber-50 hover:bg-amber-100 dark:bg-amber-950/40 text-amber-800 dark:text-amber-300 font-bold text-xs border border-amber-200 dark:border-amber-800 flex items-center justify-center gap-1.5 cursor-pointer"
-              >
-                <KeyRound className="w-3.5 h-3.5" />
-                <span>{hasPin ? "Admin PIN बदलें (Set ✓)" : "Admin Security PIN सेट करें"}</span>
-              </button>
+              {canEditPin ? (
+                <button
+                  type="button"
+                  onClick={() => setShowPinSetup((p) => !p)}
+                  className="py-2.5 px-3 rounded-xl bg-amber-50 hover:bg-amber-100 dark:bg-amber-950/40 text-amber-800 dark:text-amber-300 font-bold text-xs border border-amber-200 dark:border-amber-800 flex items-center justify-center gap-1.5 cursor-pointer"
+                >
+                  <KeyRound className="w-3.5 h-3.5" />
+                  <span>
+                    {hasPin ? "School Security PIN बदलें (Active ✓)" : "School Security PIN सेट करें"}
+                  </span>
+                </button>
+              ) : (
+                <div className="py-2.5 px-3 rounded-xl bg-emerald-50 dark:bg-emerald-950/40 text-emerald-800 dark:text-emerald-300 font-bold text-xs border border-emerald-200 dark:border-emerald-800 flex items-center justify-center gap-1.5">
+                  <KeyRound className="w-3.5 h-3.5 shrink-0" />
+                  <span className="truncate">
+                    {hasPin || status.hasNativeAdminPin
+                      ? "School Admin PIN Synced ✓"
+                      : "School Admin PIN Pending"}
+                  </span>
+                </div>
+              )}
 
               <button
                 type="button"
@@ -561,9 +656,7 @@ export const DeviceAdminProtectionModal: React.FC<DeviceAdminProtectionModalProp
             <div className="p-3.5 rounded-2xl bg-rose-50 dark:bg-rose-950/30 border border-rose-200 dark:border-rose-800 space-y-2.5">
               <p className="text-xs font-bold text-rose-800 dark:text-rose-200">
                 {requiresPinOrSchoolCode
-                  ? hasPin
-                    ? "Confirm karne ke liye Admin Security PIN daalein:"
-                    : "Confirm karne ke liye School Security Lock Code daalein:"
+                  ? "Confirm karne ke liye School Security PIN daalein:"
                   : pendingAdminAction === "temp_unlock"
                   ? "Kya aap 2 minute ke liye Accessibility Uninstall Guard pause karna chahte hain?"
                   : "Kya aap Device Admin band karna chahte hain?"}
@@ -575,7 +668,7 @@ export const DeviceAdminProtectionModal: React.FC<DeviceAdminProtectionModalProp
                     inputMode="numeric"
                     value={verifyPinInput}
                     onChange={(e) => setVerifyPinInput(e.target.value)}
-                    placeholder="Enter PIN / Code"
+                    placeholder="School PIN / Code"
                     className="flex-1 px-3 py-2 rounded-xl border border-rose-300 dark:border-rose-700 bg-white dark:bg-slate-900 text-xs font-mono"
                   />
                 )}
@@ -600,11 +693,11 @@ export const DeviceAdminProtectionModal: React.FC<DeviceAdminProtectionModalProp
             </div>
           )}
 
-          {/* Security PIN Setup Box */}
-          {showPinSetup && (
+          {/* Central School Security PIN Setup Box (Admin Only) */}
+          {canEditPin && showPinSetup && (
             <div className="p-3.5 rounded-2xl bg-amber-50/80 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 space-y-2.5">
               <p className="text-xs font-bold text-amber-900 dark:text-amber-200">
-                Guard Unlock ya Device Admin band karne ke liye apna PIN set karein (Recommend: zaroor set karein):
+                {schoolName ? `${schoolName} ke sabhi` : "School ke sabhi"} Student, Teacher aur Staff phones ke Uninstall Guard ke liye EK central School PIN set karein (alag-alag account me PIN set karne ki zaroorat nahi hogi):
               </p>
               <div className="flex items-center gap-2">
                 <input
@@ -612,19 +705,21 @@ export const DeviceAdminProtectionModal: React.FC<DeviceAdminProtectionModalProp
                   inputMode="numeric"
                   value={newPin}
                   onChange={(e) => setNewPin(e.target.value)}
-                  placeholder="Naya 4-6 digit PIN"
+                  placeholder="Naya 4-6 digit School PIN"
                   className="flex-1 px-3 py-2 rounded-xl border border-amber-300 dark:border-amber-700 bg-white dark:bg-slate-900 text-xs font-mono"
                 />
                 <button
                   type="button"
+                  disabled={savingPin}
                   onClick={handleSavePin}
-                  className="px-4 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-xs cursor-pointer"
+                  className="px-4 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 disabled:opacity-60 text-slate-950 font-black text-xs cursor-pointer"
                 >
-                  Save PIN
+                  {savingPin ? "Saving..." : "Save School PIN"}
                 </button>
                 {hasPin && (
                   <button
                     type="button"
+                    disabled={savingPin}
                     onClick={handleClearPin}
                     className="px-3 py-2 rounded-xl bg-slate-200 dark:bg-slate-800 text-slate-700 dark:text-slate-300 font-bold text-xs cursor-pointer"
                   >
@@ -642,7 +737,7 @@ export const DeviceAdminProtectionModal: React.FC<DeviceAdminProtectionModalProp
               <span>Kaise Kaam Karta Hai?</span>
             </h4>
             <p className="text-[11px] text-slate-600 dark:text-slate-300 leading-relaxed">
-              <strong>Bina Computer (Regain Style):</strong> Upar <strong>Step 1 (Accessibility Guard)</strong> aur <strong>Step 2 (Device Admin)</strong> dono ON kar dein aur apna <strong>Admin PIN</strong> set kar lein. Ab koi bhi Uninstall, App Info, Device Admin ya Accessibility off karne jayega to screen turant Back ho jayegi!
+              <strong>Bina Computer (Regain Style):</strong> Upar <strong>Step 1 (Accessibility Guard)</strong> aur <strong>Step 2 (Device Admin)</strong> ON kar dein. School Admin ek baar <strong>School Security PIN</strong> set kar denge to woh PIN school ke sabhi Student, Teacher aur Staff phones me automatic sync ho jayega — har account me alag PIN set nahi karna hoga!
             </p>
             <details className="text-[11px] text-slate-600 dark:text-slate-300 pt-1">
               <summary className="font-black text-indigo-700 dark:text-indigo-300 cursor-pointer flex items-center gap-1.5">

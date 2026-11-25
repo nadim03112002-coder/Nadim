@@ -161,6 +161,17 @@
             android:indeterminate="true"
             android:indeterminateTint="@color/brand_accent" />
 
+        <TextView
+            android:id="@+id/splashDeveloperCredit"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="22dp"
+            android:letterSpacing="0.18"
+            android:text="DEVELOPED BY NADIM ANWAR"
+            android:textColor="#FCD34D"
+            android:textSize="11sp"
+            android:textStyle="bold" />
+
     </LinearLayout>
 
     <LinearLayout

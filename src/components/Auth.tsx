@@ -1225,18 +1225,20 @@ export const Auth: React.FC<Props> = ({ onLogin, logActivity, appSettings, onBac
           sessionId: '2026-27'
         }));
 
-        // 2. Also ensure local school students pool includes this student
+        // 2. Also ensure local school students pool & permanent user-linked student bundle include this student
         try {
           const sid = matchedStudentUser.schoolId || targetSchoolId;
           const studentEntry = {
+            type: 'STUDENT',
             id: matchedStudentUser.id,
             schoolId: sid,
+            schoolName: realSchoolName || matchedStudentUser.schoolName || '',
             name: matchedStudentUser.name,
             rollNo: (matchedStudentUser.displayId || '').replace('ROLL-', '') || '01',
             admissionNo: matchedStudentUser.admissionNo || '',
             phone: matchedStudentUser.mobile || '',
             classId: matchedStudentUser.classLevel || 'cls_10',
-            monthlyFee: 1800,
+            monthlyFee: matchedStudentUser.monthlyFee || 1800,
             active: true,
             createdAt: new Date().toISOString()
           };
@@ -1246,6 +1248,14 @@ export const Auth: React.FC<Props> = ({ onLogin, logActivity, appSettings, onBac
             const defPool = getLocalStudents(DEFAULT_SCHOOL_ID);
             setLocalStudents(DEFAULT_SCHOOL_ID, [studentEntry, ...defPool.filter(s => s.id !== matchedStudentUser!.id && (!matchedStudentUser!.admissionNo || s.admissionNo !== matchedStudentUser!.admissionNo))]);
           }
+          const activeKey = getStudentLinkKey(studentEntry, sid);
+          const mergedStudents = [studentEntry];
+          localStorage.setItem('nst_linked_students', JSON.stringify(mergedStudents));
+          localStorage.setItem(
+            `nst_user_linked_students_${matchedStudentUser.id}`,
+            JSON.stringify({ students: mergedStudents, activeStudentKey: activeKey, activeStudentId: studentEntry.id })
+          );
+          void saveUserLinkedStudents(matchedStudentUser.id, mergedStudents, activeKey);
         } catch {}
 
         // 3. Complete login INSTANTLY in UI
@@ -2151,29 +2161,64 @@ export const Auth: React.FC<Props> = ({ onLogin, logActivity, appSettings, onBac
       const isEmailFormat = cleanId.includes('@');
 
       if (isPhone || isNstaId || isEmailFormat) {
-        const restoredId = isNstaId
-          ? (cleanId.toUpperCase().startsWith('NSTA') ? cleanId.toUpperCase() : `NSTA-${cleanId}`)
-          : (isPhone ? `NSTA-${rawDigits.slice(-6)}` : `NSTA-${Date.now().toString().slice(-6)}`);
+        // Check local profile cache by email/mobile/ID before minting a restored ID so existing QR links stay intact
+        try {
+          const normMail = cleanId.toLowerCase();
+          for (let i = 0; i < localStorage.length; i++) {
+            const k = localStorage.key(i);
+            if (k && (k.startsWith('nst_user_profile_') || k === 'nsta_cached_user' || k === 'nst_current_user')) {
+              const raw = localStorage.getItem(k);
+              if (raw) {
+                const parsed = JSON.parse(raw);
+                if (!parsed || !(parsed.id || parsed.uid)) continue;
+                const pMail = String(parsed.email || '').toLowerCase();
+                const pMob = String(parsed.mobile || parsed.phone || '').replace(/\D/g, '').slice(-10);
+                const pId = String(parsed.displayId || parsed.id || '').toUpperCase();
+                if (
+                  (isEmailFormat && pMail === normMail) ||
+                  (isPhone && pMob === rawDigits) ||
+                  (isNstaId && pId === cleanId.toUpperCase())
+                ) {
+                  matchedUser = parsed;
+                  break;
+                }
+              }
+            }
+          }
+        } catch {}
 
-        matchedUser = {
-          id: restoredId,
-          uid: restoredId,
-          displayId: restoredId,
-          name: isEmailFormat ? cleanId.split('@')[0] : 'Student',
-          mobile: isPhone ? rawDigits : '',
-          email: isEmailFormat ? cleanId : `${restoredId.toLowerCase()}@nsta.app`,
-          role: 'STUDENT',
-          classLevel: '10',
-          schoolId: DEFAULT_SCHOOL_ID,
-          credits: 100,
-          diamonds: 50,
-          streak: 1,
-          totalScore: 0,
-          profileCompleted: true,
-          provider: 'account_restore',
-          password: cleanPassword
-        };
-        saveUserToLive(matchedUser, { immediate: true }).catch(() => {});
+        if (!matchedUser) {
+          let emailHash = 0;
+          if (isEmailFormat) {
+            const normMail = cleanId.toLowerCase();
+            for (let i = 0; i < normMail.length; i++) {
+              emailHash = (Math.imul(emailHash, 31) + normMail.charCodeAt(i)) >>> 0;
+            }
+          }
+          const restoredId = isNstaId
+            ? (cleanId.toUpperCase().startsWith('NSTA') ? cleanId.toUpperCase() : `NSTA-${cleanId}`)
+            : (isPhone ? `NSTA-${rawDigits.slice(-6)}` : `NSTA-E${String(emailHash % 900000 + 100000)}`);
+
+          matchedUser = {
+            id: restoredId,
+            uid: restoredId,
+            displayId: restoredId,
+            name: isEmailFormat ? cleanId.split('@')[0] : 'Student',
+            mobile: isPhone ? rawDigits : '',
+            email: isEmailFormat ? cleanId : `${restoredId.toLowerCase()}@nsta.app`,
+            role: 'STUDENT',
+            classLevel: '10',
+            schoolId: DEFAULT_SCHOOL_ID,
+            credits: 100,
+            diamonds: 50,
+            streak: 1,
+            totalScore: 0,
+            profileCompleted: true,
+            provider: 'account_restore',
+            password: cleanPassword
+          };
+          saveUserToLive(matchedUser, { immediate: true }).catch(() => {});
+        }
       } else {
         return {
           ok: false,

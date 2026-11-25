@@ -31,6 +31,7 @@ import {
   sendSchoolWalkieMessage,
   setWalkieAutoPlayPref,
   syncWalkiePrefsToAndroid,
+  unlockWalkieAudioPlayback,
   type SchoolWalkieSchedule,
   type WalkieMessage,
 } from "../../utils/schoolWalkieService";
@@ -44,6 +45,7 @@ interface WalkieTalkieModalProps {
   currentUserId: string;
   currentUserName: string;
   currentUserRole: "ADMIN" | "ACCOUNTANT" | "TEACHER";
+  schoolAdminUid?: string;
   teachers?: SchoolTeacher[];
   accountants?: SchoolAccountant[];
   messages: WalkieMessage[];
@@ -81,6 +83,49 @@ function blobToBase64(blob: Blob): Promise<string> {
   });
 }
 
+function createSafeMediaRecorder(stream: MediaStream): {
+  recorder: MediaRecorder;
+  chosenMime: string;
+} {
+  const mimeCandidates = [
+    "audio/webm;codecs=opus",
+    "audio/webm",
+    "audio/mp4",
+    "audio/ogg;codecs=opus",
+    "audio/ogg",
+  ];
+  const chosenMime =
+    typeof MediaRecorder !== "undefined"
+      ? mimeCandidates.find((m) => MediaRecorder.isTypeSupported?.(m)) || ""
+      : "";
+
+  if (chosenMime) {
+    try {
+      return {
+        recorder: new MediaRecorder(stream, {
+          mimeType: chosenMime,
+          audioBitsPerSecond: 24000,
+        }),
+        chosenMime,
+      };
+    } catch {
+      try {
+        return {
+          recorder: new MediaRecorder(stream, { mimeType: chosenMime }),
+          chosenMime,
+        };
+      } catch {
+        // Fallback below
+      }
+    }
+  }
+
+  return {
+    recorder: new MediaRecorder(stream),
+    chosenMime: "",
+  };
+}
+
 export const WalkieTalkieModal: React.FC<WalkieTalkieModalProps> = ({
   isOpen,
   onClose,
@@ -89,6 +134,7 @@ export const WalkieTalkieModal: React.FC<WalkieTalkieModalProps> = ({
   currentUserId,
   currentUserName,
   currentUserRole,
+  schoolAdminUid,
   teachers = [],
   accountants = [],
   messages,
@@ -111,12 +157,18 @@ export const WalkieTalkieModal: React.FC<WalkieTalkieModalProps> = ({
   // Recording state
   const [isRecording, setIsRecording] = useState(false);
   const [recordSeconds, setRecordSeconds] = useState(0);
+  const [micLevel, setMicLevel] = useState(0);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);
+  const meterCtxRef = useRef<AudioContext | null>(null);
+  const meterRafRef = useRef<number | null>(null);
   const chunksRef = useRef<Blob[]>([]);
   const startedAtRef = useRef<number>(0);
   const timerRef = useRef<number | null>(null);
   const cancelNextStopRef = useRef(false);
+  const isStartingMicRef = useRef(false);
+  const pointerDownAtRef = useRef<number>(0);
+  const ignoreNextClickRef = useRef(false);
 
   // Admin School Hours Editor
   const [showScheduleEditor, setShowScheduleEditor] = useState(false);
@@ -129,7 +181,35 @@ export const WalkieTalkieModal: React.FC<WalkieTalkieModalProps> = ({
   }, [schedule]);
 
   useEffect(() => {
-    if (!isOpen) return;
+    if (!isOpen) {
+      // Safely cancel active recording if modal closes
+      cancelNextStopRef.current = true;
+      if (timerRef.current) {
+        window.clearInterval(timerRef.current);
+        timerRef.current = null;
+      }
+      if (meterRafRef.current) {
+        cancelAnimationFrame(meterRafRef.current);
+        meterRafRef.current = null;
+      }
+      try {
+        if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
+          mediaRecorderRef.current.stop();
+        }
+      } catch {}
+      try {
+        mediaStreamRef.current?.getTracks().forEach((t) => t.stop());
+      } catch {}
+      try {
+        void meterCtxRef.current?.close();
+      } catch {}
+      meterCtxRef.current = null;
+      setIsRecording(false);
+      setMicLevel(0);
+      return;
+    }
+
+    unlockWalkieAudioPlayback();
     const id = window.setInterval(() => setNowTick(Date.now()), 15_000);
     return () => window.clearInterval(id);
   }, [isOpen]);
@@ -137,6 +217,7 @@ export const WalkieTalkieModal: React.FC<WalkieTalkieModalProps> = ({
   useEffect(() => {
     return () => {
       if (timerRef.current) window.clearInterval(timerRef.current);
+      if (meterRafRef.current) cancelAnimationFrame(meterRafRef.current);
       try {
         if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
           cancelNextStopRef.current = true;
@@ -145,6 +226,9 @@ export const WalkieTalkieModal: React.FC<WalkieTalkieModalProps> = ({
       } catch {}
       try {
         mediaStreamRef.current?.getTracks().forEach((t) => t.stop());
+      } catch {}
+      try {
+        void meterCtxRef.current?.close();
       } catch {}
     };
   }, []);
@@ -158,23 +242,36 @@ export const WalkieTalkieModal: React.FC<WalkieTalkieModalProps> = ({
     const list: Array<{ id: string; pushIds: string[]; name: string; roleLabel: string }> = [];
 
     if (currentUserRole !== "ADMIN") {
+      const adminPushIds = ["STAFF_ADMIN", "school_admin"];
+      if (schoolAdminUid && schoolAdminUid.trim()) {
+        adminPushIds.push(schoolAdminUid.trim());
+      }
       list.push({
         id: "STAFF_ADMIN",
-        pushIds: ["STAFF_ADMIN", "school_admin"],
+        pushIds: Array.from(new Set(adminPushIds)),
         name: school?.principalName || "Principal / Admin Office",
         roleLabel: "Admin Office",
       });
     }
 
-    accountants.forEach((acc) => {
-      if (!acc?.id || acc.id === currentUserId) return;
-      list.push({
-        id: acc.id,
-        pushIds: [acc.id, "accountant_admin"],
-        name: acc.name || "Accountant",
-        roleLabel: acc.designation || "Accountant",
+    if (accountants.length > 0) {
+      accountants.forEach((acc) => {
+        if (!acc?.id || acc.id === currentUserId) return;
+        list.push({
+          id: acc.id,
+          pushIds: [acc.id, "accountant_admin"],
+          name: acc.name || "Accountant",
+          roleLabel: acc.designation || "Accountant",
+        });
       });
-    });
+    } else if (currentUserRole !== "ACCOUNTANT") {
+      list.push({
+        id: "accountant_admin",
+        pushIds: ["accountant_admin"],
+        name: "Accountant Office",
+        roleLabel: "Fee & Accounts",
+      });
+    }
 
     teachers.forEach((t) => {
       if (!t?.id || t.id === currentUserId) return;
@@ -182,12 +279,23 @@ export const WalkieTalkieModal: React.FC<WalkieTalkieModalProps> = ({
         id: t.id,
         pushIds: [t.id],
         name: t.name || "Teacher",
-        roleLabel: t.designation || (Array.isArray(t.subjects) && t.subjects.length > 0 ? t.subjects.slice(0, 2).join(", ") : "Teacher"),
+        roleLabel:
+          t.designation ||
+          (Array.isArray(t.subjects) && t.subjects.length > 0
+            ? t.subjects.slice(0, 2).join(", ")
+            : "Teacher"),
       });
     });
 
     return list;
-  }, [accountants, teachers, currentUserId, currentUserRole, school?.principalName]);
+  }, [
+    accountants,
+    teachers,
+    currentUserId,
+    currentUserRole,
+    school?.principalName,
+    schoolAdminUid,
+  ]);
 
   const filteredStaff = useMemo(() => {
     const q = staffSearch.trim().toLowerCase();
@@ -228,7 +336,47 @@ export const WalkieTalkieModal: React.FC<WalkieTalkieModalProps> = ({
 
   if (!isOpen) return null;
 
+  const stopMeterLoop = () => {
+    if (meterRafRef.current) {
+      cancelAnimationFrame(meterRafRef.current);
+      meterRafRef.current = null;
+    }
+    try {
+      void meterCtxRef.current?.close();
+    } catch {}
+    meterCtxRef.current = null;
+    setMicLevel(0);
+  };
+
+  const startMeterLoop = (stream: MediaStream) => {
+    try {
+      const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+      if (!AudioCtx) return;
+      const ctx = new AudioCtx();
+      meterCtxRef.current = ctx;
+      const source = ctx.createMediaStreamSource(stream);
+      const analyser = ctx.createAnalyser();
+      analyser.fftSize = 256;
+      source.connect(analyser);
+      const dataArray = new Uint8Array(analyser.frequencyBinCount);
+
+      const tick = () => {
+        if (!meterCtxRef.current) return;
+        analyser.getByteFrequencyData(dataArray);
+        let sum = 0;
+        for (let i = 0; i < dataArray.length; i++) {
+          sum += dataArray[i];
+        }
+        const avg = sum / dataArray.length;
+        setMicLevel(Math.min(100, Math.round((avg / 90) * 100)));
+        meterRafRef.current = requestAnimationFrame(tick);
+      };
+      meterRafRef.current = requestAnimationFrame(tick);
+    } catch {}
+  };
+
   const handleToggleAutoPlay = () => {
+    unlockWalkieAudioPlayback();
     const next = !autoPlay;
     setAutoPlay(next);
     setWalkieAutoPlayPref(next);
@@ -246,51 +394,74 @@ export const WalkieTalkieModal: React.FC<WalkieTalkieModalProps> = ({
       window.clearInterval(timerRef.current);
       timerRef.current = null;
     }
+    stopMeterLoop();
     try {
       if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
         mediaRecorderRef.current.stop();
+      } else {
+        mediaStreamRef.current?.getTracks().forEach((t) => t.stop());
+        mediaStreamRef.current = null;
       }
-    } catch {}
+    } catch {
+      try {
+        mediaStreamRef.current?.getTracks().forEach((t) => t.stop());
+      } catch {}
+      mediaStreamRef.current = null;
+    }
     setIsRecording(false);
+    if (shouldCancel) {
+      toast.info("Voice recording cancel kar di gayi.");
+    }
   };
 
   const startRecording = async () => {
-    if (!isElite || isRecording || sending) return;
+    if (!isElite || isRecording || sending || isStartingMicRef.current) return;
     if (!hourStatus.active) {
       toast.error(hourStatus.reason);
       return;
     }
     if (typeof navigator === "undefined" || !navigator.mediaDevices?.getUserMedia) {
-      toast.error("Is device par microphone recording supported nahi hai. Neeche text voice use karein.");
+      toast.error(
+        "Is device par microphone recording supported nahi hai. Neeche Text Walkie bhejein."
+      );
       return;
     }
 
+    isStartingMicRef.current = true;
+    unlockWalkieAudioPlayback();
+
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      let stream: MediaStream;
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          audio: {
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true,
+          },
+        });
+      } catch {
+        stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      }
+
       mediaStreamRef.current = stream;
       chunksRef.current = [];
       cancelNextStopRef.current = false;
 
-      const mimeCandidates = [
-        "audio/webm;codecs=opus",
-        "audio/webm",
-        "audio/mp4",
-        "audio/ogg",
-      ];
-      const chosenMime =
-        typeof MediaRecorder !== "undefined"
-          ? mimeCandidates.find((m) => MediaRecorder.isTypeSupported?.(m)) || ""
-          : "";
-
-      const recorder = chosenMime
-        ? new MediaRecorder(stream, { mimeType: chosenMime, audioBitsPerSecond: 24000 })
-        : new MediaRecorder(stream);
+      const { recorder, chosenMime } = createSafeMediaRecorder(stream);
 
       recorder.ondataavailable = (ev) => {
         if (ev.data && ev.data.size > 0) chunksRef.current.push(ev.data);
       };
 
+      recorder.onerror = () => {
+        stopMeterLoop();
+        setIsRecording(false);
+        toast.error("Mic recording me dikkat aayi. Dubara try karein ya Text Walkie bhejein.");
+      };
+
       recorder.onstop = async () => {
+        stopMeterLoop();
         try {
           stream.getTracks().forEach((t) => t.stop());
         } catch {}
@@ -307,8 +478,8 @@ export const WalkieTalkieModal: React.FC<WalkieTalkieModalProps> = ({
           type: chosenMime || recorder.mimeType || "audio/webm",
         });
         chunksRef.current = [];
-        if (blob.size < 450) {
-          toast.info("Thodi der bolkar button chhodein.");
+        if (blob.size < 350) {
+          toast.info("Kam se kam 1 second bolkar button chhodein.");
           return;
         }
         setSending(true);
@@ -331,7 +502,7 @@ export const WalkieTalkieModal: React.FC<WalkieTalkieModalProps> = ({
             schedule,
           });
           playWalkieChimeTone("over");
-          toast.success(`${activeTarget.targetName} ko walkie bheja gaya.`);
+          toast.success(`${activeTarget.targetName} ko walkie voice bhej di gayi.`);
         } catch (err: any) {
           toast.error(err?.message || "Walkie message nahi bheja ja saka.");
         } finally {
@@ -344,21 +515,59 @@ export const WalkieTalkieModal: React.FC<WalkieTalkieModalProps> = ({
       setRecordSeconds(0);
       setIsRecording(true);
       playWalkieChimeTone("start");
+      startMeterLoop(stream);
       recorder.start(250);
 
       timerRef.current = window.setInterval(() => {
         const sec = Math.floor((Date.now() - startedAtRef.current) / 1000);
         setRecordSeconds(sec);
-        if (sec >= 15) {
+        if (sec >= 30) {
           stopRecordingInternal(false);
         }
       }, 250);
     } catch {
       toast.error("Microphone permission allow karein ya neeche Text Walkie bhejein.");
+    } finally {
+      isStartingMicRef.current = false;
+    }
+  };
+
+  const handleMicPointerDown = () => {
+    if (sending || !hourStatus.active || !isElite) return;
+    unlockWalkieAudioPlayback();
+    pointerDownAtRef.current = Date.now();
+    if (!isRecording) {
+      ignoreNextClickRef.current = true;
+      void startRecording();
+    } else {
+      ignoreNextClickRef.current = false;
+    }
+  };
+
+  const handleMicPointerUp = () => {
+    if (!isRecording) return;
+    const heldMs = Date.now() - pointerDownAtRef.current;
+    // Hold-to-talk: if held >= 650ms, releasing sends immediately; quick tap keeps recording open until tapped again
+    if (heldMs >= 650) {
+      ignoreNextClickRef.current = true;
+      stopRecordingInternal(false);
+    }
+  };
+
+  const handleMicClick = () => {
+    if (ignoreNextClickRef.current) {
+      ignoreNextClickRef.current = false;
+      return;
+    }
+    if (isRecording) {
+      stopRecordingInternal(false);
+    } else {
+      void startRecording();
     }
   };
 
   const handleSendTextWalkie = async (customText?: string) => {
+    unlockWalkieAudioPlayback();
     const clean = (customText ?? announcementText).trim();
     if (!clean || sending) return;
     if (!hourStatus.active) {
@@ -401,8 +610,8 @@ export const WalkieTalkieModal: React.FC<WalkieTalkieModalProps> = ({
       });
       setShowScheduleEditor(false);
       toast.success("School Hours Walkie timing save ho gayi.");
-    } catch {
-      toast.error("Timing save nahi ho saki.");
+    } catch (err: any) {
+      toast.error(err?.message || "Timing save nahi ho saki.");
     } finally {
       setSavingSchedule(false);
     }
@@ -441,7 +650,8 @@ export const WalkieTalkieModal: React.FC<WalkieTalkieModalProps> = ({
                 School Walkie-Talkie Intercom
               </h3>
               <p className="text-[11px] text-slate-500 dark:text-slate-400 truncate">
-                Sirf School Hours · {hourStatus.windowLabel}
+                {schedule.alwaysActive ? "24 Hours Live" : "School Hours"} ·{" "}
+                {hourStatus.windowLabel}
               </p>
             </div>
           </div>
@@ -481,7 +691,7 @@ export const WalkieTalkieModal: React.FC<WalkieTalkieModalProps> = ({
               description="Principal, Accountant aur Teachers ke beech school timing me direct push-to-talk walkie-talkie aur voice announcement sirf Elite Plan schools ke liye uplabdh hai."
               highlights={[
                 "1-Tap Push-to-Talk & Text-to-Voice broadcast (Single Staff ya All Staff)",
-                "Sirf School Hours window (jaise 07:30 AM – 03:30 PM) me active",
+                "Sirf School Hours window (jaise 07:30 AM – 03:30 PM) ya 24h mode",
                 "Audio/Video Calls aur Fee Tagada Caller bhi Elite Plan me shamil",
               ]}
               onUpgrade={() => {
@@ -507,7 +717,11 @@ export const WalkieTalkieModal: React.FC<WalkieTalkieModalProps> = ({
                         : "text-rose-700 dark:text-rose-300"
                     }`}
                   >
-                    {hourStatus.active ? "School Hours Active" : "Closed Outside School Hours"}
+                    {hourStatus.active
+                      ? schedule.alwaysActive
+                        ? "24 Hours Live Active"
+                        : "School Hours Active"
+                      : "Closed Outside School Hours"}
                   </span>
                 </div>
 
@@ -537,75 +751,97 @@ export const WalkieTalkieModal: React.FC<WalkieTalkieModalProps> = ({
               {/* Admin School Hours Config */}
               {showScheduleEditor && currentUserRole === "ADMIN" && (
                 <div className="p-3.5 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 space-y-3">
-                  <div className="flex items-center justify-between gap-2">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
                     <span className="text-xs font-bold text-slate-900 dark:text-white">
                       School Hours Walkie Schedule
                     </span>
-                    <label className="inline-flex items-center gap-2 text-xs font-semibold text-slate-700 dark:text-slate-300 cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={draftSchedule.enabled}
-                        onChange={(e) =>
-                          setDraftSchedule((p) => ({ ...p, enabled: e.target.checked }))
-                        }
-                        className="rounded accent-emerald-600"
-                      />
-                      <span>Walkie Enabled</span>
-                    </label>
-                  </div>
-
-                  <div className="grid grid-cols-2 gap-2.5">
-                    <div>
-                      <label className="text-[11px] font-medium text-slate-500 dark:text-slate-400 block mb-1">
-                        Start Time
+                    <div className="flex items-center gap-3">
+                      <label className="inline-flex items-center gap-1.5 text-xs font-semibold text-indigo-700 dark:text-indigo-300 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={Boolean(draftSchedule.alwaysActive)}
+                          onChange={(e) =>
+                            setDraftSchedule((p) => ({
+                              ...p,
+                              alwaysActive: e.target.checked,
+                            }))
+                          }
+                          className="rounded accent-indigo-600"
+                        />
+                        <span>24 Hours Always ON</span>
                       </label>
-                      <input
-                        type="time"
-                        value={draftSchedule.startTime}
-                        onChange={(e) =>
-                          setDraftSchedule((p) => ({ ...p, startTime: e.target.value }))
-                        }
-                        className="w-full min-h-[40px] px-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs font-mono text-slate-900 dark:text-white"
-                      />
-                    </div>
-                    <div>
-                      <label className="text-[11px] font-medium text-slate-500 dark:text-slate-400 block mb-1">
-                        End Time
+                      <label className="inline-flex items-center gap-1.5 text-xs font-semibold text-slate-700 dark:text-slate-300 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={draftSchedule.enabled}
+                          onChange={(e) =>
+                            setDraftSchedule((p) => ({ ...p, enabled: e.target.checked }))
+                          }
+                          className="rounded accent-emerald-600"
+                        />
+                        <span>Enabled</span>
                       </label>
-                      <input
-                        type="time"
-                        value={draftSchedule.endTime}
-                        onChange={(e) =>
-                          setDraftSchedule((p) => ({ ...p, endTime: e.target.value }))
-                        }
-                        className="w-full min-h-[40px] px-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs font-mono text-slate-900 dark:text-white"
-                      />
                     </div>
                   </div>
 
-                  <div className="flex flex-wrap gap-1.5">
-                    {WEEKDAY_LABELS.map((w) => {
-                      const active = draftSchedule.activeDays.includes(w.day);
-                      return (
-                        <button
-                          key={w.day}
-                          type="button"
-                          onClick={() => toggleDraftDay(w.day)}
-                          className={`min-h-[34px] px-2.5 rounded-lg text-[11px] font-semibold cursor-pointer border transition ${
-                            active
-                              ? "bg-indigo-600 text-white border-indigo-600"
-                              : "bg-white dark:bg-slate-900 text-slate-600 dark:text-slate-300 border-slate-200 dark:border-slate-700"
-                          }`}
-                        >
-                          {w.label}
-                        </button>
-                      );
-                    })}
-                  </div>
+                  {!draftSchedule.alwaysActive && (
+                    <>
+                      <div className="grid grid-cols-2 gap-2.5">
+                        <div>
+                          <label className="text-[11px] font-medium text-slate-500 dark:text-slate-400 block mb-1">
+                            Start Time
+                          </label>
+                          <input
+                            type="time"
+                            value={draftSchedule.startTime}
+                            onChange={(e) =>
+                              setDraftSchedule((p) => ({ ...p, startTime: e.target.value }))
+                            }
+                            className="w-full min-h-[40px] px-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs font-mono text-slate-900 dark:text-white"
+                          />
+                        </div>
+                        <div>
+                          <label className="text-[11px] font-medium text-slate-500 dark:text-slate-400 block mb-1">
+                            End Time
+                          </label>
+                          <input
+                            type="time"
+                            value={draftSchedule.endTime}
+                            onChange={(e) =>
+                              setDraftSchedule((p) => ({ ...p, endTime: e.target.value }))
+                            }
+                            className="w-full min-h-[40px] px-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs font-mono text-slate-900 dark:text-white"
+                          />
+                        </div>
+                      </div>
+
+                      <div className="flex flex-wrap gap-1.5">
+                        {WEEKDAY_LABELS.map((w) => {
+                          const active = draftSchedule.activeDays.includes(w.day);
+                          return (
+                            <button
+                              key={w.day}
+                              type="button"
+                              onClick={() => toggleDraftDay(w.day)}
+                              className={`min-h-[34px] px-2.5 rounded-lg text-[11px] font-semibold cursor-pointer border transition ${
+                                active
+                                  ? "bg-indigo-600 text-white border-indigo-600"
+                                  : "bg-white dark:bg-slate-900 text-slate-600 dark:text-slate-300 border-slate-200 dark:border-slate-700"
+                              }`}
+                            >
+                              {w.label}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </>
+                  )}
 
                   <div className="flex items-center justify-between gap-2 pt-1">
                     <span className="text-[11px] text-slate-500 dark:text-slate-400">
-                      Preview: {formatTime24To12(draftSchedule.startTime)} – {formatTime24To12(draftSchedule.endTime)}
+                      {draftSchedule.alwaysActive
+                        ? "Preview: 24 Hours Always Active (Testing & Emergency Ready)"
+                        : `Preview: ${formatTime24To12(draftSchedule.startTime)} – ${formatTime24To12(draftSchedule.endTime)}`}
                     </span>
                     <button
                       type="button"
@@ -707,7 +943,10 @@ export const WalkieTalkieModal: React.FC<WalkieTalkieModalProps> = ({
               {/* Push-to-Talk Anchor */}
               <div className="p-4 rounded-2xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 flex flex-col items-center text-center gap-3">
                 <p className="text-xs font-semibold text-slate-700 dark:text-slate-300">
-                  Target: <span className="font-bold text-slate-900 dark:text-white">{activeTarget.targetName}</span>
+                  Target:{" "}
+                  <span className="font-bold text-slate-900 dark:text-white">
+                    {activeTarget.targetName}
+                  </span>
                 </p>
 
                 {!hourStatus.active ? (
@@ -715,41 +954,68 @@ export const WalkieTalkieModal: React.FC<WalkieTalkieModalProps> = ({
                     {hourStatus.reason}
                   </div>
                 ) : (
-                  <div className="flex flex-col items-center gap-2">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        if (isRecording) stopRecordingInternal(false);
-                        else void startRecording();
-                      }}
-                      disabled={sending}
-                      className={`w-20 h-20 rounded-full flex flex-col items-center justify-center gap-1 font-bold text-xs shadow-md transition active:scale-95 cursor-pointer ${
-                        isRecording
-                          ? "bg-rose-600 hover:bg-rose-700 text-white ring-4 ring-rose-500/30"
-                          : "bg-emerald-600 hover:bg-emerald-700 text-white"
-                      }`}
-                      title={isRecording ? "Tap to Stop & Send" : "Tap to Speak (Walkie-Talkie)"}
-                    >
-                      {isRecording ? (
-                        <>
-                          <Square className="w-6 h-6 fill-current" />
-                          <span className="font-mono tabular-nums text-[11px]">
-                            0:{String(recordSeconds).padStart(2, "0")}
-                          </span>
-                        </>
-                      ) : (
-                        <>
-                          <Mic className="w-7 h-7" />
-                          <span className="text-[10px]">
-                            {sending ? "Sending" : "Speak"}
-                          </span>
-                        </>
+                  <div className="flex flex-col items-center gap-2.5 w-full">
+                    <div className="flex items-center justify-center gap-3">
+                      <button
+                        type="button"
+                        onPointerDown={handleMicPointerDown}
+                        onPointerUp={handleMicPointerUp}
+                        onPointerCancel={handleMicPointerUp}
+                        onClick={handleMicClick}
+                        disabled={sending}
+                        className={`w-20 h-20 rounded-full flex flex-col items-center justify-center gap-1 font-bold text-xs shadow-md transition active:scale-95 select-none touch-none cursor-pointer ${
+                          isRecording
+                            ? "bg-rose-600 hover:bg-rose-700 text-white ring-4 ring-rose-500/30"
+                            : "bg-emerald-600 hover:bg-emerald-700 text-white"
+                        }`}
+                        title={
+                          isRecording
+                            ? "Tap to Stop & Send"
+                            : "Hold karke ya Tap karke bolein"
+                        }
+                      >
+                        {isRecording ? (
+                          <>
+                            <Square className="w-6 h-6 fill-current" />
+                            <span className="font-mono tabular-nums text-[11px]">
+                              0:{String(recordSeconds).padStart(2, "0")}
+                            </span>
+                          </>
+                        ) : (
+                          <>
+                            <Mic className="w-7 h-7" />
+                            <span className="text-[10px]">
+                              {sending ? "Sending" : "Speak"}
+                            </span>
+                          </>
+                        )}
+                      </button>
+
+                      {isRecording && (
+                        <button
+                          type="button"
+                          onClick={() => stopRecordingInternal(true)}
+                          className="min-h-[40px] px-3 rounded-xl bg-slate-200 dark:bg-slate-800 hover:bg-slate-300 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 text-xs font-semibold inline-flex items-center gap-1 cursor-pointer"
+                        >
+                          <X className="w-3.5 h-3.5" />
+                          <span>Cancel</span>
+                        </button>
                       )}
-                    </button>
+                    </div>
+
+                    {isRecording && (
+                      <div className="w-44 h-1.5 rounded-full bg-slate-200 dark:bg-slate-800 overflow-hidden">
+                        <div
+                          className="h-full bg-emerald-500 transition-[width] duration-75"
+                          style={{ width: `${Math.max(12, micLevel)}%` }}
+                        />
+                      </div>
+                    )}
+
                     <p className="text-[11px] text-slate-500 dark:text-slate-400">
                       {isRecording
-                        ? "Bolne ke baad dubara tap karein (auto-send max 15s)"
-                        : "Mic dabakar bolein — target ke phone par seedha bajega"}
+                        ? "Bolne ke baad Stop dabayein (max 30s)"
+                        : "Dabakar rakhein ya Tap karein — dusre mobile par seedha bajega"}
                     </p>
                   </div>
                 )}
@@ -853,7 +1119,10 @@ export const WalkieTalkieModal: React.FC<WalkieTalkieModalProps> = ({
                           <div className="flex items-center gap-1 shrink-0">
                             <button
                               type="button"
-                              onClick={() => void playWalkieMessageAudio(m)}
+                              onClick={() => {
+                                unlockWalkieAudioPlayback();
+                                void playWalkieMessageAudio(m);
+                              }}
                               className="min-h-[34px] min-w-[34px] rounded-lg bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 hover:bg-emerald-100 dark:hover:bg-emerald-900/60 flex items-center justify-center cursor-pointer"
                               title="Play Walkie Message"
                             >

@@ -9,14 +9,8 @@ import androidx.annotation.RequiresApi
 class SchoolCallScreeningService : CallScreeningService() {
 
     override fun onScreenCall(callDetails: Call.Details) {
-        // Never block, reject, or silence any incoming call
+        // Never block, reject, or silence any call
         respondToCall(callDetails, CallResponse.Builder().build())
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            if (callDetails.callDirection != Call.Details.DIRECTION_INCOMING) {
-                return
-            }
-        }
 
         val rawNumber = callDetails.handle?.schemeSpecificPart
             ?: callDetails.gatewayInfo?.originalAddress?.schemeSpecificPart
@@ -24,6 +18,18 @@ class SchoolCallScreeningService : CallScreeningService() {
 
         if (rawNumber.isBlank()) return
 
-        ParentCallerAlertHelper.handleIncomingNumber(applicationContext, rawNumber)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            when (callDetails.callDirection) {
+                Call.Details.DIRECTION_INCOMING -> {
+                    ParentCallerAlertHelper.handleIncomingNumber(applicationContext, rawNumber)
+                }
+                Call.Details.DIRECTION_OUTGOING -> {
+                    ParentCallerAlertHelper.handleOutgoingNumber(applicationContext, rawNumber)
+                }
+                else -> Unit
+            }
+        } else {
+            ParentCallerAlertHelper.handleIncomingNumber(applicationContext, rawNumber)
+        }
     }
 }

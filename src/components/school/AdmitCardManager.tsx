@@ -1879,6 +1879,7 @@ export const AdmitCardManager: React.FC<Props> = ({
 
       {showAddStudentModal && (
         <QuickAddStudentModal
+          isOpen={true}
           schoolId={school.id}
           classes={classes}
           defaultClassId={selectedClassId}

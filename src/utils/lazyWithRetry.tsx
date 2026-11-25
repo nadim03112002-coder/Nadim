@@ -1,5 +1,6 @@
 import React, { Component, Suspense, useEffect, useState } from "react";
 import { RefreshCw, WifiOff } from "lucide-react";
+import { DevelopedByCredit } from "../components/school/DevelopedByFooter";
 
 const PRELOADED_IMPORTERS = new WeakSet<() => Promise<unknown>>();
 
@@ -142,6 +143,7 @@ const DelayedLoadingFallback: React.FC<{
           </button>
         </div>
       )}
+      <DevelopedByCredit tone="auto" />
     </div>
   );
 };

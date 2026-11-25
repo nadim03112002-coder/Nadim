@@ -17,7 +17,7 @@ import {
   sbBridgeOnSnapshot as onSnapshot,
   sbBridgeWriteBatch as writeBatch,
 } from "./services/supabaseSchoolBridge";
-import { isSupabaseSchemaReady } from "./services/supabaseDbAdapter";
+import { isSupabaseSchemaReady, sbRtdbGet, sbRtdbSet } from "./services/supabaseDbAdapter";
 
 const withTimeout = <T>(promise: Promise<T>, ms = 3000, fallbackVal?: T): Promise<T> => {
   return Promise.race([
@@ -51,7 +51,7 @@ import type {
   StudentAcknowledgedLeave, StudentAbsenteeCallLog,
   SchoolEvent, SchoolEventType,
   AdminAttendanceRecord, StaffDailyAttendanceRecord, StaffDailyAttendanceEntry,
-  FeeCallFollowUpRecord
+  FeeCallFollowUpRecord, SimCallLogRecord, UpiPaymentProofRecord
 } from "./school-types";
 import { sortSchoolClasses } from "./school-types";
 import {
@@ -6214,21 +6214,20 @@ export const getClassMCQResults = async (schoolId: string, classId: string): Pro
 export const saveSchoolUserProfile = async (profile: SchoolUserProfile) => {
   const sanitized = sanitizeForFirestore(profile);
   setSchoolCacheSync(`nst_school_user_${profile.uid}`, sanitized);
+  const safeUid = cleanRtdbUid(profile.uid);
 
-  if (rtdb) {
-    try { await set(ref(rtdb, `school_users/${profile.uid}`), sanitized); } catch {}
-  }
-  if (db) {
-    try {
-      await withTimeout(setDoc(d(`school_users/${profile.uid}`), sanitized), 3000);
-    } catch (e) {
-      console.warn('[school-firebase] saveSchoolUserProfile non-fatal notice:', (e as any)?.code || e);
-    }
-  }
+  await ensureFirebaseAuthSession().catch(() => null);
+
+  await Promise.allSettled([
+    sbRtdbSet(`school_users/${safeUid}`, sanitized),
+    rtdb ? withTimeout(set(ref(rtdb, `school_users/${safeUid}`), sanitized), 2500) : Promise.resolve(),
+    db ? withTimeout(setDoc(d(`school_users/${profile.uid}`), sanitized), 3000) : Promise.resolve(),
+  ]);
 };
 
 export const getSchoolUserProfile = async (uid: string, userEmail?: string): Promise<SchoolUserProfile | null> => {
   const normEmail = (userEmail || "").trim().toLowerCase();
+  const safeUid = cleanRtdbUid(uid);
 
   // 0. Check IndexedDB RAM cached profile first (instant)
   const cached = getSchoolCacheSync<SchoolUserProfile | null>(`nst_school_user_${uid}`, null);
@@ -6236,10 +6235,12 @@ export const getSchoolUserProfile = async (uid: string, userEmail?: string): Pro
     return cached;
   }
 
+  await ensureFirebaseAuthSession().catch(() => null);
+
   // 1. Check RTDB (fastest remote)
   if (rtdb) {
     try {
-      const snap = await withTimeout(get(ref(rtdb, `school_users/${uid}`)), 1500);
+      const snap = await withTimeout(get(ref(rtdb, `school_users/${safeUid}`)), 1800);
       const val = snap?.val?.();
       if (val && val.schoolId) {
         setSchoolCacheSync(`nst_school_user_${uid}`, val);
@@ -6261,6 +6262,15 @@ export const getSchoolUserProfile = async (uid: string, userEmail?: string): Pro
       }
     } catch {}
   }
+
+  // 2.5 Check Supabase RTDB mirror
+  try {
+    const sbProfile = await withTimeout(sbRtdbGet<SchoolUserProfile>(`school_users/${safeUid}`), 2000);
+    if (sbProfile && sbProfile.schoolId) {
+      setSchoolCacheSync(`nst_school_user_${uid}`, sbProfile);
+      return sbProfile;
+    }
+  } catch {}
 
   // 3. FIRST check if this email was allotted to a SPECIFIC school in SuperAdminPanel!
   // This guarantees Multi-School Admin isolation (School 2's admin ALWAYS opens School 2!).
@@ -8291,40 +8301,81 @@ export const saveUserLinkedStudents = async (
   } else {
     removeSchoolCacheSync(`nst_school_linked_${uid}`);
   }
+  if (typeof window !== "undefined") {
+    try {
+      localStorage.setItem("nst_linked_students", JSON.stringify(cleanList));
+      localStorage.setItem(
+        `nst_user_linked_students_${uid}`,
+        JSON.stringify({
+          students: cleanList,
+          activeStudentKey: bundle.activeStudentKey,
+          activeStudentId: bundle.activeStudentId,
+          updatedAt: bundle.updatedAt,
+        })
+      );
+      if (matchedActive?.schoolId) {
+        localStorage.setItem("nst_active_school_id", String(matchedActive.schoolId));
+      }
+    } catch {}
+  }
 
+  await ensureFirebaseAuthSession().catch(() => null);
   const safeUid = cleanRtdbUid(uid);
-  if (rtdb) {
-    try {
-      await Promise.all([
-        withTimeout(set(ref(rtdb, `users/${safeUid}/linkedSchoolStudents`), bundle), 2500),
-        withTimeout(set(ref(rtdb, `school_user_links/${safeUid}`), bundle), 2500),
-      ]);
-    } catch {}
-  }
 
-  if (db) {
-    try {
-      await withTimeout(setDoc(d(`school_user_links/${safeUid}`), bundle), 3000);
-    } catch {}
-  }
+  await Promise.allSettled([
+    sbRtdbSet(`school_user_links/${safeUid}`, bundle),
+    rtdb ? withTimeout(set(ref(rtdb, `users/${safeUid}/linkedSchoolStudents`), bundle), 2500) : Promise.resolve(),
+    rtdb ? withTimeout(set(ref(rtdb, `school_user_links/${safeUid}`), bundle), 2500) : Promise.resolve(),
+    db ? withTimeout(setDoc(d(`school_user_links/${safeUid}`), bundle), 3000) : Promise.resolve(),
+  ]);
 };
 
 export const getUserLinkedStudents = async (uid: string): Promise<UserLinkedStudentsBundle | null> => {
   if (!uid) return null;
-  const localBundle = getLocalUserLinkedStudents(uid);
+  let localBundle = getLocalUserLinkedStudents(uid);
+  if ((!localBundle || !localBundle.students?.length) && typeof window !== "undefined") {
+    try {
+      const lsRaw = localStorage.getItem(`nst_user_linked_students_${uid}`);
+      if (lsRaw) {
+        const parsed = JSON.parse(lsRaw);
+        if (parsed && Array.isArray(parsed.students) && parsed.students.length > 0) {
+          localBundle = {
+            students: parsed.students,
+            activeStudentId: parsed.activeStudentId || parsed.students[0]?.id || "",
+            activeStudentKey: parsed.activeStudentKey || getStudentLinkKey(parsed.students[0]),
+            updatedAt: parsed.updatedAt || new Date().toISOString(),
+          };
+        }
+      }
+    } catch {}
+  }
+
+  await ensureFirebaseAuthSession().catch(() => null);
   const safeUid = cleanRtdbUid(uid);
+
+  const pickBest = (remote: UserLinkedStudentsBundle | null): UserLinkedStudentsBundle | null => {
+    if (!remote || !Array.isArray(remote.students)) return null;
+    if (remote.students.length > 0) {
+      setSchoolCacheSync(`nst_school_linked_list_${uid}`, remote);
+      return remote;
+    }
+    if (localBundle && Array.isArray(localBundle.students) && localBundle.students.length > 0) {
+      const remoteTs = remote.updatedAt ? Date.parse(remote.updatedAt) : 0;
+      const localTs = localBundle.updatedAt ? Date.parse(localBundle.updatedAt) : 0;
+      if (localTs > remoteTs) {
+        return localBundle;
+      }
+    }
+    setSchoolCacheSync(`nst_school_linked_list_${uid}`, remote);
+    removeSchoolCacheSync(`nst_school_linked_${uid}`);
+    return remote;
+  };
 
   if (rtdb) {
     try {
-      const snap = await withTimeout(get(ref(rtdb, `school_user_links/${safeUid}`)), 2000);
-      const val = snap?.val?.();
-      if (val && Array.isArray(val.students)) {
-        setSchoolCacheSync(`nst_school_linked_list_${uid}`, val);
-        if (val.students.length === 0) {
-          removeSchoolCacheSync(`nst_school_linked_${uid}`);
-        }
-        return val as UserLinkedStudentsBundle;
-      }
+      const snap = await withTimeout(get(ref(rtdb, `school_user_links/${safeUid}`)), 2200);
+      const res = pickBest(snap?.val?.());
+      if (res) return res;
     } catch {}
   }
 
@@ -8332,17 +8383,25 @@ export const getUserLinkedStudents = async (uid: string): Promise<UserLinkedStud
     try {
       const snap = await withTimeout(getDoc(d(`school_user_links/${safeUid}`)), 2500);
       if (snap.exists()) {
-        const data = snap.data() as UserLinkedStudentsBundle;
-        if (data && Array.isArray(data.students)) {
-          setSchoolCacheSync(`nst_school_linked_list_${uid}`, data);
-          if (data.students.length === 0) {
-            removeSchoolCacheSync(`nst_school_linked_${uid}`);
-          }
-          return data;
-        }
+        const res = pickBest(snap.data() as UserLinkedStudentsBundle);
+        if (res) return res;
       }
     } catch {}
   }
+
+  if (rtdb) {
+    try {
+      const snap = await withTimeout(get(ref(rtdb, `users/${safeUid}/linkedSchoolStudents`)), 2000);
+      const res = pickBest(snap?.val?.());
+      if (res) return res;
+    } catch {}
+  }
+
+  try {
+    const sbVal = await withTimeout(sbRtdbGet<UserLinkedStudentsBundle>(`school_user_links/${safeUid}`), 2000);
+    const res = pickBest(sbVal);
+    if (res) return res;
+  } catch {}
 
   return localBundle;
 };
@@ -8372,7 +8431,13 @@ export const verifyLinkedStudentsAuthoritative = async (
 
   const cloudCheckBySchool = new Map<
     string,
-    { cloudVerified: boolean; activeMap: Map<string, any>; deletedIdSet: Set<string>; rawMap: Map<string, any> }
+    {
+      cloudVerified: boolean;
+      hasRosterData: boolean;
+      activeMap: Map<string, any>;
+      deletedIdSet: Set<string>;
+      rawMap: Map<string, any>;
+    }
   >();
 
   await Promise.all(
@@ -8399,6 +8464,13 @@ export const verifyLinkedStudentsAuthoritative = async (
         activeList.forEach((st: any) => {
           if (st?.id) activeMap.set(st.id, st);
           if (st?.admissionNo) activeMap.set(`adm:${String(st.admissionNo).trim().toLowerCase()}`, st);
+          if (st?.name && st?.rollNo) {
+            activeMap.set(`rn:${String(st.rollNo).trim().toLowerCase()}__${String(st.name).trim().toLowerCase()}`, st);
+          }
+          const digits = String(st?.phone || "").replace(/\D/g, "").slice(-10);
+          if (digits.length === 10 && st?.name) {
+            activeMap.set(`ph:${digits}__${String(st.name).trim().toLowerCase()}`, st);
+          }
         });
 
         const rawMap = new Map<string, any>();
@@ -8412,6 +8484,7 @@ export const verifyLinkedStudentsAuthoritative = async (
 
         cloudCheckBySchool.set(schId, {
           cloudVerified: cloudVerified || deletedRtdbSet.size > 0,
+          hasRosterData: cloudVerified && activeList.length > 0,
           activeMap,
           deletedIdSet: deletedRtdbSet,
           rawMap,
@@ -8419,6 +8492,7 @@ export const verifyLinkedStudentsAuthoritative = async (
       } catch {
         cloudCheckBySchool.set(schId, {
           cloudVerified: false,
+          hasRosterData: false,
           activeMap: new Map(),
           deletedIdSet: new Set(),
           rawMap: new Map(),
@@ -8453,6 +8527,12 @@ export const verifyLinkedStudentsAuthoritative = async (
 
     verifiedAnySchool = true;
     const admKey = linked.admissionNo ? `adm:${String(linked.admissionNo).trim().toLowerCase()}` : "";
+    const rnKey =
+      linked.name && linked.rollNo
+        ? `rn:${String(linked.rollNo).trim().toLowerCase()}__${String(linked.name).trim().toLowerCase()}`
+        : "";
+    const phDigits = String(linked.phone || "").replace(/\D/g, "").slice(-10);
+    const phKey = phDigits.length === 10 && linked.name ? `ph:${phDigits}__${String(linked.name).trim().toLowerCase()}` : "";
 
     // Explicit deleted tombstone or inactive raw record
     if ((linked.id && check.deletedIdSet.has(linked.id)) || (linked.id && check.rawMap.has(linked.id) && !isActiveSchoolStudentRecord(check.rawMap.get(linked.id)))) {
@@ -8462,9 +8542,12 @@ export const verifyLinkedStudentsAuthoritative = async (
 
     const activeMatch =
       (linked.id ? check.activeMap.get(linked.id) : undefined) ||
-      (admKey ? check.activeMap.get(admKey) : undefined);
+      (admKey ? check.activeMap.get(admKey) : undefined) ||
+      (rnKey ? check.activeMap.get(rnKey) : undefined) ||
+      (phKey ? check.activeMap.get(phKey) : undefined);
 
     if (activeMatch) {
+      verifiedAnySchool = true;
       validStudents.push({
         ...linked,
         ...activeMatch,
@@ -8472,8 +8555,12 @@ export const verifyLinkedStudentsAuthoritative = async (
         schoolId: activeMatch.schoolId || schId,
         schoolName: linked.schoolName || activeMatch.schoolName || "",
       });
+    } else if (!check.hasRosterData) {
+      // Only tombstones existed or roster returned empty — keep linked student safely
+      validStudents.push(linked);
     } else {
-      // School's cloud roster responded cleanly, and this student no longer exists in it!
+      verifiedAnySchool = true;
+      // School's full cloud roster responded cleanly, and this student no longer exists in it!
       removedStudents.push(linked);
     }
   }
@@ -11897,5 +11984,440 @@ export const subscribeToFeeCallFollowUps = (
   };
 };
 
+// ── MATCHED SCHOOL SIM CALL LOGS (INCOMING + OUTGOING DIALER SYNC) ────────────
+const SIM_CALL_LOGS_CACHE_KEY = (schoolId: string) => `nst_sim_call_logs_v1_${schoolId}`;
 
+export const getLocalSchoolSimCallLogs = (schoolId: string): SimCallLogRecord[] => {
+  if (!schoolId) return [];
+  const list = getSchoolCacheSync<SimCallLogRecord[]>(SIM_CALL_LOGS_CACHE_KEY(schoolId), []);
+  return Array.isArray(list) ? list : [];
+};
 
+export const saveMatchedSimCallLogsBatch = async (
+  schoolId: string,
+  records: SimCallLogRecord[]
+): Promise<number> => {
+  if (!schoolId || !Array.isArray(records) || records.length === 0) return 0;
+  const cleanRecords = records
+    .filter((r) => Boolean(r?.id && r?.phone && r?.callDateMs))
+    .map((r) =>
+      sanitizeForFirestore({
+        ...r,
+        schoolId,
+        syncedAt: r.syncedAt || new Date().toISOString(),
+      }) as SimCallLogRecord
+    );
+  if (cleanRecords.length === 0) return 0;
+
+  const existing = getLocalSchoolSimCallLogs(schoolId);
+  const byId = new Map<string, SimCallLogRecord>();
+  for (const item of existing) {
+    if (item?.id) byId.set(item.id, item);
+  }
+  let addedOrUpdated = 0;
+  for (const item of cleanRecords) {
+    const prev = byId.get(item.id);
+    if (!prev || prev.durationSec !== item.durationSec || prev.callType !== item.callType) {
+      addedOrUpdated++;
+    }
+    byId.set(item.id, item);
+  }
+  const merged = Array.from(byId.values())
+    .sort((a, b) => Number(b.callDateMs || 0) - Number(a.callDateMs || 0))
+    .slice(0, 150);
+  setSchoolCacheSync(SIM_CALL_LOGS_CACHE_KEY(schoolId), merged);
+
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new CustomEvent("school-sim-call-logs-updated", { detail: { schoolId } }));
+  }
+
+  if (typeof navigator !== "undefined" && navigator.onLine === false) {
+    return addedOrUpdated;
+  }
+
+  for (const rec of cleanRecords.slice(0, 25)) {
+    if (db) {
+      try {
+        await withTimeout(setDoc(d(`schools/${schoolId}/sim_call_logs/${rec.id}`), rec, { merge: true }), 3000);
+      } catch {}
+    }
+    if (rtdb) {
+      try {
+        await withTimeout(set(ref(rtdb, `schools/${schoolId}/sim_call_logs/${rec.id}`), rec), 2500);
+      } catch {}
+    }
+  }
+  return addedOrUpdated;
+};
+
+export const subscribeSchoolSimCallLogs = (
+  schoolId: string,
+  onData: (logs: SimCallLogRecord[]) => void
+): (() => void) => {
+  if (!schoolId) {
+    onData([]);
+    return () => {};
+  }
+  let disposed = false;
+  const emitLocal = () => {
+    if (disposed) return;
+    const sorted = [...getLocalSchoolSimCallLogs(schoolId)].sort(
+      (a, b) => Number(b.callDateMs || 0) - Number(a.callDateMs || 0)
+    );
+    onData(sorted);
+  };
+  emitLocal();
+
+  const onCustomUpdate = (e: Event) => {
+    const detail = (e as CustomEvent)?.detail;
+    if (!detail?.schoolId || detail.schoolId === schoolId) emitLocal();
+  };
+  if (typeof window !== "undefined") {
+    window.addEventListener("school-sim-call-logs-updated", onCustomUpdate);
+    window.addEventListener("school-idb-hydrated", emitLocal);
+  }
+
+  let unsubFs = () => {};
+  if (db) {
+    try {
+      const qFs = query(col(`schools/${schoolId}/sim_call_logs`), orderBy("callDateMs", "desc"), limit(120));
+      unsubFs = onSnapshot(qFs, (snap) => {
+        if (disposed) return;
+        const remoteList = snap.docs.map((docSnap) => docSnap.data() as SimCallLogRecord);
+        const localCur = getLocalSchoolSimCallLogs(schoolId);
+        const mergedMap = new Map<string, SimCallLogRecord>();
+        for (const r of remoteList) {
+          if (r?.id) mergedMap.set(r.id, r);
+        }
+        for (const loc of localCur) {
+          if (loc?.id && !mergedMap.has(loc.id)) mergedMap.set(loc.id, loc);
+        }
+        const merged = Array.from(mergedMap.values())
+          .sort((a, b) => Number(b.callDateMs || 0) - Number(a.callDateMs || 0))
+          .slice(0, 150);
+        setSchoolCacheSync(SIM_CALL_LOGS_CACHE_KEY(schoolId), merged);
+        emitLocal();
+      });
+    } catch {}
+  }
+
+  return () => {
+    disposed = true;
+    if (typeof window !== "undefined") {
+      window.removeEventListener("school-sim-call-logs-updated", onCustomUpdate);
+      window.removeEventListener("school-idb-hydrated", emitLocal);
+    }
+    unsubFs();
+  };
+};
+
+// ── UPI SCREENSHOT PAYMENT PROOF & 1-CLICK APPROVAL SYSTEM ──────────────────
+const UPI_PROOFS_CACHE_KEY = (schoolId: string) => `nst_upi_proofs_${schoolId}`;
+
+export const getLocalUpiProofs = (schoolId: string): UpiPaymentProofRecord[] => {
+  if (!schoolId) return [];
+  try {
+    const raw = getSchoolCacheSync<UpiPaymentProofRecord[]>(UPI_PROOFS_CACHE_KEY(schoolId), []);
+    if (Array.isArray(raw)) return raw;
+  } catch {}
+  return [];
+};
+
+export const setLocalUpiProofs = (schoolId: string, proofs: UpiPaymentProofRecord[]) => {
+  if (!schoolId) return;
+  try {
+    setSchoolCacheSync(UPI_PROOFS_CACHE_KEY(schoolId), Array.isArray(proofs) ? proofs : []);
+  } catch {}
+};
+
+export const normalizeUpiUtr = (val: string): string =>
+  String(val || "")
+    .trim()
+    .toUpperCase()
+    .replace(/\s+/g, "");
+
+export const saveUpiPaymentProof = async (
+  proof: UpiPaymentProofRecord
+): Promise<{ ok: boolean; error?: string; record?: UpiPaymentProofRecord }> => {
+  const schoolId = proof.schoolId;
+  if (!schoolId) return { ok: false, error: "School ID missing." };
+  const cleanUtr = normalizeUpiUtr(proof.utrNumber);
+  if (cleanUtr.length < 6) {
+    return { ok: false, error: "Kripya kam se kam 6 anko ka sahi UTR / Transaction ID darj karein." };
+  }
+  const existingList = getLocalUpiProofs(schoolId);
+  const duplicate = existingList.find(
+    (p) =>
+      p.id !== proof.id &&
+      normalizeUpiUtr(p.utrNumber) === cleanUtr &&
+      (p.status === "PENDING" || p.status === "APPROVED")
+  );
+  if (duplicate) {
+    return {
+      ok: false,
+      error: `Yeh UTR (${cleanUtr}) pehle se ${duplicate.studentName} ke liye darj hai (Duplicate UTR).`,
+    };
+  }
+
+  let finalScreenshotUrl = proof.screenshotUrl || "";
+  if (finalScreenshotUrl.startsWith("data:image/")) {
+    try {
+      finalScreenshotUrl = await ensureCloudImageUrl(finalScreenshotUrl, `upi_proof_${schoolId}_${proof.id}`);
+    } catch {
+      // Keep compressed dataURL fallback if cloud image upload is unavailable
+    }
+  }
+
+  const cleanRec: UpiPaymentProofRecord = sanitizeForFirestore({
+    ...proof,
+    utrNumber: cleanUtr,
+    screenshotUrl: finalScreenshotUrl,
+    status: proof.status || "PENDING",
+    submittedAt: proof.submittedAt || new Date().toISOString(),
+    createdAt: proof.createdAt || new Date().toISOString(),
+  });
+
+  const nextList = [cleanRec, ...existingList.filter((x) => x.id !== cleanRec.id)].slice(0, 300);
+  setLocalUpiProofs(schoolId, nextList);
+  markSchoolCacheFresh(UPI_PROOFS_CACHE_KEY(schoolId));
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new CustomEvent("upi-proofs-updated", { detail: { schoolId } }));
+  }
+
+  if (db) {
+    try {
+      await withTimeout(setDoc(d(`schools/${schoolId}/upi_proofs/${cleanRec.id}`), cleanRec, { merge: true }), 3000);
+    } catch {}
+  }
+  if (rtdb) {
+    try {
+      await withTimeout(set(ref(rtdb, `schools/${schoolId}/upi_proofs/${cleanRec.id}`), cleanRec), 2500);
+    } catch {}
+  }
+  return { ok: true, record: cleanRec };
+};
+
+export const subscribeSchoolUpiProofs = (
+  schoolId: string,
+  onData: (proofs: UpiPaymentProofRecord[]) => void
+): (() => void) => {
+  if (!schoolId) {
+    onData([]);
+    return () => {};
+  }
+  let disposed = false;
+  const emitLocal = () => {
+    if (disposed) return;
+    const sorted = [...getLocalUpiProofs(schoolId)].sort((a, b) =>
+      String(b.submittedAt || "").localeCompare(String(a.submittedAt || ""))
+    );
+    onData(sorted);
+  };
+  emitLocal();
+
+  const onEvt = (e: Event) => {
+    const detail = (e as CustomEvent)?.detail;
+    if (!detail?.schoolId || detail.schoolId === schoolId) emitLocal();
+  };
+  if (typeof window !== "undefined") {
+    window.addEventListener("upi-proofs-updated", onEvt);
+    window.addEventListener("school-idb-hydrated", emitLocal);
+  }
+
+  let unsubFs = () => {};
+  if (db) {
+    try {
+      const qFs = query(col(`schools/${schoolId}/upi_proofs`), orderBy("submittedAt", "desc"), limit(200));
+      unsubFs = onSnapshot(qFs, (snap) => {
+        if (disposed) return;
+        const remoteList = snap.docs.map((docSnap) => docSnap.data() as UpiPaymentProofRecord);
+        const localCur = getLocalUpiProofs(schoolId);
+        const mergedMap = new Map<string, UpiPaymentProofRecord>();
+        for (const r of remoteList) {
+          if (r?.id) mergedMap.set(r.id, r);
+        }
+        for (const loc of localCur) {
+          if (loc?.id && !mergedMap.has(loc.id)) mergedMap.set(loc.id, loc);
+        }
+        const merged = Array.from(mergedMap.values())
+          .sort((a, b) => String(b.submittedAt || "").localeCompare(String(a.submittedAt || "")))
+          .slice(0, 300);
+        setLocalUpiProofs(schoolId, merged);
+        emitLocal();
+      });
+    } catch {}
+  }
+
+  return () => {
+    disposed = true;
+    if (typeof window !== "undefined") {
+      window.removeEventListener("upi-proofs-updated", onEvt);
+      window.removeEventListener("school-idb-hydrated", emitLocal);
+    }
+    unsubFs();
+  };
+};
+
+export const approveUpiPaymentProof = async (params: {
+  schoolId: string;
+  proof: UpiPaymentProofRecord;
+  approverName: string;
+  approverRole: "accountant" | "manager";
+}): Promise<{ receiptNo: string; fee: MonthlyFee; proof: UpiPaymentProofRecord }> => {
+  const { schoolId, proof, approverName, approverRole } = params;
+  const nowIso = new Date().toISOString();
+  const receiptNo = `UPI-${Date.now().toString().slice(-6)}`;
+
+  const existingFees = getLocalFees(schoolId);
+  const existing = existingFees.find(
+    (f) => f.studentId === proof.studentId && f.month === proof.month
+  );
+  const billed = Number(existing?.monthlyAmount ?? existing?.amount ?? proof.amount);
+  const prevPaid = existing?.paid
+    ? Number(existing?.paidAmount ?? billed)
+    : Number(existing?.paidAmount ?? 0);
+  const payAmt = Math.max(0, Number(proof.amount) || 0);
+  const newPaidTotal = existing?.paid ? prevPaid : prevPaid + payAmt;
+  const newBalance = Math.max(0, billed - newPaidTotal);
+
+  const feeRecord: MonthlyFee = {
+    ...(existing || {}),
+    schoolId,
+    sessionId: proof.sessionId || existing?.sessionId || "",
+    studentId: proof.studentId,
+    studentName: proof.studentName,
+    rollNo: proof.rollNo || existing?.rollNo || "",
+    classId: proof.classId,
+    className: proof.className || existing?.className,
+    month: proof.month,
+    amount: billed,
+    monthlyAmount: billed,
+    paid: newBalance <= 0,
+    status: newBalance <= 0 ? "Paid" : "Partial",
+    paidDate: nowIso,
+    paidBy: approverName,
+    collectedBy: `${approverRole === "accountant" ? "Accountant" : "Admin"} (${approverName})`,
+    collectedByRole: approverRole,
+    collectedByName: approverName,
+    receiptNo,
+    paymentMode: "online_upi",
+    paidAmount: newPaidTotal,
+    lastPaidAmount: payAmt,
+    lastReceiptPaidAmount: payAmt,
+    lastPaidDate: nowIso,
+    balanceDue: newBalance,
+    updatedAt: nowIso,
+    payModeInfo: {
+      payMode: "UPI QR (Verified)",
+      date: nowIso.slice(0, 10),
+      bank: "School UPI",
+      number: proof.utrNumber,
+      onlineAmount: payAmt,
+      offlineAmount: 0,
+    },
+    note: proof.note
+      ? `UPI UTR: ${proof.utrNumber} · ${proof.note}`
+      : `UPI UTR: ${proof.utrNumber}`,
+  };
+
+  await saveFee(feeRecord);
+
+  const updatedProof: UpiPaymentProofRecord = sanitizeForFirestore({
+    ...proof,
+    status: "APPROVED",
+    reviewedAt: nowIso,
+    reviewedBy: approverName,
+    receiptNo,
+  });
+
+  const nextProofs = [
+    updatedProof,
+    ...getLocalUpiProofs(schoolId).filter((x) => x.id !== updatedProof.id),
+  ];
+  setLocalUpiProofs(schoolId, nextProofs);
+  markSchoolCacheFresh(UPI_PROOFS_CACHE_KEY(schoolId));
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new CustomEvent("upi-proofs-updated", { detail: { schoolId } }));
+  }
+
+  if (db) {
+    try {
+      await withTimeout(setDoc(d(`schools/${schoolId}/upi_proofs/${updatedProof.id}`), updatedProof, { merge: true }), 3000);
+    } catch {}
+  }
+  if (rtdb) {
+    try {
+      await withTimeout(set(ref(rtdb, `schools/${schoolId}/upi_proofs/${updatedProof.id}`), updatedProof), 2500);
+    } catch {}
+  }
+
+  autoSettleFeeCallFollowUp(schoolId, proof.studentId, {
+    receiptNo,
+    amountPaid: payAmt,
+    remainingDue: newBalance,
+    actorName: approverName,
+    studentName: proof.studentName,
+    fatherName: proof.fatherName,
+    classId: proof.classId,
+    className: proof.className,
+    rollNo: proof.rollNo,
+    phone: proof.phone,
+  }).catch(() => {});
+
+  autoSendFeeSlipToSchoolDesk({
+    schoolId,
+    studentId: proof.studentId,
+    studentName: proof.studentName,
+    slipType: "FEE_RECEIPT",
+    month: proof.month,
+    monthLabel: proof.monthLabel || proof.month,
+    amount: payAmt,
+    balanceDue: newBalance,
+    receiptNo,
+    dueDate: nowIso.slice(0, 10),
+  }).catch(() => {});
+
+  return { receiptNo, fee: feeRecord, proof: updatedProof };
+};
+
+export const rejectUpiPaymentProof = async (params: {
+  schoolId: string;
+  proofId: string;
+  reason: string;
+  reviewerName: string;
+}): Promise<UpiPaymentProofRecord | null> => {
+  const { schoolId, proofId, reason, reviewerName } = params;
+  const list = getLocalUpiProofs(schoolId);
+  const existing = list.find((p) => p.id === proofId);
+  if (!existing) return null;
+
+  const updatedProof: UpiPaymentProofRecord = sanitizeForFirestore({
+    ...existing,
+    status: "REJECTED",
+    rejectionReason: String(reason || "Payment verify nahi hua").trim(),
+    reviewedAt: new Date().toISOString(),
+    reviewedBy: reviewerName,
+  });
+
+  setLocalUpiProofs(
+    schoolId,
+    list.map((p) => (p.id === proofId ? updatedProof : p))
+  );
+  markSchoolCacheFresh(UPI_PROOFS_CACHE_KEY(schoolId));
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new CustomEvent("upi-proofs-updated", { detail: { schoolId } }));
+  }
+
+  if (db) {
+    try {
+      await withTimeout(setDoc(d(`schools/${schoolId}/upi_proofs/${proofId}`), updatedProof, { merge: true }), 3000);
+    } catch {}
+  }
+  if (rtdb) {
+    try {
+      await withTimeout(set(ref(rtdb, `schools/${schoolId}/upi_proofs/${proofId}`), updatedProof), 2500);
+    } catch {}
+  }
+
+  return updatedProof;
+};

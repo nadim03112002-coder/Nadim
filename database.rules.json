@@ -71,6 +71,20 @@
       ".indexOn": ["timestamp", "schoolId"]
     },
 
+    "school_walkie": {
+      "$schoolId": {
+        "schedule": {
+          ".read": "auth != null",
+          ".write": "auth != null"
+        },
+        "messages": {
+          ".read": "auth != null",
+          ".write": "auth != null",
+          ".indexOn": ["createdAtMs"]
+        }
+      }
+    },
+
     "active_sessions": {
       ".read": "auth != null",
       ".write": "auth != null",

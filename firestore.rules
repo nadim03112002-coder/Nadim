@@ -438,6 +438,18 @@ service cloud.firestore {
       }
     }
 
+    match /school_users/{userId} {
+      allow read: if isValidId(userId) && isSignedIn();
+      allow create, update: if isValidId(userId) && isSignedIn() && isReasonableDoc(incoming());
+      allow delete: if isValidId(userId) && isSuperAdmin();
+    }
+
+    match /school_user_links/{userId} {
+      allow read: if isValidId(userId) && isSignedIn();
+      allow create, update: if isValidId(userId) && isSignedIn() && isReasonableDoc(incoming());
+      allow delete: if isValidId(userId) && isSignedIn();
+    }
+
     match /schoolPlanRequests/{reqId} {
       allow read: if isSuperAdmin() || isSignedIn();
       allow create: if isValidId(reqId) && isSignedIn() && isReasonableDoc(incoming());

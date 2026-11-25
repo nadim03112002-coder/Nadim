@@ -114,6 +114,7 @@ import { SchoolWelcomeModal } from "./SchoolWelcomeModal";
 import { SchoolBirthdayModal } from "./SchoolBirthdayModal";
 import { NstaStatusStudio } from "./NstaStatusStudio";
 import { NstaCallPortalHost } from "./NstaCallModal";
+import { triggerTelegramDeleteAnimation } from "./TelegramDeleteEffect";
 import {
   startDirectCall,
   startOrJoinGroupCall,
@@ -140,6 +141,8 @@ interface Props {
   fees?: MonthlyFee[];
   initialTeacherId?: string | null;
   onClearInitialTeacher?: () => void;
+  initialThread?: "school" | "class" | "teacher" | "friend" | null;
+  onClearInitialThread?: () => void;
   onBack?: () => void;
   onOpenFeeReceipt?: (fee: any) => void;
   onOpenWhatsAppPay?: (fee: any) => void;
@@ -356,6 +359,8 @@ export const NstaMessengerSuite: React.FC<Props> = ({
   fees = [],
   initialTeacherId = null,
   onClearInitialTeacher,
+  initialThread = null,
+  onClearInitialThread,
   onBack,
   onOpenFeeReceipt,
   onOpenWhatsAppPay
@@ -612,6 +617,14 @@ export const NstaMessengerSuite: React.FC<Props> = ({
       onClearInitialTeacher?.();
     }
   }, [initialTeacherId]);
+
+  useEffect(() => {
+    if (initialThread) {
+      setActiveTab(initialThread);
+      setMobileView("chat");
+      onClearInitialThread?.();
+    }
+  }, [initialThread]);
   const websiteDeskVisitors = useMemo(() => {
     if (currentUserRole !== "ADMIN") return [];
     const visitorMap = new Map<string, { id: string; name: string; className?: string; lastAt: string }>();
@@ -681,6 +694,17 @@ export const NstaMessengerSuite: React.FC<Props> = ({
 
 
   const [isDeletingMessages, setIsDeletingMessages] = useState(false);
+  const [vaporizingMsgIds, setVaporizingMsgIds] = useState<string[]>([]);
+
+  const playTelegramVaporize = async (ids: string[]) => {
+    if (!ids.length) return;
+    setVaporizingMsgIds((prev) => Array.from(new Set([...prev, ...ids])));
+    try {
+      await triggerTelegramDeleteAnimation(ids);
+    } finally {
+      setVaporizingMsgIds((prev) => prev.filter((id) => !ids.includes(id)));
+    }
+  };
 
   // Execute Delete Permanently (completely removes messages from chat & database)
   const handleDeletePermanently = async () => {
@@ -691,6 +715,7 @@ export const NstaMessengerSuite: React.FC<Props> = ({
     setSelectedMessageIds([]);
     setFloatingReactionMsgId(null);
     try {
+      await playTelegramVaporize(ids);
       const count = await bulkPermanentDeleteNstaMessages(school?.id || "default", ids);
       setToastNotification(`🗑️ ${count} संदेश पूरी तरह हटा दिए गए (Permanently deleted)`);
     } catch {
@@ -710,6 +735,7 @@ export const NstaMessengerSuite: React.FC<Props> = ({
     setSelectedMessageIds([]);
     setFloatingReactionMsgId(null);
     try {
+      await playTelegramVaporize(ids);
       const count = await bulkDeleteNstaMessagesForEveryone(school?.id || "default", ids, {
         permanentOnBulk: true,
       });
@@ -731,6 +757,7 @@ export const NstaMessengerSuite: React.FC<Props> = ({
     setSelectedMessageIds([]);
     setFloatingReactionMsgId(null);
     try {
+      await playTelegramVaporize(ids);
       const count = await bulkDeleteNstaMessagesForMe(school?.id || "default", ids, currentUserId);
       setToastNotification(`🗑️ ${count} संदेश आपके लिए हटा दिए गए (Deleted for me)`);
     } catch {
@@ -986,10 +1013,11 @@ export const NstaMessengerSuite: React.FC<Props> = ({
   const handleDeleteMessage = async (msg: NstaMessage) => {
     if (!canDeleteMessage(msg)) return;
     setDeletingMsgId(msg.id);
+    setConfirmDeleteMsgId(null);
     try {
+      await playTelegramVaporize([msg.id]);
       await deleteNstaMessageForEveryone(school?.id || "default", msg.id);
       setAllSchoolMsgs((prev) => prev.filter((m) => m.id !== msg.id));
-      setConfirmDeleteMsgId(null);
       setToastNotification("🗑️ संदेश हटा दिया गया (Message deleted for everyone)");
       setTimeout(() => setToastNotification(null), 3000);
     } catch (err: any) {
@@ -5744,11 +5772,15 @@ export const NstaMessengerSuite: React.FC<Props> = ({
           const isDelivered =
             isRead || msg.status === "delivered" || (Array.isArray(msg.deliveredTo) && msg.deliveredTo.length > 0);
 
+          const isVaporizing = vaporizingMsgIds.includes(msg.id);
+
           return (
             <div
               key={msg.id}
               id={`msg-${msg.id}`}
-              className="relative w-full flex flex-col select-none transition-all"
+              className={`relative w-full flex flex-col select-none transition-all duration-300 ${
+                isVaporizing ? "opacity-0 scale-90 blur-[1px] pointer-events-none" : ""
+              }`}
             >
               {/* Swipe Right to Reply indicator revealed behind on the left */}
               {currentSwipeOffset > 15 && (
@@ -5877,6 +5909,7 @@ export const NstaMessengerSuite: React.FC<Props> = ({
 
                 {/* Message Bubble Box */}
                 <div
+                  data-nsta-bubble="true"
                   className={`rounded-2xl p-3 sm:p-3.5 shadow-md relative transition-all cursor-pointer ${
                     isSelected ? "ring-2 ring-emerald-400 ring-offset-2 ring-offset-slate-950 scale-[1.01]" : ""
                   } ${

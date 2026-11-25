@@ -17,6 +17,7 @@ import {
 } from "../../utils/schoolTickerUtils";
 import { resolveWebsiteAdmissionSessionLabel } from "../../utils/safeBrowserActions";
 import AndroidBatteryIndicator from "../AndroidBatteryIndicator";
+import { LanguageToggleButton } from "./LanguageToggleButton";
 
 export type WebsiteTopNavSection =
   | "home"
@@ -300,6 +301,7 @@ export const PublicWebsiteTopBar: React.FC<Props> = ({
 
             {/* Right Controls: Account/Portal + Apply */}
             <div className="flex items-center gap-2 shrink-0">
+              <LanguageToggleButton tone="auto" compact />
               <AndroidBatteryIndicator tone="auto" />
               {isAuthenticated && onSwitchToPortal ? (
                 <button

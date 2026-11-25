@@ -70,6 +70,7 @@ import {
   currentMonthStr,
 } from "../../school-firebase";
 import { FeeTermSchedulerModal } from "./FeeTermSchedulerModal";
+import { TeacherIdCardModal } from "./TeacherIdCardModal";
 
 interface Props {
   schoolId: string;
@@ -241,6 +242,7 @@ export const ClassFeeStructureSection: React.FC<Props> = ({
   const [termSchedulerSchool, setTermSchedulerSchool] = useState<School | null>(null);
   const [termSchedulerHistory, setTermSchedulerHistory] = useState<MonthlyFee[]>([]);
   const [termSchedulerInitialClassId, setTermSchedulerInitialClassId] = useState<string | undefined>(undefined);
+  const [selectedTeacherForIdCard, setSelectedTeacherForIdCard] = useState<SchoolTeacher | null>(null);
 
   const openTermScheduler = async (targetClassId?: string) => {
     setTermSchedulerInitialClassId(targetClassId);
@@ -1166,6 +1168,12 @@ export const ClassFeeStructureSection: React.FC<Props> = ({
         email: "",
       });
       showNotification(`Naye teacher "${newTeacherRecord.name}" aur unka monthly salary structure add ho gaya!`);
+      if (!termSchedulerSchool) {
+        getSchool(schoolId).then((sc) => {
+          if (sc) setTermSchedulerSchool(sc);
+        }).catch(() => {});
+      }
+      setSelectedTeacherForIdCard(newTeacherRecord);
       if (onTeachersUpdated) onTeachersUpdated();
     } catch (err: any) {
       toast.error("Error adding teacher: " + (err?.message || "Failed"));
@@ -3650,6 +3658,15 @@ export const ClassFeeStructureSection: React.FC<Props> = ({
           toast.success("Student monthly fee head updated!");
         }}
       />
+
+      {selectedTeacherForIdCard && (
+        <TeacherIdCardModal
+          isOpen={true}
+          teacher={selectedTeacherForIdCard}
+          school={termSchedulerSchool || ({ id: schoolId, name: "School Campus" } as School)}
+          onClose={() => setSelectedTeacherForIdCard(null)}
+        />
+      )}
     </div>
   );
 };

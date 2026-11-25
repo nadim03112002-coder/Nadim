@@ -146,6 +146,7 @@ import { DirectUploadButton } from "../DirectUploadButton";
 import { ProfileCameraModal } from "../ProfileCameraModal";
 import { OfficialFeeReceiptModal } from "./OfficialFeeReceiptModal";
 import { AdmissionFormPrintModal, type AdmissionPrintMode, calculateAgeOnAprilFirst } from "./AdmissionFormPrintModal";
+import { StudentIdCardModal } from "./StudentIdCardModal";
 import { maskSensitive2Chars } from "./feeReceiptUtils";
 import {
   detectFamilySiblings,
@@ -1608,6 +1609,11 @@ export const OnlineAdmissionManager: React.FC<Props> = ({
     student: SchoolStudent | null;
     fee: MonthlyFee | null;
   }>({ open: false, student: null, fee: null });
+  const [selectedStudentForIdCard, setSelectedStudentForIdCard] = useState<{
+    student: SchoolStudent;
+    admissionFee?: MonthlyFee | null;
+    application?: AdmissionApplication | null;
+  } | null>(null);
 
   // Form State
   const [form, setForm] = useState({
@@ -5478,6 +5484,11 @@ export const OnlineAdmissionManager: React.FC<Props> = ({
       setTimeout(() => setSuccessToast(null), 5000);
       setViewScreenshotUrl(null);
       setQuickVerifyConfirmApp(null);
+      setSelectedStudentForIdCard({
+        student: savedQuickStudent,
+        admissionFee: admissionFeeRecord,
+        application: app,
+      });
       fetchApplications();
     } catch (err: any) {
       toast.error("एडमिशन कन्फर्म करने में त्रुटि: " + (err?.message || "पुनः प्रयास करें"));
@@ -12177,6 +12188,49 @@ export const OnlineAdmissionManager: React.FC<Props> = ({
           initialMode={printStudioState.mode}
           isStudentView={!isAdmin}
           defaultMasked={maskSensitiveData}
+          onOpenStudentIdCard={
+            printStudioState.student
+              ? () => {
+                  const cur = printStudioState;
+                  setPrintStudioState({ open: false });
+                  if (cur.student) {
+                    setSelectedStudentForIdCard({
+                      student: cur.student as SchoolStudent,
+                      admissionFee: cur.feeRecord || null,
+                      application: (cur.application as AdmissionApplication) || null,
+                    });
+                  }
+                }
+              : undefined
+          }
+        />
+      )}
+
+      {selectedStudentForIdCard && (
+        <StudentIdCardModal
+          isOpen={true}
+          student={selectedStudentForIdCard.student}
+          school={school}
+          classes={classes}
+          admissionFee={selectedStudentForIdCard.admissionFee || null}
+          onClose={() => setSelectedStudentForIdCard(null)}
+          onOpenAdmissionForm={() => {
+            const curCard = selectedStudentForIdCard;
+            setSelectedStudentForIdCard(null);
+            if (curCard?.student) {
+              setPrintStudioState({
+                open: true,
+                student: curCard.student,
+                application: curCard.application || undefined,
+                className:
+                  formatClassLabel(classes.find((c) => c.id === curCard.student.classId)) ||
+                  curCard.student.className ||
+                  "Class",
+                feeRecord: curCard.admissionFee || null,
+                mode: curCard.admissionFee ? "combined" : "form_only",
+              });
+            }
+          }}
         />
       )}
 

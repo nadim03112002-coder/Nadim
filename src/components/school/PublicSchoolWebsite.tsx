@@ -1,5 +1,6 @@
 import React, { Suspense, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import AndroidBatteryIndicator from "../AndroidBatteryIndicator";
+import { DevelopedByCredit } from "./DevelopedByFooter";
 import { useBackHandler } from "../../utils/backNavigation";
 import type {
   AdmissionApplication,
@@ -1047,6 +1048,7 @@ export const PublicSchoolWebsite: React.FC<Props> = ({
           className="w-[min(86vw,512px)] aspect-square object-contain bg-transparent mb-5 drop-shadow-[0_18px_38px_rgba(0,0,0,0.65)]"
         />
         <p className="text-sm font-semibold text-slate-300">Loading School Website...</p>
+        <DevelopedByCredit tone="dark" />
         {onBack && (
           <button
             type="button"

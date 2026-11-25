@@ -166,9 +166,15 @@ class WebAppBridge(private val activity: MainActivity) {
     @JavascriptInterface
     fun getCallerIdStatus(): String {
         if (!isTrustedHostActive) {
-            return """{"supported":false,"isRoleHeld":false,"hasPhonePerms":false,"isReady":false,"cachedCount":0,"voiceEnabled":false,"batteryUnrestricted":false,"parentCallerEnabled":true,"parentDueVoiceEnabled":true,"parentScheduleVoiceEnabled":false,"parentCardPopupEnabled":true,"parentOverlayEnabled":true,"canDrawOverlays":false}"""
+            return """{"supported":false,"isRoleHeld":false,"hasPhonePerms":false,"hasCallLogPerm":false,"isReady":false,"cachedCount":0,"voiceEnabled":false,"batteryUnrestricted":false,"parentCallerEnabled":true,"parentDueVoiceEnabled":true,"parentScheduleVoiceEnabled":false,"parentCardPopupEnabled":true,"parentOverlayEnabled":true,"outgoingCallEnabled":true,"autoCallLogSyncEnabled":true,"canDrawOverlays":false}"""
         }
         return activity.getCallerIdStatusJson().toString()
+    }
+
+    @JavascriptInterface
+    fun getMatchedSchoolCallLogs(sinceMs: Long): String {
+        if (!isTrustedHostActive) return "[]"
+        return activity.queryMatchedSchoolCallLogs(sinceMs).toString()
     }
 
     @JavascriptInterface
@@ -194,6 +200,57 @@ class WebAppBridge(private val activity: MainActivity) {
     }
 
     @JavascriptInterface
+    fun previewVerifiedSchoolCallOverlay(
+        schoolName: String?,
+        staffName: String?,
+        staffRole: String?,
+        phone: String?
+    ): Boolean {
+        if (!isTrustedHostActive) return false
+        return ParentCallerAlertHelper.showTestVerifiedSchoolOverlay(
+            context = activity.applicationContext,
+            schoolName = schoolName?.trim().orEmpty(),
+            staffName = staffName?.trim().orEmpty(),
+            staffRole = staffRole?.trim().orEmpty(),
+            phone = phone?.trim().orEmpty()
+        )
+    }
+
+    @JavascriptInterface
+    fun getAppVersionInfo(): String {
+        if (!isTrustedHostActive) {
+            return """{"supported":false,"versionCode":0,"versionName":""}"""
+        }
+        return try {
+            JSONObject().apply {
+                put("supported", true)
+                put("versionCode", BuildConfig.VERSION_CODE)
+                put("versionName", BuildConfig.VERSION_NAME)
+            }.toString()
+        } catch (_: Exception) {
+            """{"supported":false,"versionCode":0,"versionName":""}"""
+        }
+    }
+
+    @JavascriptInterface
+    fun getMissedSchoolCalls(): String {
+        if (!isTrustedHostActive) return "[]"
+        return AppPrefs.getMissedSchoolCallsJson(activity.applicationContext)
+    }
+
+    @JavascriptInterface
+    fun dismissMissedSchoolCall(phone: String?, callDateMs: Long) {
+        if (!isTrustedHostActive) return
+        AppPrefs.dismissMissedSchoolCall(activity.applicationContext, phone, callDateMs)
+    }
+
+    @JavascriptInterface
+    fun clearAllMissedSchoolCalls() {
+        if (!isTrustedHostActive) return
+        AppPrefs.clearAllMissedSchoolCalls(activity.applicationContext)
+    }
+
+    @JavascriptInterface
     fun setWalkieOptions(jsonStr: String?) {
         if (!isTrustedHostActive) return
         val clean = jsonStr?.trim().orEmpty()
@@ -215,6 +272,23 @@ class WebAppBridge(private val activity: MainActivity) {
         } catch (_: Exception) {
             "{}"
         }
+    }
+
+    @JavascriptInterface
+    fun playNativeWalkieAudio(
+        audioBase64: String?,
+        mimeType: String?,
+        fallbackText: String?,
+        dedupeKey: String?
+    ) {
+        if (!isTrustedHostActive) return
+        VoiceAnnouncer.playWalkieMessage(
+            context = activity.applicationContext,
+            audioBase64 = audioBase64,
+            mimeType = mimeType,
+            fallbackText = fallbackText,
+            dedupeKey = dedupeKey
+        )
     }
 
     @JavascriptInterface

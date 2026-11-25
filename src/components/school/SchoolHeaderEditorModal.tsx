@@ -43,6 +43,9 @@ export interface SchoolHeaderDetails {
   directorPhotoUrl?: string;
   erpAppUrl?: string;
   erpAppFeatures?: string[];
+  latestApkVersionCode?: number;
+  latestApkVersionName?: string;
+  apkUpdateNotes?: string;
   upiId?: string;
   customFields?: SchoolProfileCustomField[];
   documentPrintFields?: SchoolDocumentPrintFields;
@@ -102,6 +105,9 @@ export const SchoolHeaderEditorModal: React.FC<Props> = ({
       directorPhotoUrl: currentDetails?.directorPhotoUrl || initialDetails?.directorPhotoUrl || school?.directorPhotoUrl || "",
       erpAppUrl: currentDetails?.erpAppUrl || initialDetails?.erpAppUrl || school?.erpAppUrl || DEFAULT_ERP_APP_DOWNLOAD_URL,
       erpAppFeatures: currentDetails?.erpAppFeatures || initialDetails?.erpAppFeatures || school?.erpAppFeatures || [],
+      latestApkVersionCode: currentDetails?.latestApkVersionCode ?? initialDetails?.latestApkVersionCode ?? school?.latestApkVersionCode ?? 2,
+      latestApkVersionName: currentDetails?.latestApkVersionName ?? initialDetails?.latestApkVersionName ?? school?.latestApkVersionName ?? "1.1.0",
+      apkUpdateNotes: currentDetails?.apkUpdateNotes ?? initialDetails?.apkUpdateNotes ?? school?.apkUpdateNotes ?? "",
       upiId: currentDetails?.upiId || initialDetails?.upiId || school?.upiId || "",
       customFields: currentDetails?.customFields || initialDetails?.customFields || school?.customFields || [],
       documentPrintFields: currentDetails?.documentPrintFields || initialDetails?.documentPrintFields || school?.documentPrintFields || {},
@@ -171,6 +177,9 @@ export const SchoolHeaderEditorModal: React.FC<Props> = ({
       directorPhotoUrl: dataToSave.directorPhotoUrl || "",
       erpAppUrl: (dataToSave.erpAppUrl || "").trim(),
       erpAppFeatures: dataToSave.erpAppFeatures || [],
+      latestApkVersionCode: Number(dataToSave.latestApkVersionCode) || 0,
+      latestApkVersionName: (dataToSave.latestApkVersionName || "").trim(),
+      apkUpdateNotes: (dataToSave.apkUpdateNotes || "").trim(),
       upiId: (dataToSave.upiId || "").trim(),
       customFields: dataToSave.customFields || [],
       documentPrintFields: dataToSave.documentPrintFields || {},
@@ -682,6 +691,48 @@ export const SchoolHeaderEditorModal: React.FC<Props> = ({
                     className="w-full px-3 py-2 text-xs font-semibold rounded-xl border border-emerald-300 dark:border-emerald-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white focus:ring-2 focus:ring-emerald-500 outline-hidden"
                   />
                 </div>
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 pt-1">
+                  <div>
+                    <label className="text-[10px] font-black uppercase tracking-wider text-emerald-900 dark:text-emerald-300 block mb-1">
+                      Latest APK Code
+                    </label>
+                    <input
+                      type="number"
+                      min={1}
+                      value={details.latestApkVersionCode ?? ""}
+                      onChange={e => setDetails(p => ({ ...p, latestApkVersionCode: Math.max(0, Number(e.target.value) || 0) }))}
+                      placeholder="2"
+                      className="w-full px-2.5 py-1.5 text-xs font-bold rounded-xl border border-emerald-300 dark:border-emerald-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white tabular-nums"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[10px] font-black uppercase tracking-wider text-emerald-900 dark:text-emerald-300 block mb-1">
+                      Version Name
+                    </label>
+                    <input
+                      type="text"
+                      value={details.latestApkVersionName || ""}
+                      onChange={e => setDetails(p => ({ ...p, latestApkVersionName: e.target.value }))}
+                      placeholder="1.2.0"
+                      className="w-full px-2.5 py-1.5 text-xs font-bold rounded-xl border border-emerald-300 dark:border-emerald-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[10px] font-black uppercase tracking-wider text-emerald-900 dark:text-emerald-300 block mb-1">
+                      Update Notes
+                    </label>
+                    <input
+                      type="text"
+                      value={details.apkUpdateNotes || ""}
+                      onChange={e => setDetails(p => ({ ...p, apkUpdateNotes: e.target.value }))}
+                      placeholder="Naya version ready hai"
+                      className="w-full px-2.5 py-1.5 text-xs font-medium rounded-xl border border-emerald-300 dark:border-emerald-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white"
+                    />
+                  </div>
+                </div>
+                <p className="text-[10px] text-emerald-800/90 dark:text-emerald-300/90 leading-snug">
+                  Purana APK (Version Code kam) chala rahe Teachers &amp; Parents ko App me update banner dikhega.
+                </p>
                 <p className="text-[10px] font-bold text-emerald-800 dark:text-emerald-300 bg-white/80 dark:bg-slate-800/70 px-2.5 py-1.5 rounded-lg border border-emerald-200/80 dark:border-emerald-800/60">
                   📲 Scan QR → Download School ERP App → Create Account → Link Account using Student&apos;s ID Card QR Code
                 </p>

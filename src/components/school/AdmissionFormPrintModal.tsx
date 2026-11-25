@@ -99,6 +99,7 @@ interface Props {
   initialMode?: AdmissionPrintMode;
   isStudentView?: boolean;
   defaultMasked?: boolean;
+  onOpenStudentIdCard?: () => void;
 }
 
 const escapeHtml = (val?: string | number | null): string => {
@@ -566,6 +567,7 @@ export const AdmissionFormPrintModal: React.FC<Props> = ({
   initialMode,
   isStudentView = false,
   defaultMasked = false,
+  onOpenStudentIdCard,
 }) => {
   const [studentRefreshTick, setStudentRefreshTick] = useState(0);
   React.useEffect(() => {
@@ -2794,6 +2796,17 @@ export const AdmissionFormPrintModal: React.FC<Props> = ({
 
             {/* Quick Action Controls */}
             <div className="flex items-center gap-1.5 flex-nowrap">
+              {onOpenStudentIdCard && (
+                <button
+                  type="button"
+                  onClick={onOpenStudentIdCard}
+                  className="flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-bold bg-indigo-600 hover:bg-indigo-500 text-white border border-indigo-400 transition cursor-pointer shadow-xs whitespace-nowrap shrink-0"
+                  title="Student ID Card aur 512×512 Easy-Scan QR kholein"
+                >
+                  <QrCode className="w-3.5 h-3.5" />
+                  <span>ID Card (QR)</span>
+                </button>
+              )}
 
               {!isStudentView && (
                 <button

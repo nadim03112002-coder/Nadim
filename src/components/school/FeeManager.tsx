@@ -1,13 +1,14 @@
 // @ts-nocheck
 import React, { useState, useEffect } from "react";
 import {
-  getStudents, getMonthlyFees, getClasses, saveFee, markFeePaid, currentMonthStr, getSchoolFeeHistory, isStudentInClass, updateStudent, getLocalFees, isDemoRecord, getAccountants, autoSendFeeSlipToSchoolDesk, getSchool, subscribeToFeeCallFollowUps, autoSettleFeeCallFollowUp
+  getStudents, getMonthlyFees, getClasses, saveFee, markFeePaid, currentMonthStr, getSchoolFeeHistory, isStudentInClass, updateStudent, getLocalFees, isDemoRecord, getAccountants, autoSendFeeSlipToSchoolDesk, getSchool, subscribeToFeeCallFollowUps, autoSettleFeeCallFollowUp, subscribeSchoolUpiProofs
 } from "../../school-firebase";
 import { toast } from "sonner";
-import type { SchoolStudent, SchoolClass, MonthlyFee, School, SchoolDocumentPrintFields, SchoolAccountant, FeeTermCampaign, AppliedTermFeeItem, FeeCallFollowUpRecord } from "../../school-types";
+import type { SchoolStudent, SchoolClass, MonthlyFee, School, SchoolDocumentPrintFields, SchoolAccountant, FeeTermCampaign, AppliedTermFeeItem, FeeCallFollowUpRecord, UpiPaymentProofRecord } from "../../school-types";
 import { schoolPrintFieldEnabled, hasEliteFeeTagadaAccess } from "../../school-types";
 import { CheckCircle, Clock, Download, ChevronLeft, ChevronRight, ChevronDown, IndianRupee, Users, TrendingUp, AlertCircle, Printer, MessageCircle, MessageSquare, ReceiptText, Building2, Sparkles, X, Check, RotateCcw, CheckCircle2, ShieldCheck, ToggleLeft, ToggleRight, Bus, QrCode, Search, Filter, Loader2, Bell, FileSpreadsheet, FileText, Plus, Trash2, CreditCard, Palette, CalendarClock, PhoneCall, Lock } from "lucide-react";
 import { FeeTagadaCallerPage, buildFamilyTagadaGroups, getLocalTodayYmd, getPendingActiveTagadaCall, type TagadaStudentFeeRow } from "./FeeTagadaCallerPage";
+import { DevelopedByCredit } from "./DevelopedByFooter";
 import { EliteFeatureLockCard } from "./EliteFeatureLockCard";
 import { FeeTermSchedulerModal } from "./FeeTermSchedulerModal";
 import { resolveScheduledFeesForStudentMonth, mergeSettlementAfterPayment } from "../../utils/feeTermScheduler";
@@ -32,6 +33,7 @@ import { AdmissionFormPrintModal, type AdmissionPrintMode } from "./AdmissionFor
 import { ClassFeeAlertBroadcastModal } from "./ClassFeeAlertBroadcastModal";
 import { ReceiptCancellationModal } from "./ReceiptCancellationModal";
 import { RazorpaySettingsModal } from "./RazorpaySettingsModal";
+import { PendingUpiApprovalsPanel } from "./PendingUpiApprovalsPanel";
 import {
   generateDpsReceiptHtml,
   generateSingleA6SlipHtml,
@@ -106,9 +108,12 @@ interface Props {
   onBack?: () => void;
   initialTool?: "qr_scanner" | "bus" | "admission_receipt" | "class_rates" | "fee_alert" | "header" | "razorpay" | "cancel_receipt" | "term_scheduler" | "fee_tagada";
   exitOnToolClose?: boolean;
+  initialStudentId?: string;
+  initialStudentAction?: "collect_fee" | "fee_update";
+  onInitialStudentActionHandled?: () => void;
 }
 
-export const FeeManager: React.FC<Props> = ({ schoolId, classId, className, schoolName, school, sessionId, adminId, userRole = "SCHOOL_ADMIN", actorName = "Admin / Accountant", allowDiscountOverride, maxDiscountLimitPct, onBack, initialTool, exitOnToolClose = false }) => {
+export const FeeManager: React.FC<Props> = ({ schoolId, classId, className, schoolName, school, sessionId, adminId, userRole = "SCHOOL_ADMIN", actorName = "Admin / Accountant", allowDiscountOverride, maxDiscountLimitPct, onBack, initialTool, exitOnToolClose = false, initialStudentId, initialStudentAction = "collect_fee", onInitialStudentActionHandled }) => {
   const canGiveDiscount = allowDiscountOverride !== undefined ? allowDiscountOverride : canRoleGiveDiscount(userRole);
   const clampByRoleLimit = (gross: number, requested: number): number => {
     if (!canGiveDiscount) return 0;
@@ -161,11 +166,19 @@ export const FeeManager: React.FC<Props> = ({ schoolId, classId, className, scho
   const [showTemplateStudio, setShowTemplateStudio] = useState<boolean>(false);
   const [showTermSchedulerModal, setShowTermSchedulerModal] = useState<boolean>(false);
   const [showFeeTagadaModal, setShowFeeTagadaModal] = useState<boolean>(false);
+  const [showUpiApprovals, setShowUpiApprovals] = useState<boolean>(false);
+  const [upiProofs, setUpiProofs] = useState<UpiPaymentProofRecord[]>([]);
   const [feeCallFollowUps, setFeeCallFollowUps] = useState<FeeCallFollowUpRecord[]>([]);
   const [liveSchool, setLiveSchool] = useState<School | undefined>(school);
   const canUseFeeTagada = hasEliteFeeTagadaAccess(liveSchool || school);
   const [termCampaigns, setTermCampaigns] = useState<FeeTermCampaign[]>(() => school?.feeTermCampaigns || []);
   const [templateTick, setTemplateTick] = useState<number>(0);
+
+  React.useEffect(() => {
+    if (!schoolId) return;
+    return subscribeSchoolUpiProofs(schoolId, setUpiProofs);
+  }, [schoolId]);
+  const pendingUpiCount = upiProofs.filter((p) => p.status === "PENDING").length;
 
   React.useEffect(() => {
     if (school) {
@@ -353,6 +366,39 @@ export const FeeManager: React.FC<Props> = ({ schoolId, classId, className, scho
     window.addEventListener("open-fee-tool", handleOpenTool);
     return () => window.removeEventListener("open-fee-tool", handleOpenTool);
   }, [initialTool]);
+
+  useEffect(() => {
+    if (!initialStudentId || loading || students.length === 0) return;
+    const targetStudent = students.find((s) => s.id === initialStudentId);
+    if (!targetStudent) return;
+
+    if (initialStudentAction === "fee_update") {
+      setModalInitialTab("fees");
+      setSelectedStudentForModal(targetStudent);
+    } else {
+      const targetFee = fees.find((f) => f.studentId === targetStudent.id);
+      if (targetFee) {
+        handleOpenPaymentModal(targetFee);
+      } else {
+        const fallbackFee = {
+          schoolId,
+          sessionId,
+          studentId: targetStudent.id,
+          studentName: targetStudent.name,
+          rollNo: targetStudent.rollNo,
+          classId: targetStudent.classId,
+          month,
+          monthlyAmount: targetStudent.monthlyFee || 2000,
+          amount: targetStudent.monthlyFee || 2000,
+          paid: false,
+          paidAmount: 0,
+          balanceDue: targetStudent.monthlyFee || 2000,
+        } as MonthlyFee;
+        handleOpenPaymentModal(fallbackFee);
+      }
+    }
+    onInitialStudentActionHandled?.();
+  }, [initialStudentId, initialStudentAction, loading, students.length, fees.length]);
 
   useEffect(() => {
     if (showAdmissionModal && !admSelectedStudentId && students.length > 0) {
@@ -3368,6 +3414,28 @@ td{padding:8px 10px;border-bottom:1px solid #e2e8f0}</style></head>
             ) : null}
           </button>
 
+          {/* UPI Screenshot Verification Queue Button */}
+          <button
+            type="button"
+            onClick={() => setShowUpiApprovals((prev) => !prev)}
+            className={`inline-flex items-center gap-1.5 px-2.5 py-2 rounded-lg text-xs font-bold transition-colors active:scale-95 cursor-pointer whitespace-nowrap shadow-xs ${
+              showUpiApprovals
+                ? "bg-amber-500 text-slate-950"
+                : pendingUpiCount > 0
+                ? "bg-amber-50 dark:bg-amber-500/20 text-amber-800 dark:text-amber-300 border border-amber-300 dark:border-amber-500/40"
+                : "border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800"
+            }`}
+            title="Parent UPI Screenshot Verification & 1-Click Receipt"
+          >
+            <QrCode className="w-3.5 h-3.5 shrink-0" />
+            <span className="whitespace-nowrap">UPI Verify</span>
+            {pendingUpiCount > 0 && (
+              <span className="font-mono text-[10px] bg-amber-600 text-white px-1.5 py-0.2 rounded-full tabular-nums">
+                {pendingUpiCount}
+              </span>
+            )}
+          </button>
+
           {/* Quick Fee Types & Term Planner Launcher */}
           <button
             type="button"
@@ -3419,6 +3487,46 @@ td{padding:8px 10px;border-bottom:1px solid #e2e8f0}</style></head>
             <span>{pushBannerMsg}</span>
             <button onClick={() => setPushBannerMsg(null)} className="text-indigo-500 hover:text-indigo-800 dark:hover:text-indigo-100 cursor-pointer px-1">✕</button>
           </div>
+        )}
+
+        {pendingUpiCount > 0 && !showUpiApprovals && (
+          <div className="rounded-xl border border-amber-300 dark:border-amber-600/50 bg-amber-50 dark:bg-amber-950/35 px-3.5 py-2.5 flex items-center justify-between gap-3">
+            <div className="min-w-0">
+              <p className="text-xs font-bold text-amber-950 dark:text-amber-200">
+                {pendingUpiCount} UPI Payment Screenshot{pendingUpiCount > 1 ? "s" : ""} Pending Verification
+              </p>
+              <p className="text-[11px] text-amber-800 dark:text-amber-300 truncate">
+                1-क्लिक में UTR जांचें और रसीद जारी करें
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setShowUpiApprovals(true)}
+              className="px-3 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-extrabold whitespace-nowrap cursor-pointer shrink-0"
+            >
+              Review Now
+            </button>
+          </div>
+        )}
+
+        {showUpiApprovals && (
+          <PendingUpiApprovalsPanel
+            schoolId={schoolId}
+            proofs={upiProofs}
+            approverName={resolveActiveCollector().collectedByName}
+            approverRole={resolveActiveCollector().collectedByRole}
+            onClose={() => setShowUpiApprovals(false)}
+            onApprovedReceipt={(approvedFee) => {
+              setFees((prev) => {
+                const next = prev.filter(
+                  (f) => !(f.studentId === approvedFee.studentId && f.month === approvedFee.month)
+                );
+                return [approvedFee, ...next];
+              });
+              setDpsModalFormat("pos");
+              setDpsReceiptFee(approvedFee);
+            }}
+          />
         )}
 
         {/* Month Selector */}
@@ -3531,7 +3639,8 @@ td{padding:8px 10px;border-bottom:1px solid #e2e8f0}</style></head>
         {/* Student fee list */}
         {loading ? (
           <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-8 text-center text-xs font-medium text-slate-400">
-            Loading fee records...
+            <p>Loading fee records...</p>
+            <DevelopedByCredit tone="auto" />
           </div>
         ) : (
           <>

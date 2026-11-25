@@ -304,56 +304,55 @@ export const AppLoadingScreen: React.FC<AppLoadingScreenProps> = ({
         </div>
       )}
 
-      {/* Bottom Premium Signature — Strictly on App Open ('boot'), 2s Letter-by-Letter + 1s Hold */}
-      {isBootMode ? (
-        <div className="relative z-10 flex flex-col items-center text-center pt-2">
-          <div
-            className="w-20 h-[1px] mb-2.5 bg-gradient-to-r from-transparent via-amber-400/75 to-transparent origin-center"
-            style={{
-              opacity: 0,
-              animation: 'spCreditHairline 320ms ease-out 180ms forwards',
-            }}
-          />
-          <div className="flex items-center justify-center text-[10px] font-bold tracking-[0.38em] uppercase text-slate-400">
-            {CREDIT_PREFIX.map((ch, idx) => (
-              <span
-                key={`cp-${idx}`}
-                className="inline-block"
-                style={{
-                  width: ch === ' ' ? '0.45em' : undefined,
-                  opacity: 0,
-                  animation: `spCreditLetterIn 220ms ease-out ${240 + idx * 52}ms forwards`,
-                }}
-              >
-                {ch === ' ' ? '\u00A0' : ch}
-              </span>
-            ))}
+      {/* Bottom Premium Signature — Animated Letter-by-Letter Across Every Loading Screen */}
+      <div className="relative z-10 flex flex-col items-center text-center pt-2">
+        {!isBootMode && (
+          <div className="mb-2 text-[10px] font-semibold tracking-[0.22em] uppercase text-slate-500">
+            Admissions · Attendance · Fees · Results
           </div>
-          <div className="mt-1 flex items-center justify-center text-sm sm:text-base font-black tracking-[0.26em] uppercase">
-            {CREDIT_AUTHOR.map((ch, idx) => (
-              <span
-                key={`ca-${idx}`}
-                className={`inline-block ${
-                  idx < 5
-                    ? 'text-slate-100 drop-shadow-[0_2px_10px_rgba(255,255,255,0.22)]'
-                    : 'text-amber-300 drop-shadow-[0_2px_12px_rgba(251,191,36,0.35)]'
-                }`}
-                style={{
-                  width: ch === ' ' ? '0.45em' : undefined,
-                  opacity: 0,
-                  animation: `spCreditLetterIn 240ms cubic-bezier(0.22, 1, 0.36, 1) ${920 + idx * 92}ms forwards`,
-                }}
-              >
-                {ch === ' ' ? '\u00A0' : ch}
-              </span>
-            ))}
-          </div>
+        )}
+        <div
+          className="w-20 h-[1px] mb-2.5 bg-gradient-to-r from-transparent via-amber-400/75 to-transparent origin-center"
+          style={{
+            opacity: 0,
+            animation: `spCreditHairline ${isBootMode ? 320 : 240}ms ease-out ${isBootMode ? 180 : 60}ms forwards`,
+          }}
+        />
+        <div className="flex items-center justify-center text-[10px] font-bold tracking-[0.38em] uppercase text-slate-400">
+          {CREDIT_PREFIX.map((ch, idx) => (
+            <span
+              key={`cp-${idx}`}
+              className="inline-block"
+              style={{
+                width: ch === ' ' ? '0.45em' : undefined,
+                opacity: 0,
+                animation: `spCreditLetterIn ${isBootMode ? 220 : 160}ms ease-out ${(isBootMode ? 240 : 100) + idx * (isBootMode ? 52 : 24)}ms forwards`,
+              }}
+            >
+              {ch === ' ' ? '\u00A0' : ch}
+            </span>
+          ))}
         </div>
-      ) : (
-        <div className="relative z-10 text-[10px] font-semibold tracking-[0.24em] uppercase text-slate-500">
-          Admissions · Attendance · Fees · Results
+        <div className="mt-1 flex items-center justify-center text-sm sm:text-base font-black tracking-[0.26em] uppercase">
+          {CREDIT_AUTHOR.map((ch, idx) => (
+            <span
+              key={`ca-${idx}`}
+              className={`inline-block ${
+                idx < 5
+                  ? 'text-slate-100 drop-shadow-[0_2px_10px_rgba(255,255,255,0.22)]'
+                  : 'text-amber-300 drop-shadow-[0_2px_12px_rgba(251,191,36,0.35)]'
+              }`}
+              style={{
+                width: ch === ' ' ? '0.45em' : undefined,
+                opacity: 0,
+                animation: `spCreditLetterIn ${isBootMode ? 240 : 180}ms cubic-bezier(0.22, 1, 0.36, 1) ${(isBootMode ? 920 : 380) + idx * (isBootMode ? 92 : 42)}ms forwards`,
+              }}
+            >
+              {ch === ' ' ? '\u00A0' : ch}
+            </span>
+          ))}
         </div>
-      )}
+      </div>
     </div>
   );
 };

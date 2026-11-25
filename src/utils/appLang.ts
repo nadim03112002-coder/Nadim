@@ -75,7 +75,23 @@ const DICT: Dict = {
   warn_offline:        { EN: 'You are offline.',           HI: 'आप offline हैं।' },
   warn_low_credits:    { EN: 'Low credits. Top up to continue.', HI: 'कम क्रेडिट हैं। जारी रखने के लिए recharge करें।' },
   warn_locked:         { EN: 'Locked! Upgrade your plan or wait for Admin access.', HI: 'लॉक्ड! अपना प्लान upgrade करें या एडमिन से access maangein।' },
+  home:                { EN: 'Home',                       HI: 'होम' },
+  dashboard:           { EN: 'Dashboard',                  HI: 'डैशबोर्ड' },
+  student_portal:      { EN: 'Student Portal',             HI: 'छात्र पोर्टल' },
+  fees:                { EN: 'Fees',                       HI: 'फीस' },
+  attendance:          { EN: 'Attendance',                 HI: 'हाज़िरी' },
+  notices:             { EN: 'Notices',                    HI: 'सूचनाएँ' },
+  homework:            { EN: 'Homework',                   HI: 'गृहकार्य' },
+  exams:               { EN: 'Exams & Results',            HI: 'परीक्षा व परिणाम' },
+  profile:             { EN: 'Profile',                    HI: 'प्रोफ़ाइल' },
+  today_collection:    { EN: "Today's Collection",         HI: 'आज की कुल वसूली' },
+  absentees:           { EN: 'Absentees',                  HI: 'अनुपस्थित छात्र' },
+  closing_summary:     { EN: 'Daily Closing Summary',      HI: 'दैनिक क्लोजिंग सारांश' },
+  share_whatsapp:      { EN: 'Share WhatsApp',             HI: 'व्हाट्सएप शेयर' },
+  save_pdf:            { EN: 'Save PDF',                   HI: 'PDF सेव करें' },
 };
+
+export const pickLang = <T,>(lang: AppLang, hi: T, en: T): T => (lang === 'EN' ? en : hi);
 
 export const tApp = (lang: AppLang, key: keyof typeof DICT | string): string => {
   const entry = DICT[key as string];

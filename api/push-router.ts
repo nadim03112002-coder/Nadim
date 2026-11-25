@@ -446,8 +446,9 @@ async function getFcmAccessToken(): Promise<string | null> {
 async function dispatchFcmToUsers(
   recipientIds: string[],
   broadcast: boolean,
-  payload: { id?: string; title: string; body: string; type?: string; threadType?: string; voiceSpeak?: boolean | string; url?: string; icon?: string },
-  filter?: { schoolId?: string; classId?: string; className?: string }
+  payload: { id?: string; title: string; body: string; type?: string; threadType?: string; voiceSpeak?: boolean | string; url?: string; icon?: string; senderId?: string; senderDeviceId?: string; walkieSpeechText?: string; walkieMimeType?: string },
+  filter?: { schoolId?: string; classId?: string; className?: string },
+  exclude?: { senderIds?: string[]; senderFcmToken?: string; senderDeviceId?: string }
 ): Promise<number> {
   const accessToken = await getFcmAccessToken();
   if (!accessToken) return 0;
@@ -465,6 +466,11 @@ async function dispatchFcmToUsers(
   const cleanSet = new Set(recipientIds.map((id) => String(id).trim().replace(/[.#$[\]/]/g, "_")));
   const rawSet = new Set(recipientIds.map((id) => String(id).trim()));
 
+  const excludeRawSet = new Set((exclude?.senderIds || []).map((id) => String(id).trim()).filter(Boolean));
+  const excludeCleanSet = new Set(Array.from(excludeRawSet).map((id) => id.replace(/[.#$[\]/]/g, "_")));
+  const excludedToken = exclude?.senderFcmToken ? String(exclude.senderFcmToken).trim() : "";
+  const excludedDeviceId = exclude?.senderDeviceId ? String(exclude.senderDeviceId).trim() : "";
+
   const tokenTargets = new Map<
     string,
     { keys: string[]; platform: string; studentId?: string; schoolId?: string }
@@ -475,6 +481,13 @@ async function dispatchFcmToUsers(
 
     const entryUserId = entry.userId ? String(entry.userId).trim() : "";
     const entryStudentId = entry.studentId ? String(entry.studentId).trim() : "";
+    const entryDeviceId = entry.deviceId ? String(entry.deviceId).trim() : "";
+
+    if (excludedToken && String(entry.token).trim() === excludedToken) continue;
+    if (excludedDeviceId && entryDeviceId && entryDeviceId === excludedDeviceId) continue;
+    if (excludeCleanSet.has(key) || excludeRawSet.has(key)) continue;
+    if (entryUserId && (excludeRawSet.has(entryUserId) || excludeCleanSet.has(entryUserId.replace(/[.#$[\]/]/g, "_")))) continue;
+    if (entryStudentId && (excludeRawSet.has(entryStudentId) || excludeCleanSet.has(entryStudentId.replace(/[.#$[\]/]/g, "_")))) continue;
 
     const explicitIdMatch =
       cleanSet.has(key) ||
@@ -532,10 +545,18 @@ async function dispatchFcmToUsers(
         threadType: String(payload.threadType || ""),
         url: String(payload.url || "/"),
         icon: String(payload.icon || "/icons/icon-512.png?v=4"),
+        senderId: String(payload.senderId || ""),
+        senderDeviceId: String(payload.senderDeviceId || ""),
         studentId: String(target.studentId || ""),
         schoolId: String(filter?.schoolId || target.schoolId || ""),
         voiceSpeak: suppressVoice ? "0" : "1",
         urgent: "1",
+        ...(payload.walkieSpeechText
+          ? { walkieSpeechText: String(payload.walkieSpeechText).slice(0, 300) }
+          : {}),
+        ...(payload.walkieMimeType
+          ? { walkieMimeType: String(payload.walkieMimeType).slice(0, 80) }
+          : {}),
       };
 
       const fcmMessage = isNativeAndroid
@@ -867,6 +888,11 @@ export default async function handler(req: any, res: any) {
         classBroadcast,
         schoolBroadcast,
         senderId,
+        senderIds,
+        senderDeviceId,
+        senderEndpoint,
+        senderFcmToken,
+        allowSelf,
         title,
         body,
         type = "SCHOOL_NOTICE",
@@ -876,15 +902,33 @@ export default async function handler(req: any, res: any) {
         urgent = true,
         icon,
         senderPhoto,
+        walkieSpeechText,
+        walkieMimeType,
       } = req.body || {};
 
       if (!title || !body) {
         return res.status(400).json({ error: "title and body are required" });
       }
 
+      const isSelfAllowed = Boolean(allowSelf);
+      const excludedIdSet = new Set<string>();
+      if (!isSelfAllowed) {
+        if (senderId && String(senderId).trim()) excludedIdSet.add(String(senderId).trim());
+        if (Array.isArray(senderIds)) {
+          senderIds.forEach((id: any) => {
+            if (id && String(id).trim()) excludedIdSet.add(String(id).trim());
+          });
+        }
+      }
+      const cleanSenderEndpoint = !isSelfAllowed && senderEndpoint ? String(senderEndpoint).trim() : "";
+      const cleanSenderDeviceId = !isSelfAllowed && senderDeviceId ? String(senderDeviceId).trim() : "";
+      const cleanSenderFcmToken = !isSelfAllowed && senderFcmToken ? String(senderFcmToken).trim() : "";
+
       const subsObj = (await rtdbGet<Record<string, StoredPushSubscription>>("school_webpush_subs")) || {};
       const targetStudentSet =
-        Array.isArray(studentIds) && studentIds.length > 0 ? new Set(studentIds.map(String)) : null;
+        Array.isArray(studentIds) && studentIds.length > 0
+          ? new Set(studentIds.map(String).filter((id) => isSelfAllowed || !excludedIdSet.has(id)))
+          : null;
 
       let delivered = 0;
       let matchedDevices = 0;
@@ -894,8 +938,10 @@ export default async function handler(req: any, res: any) {
         if (!record?.subscription?.endpoint) continue;
         record.id = id;
 
-        if (senderId && record.userId && record.userId === String(senderId) && !userId) {
-          continue;
+        if (!isSelfAllowed) {
+          if (cleanSenderEndpoint && record.subscription.endpoint === cleanSenderEndpoint) continue;
+          if (cleanSenderDeviceId && record.deviceId && record.deviceId === cleanSenderDeviceId) continue;
+          if (record.userId && excludedIdSet.has(String(record.userId).trim())) continue;
         }
 
         let matchedStudent: LinkedStudentPushMeta | undefined;
@@ -977,8 +1023,28 @@ export default async function handler(req: any, res: any) {
       const fcmDelivered = await dispatchFcmToUsers(
         fcmRecipients,
         isFcmBroadcast,
-        { id: notifId, title, body, type, threadType, voiceSpeak, url, icon: effectiveIcon },
-        { schoolId, classId, className }
+        {
+          id: notifId,
+          title,
+          body,
+          type,
+          threadType,
+          voiceSpeak,
+          url,
+          icon: effectiveIcon,
+          senderId: senderId ? String(senderId) : "",
+          senderDeviceId: cleanSenderDeviceId,
+          walkieSpeechText: walkieSpeechText ? String(walkieSpeechText).slice(0, 300) : undefined,
+          walkieMimeType: walkieMimeType ? String(walkieMimeType).slice(0, 80) : undefined,
+        },
+        { schoolId, classId, className },
+        isSelfAllowed
+          ? undefined
+          : {
+              senderIds: Array.from(excludedIdSet),
+              senderFcmToken: cleanSenderFcmToken,
+              senderDeviceId: cleanSenderDeviceId,
+            }
       );
       delivered += fcmDelivered;
 

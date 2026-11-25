@@ -342,6 +342,7 @@ export const StaffHRMManager: React.FC<Props> = ({
     designation: string;
     monthlySalary: number;
     signatureUrl?: string;
+    hidePhoneFromParentCallerId: boolean;
   } | null>(null);
   const [signatureTargetAccountant, setSignatureTargetAccountant] = useState<SchoolAccountant | null>(null);
 
@@ -367,6 +368,7 @@ export const StaffHRMManager: React.FC<Props> = ({
     designation: string;
     department: string;
     monthlySalary: number;
+    hidePhoneFromParentCallerId: boolean;
   } | null>(null);
 
   const [savingRoleOrPay, setSavingRoleOrPay] = useState(false);
@@ -415,7 +417,7 @@ export const StaffHRMManager: React.FC<Props> = ({
   const handleSaveAccountantEdit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!editingAccountantModal) return;
-    const { acc, name, phone, employeeId, designation, monthlySalary, signatureUrl } = editingAccountantModal;
+    const { acc, name, phone, employeeId, designation, monthlySalary, signatureUrl, hidePhoneFromParentCallerId } = editingAccountantModal;
     if (!name.trim() || !phone.trim()) {
       showToast("error", "कृपया Accountant का नाम और मोबाइल नंबर दर्ज करें।");
       return;
@@ -433,6 +435,7 @@ export const StaffHRMManager: React.FC<Props> = ({
         monthlySalary: nextPay,
         salaryStructure: nextStruct,
         signatureUrl: signatureUrl !== undefined ? signatureUrl : acc.signatureUrl,
+        hidePhoneFromParentCallerId: Boolean(hidePhoneFromParentCallerId),
       };
       await saveAccountant(updatedAcc);
       setAccountantsList((prev) => prev.map((a) => (a.id === acc.id ? updatedAcc : a)));
@@ -447,11 +450,12 @@ export const StaffHRMManager: React.FC<Props> = ({
           monthlySalary: nextPay,
           salary: nextPay,
           salaryStructure: syncedStruct,
+          hidePhoneFromParentCallerId: Boolean(hidePhoneFromParentCallerId),
         });
         setTeachersList((prev) =>
           prev.map((t) =>
             t.id === linkedTeacher.id
-              ? { ...t, name: updatedAcc.name, phone: updatedAcc.phone, monthlySalary: nextPay, salary: nextPay, salaryStructure: syncedStruct }
+              ? { ...t, name: updatedAcc.name, phone: updatedAcc.phone, monthlySalary: nextPay, salary: nextPay, salaryStructure: syncedStruct, hidePhoneFromParentCallerId: Boolean(hidePhoneFromParentCallerId) }
               : t
           )
         );
@@ -470,6 +474,7 @@ export const StaffHRMManager: React.FC<Props> = ({
           phone: updatedAcc.phone,
           monthlySalary: nextPay,
           salaryStructure: nextStruct,
+          hidePhoneFromParentCallerId: Boolean(hidePhoneFromParentCallerId),
         };
         await saveStaffEmployee(syncedStaff);
         setStaffList((prev) => prev.map((s) => (s.id === matchingStaff.id ? syncedStaff : s)));
@@ -594,7 +599,7 @@ export const StaffHRMManager: React.FC<Props> = ({
   const handleSaveStaffEdit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!editingStaffModal) return;
-    const { st, name, phone, employeeId, designation, department, monthlySalary } = editingStaffModal;
+    const { st, name, phone, employeeId, designation, department, monthlySalary, hidePhoneFromParentCallerId } = editingStaffModal;
     if (!name.trim()) {
       showToast("error", "कृपया स्टाफ का नाम दर्ज करें।");
       return;
@@ -612,6 +617,7 @@ export const StaffHRMManager: React.FC<Props> = ({
         department: department.trim() || st.department,
         monthlySalary: nextPay,
         salaryStructure: nextStruct,
+        hidePhoneFromParentCallerId: Boolean(hidePhoneFromParentCallerId),
       };
       await saveStaffEmployee(updatedStaff);
       setStaffList((prev) => prev.map((item) => (item.id === st.id ? updatedStaff : item)));
@@ -628,11 +634,12 @@ export const StaffHRMManager: React.FC<Props> = ({
           monthlySalary: nextPay,
           salary: nextPay,
           salaryStructure: tStruct,
+          hidePhoneFromParentCallerId: Boolean(hidePhoneFromParentCallerId),
         });
         setTeachersList((prev) =>
           prev.map((t) =>
             t.id === matchingTeacher.id
-              ? { ...t, name: updatedStaff.name, phone: updatedStaff.phone, designation: updatedStaff.designation, monthlySalary: nextPay, salary: nextPay, salaryStructure: tStruct }
+              ? { ...t, name: updatedStaff.name, phone: updatedStaff.phone, designation: updatedStaff.designation, monthlySalary: nextPay, salary: nextPay, salaryStructure: tStruct, hidePhoneFromParentCallerId: Boolean(hidePhoneFromParentCallerId) }
               : t
           )
         );
@@ -649,6 +656,7 @@ export const StaffHRMManager: React.FC<Props> = ({
           phone: updatedStaff.phone || linkedAcc.phone,
           monthlySalary: nextPay,
           salaryStructure: nextStruct,
+          hidePhoneFromParentCallerId: Boolean(hidePhoneFromParentCallerId),
         };
         await saveAccountant(updatedAcc);
         setAccountantsList((prev) => prev.map((a) => (a.id === linkedAcc.id ? updatedAcc : a)));
@@ -676,6 +684,7 @@ export const StaffHRMManager: React.FC<Props> = ({
     department: "Science & Academics",
     monthlySalary: 25000,
     joinDate: todayStr(),
+    hidePhoneFromParentCallerId: false,
   });
 
   // Leave apply modal
@@ -945,6 +954,7 @@ export const StaffHRMManager: React.FC<Props> = ({
         monthlySalary: Number(staffForm.monthlySalary) || 0,
         joinDate: staffForm.joinDate,
         active: true,
+        hidePhoneFromParentCallerId: Boolean(staffForm.hidePhoneFromParentCallerId),
         createdAt: new Date().toISOString(),
       };
       await saveStaffEmployee(newStaff);
@@ -960,6 +970,7 @@ export const StaffHRMManager: React.FC<Props> = ({
         department: "Science & Academics",
         monthlySalary: 25000,
         joinDate: todayStr(),
+        hidePhoneFromParentCallerId: false,
       });
       setSelectedStaffForIdCard(newStaff);
       showToast("success", `${newStaff.name} ko staff directory mein jod diya gaya.`);
@@ -1436,6 +1447,24 @@ export const StaffHRMManager: React.FC<Props> = ({
                     />
                   </div>
                 </div>
+                <label className="flex items-start gap-2.5 p-3 rounded-xl bg-slate-50 dark:bg-slate-900/60 border border-slate-200 dark:border-slate-700 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={Boolean(staffForm.hidePhoneFromParentCallerId)}
+                    onChange={(e) =>
+                      setStaffForm({ ...staffForm, hidePhoneFromParentCallerId: e.target.checked })
+                    }
+                    className="mt-0.5 w-4 h-4 rounded accent-indigo-600 cursor-pointer shrink-0"
+                  />
+                  <div className="min-w-0">
+                    <span className="text-xs font-bold text-slate-800 dark:text-slate-100 block">
+                      Parent Caller ID se personal number chhupayein (Lady Teacher / Staff Privacy)
+                    </span>
+                    <span className="text-[11px] text-slate-500 dark:text-slate-400 block">
+                      On karne par Parents ke app me inka personal mobile number nahi dikhega.
+                    </span>
+                  </div>
+                </label>
                 <div className="flex justify-end gap-2 pt-2">
                   <button
                     onClick={() => setShowAddStaff(false)}
@@ -1482,6 +1511,7 @@ export const StaffHRMManager: React.FC<Props> = ({
                               designation: st.designation || "",
                               department: st.department || "",
                               monthlySalary: Number(st.salaryStructure?.netMonthlySalary ?? st.monthlySalary ?? 0),
+                              hidePhoneFromParentCallerId: Boolean(st.hidePhoneFromParentCallerId),
                             })
                           }
                           className="px-2 py-1 rounded-lg bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 hover:bg-emerald-100 text-[10px] font-black flex items-center gap-1 cursor-pointer"
@@ -1774,6 +1804,7 @@ export const StaffHRMManager: React.FC<Props> = ({
                               designation: acc.designation || "Accountant & Cashier",
                               monthlySalary: Number(acc.salaryStructure?.netMonthlySalary ?? acc.monthlySalary ?? 0),
                               signatureUrl: acc.signatureUrl || "",
+                              hidePhoneFromParentCallerId: Boolean(acc.hidePhoneFromParentCallerId),
                             })
                           }
                           className="px-3 py-1.5 rounded-xl bg-amber-50 dark:bg-amber-950/40 text-amber-800 dark:text-amber-300 border border-amber-200 dark:border-amber-800 hover:bg-amber-100 text-xs font-black transition flex items-center gap-1 cursor-pointer active:scale-95"
@@ -3478,6 +3509,28 @@ export const StaffHRMManager: React.FC<Props> = ({
                   </div>
                 </div>
 
+                <label className="flex items-start gap-2.5 p-3 rounded-2xl bg-slate-50 dark:bg-slate-800/70 border border-slate-200 dark:border-slate-700 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={Boolean(editingAccountantModal.hidePhoneFromParentCallerId)}
+                    onChange={(e) =>
+                      setEditingAccountantModal({
+                        ...editingAccountantModal,
+                        hidePhoneFromParentCallerId: e.target.checked,
+                      })
+                    }
+                    className="mt-0.5 w-4 h-4 rounded accent-indigo-600 cursor-pointer shrink-0"
+                  />
+                  <div className="min-w-0">
+                    <span className="block font-bold text-slate-700 dark:text-slate-200 text-xs">
+                      Parent Caller ID se personal number chhupayein (Privacy)
+                    </span>
+                    <span className="block text-[10px] text-slate-500">
+                      On karne par Parents ke app me inka personal number sync nahi hoga.
+                    </span>
+                  </div>
+                </label>
+
                 <div className="pt-2 flex items-center gap-2">
                   <button
                     type="button"
@@ -3721,6 +3774,28 @@ export const StaffHRMManager: React.FC<Props> = ({
                     className="w-full px-3 py-2.5 rounded-xl bg-white dark:bg-slate-900 border border-emerald-300 dark:border-emerald-700 text-slate-900 dark:text-white font-black text-base tabular-nums"
                   />
                 </div>
+
+                <label className="flex items-start gap-2.5 p-3 rounded-2xl bg-slate-50 dark:bg-slate-800/70 border border-slate-200 dark:border-slate-700 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={Boolean(editingStaffModal.hidePhoneFromParentCallerId)}
+                    onChange={(e) =>
+                      setEditingStaffModal({
+                        ...editingStaffModal,
+                        hidePhoneFromParentCallerId: e.target.checked,
+                      })
+                    }
+                    className="mt-0.5 w-4 h-4 rounded accent-indigo-600 cursor-pointer shrink-0"
+                  />
+                  <div className="min-w-0">
+                    <span className="block font-bold text-slate-700 dark:text-slate-200 text-xs">
+                      Parent Caller ID se personal number chhupayein (Lady Teacher / Staff Privacy)
+                    </span>
+                    <span className="block text-[10px] text-slate-500">
+                      On karne par Parents ke app me inka personal number nahi dikhega.
+                    </span>
+                  </div>
+                </label>
 
                 <div className="pt-2 flex items-center gap-2">
                   <button

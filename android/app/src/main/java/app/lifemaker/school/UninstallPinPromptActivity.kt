@@ -81,9 +81,9 @@ class UninstallPinPromptActivity : Activity() {
 
         val titleView = TextView(this).apply {
             text = if (hasPinConfigured) {
-                "Admin PIN Darj Karein"
+                "School Admin PIN Darj Karein"
             } else {
-                "SCHOOL+ Uninstall Locked Hai"
+                "School Security PIN Sync Nahi Hua"
             }
             setTextColor(Color.WHITE)
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 20f)
@@ -93,9 +93,9 @@ class UninstallPinPromptActivity : Activity() {
 
         val subtitleView = TextView(this).apply {
             text = if (hasPinConfigured) {
-                "$reason ko aage badhane ke liye SCHOOL+ Admin Security PIN daalein. Sahi PIN par 2 minute ke liye unlock milega."
+                "$reason ko aage badhane ke liye School Admin Security PIN daalein. Sahi PIN par 2 minute ke liye unlock milega."
             } else {
-                "$reason surakshit hai. Pehle SCHOOL+ App kholkar Device Admin Protection me Admin PIN set karein."
+                "$reason surakshit hai. Kripya SCHOOL+ App kholkar apna School account refresh karein — School Admin ka PIN sync hote hi yahan PIN daalne ka box dikhega."
             }
             setTextColor(Color.parseColor("#CBD5E1"))
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 13.5f)

@@ -15,7 +15,8 @@ import {
   subscribeToRecycleBin, restoreTeacherFromRecycleBin, restoreStudentFromRecycleBin,
   permanentDeleteTeacherFromBin, permanentDeleteStudentFromBin,
   subscribeStaffLeaves, autoSendFeeSlipToSchoolDesk, subscribeToFeeCallFollowUps,
-  getSchoolPublicInquiries, getPendingFeeFollowUpSyncCount, syncPendingFeeCallFollowUps
+  getSchoolPublicInquiries, getPendingFeeFollowUpSyncCount, syncPendingFeeCallFollowUps,
+  subscribeSchoolUpiProofs
 } from "../../school-firebase";
 import {
   subscribeAttendanceSchedule,
@@ -45,6 +46,10 @@ import { ContentManager } from "./ContentManager";
 import { SmartClass } from "./SmartClass";
 import { AttendanceManager } from "./AttendanceManager";
 import { lazyWithRetry, LazyPanelBoundary, scheduleIdlePreload } from "../../utils/lazyWithRetry";
+import { DevelopedByCredit } from "./DevelopedByFooter";
+import { ScreenInfoGuideButton } from "./ScreenInfoGuideButton";
+import { LanguageToggleButton } from "./LanguageToggleButton";
+import { pickLang, useAppLang } from "../../utils/appLang";
 const loadFaceAttendanceKiosk = () => import("./FaceAttendanceKioskModal").then(m => ({ default: m.FaceAttendanceKioskModal }));
 const loadUniversalFaceIdStudio = () => import("./UniversalFaceIdStudioModal").then(m => ({ default: m.UniversalFaceIdStudioModal }));
 const loadIdCardManager = () => import("./IdCardManager").then(m => ({ default: m.IdCardManager }));
@@ -86,7 +91,7 @@ const SchoolWebsiteCms = lazyWithRetry(loadSchoolWebsiteCms, "School Website CMS
 const OnlineAdmissionManager = lazyWithRetry(loadOnlineAdmissionManager, "Online Admission Manager");
 import { getStaffEmployees, saveStaffEmployee, getAccountants, saveAccountant, subscribeToAccountants, deleteAccountant, unassignTeacherForAccountantRole, saveSchoolGalleryItem, deleteSchoolGalleryItem } from "../../school-firebase";
 import { compressImageFileToDataUrl } from "../../utils/imageCompression";
-import type { MonthlyFee, StaffEmployee, StoreSaleRecord, SchoolAccountant, FeeCallFollowUpRecord, SchoolPublicInquiry } from "../../school-types";
+import type { MonthlyFee, StaffEmployee, StoreSaleRecord, SchoolAccountant, FeeCallFollowUpRecord, SchoolPublicInquiry, UpiPaymentProofRecord } from "../../school-types";
 import { SchoolHeaderEditorModal, type SchoolHeaderDetails } from "./SchoolHeaderEditorModal";
 import { DigitalSignatureModal, type DigitalSignatureTab } from "./DigitalSignatureModal";
 import { getSavedSchoolLogo, getVisibleSchoolRegNo, isAppLogo, cleanLogoUrl } from "./feeReceiptUtils";
@@ -97,6 +102,7 @@ import { LibraryManager } from "./LibraryManager";
 import { ParentTeacherQueryManager } from "./ParentTeacherQueryManager";
 import { InventoryStoreManager } from "./InventoryStoreManager";
 import { TeacherIdCardModal } from "./TeacherIdCardModal";
+import { StudentIdCardModal } from "./StudentIdCardModal";
 import { SchoolCommunityFeed } from "./SchoolCommunityFeed";
 import { SchoolMessengerBroadcastStudio } from "./SchoolMessengerBroadcastStudio";
 const NstaMessengerSuite = lazyWithRetry(loadNstaMessengerSuite, "NSTA Messenger");
@@ -110,6 +116,8 @@ import { AccountRecoveryCard } from "./AccountRecoveryCard";
 const AdminAccountsDirectory = lazyWithRetry(loadAdminAccountsDirectory, "Accounts Directory");
 import { NstaCallPortalHost } from "./NstaCallModal";
 import { CallerIdSettingsCard } from "./CallerIdSettingsCard";
+import { CallSetupChecklistBanner } from "./CallSetupChecklistBanner";
+import { ApkUpdateBanner } from "./ApkUpdateBanner";
 import { IncomingParentCallModal } from "./IncomingParentCallModal";
 import { TodayCommandDigestCard } from "./TodayCommandDigestCard";
 import { WalkieTalkieModal } from "./WalkieTalkieModal";
@@ -193,7 +201,7 @@ import { toast } from "sonner";
 import { ADMIN_WHATSAPP_NUMBER } from "../../constants";
 import { safeOpenExternalUrl, getDynamicAcademicSessionLabel, resolveWebsiteAdmissionSessionLabel, formatCleanSessionName } from "../../utils/safeBrowserActions";
 import { autoSyncSchoolPushIfPermitted, sendSchoolPushNotification } from "../../utils/schoolPushClient";
-import { subscribeUserToPush } from "../NotificationManager";
+import { subscribeUserToPush, syncNativeAndroidIdentity } from "../NotificationManager";
 import { useBackHandler } from "../../utils/backNavigation";
 
 interface Props {
@@ -344,7 +352,15 @@ export const SchoolAdminPanel: React.FC<Props> = ({
     schoolId ? getStaffDailyAttendance(schoolId, todayStr()) : { schoolId: "", date: todayStr(), records: {} }
   );
 
+  const [lang] = useAppLang();
+  const [upiProofs, setUpiProofs] = useState<UpiPaymentProofRecord[]>([]);
+  const [sendingSmartReminders, setSendingSmartReminders] = useState(false);
   const [pendingStaffLeavesCount, setPendingStaffLeavesCount] = useState(0);
+
+  useEffect(() => {
+    if (!schoolId) return;
+    return subscribeSchoolUpiProofs(schoolId, setUpiProofs);
+  }, [schoolId]);
 
   useEffect(() => {
     if (schoolId) {
@@ -405,6 +421,11 @@ export const SchoolAdminPanel: React.FC<Props> = ({
       localStorage.setItem("nst_active_school_id", schoolId);
       window.dispatchEvent(new CustomEvent("nst_school_identity_updated", { detail: { schoolId, adminUid } }));
     } catch {}
+    syncNativeAndroidIdentity({
+      userId: adminUid || "STAFF_ADMIN",
+      schoolId,
+      extraIds: ["STAFF_ADMIN", "school_admin"],
+    }).catch(() => {});
     if (typeof Notification !== "undefined" && Notification.permission === "granted") {
       autoSyncSchoolPushIfPermitted({
         userId: "STAFF_ADMIN",
@@ -892,6 +913,10 @@ export const SchoolAdminPanel: React.FC<Props> = ({
   const [quickActionStudent, setQuickActionStudent] = useState<SchoolStudent | null>(null);
   const [quickActionInitialTab, setQuickActionInitialTab] = useState<StudentQuickActionTab>("profile");
   const [selectedTeacherForIdCard, setSelectedTeacherForIdCard] = useState<SchoolTeacher | StaffEmployee | null>(null);
+  const [selectedStudentForIdCard, setSelectedStudentForIdCard] = useState<{
+    student: SchoolStudent;
+    admissionFee?: MonthlyFee | null;
+  } | null>(null);
 
   // Forms
   const [sessionForm, setSessionForm] = useState({ name: "", startDate: "", endDate: "" });
@@ -941,6 +966,7 @@ export const SchoolAdminPanel: React.FC<Props> = ({
     email: "",
     monthlySalary: 0,
     hasReferralIncentive: false,
+    hidePhoneFromParentCallerId: false,
     staffRole: "TEACHER" as "TEACHER" | "ACCOUNTANT" | "BOTH",
   });
   const [studentForm, setStudentForm] = useState<any>({
@@ -974,6 +1000,7 @@ export const SchoolAdminPanel: React.FC<Props> = ({
     email: "",
     monthlySalary: 0,
     hasReferralIncentive: false,
+    hidePhoneFromParentCallerId: false,
     staffRole: "TEACHER" as "TEACHER" | "ACCOUNTANT" | "BOTH",
   });
   const [editingStudentId, setEditingStudentId] = useState<string | null>(null);
@@ -1023,6 +1050,7 @@ export const SchoolAdminPanel: React.FC<Props> = ({
   useBackHandler(Boolean(signatureTargetTeacher), () => setSignatureTargetTeacher(null), 25);
   useBackHandler(Boolean(appointmentLetterTeacher), () => setAppointmentLetterTeacher(null), 23);
   useBackHandler(Boolean(selectedTeacherForIdCard), () => setSelectedTeacherForIdCard(null), 22);
+  useBackHandler(Boolean(selectedStudentForIdCard), () => setSelectedStudentForIdCard(null), 22);
   useBackHandler(Boolean(quickActionStudent), () => setQuickActionStudent(null), 22);
   useBackHandler(Boolean(showForm), () => setShowForm(null), 22);
   useBackHandler(Boolean(admissionPrintPayload), () => setAdmissionPrintPayload(null), 22);
@@ -1124,6 +1152,10 @@ export const SchoolAdminPanel: React.FC<Props> = ({
     };
   }, [schoolId, activeSession?.id]);
   const [feeClassSelected, setFeeClassSelected] = useState<SchoolClass | null>(null);
+  const [feePreselectTarget, setFeePreselectTarget] = useState<{
+    studentId: string;
+    action: "collect_fee" | "fee_update";
+  } | null>(null);
   const [demoGenerating, setDemoGenerating] = useState(false);
   const [demoMessage, setDemoMessage] = useState("");
   const [demoEnabled, setDemoEnabled] = useState<boolean>(() => isDemoDataEnabled());
@@ -1937,6 +1969,7 @@ export const SchoolAdminPanel: React.FC<Props> = ({
       salary: monthlyPay,
       salaryStructure: salaryStruct,
       hasReferralIncentive: Boolean(teacherForm.hasReferralIncentive),
+      hidePhoneFromParentCallerId: Boolean(teacherForm.hidePhoneFromParentCallerId),
     };
 
     if (roleChoice === "TEACHER" || roleChoice === "BOTH") {
@@ -1963,6 +1996,7 @@ export const SchoolAdminPanel: React.FC<Props> = ({
         joinDate: newTeacher.joinDate,
         active: true,
         teacherRef: roleChoice === "BOTH" ? id : undefined,
+        hidePhoneFromParentCallerId: Boolean(teacherForm.hidePhoneFromParentCallerId),
         permissions: {
           canCollectFee: true,
           canAdmitStudents: true,
@@ -2001,6 +2035,7 @@ export const SchoolAdminPanel: React.FC<Props> = ({
       active: true,
       photoUrl: newTeacher.photoUrl,
       employeeId: empId,
+      hidePhoneFromParentCallerId: Boolean(teacherForm.hidePhoneFromParentCallerId),
       createdAt: newTeacher.createdAt
     });
 
@@ -2018,6 +2053,7 @@ export const SchoolAdminPanel: React.FC<Props> = ({
       email: "",
       monthlySalary: 0,
       hasReferralIncentive: false,
+      hidePhoneFromParentCallerId: false,
       staffRole: "TEACHER",
     });
     setShowForm(null);
@@ -2025,8 +2061,10 @@ export const SchoolAdminPanel: React.FC<Props> = ({
 
     if (roleChoice === "ACCOUNTANT") {
       toast.success(`💼 ${newTeacher.name} ko Accountant ke roop me add kar diya gaya!`);
+      setSelectedTeacherForIdCard(newTeacher);
     } else if (roleChoice === "BOTH") {
       toast.success(`⚡ ${newTeacher.name} ko Teacher + Accountant dono ke roop me add kar diya gaya!`);
+      setSelectedTeacherForIdCard(newTeacher);
     } else {
       // Auto-open newly added teacher's ID card immediately!
       setSelectedTeacherForIdCard(newTeacher);
@@ -2043,8 +2081,9 @@ export const SchoolAdminPanel: React.FC<Props> = ({
     }
     setSaving(true);
     const id = generateId();
-    await saveStudent({
+    const savedStudent = await saveStudent({
       id, schoolId, sessionId: activeSession.id, classId: selectedClass.id,
+      className: `${selectedClass.name}${selectedClass.section ? ` (${selectedClass.section})` : ""}`,
       name: toUpperFormText(studentForm.name.trim()), rollNo: toUpperFormText(studentForm.rollNo),
       admissionNo: toUpperFormText(studentForm.admissionNo), fatherName: toUpperFormText(studentForm.fatherName),
       motherName: toUpperFormText(studentForm.motherName), phone: studentForm.phone,
@@ -2057,6 +2096,7 @@ export const SchoolAdminPanel: React.FC<Props> = ({
     setStudentForm({ name: "", rollNo: "", admissionNo: "", fatherName: "", motherName: "", phone: "", dateOfBirth: "", bloodGroup: "", monthlyFee: (selectedClass as any)?.defaultFee || 0 });
     setShowForm(null);
     setSaving(false);
+    setSelectedStudentForIdCard({ student: savedStudent });
   };
 
   // ── Edit handlers ─────────────────────────────────────────────────────────
@@ -2264,6 +2304,7 @@ export const SchoolAdminPanel: React.FC<Props> = ({
       monthlySalary?: number;
       salaryStructure?: any;
       hasReferralIncentive?: boolean;
+      hidePhoneFromParentCallerId?: boolean;
     }
   ) => {
     const nowIso = new Date().toISOString();
@@ -2385,6 +2426,8 @@ export const SchoolAdminPanel: React.FC<Props> = ({
         salary: monthlyPay,
         salaryStructure: nextSalaryStructure,
         hasReferralIncentive: overrides?.hasReferralIncentive ?? Boolean(person.hasReferralIncentive),
+        hidePhoneFromParentCallerId:
+          overrides?.hidePhoneFromParentCallerId ?? Boolean(person.hidePhoneFromParentCallerId),
         active: true,
       };
       await saveTeacher(teacherRecord);
@@ -2419,6 +2462,8 @@ export const SchoolAdminPanel: React.FC<Props> = ({
         joinDate: matchedAcc?.joinDate || person.joinDate || nowIso.split("T")[0],
         active: true,
         teacherRef: nextMode === "BOTH" ? teacherId : undefined,
+        hidePhoneFromParentCallerId:
+          overrides?.hidePhoneFromParentCallerId ?? Boolean(person.hidePhoneFromParentCallerId ?? matchedAcc?.hidePhoneFromParentCallerId),
         permissions: matchedAcc?.permissions || {
           canCollectFee: true,
           canAdmitStudents: true,
@@ -2471,6 +2516,8 @@ export const SchoolAdminPanel: React.FC<Props> = ({
       active: true,
       photoUrl: cleanPhoto || undefined,
       employeeId: cleanEmpId,
+      hidePhoneFromParentCallerId:
+        overrides?.hidePhoneFromParentCallerId ?? Boolean(person.hidePhoneFromParentCallerId ?? existingStaff?.hidePhoneFromParentCallerId),
       createdAt: person.createdAt || existingStaff?.createdAt || nowIso,
     });
   };
@@ -2497,6 +2544,7 @@ export const SchoolAdminPanel: React.FC<Props> = ({
         employeeId: editTeacherForm.employeeId,
         monthlySalary: editTeacherForm.monthlySalary,
         hasReferralIncentive: editTeacherForm.hasReferralIncentive,
+        hidePhoneFromParentCallerId: editTeacherForm.hidePhoneFromParentCallerId,
       });
 
       setEditingTeacherId(null);
@@ -2647,8 +2695,15 @@ export const SchoolAdminPanel: React.FC<Props> = ({
 
   const saveLockCode = async () => {
     setSavingLockCode(true);
-    await setSchoolLockCode(schoolId, lockCodeInput.trim(), lockCodeActive);
-    setSchool(prev => prev ? { ...prev, lockCode: lockCodeInput.trim(), lockCodeActive } : prev);
+    const trimmedCode = lockCodeInput.trim();
+    await setSchoolLockCode(schoolId, trimmedCode, lockCodeActive);
+    setSchool(prev => prev ? { ...prev, lockCode: trimmedCode, lockCodeActive } : prev);
+    if (lockCodeActive && trimmedCode && !school?.uninstallGuardPinHash) {
+      try {
+        const { syncRawPinFallbackToNativeIfMissing } = await import("../../utils/androidDeviceAdmin");
+        await syncRawPinFallbackToNativeIfMissing(trimmedCode, schoolId);
+      } catch {}
+    }
     setSavingLockCode(false);
     setLockCodeSaved(true);
     setTimeout(() => setLockCodeSaved(false), 2000);
@@ -3946,13 +4001,13 @@ export const SchoolAdminPanel: React.FC<Props> = ({
             ? "bg-[#050505] border-neutral-800 text-white"
             : "bg-[#0b1b3a] border-[#1c3566] text-white"
         }`}>
-          {/* Left: Mobile Menu Trigger, Back Home & Academic Session */}
-          <div className="flex items-center gap-2 min-w-0">
+          {/* Left: Mobile Menu Trigger, Back Home & Academic Session (Overflow-Safe) */}
+          <div className="flex items-center gap-1.5 sm:gap-2 min-w-0 flex-1 overflow-hidden">
             {!isEffectiveLandscape && (
               <button
                 type="button"
                 onClick={() => setIsSidebarOpen(true)}
-                className={`md:hidden inline-flex items-center justify-center min-w-[40px] min-h-[40px] p-2 rounded-xl border transition cursor-pointer shrink-0 ${
+                className={`md:hidden inline-flex items-center justify-center min-w-[38px] min-h-[38px] p-1.5 rounded-xl border transition cursor-pointer shrink-0 ${
                   isWhite
                     ? "bg-slate-100 hover:bg-slate-200 border-slate-200 text-slate-700"
                     : "bg-white/10 hover:bg-white/15 border-white/15 text-slate-200"
@@ -3968,20 +4023,21 @@ export const SchoolAdminPanel: React.FC<Props> = ({
               <button
                 type="button"
                 onClick={() => setView("dashboard")}
-                className={`inline-flex items-center gap-1 px-2.5 py-1.5 rounded-xl text-xs font-bold transition cursor-pointer shrink-0 ${
+                className={`inline-flex items-center justify-center gap-1 min-w-[36px] min-h-[36px] px-2 sm:px-2.5 py-1.5 rounded-xl text-xs font-bold transition cursor-pointer shrink-0 ${
                   isWhite
                     ? "bg-slate-100 hover:bg-slate-200 text-slate-700"
                     : "bg-slate-800 hover:bg-slate-700 text-slate-200"
                 }`}
+                aria-label="Back to Home"
               >
-                <ChevronLeft className="w-3.5 h-3.5" />
-                <span className="hidden xs:inline">Home</span>
+                <ChevronLeft className="w-4 h-4 shrink-0" />
+                <span className="hidden sm:inline">Home</span>
               </button>
             ) : isSuperAdmin && onBack ? (
               <button
                 type="button"
                 onClick={onBack}
-                className={`inline-flex items-center gap-1 px-2.5 py-1.5 rounded-xl text-xs font-black transition cursor-pointer shrink-0 border ${
+                className={`inline-flex items-center gap-1 min-h-[36px] px-2.5 py-1.5 rounded-xl text-xs font-black transition cursor-pointer shrink-0 border ${
                   isWhite
                     ? "bg-indigo-50 hover:bg-indigo-100 text-indigo-800 border-indigo-300"
                     : "bg-indigo-600/25 hover:bg-indigo-600/40 text-indigo-200 border-indigo-400/40"
@@ -3997,7 +4053,7 @@ export const SchoolAdminPanel: React.FC<Props> = ({
             <button
               type="button"
               onClick={() => setShowSessionModal(true)}
-              className={`inline-flex items-center gap-1 px-2 py-1 rounded-lg border text-[11px] font-black transition cursor-pointer active:scale-95 shadow-xs shrink-0 ${
+              className={`inline-flex items-center gap-1 min-h-[34px] px-2 py-1 rounded-xl border text-[11px] font-black transition cursor-pointer active:scale-95 shadow-xs shrink-0 ${
                 isWhite
                   ? "bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border-emerald-300"
                   : "bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-200 border-emerald-500/35"
@@ -4005,7 +4061,7 @@ export const SchoolAdminPanel: React.FC<Props> = ({
               title="सत्र बदलें, नया सत्र जोड़ें या एडिट करें (Click to Switch/Edit Academic Session)"
             >
               <Calendar className={`w-3 h-3 shrink-0 ${isWhite ? "text-emerald-700" : "text-emerald-400"}`} />
-              <span className="tabular-nums font-mono text-[11px] leading-none">
+              <span className="tabular-nums font-mono text-[11px] leading-none whitespace-nowrap">
                 {isDemoSessionId(activeSession?.id)
                   ? "Demo"
                   : (activeSession?.name || getDynamicAcademicSessionLabel())
@@ -4015,39 +4071,39 @@ export const SchoolAdminPanel: React.FC<Props> = ({
               <ChevronDown className={`w-2.5 h-2.5 opacity-80 shrink-0 ${isWhite ? "text-emerald-700" : "text-emerald-300"}`} />
             </button>
 
-            {/* 1-Click Multi-Branch Campus Selector (Compact Icon-Only) */}
+            {/* Desktop/Tablet Multi-Branch Selector (Moved inside Settings on <640px mobile to stop icon collisions) */}
             <button
               type="button"
               onClick={() => setView("multi_branch")}
-              className={`inline-flex items-center justify-center p-1.5 rounded-lg border transition cursor-pointer active:scale-95 shadow-xs shrink-0 ${
+              className={`hidden sm:inline-flex items-center justify-center min-w-[36px] min-h-[36px] p-1.5 rounded-xl transition cursor-pointer active:scale-95 shrink-0 ${
                 isWhite
-                  ? "bg-indigo-50 hover:bg-indigo-100 text-indigo-800 border-indigo-300"
-                  : "bg-indigo-500/15 hover:bg-indigo-500/25 text-indigo-200 border-indigo-500/35"
+                  ? "bg-slate-100 hover:bg-slate-200 text-slate-700"
+                  : "bg-white/10 hover:bg-white/15 text-slate-200"
               }`}
               title={`ब्रांच: ${activeBranchName} — ब्रांच बदलें या नया कैंपस जोड़ें`}
               aria-label={`ब्रांच बदलें (${activeBranchName})`}
             >
-              <Building2 className={`w-3.5 h-3.5 shrink-0 ${isWhite ? "text-indigo-700" : "text-indigo-400"}`} />
+              <Building2 className="w-4 h-4 shrink-0" />
             </button>
 
-            {/* Warning Button: Open Payment & Refund History + Receipt Cancellation Page */}
+            {/* Desktop/Tablet Refund & Cancellation History (Moved inside Settings on <640px mobile to stop icon collisions) */}
             <button
               type="button"
               onClick={() => setView("receipt_cancellation")}
-              className={`inline-flex items-center justify-center p-1.5 rounded-lg border transition cursor-pointer active:scale-95 shadow-xs shrink-0 ${
+              className={`hidden sm:inline-flex items-center justify-center min-w-[36px] min-h-[36px] p-1.5 rounded-xl transition cursor-pointer active:scale-95 shrink-0 ${
                 view === "receipt_cancellation"
-                  ? "bg-amber-500 text-slate-950 border-amber-500"
+                  ? "bg-amber-500 text-slate-950"
                   : isWhite
-                  ? "bg-amber-50 hover:bg-amber-100 text-amber-700 border-amber-400"
-                  : "bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border-amber-500/45"
+                  ? "bg-slate-100 hover:bg-slate-200 text-amber-600"
+                  : "bg-white/10 hover:bg-white/15 text-amber-300"
               }`}
               title="पेमेंट व रिफंड हिस्ट्री / रसीद निरस्तीकरण (Payment & Refund History • Receipt Cancellation)"
               aria-label="Payment & Refund History / Receipt Cancellation"
             >
-              <AlertTriangle className={`w-3.5 h-3.5 shrink-0 ${view === "receipt_cancellation" ? "text-slate-950" : isWhite ? "text-amber-600" : "text-amber-400"}`} />
+              <AlertTriangle className="w-4 h-4 shrink-0" />
             </button>
 
-            <h1 className={`text-xs sm:text-sm font-black capitalize truncate hidden md:inline-block ${isWhite ? "text-slate-900" : "text-white"}`}>
+            <h1 className={`text-xs sm:text-sm font-bold capitalize truncate hidden lg:inline-block min-w-0 ${isWhite ? "text-slate-900" : "text-white"}`}>
               {view === "dashboard"
                 ? "Home Dashboard"
                 : view === "account_hub"
@@ -4078,52 +4134,53 @@ export const SchoolAdminPanel: React.FC<Props> = ({
             </h1>
           </div>
 
-          {/* Right: Search + Mobile/Laptop Rotate + Settings Icon (Profile & Theme) */}
-          <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
-            {/* Direct Routine & Timetable Quick Button (Next to Search) */}
+          {/* Right: Search + Alerts + Walkie + Settings (Overlap-Free Mobile & Desktop) */}
+          <div className="flex items-center gap-1.5 shrink-0">
+            {/* Desktop/Tablet Routine Button */}
             <button
               type="button"
               onClick={() => setView("timetable")}
-              className={`flex items-center gap-1 px-2.5 py-1.5 rounded-xl font-black text-xs transition cursor-pointer active:scale-95 shadow-sm border ${
+              className={`hidden sm:flex items-center justify-center gap-1 min-w-[36px] min-h-[36px] px-2.5 py-1.5 rounded-xl font-semibold text-xs transition cursor-pointer active:scale-95 ${
                 view === "timetable"
-                  ? "bg-indigo-600 text-white border-indigo-500"
+                  ? "bg-indigo-600 text-white"
                   : isWhite
-                  ? "bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border-indigo-300"
-                  : "bg-indigo-950/70 hover:bg-indigo-900/70 text-indigo-200 border-indigo-500/40"
+                  ? "bg-slate-100 hover:bg-slate-200 text-slate-700"
+                  : "bg-white/10 hover:bg-white/15 text-slate-200"
               }`}
               title="Timetable & Routine (समय सारणी व दैनिक घंटी खोलें)"
             >
-              <Clock className="w-3.5 h-3.5" />
-              <span className="hidden sm:inline">Routine</span>
+              <Clock className="w-4 h-4" />
+              <span className="hidden md:inline">Routine</span>
             </button>
 
             {/* Compact Universal Search Button */}
             <button
               type="button"
               onClick={() => setShowCompactSearch((prev) => !prev)}
-              className={`flex items-center gap-1 px-2.5 py-1.5 rounded-xl font-black text-xs transition cursor-pointer active:scale-95 shadow-sm border ${
+              className={`flex items-center justify-center gap-1 min-w-[38px] min-h-[38px] px-2 sm:px-2.5 py-1.5 rounded-xl font-semibold text-xs transition cursor-pointer active:scale-95 ${
                 showCompactSearch || universalSearchQuery.trim()
-                  ? "bg-blue-600 text-white border-blue-500"
+                  ? "bg-blue-600 text-white"
                   : isWhite
-                  ? "bg-slate-100 hover:bg-slate-200 text-slate-700 border-slate-300"
-                  : "bg-slate-800 hover:bg-slate-700 text-slate-200 border-slate-700"
+                  ? "bg-slate-100 hover:bg-slate-200 text-slate-700"
+                  : "bg-white/10 hover:bg-white/15 text-slate-200"
               }`}
               title="यूनिवर्सल सर्च खोलें (छात्र, शिक्षक, फीस, छूट, टूल)"
+              aria-label="Universal Search"
             >
-              <Search className="w-3.5 h-3.5" />
-              <span className="hidden sm:inline">Search</span>
+              <Search className="w-4 h-4" />
+              <span className="hidden md:inline">Search</span>
             </button>
 
-            {/* Mobile / Laptop Rotate Toggle Button (Icon-Only) */}
+            {/* Desktop/Tablet Rotate Toggle (Also inside Settings Menu on mobile) */}
             <button
               type="button"
               onClick={handleToggleScreenRotate}
-              className={`inline-flex items-center justify-center p-1.5 rounded-xl transition cursor-pointer active:scale-95 shadow-sm border shrink-0 ${
+              className={`hidden sm:inline-flex items-center justify-center min-w-[36px] min-h-[36px] p-1.5 rounded-xl transition cursor-pointer active:scale-95 shrink-0 ${
                 isEffectiveLandscape
-                  ? "bg-gradient-to-r from-cyan-600 via-blue-600 to-indigo-600 text-white border-cyan-300/60 shadow-cyan-500/30 ring-2 ring-cyan-400/30"
+                  ? "bg-indigo-600 text-white"
                   : isWhite
-                  ? "bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border-emerald-300"
-                  : "bg-slate-800 hover:bg-slate-700 text-emerald-300 border-emerald-500/40 shadow-emerald-500/10"
+                  ? "bg-slate-100 hover:bg-slate-200 text-emerald-700"
+                  : "bg-white/10 hover:bg-white/15 text-emerald-300"
               }`}
               title={
                 isEffectiveLandscape
@@ -4137,9 +4194,9 @@ export const SchoolAdminPanel: React.FC<Props> = ({
               }
             >
               {isEffectiveLandscape ? (
-                <Laptop className="w-4 h-4 text-cyan-200" />
+                <Laptop className="w-4 h-4" />
               ) : (
-                <Smartphone className={`w-4 h-4 ${isWhite ? "text-emerald-700" : "text-emerald-400"}`} />
+                <Smartphone className="w-4 h-4" />
               )}
             </button>
 
@@ -4147,10 +4204,14 @@ export const SchoolAdminPanel: React.FC<Props> = ({
               <button
                 type="button"
                 onClick={() => setShowLeaveConfirmModal(true)}
-                className="inline-flex items-center gap-1 px-2.5 py-1 rounded-xl bg-amber-500/10 hover:bg-amber-500/20 text-amber-700 dark:text-amber-300 border border-amber-500/30 text-xs font-bold transition cursor-pointer active:scale-95"
+                className={`inline-flex items-center justify-center gap-1 min-w-[38px] min-h-[38px] px-2 sm:px-2.5 py-1 rounded-xl text-xs font-semibold transition cursor-pointer active:scale-95 ${
+                  isWhite
+                    ? "bg-amber-50 hover:bg-amber-100 text-amber-800"
+                    : "bg-amber-500/15 hover:bg-amber-500/25 text-amber-300"
+                }`}
                 title="Leave School / स्कूल छोड़ें"
               >
-                <Building2 className="w-3.5 h-3.5 text-amber-500" />
+                <Building2 className="w-4 h-4 sm:w-3.5 sm:h-3.5" />
                 <span className="hidden sm:inline">Leave</span>
               </button>
             )}
@@ -4159,16 +4220,16 @@ export const SchoolAdminPanel: React.FC<Props> = ({
             <button
               type="button"
               onClick={() => setShowWalkieModal(true)}
-              className={`relative shrink-0 inline-flex items-center gap-1 px-2.5 py-1.5 rounded-xl text-xs font-bold transition cursor-pointer active:scale-95 shadow-sm border ${
+              className={`relative shrink-0 inline-flex items-center justify-center gap-1 min-w-[38px] min-h-[38px] px-2 sm:px-2.5 py-1.5 rounded-xl text-xs font-semibold transition cursor-pointer active:scale-95 ${
                 !hasEliteWalkieAccess(school)
                   ? isWhite
-                    ? "bg-amber-50 hover:bg-amber-100 text-amber-800 border-amber-200"
-                    : "bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 border-amber-500/35"
+                    ? "bg-amber-50 hover:bg-amber-100 text-amber-800"
+                    : "bg-amber-500/15 hover:bg-amber-500/25 text-amber-300"
                   : isWalkieSchoolHoursNow
-                  ? "bg-emerald-600 hover:bg-emerald-500 text-white border-emerald-500"
+                  ? "bg-emerald-600 hover:bg-emerald-500 text-white"
                   : isWhite
-                  ? "bg-slate-100 hover:bg-slate-200 text-slate-700 border-slate-300"
-                  : "bg-[#112447] hover:bg-[#193363] text-slate-200 border-[#294c88]"
+                  ? "bg-slate-100 hover:bg-slate-200 text-slate-700"
+                  : "bg-white/10 hover:bg-white/15 text-slate-200"
               }`}
               title={
                 hasEliteWalkieAccess(school)
@@ -4177,8 +4238,8 @@ export const SchoolAdminPanel: React.FC<Props> = ({
               }
               aria-label="Open School Walkie-Talkie"
             >
-              <Radio className="w-3.5 h-3.5 shrink-0" />
-              <span className="hidden sm:inline">Walkie</span>
+              <Radio className="w-4 h-4 shrink-0" />
+              <span className="hidden md:inline">Walkie</span>
               {!hasEliteWalkieAccess(school) && <Lock className="w-3 h-3 shrink-0" />}
             </button>
 
@@ -4189,14 +4250,12 @@ export const SchoolAdminPanel: React.FC<Props> = ({
                 setShowHeaderSettingsMenu(false);
                 setView((prev) => (prev === "fee_alerts" ? "dashboard" : "fee_alerts"));
               }}
-              className={`relative shrink-0 inline-flex items-center justify-center p-1.5 rounded-xl transition cursor-pointer active:scale-95 shadow-sm border ${
+              className={`relative shrink-0 inline-flex items-center justify-center min-w-[36px] min-h-[36px] p-1.5 rounded-xl transition cursor-pointer active:scale-95 ${
                 view === "fee_alerts"
-                  ? "bg-amber-500 text-slate-950 border-amber-400 ring-2 ring-amber-400/40"
+                  ? "bg-amber-500 text-slate-950"
                   : isWhite
-                  ? "bg-slate-100 hover:bg-slate-200 text-slate-700 border-slate-300"
-                  : isBlack
-                  ? "bg-neutral-900 hover:bg-neutral-800 text-slate-200 border-neutral-700"
-                  : "bg-[#112447] hover:bg-[#193363] text-slate-200 border-[#294c88]"
+                  ? "bg-slate-100 hover:bg-slate-200 text-slate-700"
+                  : "bg-white/10 hover:bg-white/15 text-slate-200"
               }`}
               title="Class Fee Alert & Broadcast"
               aria-label="Class Fee Alert and Broadcast"
@@ -4211,11 +4270,14 @@ export const SchoolAdminPanel: React.FC<Props> = ({
                 }`}
               />
               {admissionAlerts.length > 0 && (
-                <span className="absolute -top-1 -right-1 min-w-[16px] h-4 px-1 rounded-full bg-rose-600 text-white text-[9px] font-black flex items-center justify-center shadow ring-2 ring-white dark:ring-slate-900 tabular-nums">
+                <span className="absolute -top-1 -right-1 min-w-[16px] h-4 px-1 rounded-full bg-rose-600 text-white text-[9px] font-bold flex items-center justify-center shadow ring-2 ring-white dark:ring-slate-900 tabular-nums">
                   {admissionAlerts.length > 9 ? "9+" : admissionAlerts.length}
                 </span>
               )}
             </button>
+
+            <LanguageToggleButton tone={appTheme} compact />
+            <ScreenInfoGuideButton portal="admin" screenKey={view} tone={appTheme} />
 
             {/* Unified Settings Icon Button (2 Options: School Profile & Settings + Theme Change) */}
             <div className="relative shrink-0">
@@ -4247,7 +4309,7 @@ export const SchoolAdminPanel: React.FC<Props> = ({
                     onClick={() => setShowHeaderSettingsMenu(false)}
                   />
                   <div
-                    className={`absolute right-0 top-full mt-2 w-64 sm:w-72 rounded-2xl border shadow-2xl z-50 p-3 space-y-2.5 animate-in fade-in zoom-in-95 duration-150 ${
+                    className={`absolute right-0 top-full mt-2 w-72 max-h-[82vh] overflow-y-auto rounded-2xl border shadow-2xl z-50 p-3 space-y-2.5 animate-in fade-in zoom-in-95 duration-150 ${
                       isWhite
                         ? "bg-white border-slate-200 text-slate-900"
                         : isBlack
@@ -4261,7 +4323,7 @@ export const SchoolAdminPanel: React.FC<Props> = ({
                       <span className={`text-[11px] font-black uppercase tracking-wider ${
                         isWhite ? "text-slate-500" : "text-slate-400"
                       }`}>
-                        Settings &amp; Theme
+                        Settings &amp; Quick Tools
                       </span>
                       <button
                         type="button"
@@ -4272,6 +4334,76 @@ export const SchoolAdminPanel: React.FC<Props> = ({
                         aria-label="Close settings menu"
                       >
                         <X className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+
+                    {/* Quick Utility Tools on Mobile (Prevents Top-Bar Icon Crowding) */}
+                    <div className="grid grid-cols-2 gap-1.5 sm:hidden">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setShowHeaderSettingsMenu(false);
+                          setView("timetable");
+                        }}
+                        className={`min-h-[40px] px-2.5 py-2 rounded-xl border text-left flex items-center gap-2 text-xs font-bold cursor-pointer ${
+                          isWhite
+                            ? "bg-slate-50 border-slate-200 text-slate-800"
+                            : "bg-white/5 border-white/10 text-slate-100"
+                        }`}
+                      >
+                        <Clock className="w-3.5 h-3.5 text-indigo-400 shrink-0" />
+                        <span className="truncate">Routine</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setShowHeaderSettingsMenu(false);
+                          setView("multi_branch");
+                        }}
+                        className={`min-h-[40px] px-2.5 py-2 rounded-xl border text-left flex items-center gap-2 text-xs font-bold cursor-pointer ${
+                          isWhite
+                            ? "bg-slate-50 border-slate-200 text-slate-800"
+                            : "bg-white/5 border-white/10 text-slate-100"
+                        }`}
+                      >
+                        <Building2 className="w-3.5 h-3.5 text-sky-400 shrink-0" />
+                        <span className="truncate">Branch</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setShowHeaderSettingsMenu(false);
+                          setView("receipt_cancellation");
+                        }}
+                        className={`min-h-[40px] px-2.5 py-2 rounded-xl border text-left flex items-center gap-2 text-xs font-bold cursor-pointer ${
+                          isWhite
+                            ? "bg-slate-50 border-slate-200 text-slate-800"
+                            : "bg-white/5 border-white/10 text-slate-100"
+                        }`}
+                      >
+                        <AlertTriangle className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                        <span className="truncate">Refund/Cancel</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setShowHeaderSettingsMenu(false);
+                          handleToggleScreenRotate();
+                        }}
+                        className={`min-h-[40px] px-2.5 py-2 rounded-xl border text-left flex items-center gap-2 text-xs font-bold cursor-pointer ${
+                          isWhite
+                            ? "bg-slate-50 border-slate-200 text-slate-800"
+                            : "bg-white/5 border-white/10 text-slate-100"
+                        }`}
+                      >
+                        {isEffectiveLandscape ? (
+                          <Smartphone className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                        ) : (
+                          <Laptop className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                        )}
+                        <span className="truncate">
+                          {isEffectiveLandscape ? "Mobile View" : "Laptop View"}
+                        </span>
                       </button>
                     </div>
 
@@ -5328,9 +5460,16 @@ export const SchoolAdminPanel: React.FC<Props> = ({
           </div>
         )}
 
+        <ApkUpdateBanner school={school} />
+        <CallSetupChecklistBanner mode="staff" schoolName={school?.name} />
+
         {/* ── PRINCIPAL DAILY COMMAND DIGEST + VOICE BRIEFING ── */}
         {(() => {
           const todayLocalYmd = getTodayLocalYmd();
+          const tomorrowDate = new Date();
+          tomorrowDate.setDate(tomorrowDate.getDate() + 1);
+          const tomorrowYmd = `${tomorrowDate.getFullYear()}-${String(tomorrowDate.getMonth() + 1).padStart(2, "0")}-${String(tomorrowDate.getDate()).padStart(2, "0")}`;
+
           const todayCallsCount = feeCallFollowUps.reduce((acc, rec) => {
             const historyToday = Array.isArray(rec.callHistory)
               ? rec.callHistory.filter((item) => (item.at || "").slice(0, 10) === todayLocalYmd).length
@@ -5350,6 +5489,19 @@ export const SchoolAdminPanel: React.FC<Props> = ({
             }
             return sum;
           }, 0);
+
+          const tomorrowPromises = feeCallFollowUps.filter(
+            (rec) =>
+              !rec.settled &&
+              (rec.promiseDate === tomorrowYmd || rec.nextCallDate === tomorrowYmd)
+          );
+          const tomorrowPromiseCount = tomorrowPromises.length;
+          const tomorrowPromiseAmount = tomorrowPromises.reduce(
+            (sum, rec) => sum + Number(rec.promisedAmount || 0),
+            0
+          );
+          const pendingUpiCount = upiProofs.filter((p) => p.status === "PENDING").length;
+
           const openInquiriesCount = inquiries.filter((inq) => {
             const st = String(inq.status || "").toLowerCase();
             return st !== "lost" && st !== "admitted" && st !== "resolved";
@@ -5363,14 +5515,137 @@ export const SchoolAdminPanel: React.FC<Props> = ({
           );
           const digestPresentCount = sevenDayAttendanceData[6]?.presentCount ?? 0;
 
+          const curMonthCode = currentMonthStr();
+          const unpaidTargets = displayedStudents
+            .map((st) => {
+              const curFee = mergedRealFees.find(
+                (f: any) => f.studentId === st.id && f.month === curMonthCode
+              );
+              const isPaidCur = Boolean(curFee?.paid);
+              const dueBal = curFee
+                ? Number(curFee.balanceDue ?? (isPaidCur ? 0 : curFee.amount || st.monthlyFee || 0))
+                : Number(st.monthlyFee || 0);
+              const extraDue =
+                Number(st.admissionDueBalance || 0) + Number(st.previousSessionDue || 0);
+              const totalPending = (isPaidCur ? 0 : dueBal) + extraDue;
+              return { student: st, totalPending };
+            })
+            .filter((item) => item.totalPending > 0);
+
+          const handleSendSmartFeeReminders = async () => {
+            if (!schoolId || sendingSmartReminders || unpaidTargets.length === 0) return;
+            setSendingSmartReminders(true);
+            try {
+              const monthLbl = new Date(`${curMonthCode}-01`).toLocaleDateString("en-IN", {
+                month: "long",
+                year: "numeric",
+              });
+              const targetIds = unpaidTargets.map((u) => u.student.id);
+              await sendSchoolPushNotification({
+                schoolId,
+                studentIds: targetIds,
+                senderName: school?.name || "School Principal",
+                type: "MONTHLY_FEE",
+                title: pickLang(
+                  lang,
+                  `शुल्क अनुस्मारक (${monthLbl})`,
+                  `Fee Reminder (${monthLbl})`
+                ),
+                body: pickLang(
+                  lang,
+                  `${school?.name || "School"}: कृपया अपना बकाया स्कूल शुल्क जमा करें या UPI QR द्वारा भुगतान कर स्क्रीनशॉट अपलोड करें।`,
+                  `${school?.name || "School"}: Please clear your pending school fee or upload UPI payment proof in the student portal.`
+                ),
+                url: "/?schoolPortal=1&openFeeReminder=1",
+                urgent: true,
+              }).catch(() => {});
+
+              // Also drop an official desk reminder slip for top 30 unpaid students
+              await Promise.all(
+                unpaidTargets.slice(0, 30).map(({ student: st, totalPending }) =>
+                  autoSendFeeSlipToSchoolDesk({
+                    schoolId,
+                    studentId: st.id,
+                    studentName: st.name,
+                    slipType: "FEE_REMINDER",
+                    month: curMonthCode,
+                    monthLabel: monthLbl,
+                    amount: totalPending,
+                    balanceDue: totalPending,
+                    dueDate: todayLocalYmd,
+                  }).catch(() => {})
+                )
+              );
+
+              toast.success(
+                pickLang(
+                  lang,
+                  `${unpaidTargets.length} बकाया छात्रों के अभिभावकों को शुल्क रिमाइंडर भेज दिया गया।`,
+                  `Smart fee reminder sent to ${unpaidTargets.length} pending student parents.`
+                )
+              );
+            } catch {
+              toast.error(
+                pickLang(lang, "रिमाइंडर भेजने में त्रुटि आई।", "Failed to send fee reminders.")
+              );
+            } finally {
+              setSendingSmartReminders(false);
+            }
+          };
+
+          const handleDownloadSchoolBackup = () => {
+            try {
+              const snapshot = {
+                exportedAt: new Date().toISOString(),
+                schoolId,
+                schoolName: school?.name || "School",
+                classesCount: displayedClasses.length,
+                studentsCount: displayedStudents.length,
+                feesCount: mergedRealFees.length,
+                classes: displayedClasses,
+                students: displayedStudents,
+                fees: mergedRealFees,
+                feeCallFollowUps,
+                upiProofs,
+              };
+              const blob = new Blob([JSON.stringify(snapshot, null, 2)], {
+                type: "application/json",
+              });
+              const url = URL.createObjectURL(blob);
+              const a = document.createElement("a");
+              a.href = url;
+              a.download = `School_Backup_${schoolId}_${todayLocalYmd}.json`;
+              document.body.appendChild(a);
+              a.click();
+              document.body.removeChild(a);
+              URL.revokeObjectURL(url);
+              toast.success(
+                pickLang(
+                  lang,
+                  "स्कूल डेटा का पूरा JSON बैकअप डाउनलोड हो गया।",
+                  "Complete school data JSON backup downloaded."
+                )
+              );
+            } catch {
+              toast.error(
+                pickLang(lang, "डेटा बैकअप डाउनलोड नहीं हो सका।", "Could not export data backup.")
+              );
+            }
+          };
+
           return (
             <TodayCommandDigestCard
               schoolName={school?.name}
               todayCollected={todayTotalFeeCollected}
+              todayCashAmount={todayCashAmt}
+              todayOnlineAmount={todayUpiAmt}
               todayReceiptsCount={todayReceiptsCount}
               todayCallsCount={todayCallsCount}
               todaySolvedCount={todaySolvedCount}
               todayPromisedAmount={todayPromisedAmount}
+              tomorrowPromiseCount={tomorrowPromiseCount}
+              tomorrowPromiseAmount={tomorrowPromiseAmount}
+              pendingUpiCount={pendingUpiCount}
               todayAbsentCount={digestAbsentCount}
               todayPresentCount={digestPresentCount}
               openInquiriesCount={openInquiriesCount}
@@ -5380,204 +5655,243 @@ export const SchoolAdminPanel: React.FC<Props> = ({
               pendingSyncCount={pendingSyncCount}
               isOnline={isOnline}
               syncingPending={syncingPending}
+              unpaidStudentsCount={unpaidTargets.length}
+              sendingFeeReminders={sendingSmartReminders}
               onSyncPending={handleSyncPendingFromDigest}
+              onOpenFees={() => setView("fees")}
               onOpenTagada={() => setView("fee_tagada")}
               onOpenAbsentees={() => setView("absentee")}
               onOpenEnquiries={() => setView("admission_crm")}
+              onOpenUpiApprovals={() => setView("fees")}
+              onSendPendingFeeReminders={handleSendSmartFeeReminders}
+              onDownloadBackup={handleDownloadSchoolBackup}
             />
           );
         })()}
 
-        {/* ── SECTION 1: TODAY'S OPERATIONAL PULSE (4 DAILY NUMBERS / आँकड़े) ── */}
+        {/* ── SECTION 1: CORE OPERATIONS DECK (CLEAN SINGLE-ELEVATION CARDS, HAIRLINE DIVIDERS) ── */}
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5">
           {/* Card 1: Student Attendance Today */}
-          <div className="bg-white dark:bg-slate-900 p-4 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-xs flex flex-col justify-between gap-3 transition hover:border-emerald-400/70">
-            <div className="flex items-start justify-between gap-2">
-              <div className="flex items-center gap-2.5">
-                <div className="w-9 h-9 rounded-xl bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300 flex items-center justify-center shrink-0">
-                  <Clock className="w-4.5 h-4.5" />
-                </div>
+          <div className="bg-white dark:bg-slate-900 p-4 rounded-2xl border border-slate-200/90 dark:border-slate-800 flex flex-col justify-between gap-3.5 transition hover:border-slate-300 dark:hover:border-slate-700">
+            <div className="space-y-2.5">
+              <div className="flex items-start justify-between gap-2">
                 <div>
-                  <span className="text-[11px] font-semibold text-slate-500 dark:text-slate-400">आज की छात्र हाजिरी</span>
-                  <div className="flex items-baseline gap-1.5">
+                  <span className="text-[11px] font-semibold text-slate-500 dark:text-slate-400">
+                    {pickLang(lang, "छात्र हाजिरी · आज", "Student Attendance · Today")}
+                  </span>
+                  <div className="flex items-baseline gap-1.5 mt-0.5">
                     <p className="text-2xl font-bold text-slate-900 dark:text-white tabular-nums">
                       {sevenDayAttendanceData[6]?.presentPct ?? 0}%
                     </p>
-                    <span className="text-[11px] font-semibold text-emerald-600 dark:text-emerald-400">उपस्थित</span>
+                    <span className="text-[11px] font-medium text-emerald-600 dark:text-emerald-400">
+                      {pickLang(lang, "उपस्थित", "Present")}
+                    </span>
                   </div>
                 </div>
+                <div className="w-9 h-9 rounded-xl bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300 flex items-center justify-center shrink-0">
+                  <Clock className="w-4 h-4" />
+                </div>
+              </div>
+
+              <div className="w-full h-1.5 rounded-full bg-slate-100 dark:bg-slate-800 overflow-hidden">
+                <div
+                  className="h-full rounded-full bg-emerald-600 transition-all duration-300"
+                  style={{
+                    width: `${Math.min(100, Math.max(0, sevenDayAttendanceData[6]?.presentPct ?? 0))}%`,
+                  }}
+                />
               </div>
             </div>
 
-            <div className="grid grid-cols-3 gap-1 bg-slate-50 dark:bg-slate-950/60 p-2 rounded-xl text-center border border-slate-200/70 dark:border-slate-800 text-[11px]">
+            <div className="grid grid-cols-3 py-2 border-y border-slate-100 dark:border-slate-800 text-center divide-x divide-slate-100 dark:divide-slate-800 text-[11px]">
               <div>
-                <span className="text-[10px] text-slate-500 dark:text-slate-400 block font-medium">उपस्थित</span>
+                <span className="text-[10px] text-slate-500 dark:text-slate-400 block">{pickLang(lang, "उपस्थित", "Present")}</span>
                 <span className="font-bold text-emerald-600 dark:text-emerald-400 tabular-nums">
                   {sevenDayAttendanceData[6]?.presentCount ?? 0}
                 </span>
               </div>
-              <div className="border-x border-slate-200 dark:border-slate-800">
-                <span className="text-[10px] text-slate-500 dark:text-slate-400 block font-medium">गैरहाजिर</span>
+              <div>
+                <span className="text-[10px] text-slate-500 dark:text-slate-400 block">{pickLang(lang, "गैरहाजिर", "Absent")}</span>
                 <span className="font-bold text-rose-600 dark:text-rose-400 tabular-nums">
                   {sevenDayAttendanceData[6]?.absentCount ?? 0}
                 </span>
               </div>
               <div>
-                <span className="text-[10px] text-slate-500 dark:text-slate-400 block font-medium">कुल छात्र</span>
-                <span className="font-bold text-slate-700 dark:text-slate-300 tabular-nums">
+                <span className="text-[10px] text-slate-500 dark:text-slate-400 block">{pickLang(lang, "कुल छात्र", "Total")}</span>
+                <span className="font-bold text-slate-800 dark:text-slate-200 tabular-nums">
                   {displayedStudents.length}
                 </span>
               </div>
             </div>
 
-            <div className="flex items-center gap-1.5">
+            <div className="space-y-2 pt-0.5">
               <button
                 type="button"
                 onClick={() => setView("attendance")}
-                className="flex-1 py-1.5 px-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-semibold text-[11px] transition cursor-pointer text-center flex items-center justify-center gap-1.5 whitespace-nowrap"
+                className="w-full min-h-[48px] py-2.5 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-sm transition cursor-pointer text-center flex items-center justify-center gap-2 whitespace-nowrap shadow-xs active:scale-[0.99]"
               >
-                <CheckCircle2 className="w-3.5 h-3.5" />
-                <span>हाजिरी रजिस्टर</span>
+                <CheckCircle2 className="w-4 h-4 shrink-0" />
+                <span>{pickLang(lang, "हाजिरी रजिस्टर खोलें", "Open Attendance")}</span>
               </button>
-              <button
-                type="button"
-                onClick={() => setShowPunchDeskExpanded((p) => !p)}
-                className={`py-1.5 px-2.5 rounded-xl font-semibold text-[11px] transition cursor-pointer shrink-0 whitespace-nowrap ${
-                  showPunchDeskExpanded
-                    ? "bg-indigo-600 text-white"
-                    : "bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200"
-                }`}
-                title="शिक्षक व छात्र 1-टैप Punch IN/OUT डेस्क"
-              >
-                {showPunchDeskExpanded ? "▲ पंच" : "पंच डेस्क"}
-              </button>
-              <button
-                type="button"
-                onClick={() => setShowSchoolLocationModal(true)}
-                className="p-1.5 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-blue-600 dark:text-blue-400 transition cursor-pointer shrink-0"
-                title="स्कूल GPS लोकेशन सेटिंग्स"
-                aria-label="School GPS Location Settings"
-              >
-                <MapPin className="w-3.5 h-3.5" />
-              </button>
+              <div className="grid grid-cols-3 gap-2">
+                <button
+                  type="button"
+                  onClick={() => setShowPunchDeskExpanded((p) => !p)}
+                  className={`col-span-2 min-h-[42px] py-2 px-3 rounded-xl font-bold text-xs transition cursor-pointer whitespace-nowrap flex items-center justify-center ${
+                    showPunchDeskExpanded
+                      ? "bg-indigo-600 text-white"
+                      : "bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200"
+                  }`}
+                  title="शिक्षक व छात्र 1-टैप Punch IN/OUT डेस्क"
+                >
+                  {showPunchDeskExpanded
+                    ? pickLang(lang, "▲ पंच डेस्क बंद करें", "▲ Close Punch Desk")
+                    : pickLang(lang, "पंच डेस्क (IN/OUT)", "Punch Desk (IN/OUT)")}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowSchoolLocationModal(true)}
+                  className="min-h-[42px] py-2 px-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 font-bold text-xs transition cursor-pointer flex items-center justify-center gap-1"
+                  title="स्कूल GPS लोकेशन सेटिंग्स"
+                  aria-label="School GPS Location Settings"
+                >
+                  <MapPin className="w-4 h-4 shrink-0" />
+                  <span>GPS</span>
+                </button>
+              </div>
             </div>
           </div>
 
           {/* Card 2: Today's Fee Collection */}
-          <div className="bg-white dark:bg-slate-900 p-4 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-xs flex flex-col justify-between gap-3 transition hover:border-amber-400/70">
+          <div className="bg-white dark:bg-slate-900 p-4 rounded-2xl border border-slate-200/90 dark:border-slate-800 flex flex-col justify-between gap-3.5 transition hover:border-slate-300 dark:hover:border-slate-700">
             <div className="flex items-start justify-between gap-2">
-              <div className="flex items-center gap-2.5">
-                <div className="w-9 h-9 rounded-xl bg-amber-50 dark:bg-amber-950/60 text-amber-700 dark:text-amber-300 flex items-center justify-center shrink-0">
-                  <IndianRupee className="w-4.5 h-4.5" />
-                </div>
-                <div>
-                  <span className="text-[11px] font-semibold text-slate-500 dark:text-slate-400">आज की फीस व स्टोर वसूली</span>
-                  <div className="flex items-baseline gap-1.5">
-                    <p className="text-2xl font-bold text-slate-900 dark:text-white tabular-nums">
-                      ₹{todayTotalFeeCollected.toLocaleString("en-IN")}
-                    </p>
-                  </div>
-                </div>
+              <div>
+                <span className="text-[11px] font-semibold text-slate-500 dark:text-slate-400">
+                  {pickLang(
+                    lang,
+                    `फीस व स्टोर वसूली · ${todayReceiptsCount} रसीदें`,
+                    `Fee & Store Collection · ${todayReceiptsCount} receipts`
+                  )}
+                </span>
+                <p className="text-2xl font-bold text-slate-900 dark:text-white tabular-nums mt-0.5">
+                  ₹{todayTotalFeeCollected.toLocaleString("en-IN")}
+                </p>
               </div>
-              <span className="text-[11px] font-semibold text-amber-700 dark:text-amber-300 shrink-0 tabular-nums">
-                {todayReceiptsCount} रसीदें
-              </span>
+              <div className="w-9 h-9 rounded-xl bg-amber-50 dark:bg-amber-950/60 text-amber-700 dark:text-amber-300 flex items-center justify-center shrink-0">
+                <IndianRupee className="w-4 h-4" />
+              </div>
             </div>
 
-            <div className="grid grid-cols-3 gap-1 bg-slate-50 dark:bg-slate-950/60 p-2 rounded-xl text-center border border-slate-200/70 dark:border-slate-800 text-[10px]">
+            <div className="grid grid-cols-3 py-2 border-y border-slate-100 dark:border-slate-800 text-center divide-x divide-slate-100 dark:divide-slate-800 text-[10px]">
               <div>
-                <span className="text-[9.5px] text-slate-500 dark:text-slate-400 block font-medium">Online QR</span>
+                <span className="text-[10px] text-slate-500 dark:text-slate-400 block">Online QR</span>
                 <span className="font-bold text-cyan-600 dark:text-cyan-400 tabular-nums">
                   ₹{todayOnlineQrAmt.toLocaleString("en-IN")}
                 </span>
               </div>
-              <div className="border-l border-slate-200 dark:border-slate-800">
-                <span className="text-[9.5px] text-slate-500 dark:text-slate-400 block font-medium">NSTA Online</span>
+              <div>
+                <span className="text-[10px] text-slate-500 dark:text-slate-400 block">NSTA Online</span>
                 <span className="font-bold text-indigo-600 dark:text-indigo-400 tabular-nums">
                   ₹{todayNstaOnlineAmt.toLocaleString("en-IN")}
                 </span>
               </div>
-              <div className="border-l border-slate-200 dark:border-slate-800">
-                <span className="text-[9.5px] text-slate-500 dark:text-slate-400 block font-medium">नकद (Cash)</span>
+              <div>
+                <span className="text-[10px] text-slate-500 dark:text-slate-400 block">Cash</span>
                 <span className="font-bold text-slate-800 dark:text-white tabular-nums">
                   ₹{todayCashAmt.toLocaleString("en-IN")}
                 </span>
               </div>
             </div>
 
-            <div className="flex items-center gap-1.5">
+            <div className="space-y-2 pt-0.5">
               <button
                 type="button"
                 onClick={() => setView("fees")}
-                className="flex-1 py-1.5 px-2.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-semibold text-[11px] transition cursor-pointer text-center flex items-center justify-center gap-1 whitespace-nowrap"
+                className="w-full min-h-[48px] py-2.5 px-4 rounded-xl bg-slate-900 dark:bg-amber-500 hover:bg-slate-800 dark:hover:bg-amber-400 text-white dark:text-slate-950 font-extrabold text-sm transition cursor-pointer text-center flex items-center justify-center gap-1.5 whitespace-nowrap shadow-xs active:scale-[0.99]"
               >
-                <Plus className="w-3.5 h-3.5 stroke-[2.5]" />
-                <span>फीस जमा</span>
+                <Plus className="w-4 h-4 stroke-[2.5] shrink-0" />
+                <span>फीस जमा करें</span>
               </button>
-              <button
-                type="button"
-                onClick={() => setView("fee_tagada")}
-                className="py-1.5 px-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-semibold text-[11px] transition cursor-pointer shrink-0 flex items-center gap-1 whitespace-nowrap"
-                title="Fee Tagada • Offline Caller"
-              >
-                <PhoneCall className="w-3 h-3 shrink-0" />
-                <span>तगादा कॉल</span>
-                {!hasEliteFeeTagadaAccess(school) && <Lock className="w-3 h-3 text-amber-200 shrink-0" />}
-              </button>
-              <button
-                type="button"
-                onClick={() => setView("expenses")}
-                className="py-1.5 px-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 font-semibold text-[11px] transition cursor-pointer shrink-0 whitespace-nowrap"
-              >
-                कैशबुक →
-              </button>
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={() => setView("fee_tagada")}
+                  className="min-h-[42px] py-2 px-3 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs transition cursor-pointer flex items-center justify-center gap-1.5 whitespace-nowrap"
+                  title="Fee Tagada • Offline Caller"
+                >
+                  <PhoneCall className="w-3.5 h-3.5 shrink-0" />
+                  <span>तगादा कॉल</span>
+                  {!hasEliteFeeTagadaAccess(school) && <Lock className="w-3 h-3 text-amber-200 shrink-0" />}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setView("expenses")}
+                  className="min-h-[42px] py-2 px-3 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 font-bold text-xs transition cursor-pointer flex items-center justify-center whitespace-nowrap"
+                >
+                  कैशबुक / खर्च
+                </button>
+              </div>
             </div>
           </div>
 
           {/* Card 3: Staff & Faculty Attendance */}
-          <div className="bg-white dark:bg-slate-900 p-4 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-xs flex flex-col justify-between gap-3 transition hover:border-violet-400/70">
-            <div className="flex items-start justify-between gap-2">
-              <div className="flex items-center gap-2.5">
-                <div className="w-9 h-9 rounded-xl bg-violet-50 dark:bg-violet-950/60 text-violet-700 dark:text-violet-300 flex items-center justify-center shrink-0">
-                  <GraduationCap className="w-4.5 h-4.5" />
-                </div>
+          <div className="bg-white dark:bg-slate-900 p-4 rounded-2xl border border-slate-200/90 dark:border-slate-800 flex flex-col justify-between gap-3.5 transition hover:border-slate-300 dark:hover:border-slate-700">
+            <div className="space-y-2.5">
+              <div className="flex items-start justify-between gap-2">
                 <div>
-                  <span className="text-[11px] font-semibold text-slate-500 dark:text-slate-400">शिक्षक व स्टाफ उपस्थिति</span>
-                  <div className="flex items-baseline gap-1.5">
+                  <span className="text-[11px] font-semibold text-slate-500 dark:text-slate-400">
+                    शिक्षक व स्टाफ ड्यूटी
+                  </span>
+                  <div className="flex items-baseline gap-1.5 mt-0.5">
                     <p className="text-2xl font-bold text-slate-900 dark:text-white tabular-nums">
-                      {staffPresentCount} <span className="text-sm font-semibold text-slate-400">/ {totalStaffCount}</span>
+                      {staffPresentCount}{" "}
+                      <span className="text-sm font-semibold text-slate-400">/ {totalStaffCount}</span>
                     </p>
-                    <span className="text-[11px] font-semibold text-violet-600 dark:text-violet-400">ऑन ड्यूटी</span>
+                    <span className="text-[11px] font-medium text-violet-600 dark:text-violet-400">
+                      ऑन ड्यूटी
+                    </span>
                   </div>
                 </div>
+                <div className="w-9 h-9 rounded-xl bg-violet-50 dark:bg-violet-950/60 text-violet-700 dark:text-violet-300 flex items-center justify-center shrink-0">
+                  <GraduationCap className="w-4 h-4" />
+                </div>
+              </div>
+
+              <div className="w-full h-1.5 rounded-full bg-slate-100 dark:bg-slate-800 overflow-hidden">
+                <div
+                  className="h-full rounded-full bg-violet-600 transition-all duration-300"
+                  style={{
+                    width: `${totalStaffCount > 0 ? Math.min(100, Math.round((staffPresentCount / totalStaffCount) * 100)) : 0}%`,
+                  }}
+                />
               </div>
             </div>
 
-            <div className="grid grid-cols-2 gap-1 bg-slate-50 dark:bg-slate-950/60 p-2 rounded-xl text-center border border-slate-200/70 dark:border-slate-800 text-[11px]">
+            <div className="grid grid-cols-2 py-2 border-y border-slate-100 dark:border-slate-800 text-center divide-x divide-slate-100 dark:divide-slate-800 text-[11px]">
               <div>
-                <span className="text-[10px] text-slate-500 dark:text-slate-400 block font-medium">उपस्थित शिक्षक</span>
+                <span className="text-[10px] text-slate-500 dark:text-slate-400 block">उपस्थित</span>
                 <span className="font-bold text-emerald-600 dark:text-emerald-400 tabular-nums">
                   {staffPresentCount} Present
                 </span>
               </div>
-              <div className="border-l border-slate-200 dark:border-slate-800">
-                <span className="text-[10px] text-slate-500 dark:text-slate-400 block font-medium">अवकाश (Leave)</span>
+              <div>
+                <span className="text-[10px] text-slate-500 dark:text-slate-400 block">अवकाश (Leave)</span>
                 <span className="font-bold text-amber-600 dark:text-amber-400 tabular-nums">
                   {staffLeaveCount} Leave
                 </span>
               </div>
             </div>
 
-            <div className="flex items-center gap-2">
+            <div className="grid grid-cols-2 gap-2 pt-0.5">
               <button
                 type="button"
                 onClick={() => {
                   setTeachersHubTab("directory");
                   setView("teachers");
                 }}
-                className="flex-1 py-1.5 px-2.5 rounded-xl bg-violet-600 hover:bg-violet-500 text-white font-semibold text-[11px] transition cursor-pointer text-center flex items-center justify-center gap-1.5 whitespace-nowrap"
+                className="min-h-[46px] py-2.5 px-3 rounded-xl bg-violet-600 hover:bg-violet-500 text-white font-bold text-xs sm:text-sm transition cursor-pointer text-center flex items-center justify-center gap-1.5 whitespace-nowrap shadow-xs"
               >
-                <Users className="w-3.5 h-3.5" />
+                <Users className="w-4 h-4 shrink-0" />
                 <span>शिक्षक सूची</span>
               </button>
               <button
@@ -5586,51 +5900,42 @@ export const SchoolAdminPanel: React.FC<Props> = ({
                   setTeachersHubTab("payroll");
                   setView("teachers");
                 }}
-                className="py-1.5 px-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 font-semibold text-[11px] transition cursor-pointer shrink-0 whitespace-nowrap"
+                className="min-h-[46px] py-2.5 px-3 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 font-bold text-xs sm:text-sm transition cursor-pointer flex items-center justify-center whitespace-nowrap"
               >
-                वेतन पर्ची →
+                वेतन पर्ची
               </button>
             </div>
           </div>
 
           {/* Card 4: Live School Bus & Transport Fleet */}
-          <div className="bg-white dark:bg-slate-900 p-4 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-xs flex flex-col justify-between gap-3 transition hover:border-sky-400/70">
+          <div className="bg-white dark:bg-slate-900 p-4 rounded-2xl border border-slate-200/90 dark:border-slate-800 flex flex-col justify-between gap-3.5 transition hover:border-slate-300 dark:hover:border-slate-700">
             <div className="flex items-start justify-between gap-2">
-              <div className="flex items-center gap-2.5">
-                <div className="w-9 h-9 rounded-xl bg-sky-50 dark:bg-sky-950/60 text-sky-700 dark:text-sky-300 flex items-center justify-center shrink-0">
-                  <Bus className="w-4.5 h-4.5" />
-                </div>
-                <div>
-                  <span className="text-[11px] font-semibold text-slate-500 dark:text-slate-400">स्कूल बस जीपीएस रडार</span>
-                  <div className="flex items-baseline gap-1.5">
-                    <p className="text-xl font-bold text-slate-900 dark:text-white tabular-nums">
-                      {activeBusCount > 0
-                        ? `${activeBusCount} बसें ऑन-रोड`
-                        : liveBuses.length > 0
-                        ? `${liveBuses.length} बसें स्टैंडबाय`
-                        : "कोई बस दर्ज नहीं"}
-                    </p>
-                  </div>
-                </div>
+              <div>
+                <span className="text-[11px] font-semibold text-slate-500 dark:text-slate-400">
+                  स्कूल बस रडार · {activeBusCount > 0 ? "Active" : "Standby"}
+                </span>
+                <p className="text-xl font-bold text-slate-900 dark:text-white tabular-nums mt-0.5">
+                  {activeBusCount > 0
+                    ? `${activeBusCount} बसें ऑन-रोड`
+                    : liveBuses.length > 0
+                    ? `${liveBuses.length} बसें स्टैंडबाय`
+                    : "कोई बस दर्ज नहीं"}
+                </p>
               </div>
-              <span className={`text-[10px] font-semibold shrink-0 ${
-                activeBusCount > 0
-                  ? "text-emerald-600 dark:text-emerald-400"
-                  : "text-slate-500 dark:text-slate-400"
-              }`}>
-                {activeBusCount > 0 ? "Active" : "Standby"}
-              </span>
+              <div className="w-9 h-9 rounded-xl bg-sky-50 dark:bg-sky-950/60 text-sky-700 dark:text-sky-300 flex items-center justify-center shrink-0">
+                <Bus className="w-4 h-4" />
+              </div>
             </div>
 
-            <div className="grid grid-cols-2 gap-1 bg-slate-50 dark:bg-slate-950/60 p-2 rounded-xl text-center border border-slate-200/70 dark:border-slate-800 text-[11px]">
+            <div className="grid grid-cols-2 py-2 border-y border-slate-100 dark:border-slate-800 text-center divide-x divide-slate-100 dark:divide-slate-800 text-[11px]">
               <div>
-                <span className="text-[10px] text-slate-500 dark:text-slate-400 block font-medium">बस छात्र</span>
+                <span className="text-[10px] text-slate-500 dark:text-slate-400 block">बस छात्र</span>
                 <span className="font-bold text-slate-800 dark:text-white tabular-nums">
                   {busStudentsCount} छात्र
                 </span>
               </div>
-              <div className="border-l border-slate-200 dark:border-slate-800">
-                <span className="text-[10px] text-slate-500 dark:text-slate-400 block font-medium">कुल वाहन</span>
+              <div>
+                <span className="text-[10px] text-slate-500 dark:text-slate-400 block">कुल वाहन</span>
                 <span className="font-bold text-sky-600 dark:text-sky-400 tabular-nums">
                   {liveBuses.length} बसें
                 </span>
@@ -5638,77 +5943,78 @@ export const SchoolAdminPanel: React.FC<Props> = ({
             </div>
 
             {liveBuses.length > 0 && (
-              <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar">
-                {liveBuses.slice(0, 3).map((b) => (
+              <div className="flex items-center gap-2 overflow-x-auto no-scrollbar text-[10px] text-slate-500 dark:text-slate-400">
+                {liveBuses.slice(0, 3).map((b, idx) => (
                   <span
                     key={b.id}
-                    className={`px-2 py-0.5 rounded-md text-[10px] font-medium border shrink-0 ${
+                    className={`shrink-0 font-medium ${
                       b.status === "started"
-                        ? "bg-emerald-50 border-emerald-200 text-emerald-700 dark:bg-emerald-950/50 dark:border-emerald-800 dark:text-emerald-300"
-                        : "bg-slate-50 border-slate-200 text-slate-600 dark:bg-slate-950 dark:border-slate-800 dark:text-slate-400"
+                        ? "text-emerald-600 dark:text-emerald-400 font-semibold"
+                        : ""
                     }`}
                   >
-                    {b.busNumber.split(" ").slice(0, 2).join(" ")} {b.status === "started" ? `(${b.speed}km/h)` : ""}
+                    {idx > 0 ? "· " : ""}
+                    {b.busNumber.split(" ").slice(0, 2).join(" ")}{" "}
+                    {b.status === "started" ? `(${b.speed}km/h)` : ""}
                   </span>
                 ))}
               </div>
             )}
 
-            <div className="flex items-center gap-2">
+            <div className="grid grid-cols-2 gap-2 pt-0.5">
               <button
                 type="button"
                 onClick={() => setView("bus_transport")}
-                className="flex-1 py-1.5 px-2.5 rounded-xl bg-sky-600 hover:bg-sky-500 text-white font-semibold text-[11px] transition cursor-pointer text-center flex items-center justify-center gap-1.5 whitespace-nowrap"
+                className="min-h-[46px] py-2.5 px-3 rounded-xl bg-sky-600 hover:bg-sky-500 text-white font-bold text-xs sm:text-sm transition cursor-pointer text-center flex items-center justify-center gap-1.5 whitespace-nowrap shadow-xs"
               >
-                <MapPin className="w-3.5 h-3.5" />
+                <MapPin className="w-4 h-4 shrink-0" />
                 <span>Live Bus Map</span>
               </button>
               <button
                 type="button"
                 onClick={() => setView("bus_logbook")}
-                className="py-1.5 px-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 font-semibold text-[11px] transition cursor-pointer shrink-0 whitespace-nowrap"
+                className="min-h-[46px] py-2.5 px-3 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 font-bold text-xs sm:text-sm transition cursor-pointer flex items-center justify-center whitespace-nowrap"
               >
-                डीजल लॉग →
+                डीजल लॉग
               </button>
             </div>
           </div>
         </div>
 
-        {/* ── COMPACT ACCOUNTS COUNTER STRIP (KITNE ACCOUNT HAI) ── */}
-        <div className="bg-white dark:bg-slate-900 rounded-2xl px-4 py-3 border border-slate-200 dark:border-slate-800 shadow-xs flex flex-wrap items-center justify-between gap-3">
+        {/* ── COMPACT ACCOUNTS DIRECTORY STRIP ── */}
+        <div className="bg-white dark:bg-slate-900 rounded-2xl p-4 border border-slate-200/90 dark:border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
           <div className="flex items-center gap-3 min-w-0">
-            <div className="w-9 h-9 rounded-xl bg-indigo-50 dark:bg-indigo-950/60 text-indigo-600 dark:text-indigo-400 flex items-center justify-center shrink-0">
-              <Users className="w-4.5 h-4.5" />
+            <div className="w-10 h-10 rounded-xl bg-indigo-50 dark:bg-indigo-950/60 text-indigo-600 dark:text-indigo-400 flex items-center justify-center shrink-0">
+              <Users className="w-5 h-5" />
             </div>
             <div className="min-w-0">
-              <div className="flex items-center gap-2 flex-wrap">
-                <span className="text-xs sm:text-sm font-bold text-slate-900 dark:text-white">
-                  कुल सक्रिय अकाउंट्स (Total School Accounts):
-                </span>
-                <span className="px-2 py-0.5 rounded-lg bg-indigo-600 text-white text-xs font-black tabular-nums">
+              <p className="text-xs sm:text-sm font-bold text-slate-900 dark:text-white tabular-nums">
+                कुल सक्रिय अकाउंट्स ·{" "}
+                <span className="text-indigo-600 dark:text-indigo-400">
                   {1 + displayedStudents.length + displayedTeachers.length + accountants.length + displayedStaff.length}
                 </span>
-              </div>
-              <p className="text-[11px] text-slate-500 dark:text-slate-400 truncate mt-0.5">
-                {displayedStudents.length} Students • {displayedTeachers.length} Teachers • {accountants.length + displayedStaff.length} Staff/Acc • 1 Admin
+              </p>
+              <p className="text-[11px] text-slate-500 dark:text-slate-400 truncate mt-0.5 tabular-nums">
+                {displayedStudents.length} Students · {displayedTeachers.length} Teachers ·{" "}
+                {accountants.length + displayedStaff.length} Staff/Acc · 1 Admin
               </p>
             </div>
           </div>
-          <div className="flex items-center gap-2 shrink-0">
+          <div className="grid grid-cols-2 sm:flex sm:items-center gap-2 shrink-0 w-full sm:w-auto">
             <button
               type="button"
               onClick={() => setView("account_hub")}
-              className="px-3 py-1.5 rounded-xl bg-amber-50 hover:bg-amber-100 dark:bg-amber-950/50 dark:hover:bg-amber-900/50 border border-amber-200 dark:border-amber-800 text-amber-800 dark:text-amber-300 text-xs font-bold transition cursor-pointer whitespace-nowrap"
+              className="min-h-[44px] px-4 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 text-xs sm:text-sm font-bold transition cursor-pointer flex items-center justify-center whitespace-nowrap"
             >
               Recovery Info
             </button>
             <button
               type="button"
               onClick={() => setView("accounts_directory")}
-              className="px-3 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold transition cursor-pointer flex items-center gap-1 whitespace-nowrap"
+              className="min-h-[44px] px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs sm:text-sm font-bold transition cursor-pointer flex items-center justify-center gap-1.5 whitespace-nowrap shadow-xs"
             >
-              <span>सभी अकाउंट्स देखें</span>
-              <ChevronRight className="w-3.5 h-3.5" />
+              <span>सभी अकाउंट्स</span>
+              <ChevronRight className="w-4 h-4 shrink-0" />
             </button>
           </div>
         </div>
@@ -5755,33 +6061,32 @@ export const SchoolAdminPanel: React.FC<Props> = ({
         />
 
         {/* ── SECTION 2: QUICK ACTION & ELITE SHORTCUT LAUNCHER ── */}
-        <div className="bg-white dark:bg-slate-900 rounded-2xl p-4 border border-slate-200 dark:border-slate-800 shadow-xs">
-          <div className="flex items-center justify-between gap-2 mb-3">
-            <div className="flex items-center gap-2">
-              <Sparkles className="w-4 h-4 text-indigo-600 dark:text-indigo-400 shrink-0" />
-              <h3 className="text-xs sm:text-sm font-bold text-slate-900 dark:text-white">
-                त्वरित कार्य व शॉर्टकट (Quick Launcher)
-              </h3>
-            </div>
-            <span className="text-[11px] text-slate-500 dark:text-slate-400 font-medium hidden sm:inline">
-              Elite फीचर्स गोल्डन टैग से चिन्हित हैं
+        <div className="bg-white dark:bg-slate-900 rounded-2xl p-4 sm:p-5 border border-slate-200/90 dark:border-slate-800">
+          <div className="flex items-center justify-between gap-2 mb-3.5">
+            <h3 className="text-sm sm:text-base font-extrabold text-slate-900 dark:text-white">
+              Quick Launcher
+            </h3>
+            <span className="text-[11px] font-semibold text-slate-500 dark:text-slate-400">
+              1-टैप स्कूल मॉड्यूल्स
             </span>
           </div>
 
-          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2.5">
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
             {/* Action 1: Direct Admission */}
             <button
               type="button"
               onClick={() => setShowDirectAdmissionModal(true)}
-              className="p-3 rounded-xl bg-slate-50 hover:bg-sky-50 dark:bg-slate-950/60 dark:hover:bg-sky-950/40 border border-slate-200 dark:border-slate-800 hover:border-sky-400 text-left transition cursor-pointer group flex flex-col justify-between min-h-[78px]"
+              className="p-3.5 sm:p-4 rounded-2xl border border-slate-200/80 dark:border-slate-800 bg-slate-50/90 hover:bg-sky-50/80 dark:bg-slate-950/60 dark:hover:bg-sky-950/35 text-left transition cursor-pointer flex flex-col justify-between gap-3 min-h-[104px] active:scale-[0.98]"
             >
               <div className="flex items-center justify-between w-full">
-                <UserPlus className="w-4.5 h-4.5 text-sky-600 dark:text-sky-400" />
-                <span className="text-[10px] font-semibold text-sky-700 dark:text-sky-300">प्रवेश</span>
+                <span className="w-9 h-9 rounded-xl bg-sky-500/12 text-sky-600 dark:text-sky-400 flex items-center justify-center shrink-0">
+                  <UserPlus className="w-4 h-4" />
+                </span>
+                <span className="text-[10px] font-bold text-sky-700 dark:text-sky-300">प्रवेश</span>
               </div>
               <div>
-                <p className="text-xs font-bold text-slate-900 dark:text-white leading-tight">नया एडमिशन</p>
-                <p className="text-[10px] text-slate-500 dark:text-slate-400 truncate mt-0.5">सीधा दाखिला · 3-Term</p>
+                <p className="text-xs sm:text-sm font-extrabold text-slate-900 dark:text-white leading-tight">नया एडमिशन</p>
+                <p className="text-[11px] text-slate-500 dark:text-slate-400 truncate mt-0.5">सीधा दाखिला · 3-Term</p>
               </div>
             </button>
 
@@ -5789,15 +6094,17 @@ export const SchoolAdminPanel: React.FC<Props> = ({
             <button
               type="button"
               onClick={() => setView("homework")}
-              className="p-3 rounded-xl bg-slate-50 hover:bg-indigo-50 dark:bg-slate-950/60 dark:hover:bg-indigo-950/40 border border-slate-200 dark:border-slate-800 hover:border-indigo-400 text-left transition cursor-pointer group flex flex-col justify-between min-h-[78px]"
+              className="p-3.5 sm:p-4 rounded-2xl border border-slate-200/80 dark:border-slate-800 bg-slate-50/90 hover:bg-indigo-50/80 dark:bg-slate-950/60 dark:hover:bg-indigo-950/35 text-left transition cursor-pointer flex flex-col justify-between gap-3 min-h-[104px] active:scale-[0.98]"
             >
               <div className="flex items-center justify-between w-full">
-                <BookOpen className="w-4.5 h-4.5 text-indigo-600 dark:text-indigo-400" />
-                <span className="text-[10px] font-semibold text-indigo-700 dark:text-indigo-300">डायरी</span>
+                <span className="w-9 h-9 rounded-xl bg-indigo-500/12 text-indigo-600 dark:text-indigo-400 flex items-center justify-center shrink-0">
+                  <BookOpen className="w-4 h-4" />
+                </span>
+                <span className="text-[10px] font-bold text-indigo-700 dark:text-indigo-300">डायरी</span>
               </div>
               <div>
-                <p className="text-xs font-bold text-slate-900 dark:text-white leading-tight">दैनिक गृहकार्य</p>
-                <p className="text-[10px] text-slate-500 dark:text-slate-400 truncate mt-0.5">होमवर्क व क्लास पिक्स</p>
+                <p className="text-xs sm:text-sm font-extrabold text-slate-900 dark:text-white leading-tight">दैनिक गृहकार्य</p>
+                <p className="text-[11px] text-slate-500 dark:text-slate-400 truncate mt-0.5">होमवर्क व क्लास पिक्स</p>
               </div>
             </button>
 
@@ -5805,19 +6112,21 @@ export const SchoolAdminPanel: React.FC<Props> = ({
             <button
               type="button"
               onClick={() => setView("class_notes_manager")}
-              className="p-3 rounded-xl bg-slate-50 hover:bg-emerald-50 dark:bg-slate-950/60 dark:hover:bg-emerald-950/40 border border-slate-200 dark:border-slate-800 hover:border-emerald-400 text-left transition cursor-pointer group flex flex-col justify-between min-h-[78px]"
+              className="p-3.5 sm:p-4 rounded-2xl border border-slate-200/80 dark:border-slate-800 bg-slate-50/90 hover:bg-emerald-50/80 dark:bg-slate-950/60 dark:hover:bg-emerald-950/35 text-left transition cursor-pointer flex flex-col justify-between gap-3 min-h-[104px] active:scale-[0.98]"
               title={isSchoolEliteCurriculum(school) ? "Class 1-12 Notes Manager — Elite Feature" : "Elite Plan Required"}
             >
               <div className="flex items-center justify-between w-full gap-1">
-                <Sparkles className="w-4.5 h-4.5 text-emerald-600 dark:text-emerald-400 shrink-0" />
-                <span className="erp-elite-tag inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[8px] font-bold uppercase tracking-wider shrink-0 leading-none">
-                  {isSchoolEliteCurriculum(school) ? <Crown className="w-2.5 h-2.5" /> : <Lock className="w-2.5 h-2.5" />}
-                  <span>ELITE</span>
+                <span className="w-9 h-9 rounded-xl bg-emerald-500/12 text-emerald-600 dark:text-emerald-400 flex items-center justify-center shrink-0">
+                  <Sparkles className="w-4 h-4" />
+                </span>
+                <span className="inline-flex items-center gap-0.5 text-[10px] font-bold uppercase tracking-wider text-amber-600 dark:text-amber-400 shrink-0">
+                  {isSchoolEliteCurriculum(school) ? <Crown className="w-3 h-3" /> : <Lock className="w-3 h-3" />}
+                  <span>Elite</span>
                 </span>
               </div>
               <div>
-                <p className="text-xs font-bold text-slate-900 dark:text-white leading-tight truncate">Class 1-12 Notes</p>
-                <p className="text-[10px] text-slate-500 dark:text-slate-400 truncate mt-0.5">नोट्स, MCQ व PDF</p>
+                <p className="text-xs sm:text-sm font-extrabold text-slate-900 dark:text-white leading-tight truncate">Class 1-12 Notes</p>
+                <p className="text-[11px] text-slate-500 dark:text-slate-400 truncate mt-0.5">नोट्स, MCQ व PDF</p>
               </div>
             </button>
 
@@ -5825,19 +6134,21 @@ export const SchoolAdminPanel: React.FC<Props> = ({
             <button
               type="button"
               onClick={() => setView("video_lectures")}
-              className="p-3 rounded-xl bg-slate-50 hover:bg-rose-50 dark:bg-slate-950/60 dark:hover:bg-rose-950/40 border border-slate-200 dark:border-slate-800 hover:border-rose-400 text-left transition cursor-pointer group flex flex-col justify-between min-h-[78px]"
+              className="p-3.5 sm:p-4 rounded-2xl border border-slate-200/80 dark:border-slate-800 bg-slate-50/90 hover:bg-rose-50/80 dark:bg-slate-950/60 dark:hover:bg-rose-950/35 text-left transition cursor-pointer flex flex-col justify-between gap-3 min-h-[104px] active:scale-[0.98]"
               title={isSchoolEliteCurriculum(school) ? "Class Video Archive — Elite Feature" : "Elite Plan Required"}
             >
               <div className="flex items-center justify-between w-full gap-1">
-                <Youtube className="w-4.5 h-4.5 text-rose-600 dark:text-rose-400 shrink-0" />
-                <span className="erp-elite-tag inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[8px] font-bold uppercase tracking-wider shrink-0 leading-none">
-                  {isSchoolEliteCurriculum(school) ? <Crown className="w-2.5 h-2.5" /> : <Lock className="w-2.5 h-2.5" />}
-                  <span>ELITE</span>
+                <span className="w-9 h-9 rounded-xl bg-rose-500/12 text-rose-600 dark:text-rose-400 flex items-center justify-center shrink-0">
+                  <Youtube className="w-4 h-4" />
+                </span>
+                <span className="inline-flex items-center gap-0.5 text-[10px] font-bold uppercase tracking-wider text-amber-600 dark:text-amber-400 shrink-0">
+                  {isSchoolEliteCurriculum(school) ? <Crown className="w-3 h-3" /> : <Lock className="w-3 h-3" />}
+                  <span>Elite</span>
                 </span>
               </div>
               <div>
-                <p className="text-xs font-bold text-slate-900 dark:text-white leading-tight truncate">Video Archive</p>
-                <p className="text-[10px] text-slate-500 dark:text-slate-400 truncate mt-0.5">डिजिटल वीडियो क्लास</p>
+                <p className="text-xs sm:text-sm font-extrabold text-slate-900 dark:text-white leading-tight truncate">Video Archive</p>
+                <p className="text-[11px] text-slate-500 dark:text-slate-400 truncate mt-0.5">डिजिटल वीडियो क्लास</p>
               </div>
             </button>
 
@@ -5845,19 +6156,21 @@ export const SchoolAdminPanel: React.FC<Props> = ({
             <button
               type="button"
               onClick={() => setView("entrance_test_hub")}
-              className="p-3 rounded-xl bg-slate-50 hover:bg-purple-50 dark:bg-slate-950/60 dark:hover:bg-purple-950/40 border border-slate-200 dark:border-slate-800 hover:border-purple-400 text-left transition cursor-pointer group flex flex-col justify-between min-h-[78px]"
+              className="p-3.5 sm:p-4 rounded-2xl border border-slate-200/80 dark:border-slate-800 bg-slate-50/90 hover:bg-purple-50/80 dark:bg-slate-950/60 dark:hover:bg-purple-950/35 text-left transition cursor-pointer flex flex-col justify-between gap-3 min-h-[104px] active:scale-[0.98]"
               title={hasEntranceExamAccess(school) ? "Entrance Test & 500-Q Bank — Elite Feature" : "Elite Plan Required"}
             >
               <div className="flex items-center justify-between w-full gap-1">
-                <GraduationCap className="w-4.5 h-4.5 text-purple-600 dark:text-purple-400 shrink-0" />
-                <span className="erp-elite-tag inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[8px] font-bold uppercase tracking-wider shrink-0 leading-none">
-                  {hasEntranceExamAccess(school) ? <Crown className="w-2.5 h-2.5" /> : <Lock className="w-2.5 h-2.5" />}
-                  <span>ELITE</span>
+                <span className="w-9 h-9 rounded-xl bg-purple-500/12 text-purple-600 dark:text-purple-400 flex items-center justify-center shrink-0">
+                  <GraduationCap className="w-4 h-4" />
+                </span>
+                <span className="inline-flex items-center gap-0.5 text-[10px] font-bold uppercase tracking-wider text-amber-600 dark:text-amber-400 shrink-0">
+                  {hasEntranceExamAccess(school) ? <Crown className="w-3 h-3" /> : <Lock className="w-3 h-3" />}
+                  <span>Elite</span>
                 </span>
               </div>
               <div>
-                <p className="text-xs font-bold text-slate-900 dark:text-white leading-tight truncate">Entrance 500-Q</p>
-                <p className="text-[10px] text-slate-500 dark:text-slate-400 truncate mt-0.5">ऑनलाइन टेस्ट व पेपर</p>
+                <p className="text-xs sm:text-sm font-extrabold text-slate-900 dark:text-white leading-tight truncate">Entrance 500-Q</p>
+                <p className="text-[11px] text-slate-500 dark:text-slate-400 truncate mt-0.5">ऑनलाइन टेस्ट व पेपर</p>
               </div>
             </button>
 
@@ -5865,19 +6178,21 @@ export const SchoolAdminPanel: React.FC<Props> = ({
             <button
               type="button"
               onClick={() => setView("website_cms")}
-              className="p-3 rounded-xl bg-slate-50 hover:bg-teal-50 dark:bg-slate-950/60 dark:hover:bg-teal-950/40 border border-slate-200 dark:border-slate-800 hover:border-teal-400 text-left transition cursor-pointer group flex flex-col justify-between min-h-[78px]"
+              className="p-3.5 sm:p-4 rounded-2xl border border-slate-200/80 dark:border-slate-800 bg-slate-50/90 hover:bg-teal-50/80 dark:bg-slate-950/60 dark:hover:bg-teal-950/35 text-left transition cursor-pointer flex flex-col justify-between gap-3 min-h-[104px] active:scale-[0.98]"
               title={isSchoolEliteCurriculum(school) ? "Website Manager (CMS) — Elite Feature" : "Elite Plan Required"}
             >
               <div className="flex items-center justify-between w-full gap-1">
-                <Globe className="w-4.5 h-4.5 text-teal-600 dark:text-teal-400 shrink-0" />
-                <span className="erp-elite-tag inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[8px] font-bold uppercase tracking-wider shrink-0 leading-none">
-                  {isSchoolEliteCurriculum(school) ? <Crown className="w-2.5 h-2.5" /> : <Lock className="w-2.5 h-2.5" />}
-                  <span>ELITE</span>
+                <span className="w-9 h-9 rounded-xl bg-teal-500/12 text-teal-600 dark:text-teal-400 flex items-center justify-center shrink-0">
+                  <Globe className="w-4 h-4" />
+                </span>
+                <span className="inline-flex items-center gap-0.5 text-[10px] font-bold uppercase tracking-wider text-amber-600 dark:text-amber-400 shrink-0">
+                  {isSchoolEliteCurriculum(school) ? <Crown className="w-3 h-3" /> : <Lock className="w-3 h-3" />}
+                  <span>Elite</span>
                 </span>
               </div>
               <div>
-                <p className="text-xs font-bold text-slate-900 dark:text-white leading-tight truncate">Website CMS</p>
-                <p className="text-[10px] text-slate-500 dark:text-slate-400 truncate mt-0.5">बैनर, फोटो व गैलरी</p>
+                <p className="text-xs sm:text-sm font-extrabold text-slate-900 dark:text-white leading-tight truncate">Website CMS</p>
+                <p className="text-[11px] text-slate-500 dark:text-slate-400 truncate mt-0.5">बैनर, फोटो व गैलरी</p>
               </div>
             </button>
           </div>
@@ -5886,7 +6201,7 @@ export const SchoolAdminPanel: React.FC<Props> = ({
         {/* ── 2-CARD BIOMETRIC & SMART ID HUB ── */}
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
           {/* Card 1: Unified AI Face Attendance, Face ID Studio & Pending Face Enrollment (ELITE) */}
-          <div className="bg-white dark:bg-slate-900 rounded-2xl p-4 border border-slate-200 dark:border-slate-800 shadow-xs flex flex-col justify-between gap-3">
+          <div className="bg-white dark:bg-slate-900 rounded-2xl p-4 sm:p-5 border border-slate-200/90 dark:border-slate-800 flex flex-col justify-between gap-3.5">
             <div className="flex items-start justify-between gap-2">
               <div className="flex items-center gap-2.5 min-w-0">
                 <div className="w-9 h-9 rounded-xl bg-purple-50 dark:bg-purple-950/60 text-purple-600 dark:text-purple-300 flex items-center justify-center shrink-0">
@@ -5896,71 +6211,71 @@ export const SchoolAdminPanel: React.FC<Props> = ({
                   <h3 className="font-bold text-xs sm:text-sm text-slate-900 dark:text-white truncate">
                     AI Face Attendance &amp; Face ID Studio
                   </h3>
-                  <p className="text-[11px] text-slate-500 dark:text-slate-400 truncate">
-                    0.2s लाइव कैमरा हाजिरी · {enrolledFaceCount}/{displayedStudents.length} सेव · {pendingFaceStudents.length} बाकी
+                  <p className="text-[11px] text-slate-500 dark:text-slate-400 truncate tabular-nums">
+                    0.2s लाइव कैमरा · {enrolledFaceCount}/{displayedStudents.length} सेव · {pendingFaceStudents.length} बाकी
                   </p>
                 </div>
               </div>
-              <span className="erp-elite-tag inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[9.5px] font-bold uppercase tracking-wider shrink-0">
+              <span className="inline-flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider text-amber-600 dark:text-amber-400 shrink-0">
                 {hasFaceAttendanceAccess(school) ? <Crown className="w-3 h-3" /> : <Lock className="w-3 h-3" />}
-                <span>{hasFaceAttendanceAccess(school) ? "ELITE" : "ELITE LOCK"}</span>
+                <span>{hasFaceAttendanceAccess(school) ? "Elite" : "Elite Lock"}</span>
               </span>
             </div>
 
             {pendingFaceStudents.length === 0 ? (
-              <div className="py-2 px-2.5 bg-emerald-50/70 dark:bg-emerald-950/25 rounded-xl border border-emerald-200/70 dark:border-emerald-900/40 text-center text-[11px] font-semibold text-emerald-700 dark:text-emerald-400 flex items-center justify-center gap-1.5">
-                <CheckCircle2 className="w-4 h-4" />
+              <div className="py-2 px-3 border-y border-slate-100 dark:border-slate-800 text-[11px] font-semibold text-emerald-700 dark:text-emerald-400 flex items-center gap-1.5">
+                <CheckCircle2 className="w-4 h-4 shrink-0" />
                 <span>सभी {displayedStudents.length} छात्रों का Face ID रजिस्टर हो चुका है।</span>
               </div>
             ) : (
-              <div className="space-y-1 max-h-16 overflow-y-auto pr-0.5">
+              <div className="divide-y divide-slate-100 dark:divide-slate-800 border-y border-slate-100 dark:border-slate-800 max-h-20 overflow-y-auto">
                 {pendingFaceStudents.slice(0, 4).map((st) => (
                   <div
                     key={`pface-${st.id}`}
-                    className="flex items-center justify-between gap-1.5 px-2.5 py-1 rounded-lg bg-slate-50 dark:bg-slate-950/60 border border-slate-200/70 dark:border-slate-800 text-[10px]"
+                    className="flex items-center justify-between gap-2 py-1.5 text-[11px]"
                   >
-                    <span className="font-semibold text-slate-800 dark:text-white truncate">
-                      {st.name} ({getClassLabel(st.classId)}) — फेस बाकी
+                    <span className="font-medium text-slate-800 dark:text-slate-200 truncate">
+                      {st.name} · {getClassLabel(st.classId)} (फेस बाकी)
                     </span>
                     <button
                       type="button"
                       onClick={() => setShowFaceStudioModal(true)}
-                      className="px-2 py-0.5 rounded bg-purple-600 hover:bg-purple-500 text-white font-semibold shrink-0 cursor-pointer text-[9.5px]"
+                      className="text-purple-600 dark:text-purple-400 hover:underline font-semibold shrink-0 cursor-pointer text-[11px]"
                     >
-                      +जोड़ें
+                      + जोड़ें
                     </button>
                   </div>
                 ))}
               </div>
             )}
 
-            <div className="flex items-center gap-2">
+            <div className="grid grid-cols-2 gap-2">
               <button
                 type="button"
                 onClick={() => setShowFaceKioskModal(true)}
-                className={`flex-1 py-2 px-3 rounded-xl font-semibold text-[11px] transition cursor-pointer text-center flex items-center justify-center gap-1.5 ${
+                className={`min-h-[46px] py-2.5 px-3 rounded-xl font-bold text-xs sm:text-sm transition cursor-pointer text-center flex items-center justify-center gap-1.5 shadow-xs ${
                   hasFaceAttendanceAccess(school)
                     ? "bg-purple-600 hover:bg-purple-500 text-white"
-                    : "bg-slate-800 hover:bg-slate-700 text-amber-300 border border-amber-500/40"
+                    : "bg-slate-800 hover:bg-slate-700 text-amber-300"
                 }`}
               >
-                {hasFaceAttendanceAccess(school) ? <Camera className="w-3.5 h-3.5" /> : <Lock className="w-3.5 h-3.5 text-amber-400" />}
-                <span>AI Face Kiosk (0.2s)</span>
+                {hasFaceAttendanceAccess(school) ? <Camera className="w-4 h-4 shrink-0" /> : <Lock className="w-4 h-4 text-amber-400 shrink-0" />}
+                <span>AI Face Kiosk</span>
               </button>
               <button
                 type="button"
                 onClick={() => setShowFaceStudioModal(true)}
-                className="py-2 px-3 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 font-semibold text-[11px] transition cursor-pointer shrink-0 flex items-center gap-1"
+                className="min-h-[46px] py-2.5 px-3 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 font-bold text-xs sm:text-sm transition cursor-pointer flex items-center justify-center gap-1"
                 title={hasFaceAttendanceAccess(school) ? "लाइव फेस आईडी स्टुडियो व मैच टेस्ट" : "Elite Plan Only"}
               >
-                {!hasFaceAttendanceAccess(school) && <Lock className="w-3 h-3 text-amber-500" />}
+                {!hasFaceAttendanceAccess(school) && <Lock className="w-3.5 h-3.5 text-amber-500 shrink-0" />}
                 <span>Face ID स्टुडियो</span>
               </button>
             </div>
           </div>
 
           {/* Card 2: QR ID Scanner & Smart ID Cards (Included in Lite & Elite) */}
-          <div className="bg-white dark:bg-slate-900 rounded-2xl p-4 border border-slate-200 dark:border-slate-800 shadow-xs flex flex-col justify-between gap-3">
+          <div className="bg-white dark:bg-slate-900 rounded-2xl p-4 sm:p-5 border border-slate-200/90 dark:border-slate-800 flex flex-col justify-between gap-3.5">
             <div className="flex items-start justify-between gap-2">
               <div className="flex items-center gap-2.5 min-w-0">
                 <div className="w-9 h-9 rounded-xl bg-sky-50 dark:bg-sky-950/60 text-sky-600 dark:text-sky-300 flex items-center justify-center shrink-0">
@@ -5980,29 +6295,29 @@ export const SchoolAdminPanel: React.FC<Props> = ({
               </span>
             </div>
 
-            <div className="bg-slate-50 dark:bg-slate-950/60 p-2.5 rounded-xl border border-slate-200/70 dark:border-slate-800 text-[11px] text-slate-700 dark:text-slate-200 flex items-center justify-between">
-              <span className="font-semibold flex items-center gap-1.5">
+            <div className="py-2 border-y border-slate-100 dark:border-slate-800 text-[11px] text-slate-700 dark:text-slate-200 flex items-center justify-between">
+              <span className="font-medium flex items-center gap-1.5 tabular-nums">
                 <QrCode className="w-3.5 h-3.5 text-sky-600 dark:text-sky-400" />
                 <span>{displayedStudents.length} छात्र QR कोड जारी</span>
               </span>
-              <span className="text-[10px] font-medium text-sky-700 dark:text-sky-300 tabular-nums">
-                Scan 0.1s
+              <span className="text-[11px] font-semibold text-sky-700 dark:text-sky-300 tabular-nums">
+                0.1s Instant Scan
               </span>
             </div>
 
-            <div className="flex items-center gap-2">
+            <div className="grid grid-cols-2 gap-2">
               <button
                 type="button"
                 onClick={() => setShowUniversalScannerModal(true)}
-                className="flex-1 py-2 px-3 rounded-xl bg-sky-600 hover:bg-sky-500 text-white font-semibold text-[11px] transition cursor-pointer text-center flex items-center justify-center gap-1.5"
+                className="min-h-[46px] py-2.5 px-3 rounded-xl bg-sky-600 hover:bg-sky-500 text-white font-bold text-xs sm:text-sm transition cursor-pointer text-center flex items-center justify-center gap-1.5 shadow-xs"
               >
-                <QrCode className="w-3.5 h-3.5" />
-                <span>QR Scanner खोलें</span>
+                <QrCode className="w-4 h-4 shrink-0" />
+                <span>QR Scanner</span>
               </button>
               <button
                 type="button"
                 onClick={() => setView("id_cards")}
-                className="py-2 px-3 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 font-semibold text-[11px] transition cursor-pointer shrink-0"
+                className="min-h-[46px] py-2.5 px-3 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 font-bold text-xs sm:text-sm transition cursor-pointer flex items-center justify-center"
                 title="छात्र व स्टाफ ID कार्ड्स प्रिंट"
               >
                 <span>ID कार्ड्स</span>
@@ -6011,53 +6326,53 @@ export const SchoolAdminPanel: React.FC<Props> = ({
           </div>
         </div>
 
-        {/* ── UNIFIED OPERATIONAL DESK (DISCOUNTS, ADMISSION ARREARS & ABSENTEE — NO DUPLICATES) ── */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        {/* ── UNIFIED OPERATIONAL DESK (DISCOUNTS, ADMISSION ARREARS & ABSENTEE — CLEAN DIVIDER LISTS) ── */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
 
           {/* Card 3: Fee Discounts Summary Card */}
           {(() => {
             const discEntries = getCombinedDiscountLedger(schoolId, displayedStudents, allFees);
             const totalDiscAmt = discEntries.reduce((s, d) => s + (Number(d.discountAmount) || 0), 0);
             return (
-              <div className="bg-white dark:bg-slate-900 rounded-2xl p-3.5 border border-slate-200 dark:border-slate-800 shadow-xs flex flex-col justify-between gap-2.5">
-                <div className="flex items-center justify-between gap-2 border-b border-slate-100 dark:border-slate-800 pb-2">
+              <div className="bg-white dark:bg-slate-900 rounded-2xl p-4 sm:p-5 border border-slate-200/90 dark:border-slate-800 flex flex-col justify-between gap-2.5">
+                <div className="flex items-center justify-between gap-2 border-b border-slate-100 dark:border-slate-800 pb-2.5">
                   <div className="min-w-0">
                     <h3 className="text-xs sm:text-sm font-bold text-slate-900 dark:text-white truncate">
                       Fee Discounts ({DISPLAY_DISCOUNT_LABEL})
                     </h3>
                     <p className="text-[11px] text-slate-500 dark:text-slate-400 tabular-nums">
-                      {discEntries.length} छूट • कुल ₹{totalDiscAmt.toLocaleString("en-IN")} माफ
+                      {discEntries.length} छूट · कुल ₹{totalDiscAmt.toLocaleString("en-IN")} माफ
                     </p>
                   </div>
                   <button
                     type="button"
                     onClick={() => setView("discount_list")}
-                    className="px-2.5 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-[11px] font-semibold shrink-0 cursor-pointer whitespace-nowrap"
+                    className="min-h-[34px] px-3 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-[11px] font-semibold shrink-0 cursor-pointer whitespace-nowrap"
                   >
                     लिस्ट →
                   </button>
                 </div>
 
                 {discEntries.length === 0 ? (
-                  <div className="py-4 text-center text-xs font-medium text-slate-400">
+                  <div className="py-5 text-center text-xs font-medium text-slate-400">
                     अभी तक कोई Discount दर्ज नहीं है।
                   </div>
                 ) : (
-                  <div className="space-y-1.5 max-h-28 overflow-y-auto pr-0.5">
+                  <div className="divide-y divide-slate-100 dark:divide-slate-800 max-h-32 overflow-y-auto">
                     {discEntries.slice(0, 6).map((d) => (
                       <div
                         key={d.id}
-                        className="flex items-center justify-between gap-2 p-2 rounded-xl bg-slate-50 dark:bg-slate-950/60 border border-slate-200/70 dark:border-slate-800"
+                        className="flex items-center justify-between gap-2 py-2"
                       >
                         <div className="min-w-0">
                           <p className="text-xs font-semibold text-slate-900 dark:text-white truncate">
                             {d.studentName}
                           </p>
                           <p className="text-[10px] text-slate-500 dark:text-slate-400 truncate">
-                            {d.className || "Class"} • {d.whereLabel}
+                            {d.className || "Class"} · {d.whereLabel}
                           </p>
                         </div>
-                        <span className="px-2 py-0.5 rounded-lg bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300 border border-emerald-200/70 dark:border-emerald-800/50 text-[11px] font-bold tabular-nums shrink-0">
+                        <span className="text-emerald-600 dark:text-emerald-400 text-xs font-bold tabular-nums shrink-0">
                           -₹{d.discountAmount.toLocaleString("en-IN")}
                         </span>
                       </div>
@@ -6069,13 +6384,13 @@ export const SchoolAdminPanel: React.FC<Props> = ({
           })()}
 
           {/* Card 6: Combined Admission Arrears & 1-Month Advance Fee */}
-          <div className="bg-white dark:bg-slate-900 rounded-2xl p-3.5 border border-slate-200 dark:border-slate-800 shadow-xs flex flex-col justify-between gap-2.5">
-            <div className="flex items-center justify-between gap-2 border-b border-slate-100 dark:border-slate-800 pb-2">
-              <div className="flex items-center gap-1 bg-slate-100 dark:bg-slate-950 p-0.5 rounded-xl border border-slate-200/60 dark:border-slate-800">
+          <div className="bg-white dark:bg-slate-900 rounded-2xl p-4 sm:p-5 border border-slate-200/90 dark:border-slate-800 flex flex-col justify-between gap-2.5">
+            <div className="flex items-center justify-between gap-2 border-b border-slate-100 dark:border-slate-800 pb-2.5">
+              <div className="flex items-center gap-1 bg-slate-100 dark:bg-slate-950 p-0.5 rounded-lg">
                 <button
                   type="button"
                   onClick={() => setDuesCardTab("admission")}
-                  className={`px-2.5 py-1 rounded-lg text-[10px] font-semibold transition cursor-pointer whitespace-nowrap tabular-nums ${
+                  className={`px-2.5 py-1 rounded-md text-[11px] font-semibold transition cursor-pointer whitespace-nowrap tabular-nums ${
                     duesCardTab === "admission"
                       ? "bg-white dark:bg-slate-800 text-rose-700 dark:text-rose-300 shadow-xs"
                       : "text-slate-500 dark:text-slate-400"
@@ -6086,7 +6401,7 @@ export const SchoolAdminPanel: React.FC<Props> = ({
                 <button
                   type="button"
                   onClick={() => setDuesCardTab("advance")}
-                  className={`px-2.5 py-1 rounded-lg text-[10px] font-semibold transition cursor-pointer whitespace-nowrap tabular-nums ${
+                  className={`px-2.5 py-1 rounded-md text-[11px] font-semibold transition cursor-pointer whitespace-nowrap tabular-nums ${
                     duesCardTab === "advance"
                       ? "bg-white dark:bg-slate-800 text-amber-700 dark:text-amber-300 shadow-xs"
                       : "text-slate-500 dark:text-slate-400"
@@ -6095,7 +6410,7 @@ export const SchoolAdminPanel: React.FC<Props> = ({
                   एडवांस (₹{totalAdvanceDue.toLocaleString("en-IN")})
                 </button>
               </div>
-              <span className="text-[11px] font-semibold text-slate-400 shrink-0 tabular-nums">
+              <span className="text-[11px] font-medium text-slate-500 dark:text-slate-400 shrink-0 tabular-nums">
                 {duesCardTab === "admission"
                   ? `${studentsWithAdmissionDues.length} छात्र`
                   : `${studentsWithAdvanceDues.length} छात्र`}
@@ -6104,25 +6419,25 @@ export const SchoolAdminPanel: React.FC<Props> = ({
 
             {duesCardTab === "admission" ? (
               studentsWithAdmissionDues.length === 0 ? (
-                <div className="py-4 text-center text-xs font-medium text-slate-500 dark:text-slate-400 flex items-center justify-center gap-1.5">
+                <div className="py-5 text-center text-xs font-medium text-slate-500 dark:text-slate-400 flex items-center justify-center gap-1.5">
                   <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
                   <span>सभी छात्रों का एडमिशन शुल्क पूर्ण जमा है।</span>
                 </div>
               ) : (
-                <div className="space-y-1.5 max-h-28 overflow-y-auto pr-0.5">
+                <div className="divide-y divide-slate-100 dark:divide-slate-800 max-h-32 overflow-y-auto">
                   {studentsWithAdmissionDues.slice(0, 12).map((st) => {
                     const due = Number(st.admissionDueBalance || 0) + Number(st.previousSessionDue || 0);
                     return (
                       <div
                         key={st.id}
-                        className="flex items-center justify-between gap-2 p-2 rounded-xl bg-slate-50 dark:bg-slate-950/60 border border-slate-200/70 dark:border-slate-800"
+                        className="flex items-center justify-between gap-2 py-2"
                       >
                         <div className="min-w-0">
                           <p className="text-xs font-semibold text-slate-900 dark:text-white truncate">
                             {st.name}
                           </p>
                           <p className="text-[10px] text-slate-500 truncate tabular-nums">
-                            {getClassLabel(st.classId)} • ₹{due.toLocaleString("en-IN")}
+                            {getClassLabel(st.classId)} · ₹{due.toLocaleString("en-IN")}
                           </p>
                         </div>
                         <div className="flex items-center gap-1 shrink-0">
@@ -6181,25 +6496,25 @@ export const SchoolAdminPanel: React.FC<Props> = ({
                 </div>
               )
             ) : studentsWithAdvanceDues.length === 0 ? (
-              <div className="py-4 text-center text-xs font-medium text-slate-500 dark:text-slate-400 flex items-center justify-center gap-1.5">
+              <div className="py-5 text-center text-xs font-medium text-slate-500 dark:text-slate-400 flex items-center justify-center gap-1.5">
                 <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
                 <span>सभी नए छात्रों की 1-माह एडवांस फीस जमा है।</span>
               </div>
             ) : (
-              <div className="space-y-1.5 max-h-28 overflow-y-auto pr-0.5">
+              <div className="divide-y divide-slate-100 dark:divide-slate-800 max-h-32 overflow-y-auto">
                 {studentsWithAdvanceDues.slice(0, 12).map((st) => {
                   const advDue = Number(st.advanceMonthlyFeeDue || st.monthlyFee || 0);
                   return (
                     <div
                       key={st.id}
-                      className="flex items-center justify-between gap-2 p-2 rounded-xl bg-slate-50 dark:bg-slate-950/60 border border-slate-200/70 dark:border-slate-800"
+                      className="flex items-center justify-between gap-2 py-2"
                     >
                       <div className="min-w-0">
                         <p className="text-xs font-semibold text-slate-900 dark:text-white truncate">
                           {st.name}
                         </p>
                         <p className="text-[10px] text-slate-500 truncate tabular-nums">
-                          {getClassLabel(st.classId)} • ₹{advDue.toLocaleString("en-IN")}
+                          {getClassLabel(st.classId)} · ₹{advDue.toLocaleString("en-IN")}
                         </p>
                       </div>
                       <div className="flex items-center gap-1 shrink-0">
@@ -6260,8 +6575,8 @@ export const SchoolAdminPanel: React.FC<Props> = ({
           </div>
 
           {/* Card 7: Absentee Action Center */}
-          <div className="bg-white dark:bg-slate-900 rounded-2xl p-3.5 border border-slate-200 dark:border-slate-800 shadow-xs flex flex-col justify-between gap-2.5 sm:col-span-2">
-            <div className="flex items-center justify-between gap-2 border-b border-slate-100 dark:border-slate-800 pb-2">
+          <div className="bg-white dark:bg-slate-900 rounded-2xl p-4 sm:p-5 border border-slate-200/90 dark:border-slate-800 flex flex-col justify-between gap-2.5 sm:col-span-2">
+            <div className="flex items-center justify-between gap-2 border-b border-slate-100 dark:border-slate-800 pb-2.5">
               <div className="flex items-center gap-2 min-w-0">
                 <div className="w-7 h-7 rounded-lg bg-rose-50 dark:bg-rose-950/60 text-rose-600 dark:text-rose-400 flex items-center justify-center shrink-0">
                   <AlertCircle className="w-4 h-4" />
@@ -6276,7 +6591,7 @@ export const SchoolAdminPanel: React.FC<Props> = ({
                 <button
                   type="button"
                   onClick={handleSend1DayPushAlerts}
-                  className="px-2.5 py-1 rounded-lg bg-amber-50 hover:bg-amber-100 dark:bg-amber-950/50 dark:hover:bg-amber-950 text-amber-800 dark:text-amber-300 border border-amber-200/70 dark:border-amber-800/60 text-[10px] font-semibold cursor-pointer whitespace-nowrap"
+                  className="min-h-[32px] px-2.5 py-1 rounded-lg bg-amber-50 hover:bg-amber-100 dark:bg-amber-950/50 dark:hover:bg-amber-950 text-amber-800 dark:text-amber-300 text-[11px] font-semibold cursor-pointer whitespace-nowrap"
                   title="Send 1-Day Push Alerts"
                 >
                   Push Alert
@@ -6284,7 +6599,7 @@ export const SchoolAdminPanel: React.FC<Props> = ({
                 <button
                   type="button"
                   onClick={() => setView("absentee")}
-                  className="px-2.5 py-1 rounded-lg bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 text-[10px] font-semibold cursor-pointer whitespace-nowrap"
+                  className="min-h-[32px] px-2.5 py-1 rounded-lg bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 text-[11px] font-semibold cursor-pointer whitespace-nowrap"
                 >
                   सभी →
                 </button>
@@ -6292,26 +6607,24 @@ export const SchoolAdminPanel: React.FC<Props> = ({
             </div>
 
             {absenteeTrackerData.consecutiveAbsentees.length === 0 ? (
-              <div className="py-4 text-center text-xs font-medium text-emerald-600 dark:text-emerald-400 flex items-center justify-center gap-1.5">
+              <div className="py-5 text-center text-xs font-medium text-emerald-600 dark:text-emerald-400 flex items-center justify-center gap-1.5">
                 <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
                 <span>कोई लगातार अनुपस्थित छात्र नहीं है।</span>
               </div>
             ) : (
-              <div className="space-y-1.5 max-h-28 overflow-y-auto pr-0.5">
+              <div className="divide-y divide-slate-100 dark:divide-slate-800 max-h-32 overflow-y-auto">
                 {absenteeTrackerData.consecutiveAbsentees.map((st) => (
                   <div
                     key={`abs-${st.id}`}
-                    className="flex items-center justify-between gap-2 p-2 rounded-xl bg-slate-50 dark:bg-slate-950/60 border border-slate-200/70 dark:border-slate-800"
+                    className="flex items-center justify-between gap-2 py-2"
                   >
                     <div className="min-w-0">
-                      <div className="flex items-center gap-1.5">
-                        <p className="font-semibold text-xs text-slate-900 dark:text-white truncate">
-                          {st.name}
-                        </p>
-                        <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-rose-100 text-rose-700 dark:bg-rose-950 dark:text-rose-300 shrink-0 tabular-nums">
-                          {st.daysAbsent}d
+                      <p className="font-semibold text-xs text-slate-900 dark:text-white truncate">
+                        {st.name}{" "}
+                        <span className="text-[11px] font-semibold text-rose-600 dark:text-rose-400 tabular-nums">
+                          · {st.daysAbsent}d absent
                         </span>
-                      </div>
+                      </p>
                       <p className="text-[10px] text-slate-500 truncate">
                         {st.className} · #{st.rollNo}
                       </p>
@@ -6445,45 +6758,47 @@ export const SchoolAdminPanel: React.FC<Props> = ({
         {/* ── ROW 4 (2-COLUMN MAX): FEE DUE LIST + BIRTHDAYS & CALENDAR (HALF-PAGE) ── */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 items-start">
           {/* Left: Compact Fee Due List */}
-          <div className="bg-white dark:bg-slate-900 rounded-2xl p-3.5 border border-slate-200 dark:border-slate-800 shadow-xs space-y-2.5">
+          <div className="bg-white dark:bg-slate-900 rounded-2xl p-4 border border-slate-200/90 dark:border-slate-800 shadow-xs space-y-3">
             <div className="flex items-center justify-between gap-2 flex-wrap">
-              <div className="flex items-center gap-2">
-                <span className="p-1.5 rounded-lg bg-amber-50 dark:bg-amber-950/60 text-amber-600 dark:text-amber-400">
-                  <FileText className="w-3.5 h-3.5" />
+              <div className="flex items-center gap-2.5 min-w-0">
+                <span className="p-2 rounded-xl bg-amber-50 dark:bg-amber-950/60 text-amber-600 dark:text-amber-400 shrink-0">
+                  <FileText className="w-4 h-4" />
                 </span>
-                <h3 className="font-bold text-xs sm:text-sm text-slate-900 dark:text-white">
-                  बकाया फीस सूची (Due List)
-                </h3>
+                <div className="min-w-0">
+                  <h3 className="font-bold text-xs sm:text-sm text-slate-900 dark:text-white truncate">
+                    बकाया फीस सूची (Due List)
+                  </h3>
+                  <p className="text-[11px] font-semibold text-amber-700 dark:text-amber-400 tabular-nums">
+                    कुल बकाया: ₹{totalDuesAmount.toLocaleString("en-IN")}
+                  </p>
+                </div>
               </div>
               <div className="flex items-center gap-1.5">
-                <span className="px-2 py-0.5 rounded-lg bg-amber-50 dark:bg-amber-950/60 text-amber-800 dark:text-amber-300 border border-amber-200/70 dark:border-amber-800 text-[10px] font-bold tabular-nums">
-                  कुल: ₹{totalDuesAmount.toLocaleString("en-IN")}
-                </span>
                 <button
                   type="button"
                   onClick={() => setView("fee_tagada")}
-                  className="px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-semibold text-[10px] cursor-pointer whitespace-nowrap inline-flex items-center gap-1"
+                  className="px-3 py-1.5 min-h-[34px] rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-semibold text-[11px] cursor-pointer whitespace-nowrap inline-flex items-center gap-1.5 transition-colors"
                   title="Offline Fee Tagada Caller खोलें"
                 >
-                  <PhoneCall className="w-3 h-3 shrink-0" />
+                  <PhoneCall className="w-3.5 h-3.5 shrink-0" />
                   <span>Fee Tagada</span>
-                  {!hasEliteFeeTagadaAccess(school) && <Lock className="w-2.5 h-2.5 text-amber-200 shrink-0" />}
+                  {!hasEliteFeeTagadaAccess(school) && <Lock className="w-3 h-3 text-amber-200 shrink-0" />}
                 </button>
                 <button
                   type="button"
                   onClick={() => setView("fees")}
-                  className="px-2.5 py-1 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-semibold text-[10px] cursor-pointer whitespace-nowrap"
+                  className="px-3 py-1.5 min-h-[34px] rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 font-semibold text-[11px] cursor-pointer whitespace-nowrap transition-colors"
                 >
                   Manage →
                 </button>
               </div>
             </div>
 
-            <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
+            <div className="flex flex-wrap items-center gap-2 text-[11px]">
               <select
                 value={dueClassFilter}
                 onChange={(e) => setDueClassFilter(e.target.value)}
-                className="px-2.5 py-1 rounded-lg bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-slate-200 text-[11px] font-semibold"
+                className="px-3 py-1.5 min-h-[34px] rounded-xl bg-slate-100/80 dark:bg-slate-800 border border-slate-200/80 dark:border-slate-700 text-slate-800 dark:text-slate-200 text-[11px] font-semibold"
               >
                 <option value="ALL">All Classes ({displayedStudents.length})</option>
                 {displayedClasses.map((c) => (
@@ -6493,43 +6808,43 @@ export const SchoolAdminPanel: React.FC<Props> = ({
               <button
                 type="button"
                 onClick={() => setDueMinAmount(dueMinAmount === 0 ? 2000 : 0)}
-                className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold cursor-pointer ${
+                className={`px-3 py-1.5 min-h-[34px] rounded-xl text-[11px] font-semibold cursor-pointer transition-colors ${
                   dueMinAmount > 0
                     ? "bg-rose-600 text-white"
-                    : "bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300"
+                    : "bg-slate-100/80 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-200/70"
                 }`}
               >
-                {dueMinAmount > 0 ? "> ₹2,000 (Filtered)" : "> ₹2,000"}
+                {dueMinAmount > 0 ? "> ₹2,000 (Active)" : "Filter > ₹2,000"}
               </button>
             </div>
 
-            <div className="overflow-x-auto max-h-64 overflow-y-auto rounded-xl border border-slate-200 dark:border-slate-800">
+            <div className="overflow-x-auto max-h-64 overflow-y-auto rounded-xl border border-slate-200/80 dark:border-slate-800">
               <table className="w-full text-left text-xs">
-                <thead className="bg-slate-50 dark:bg-slate-950/60 text-slate-500 dark:text-slate-400 font-semibold text-[10px] uppercase border-b border-slate-200 dark:border-slate-800 sticky top-0">
+                <thead className="bg-slate-50/90 dark:bg-slate-950/60 text-slate-500 dark:text-slate-400 font-semibold text-[10px] uppercase border-b border-slate-200/80 dark:border-slate-800 sticky top-0">
                   <tr>
-                    <th className="px-3 py-2">छात्र</th>
-                    <th className="px-2 py-2">बकाया</th>
-                    <th className="px-3 py-2 text-right">स्लिप</th>
+                    <th className="px-3 py-2.5">छात्र</th>
+                    <th className="px-2 py-2.5">बकाया</th>
+                    <th className="px-3 py-2.5 text-right">स्लिप</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
                   {feeDueList.slice(0, 10).map((st) => (
-                    <tr key={`due-row-${st.id}`} className="hover:bg-slate-50 dark:hover:bg-slate-800/40">
-                      <td className="px-3 py-2">
+                    <tr key={`due-row-${st.id}`} className="hover:bg-slate-50/80 dark:hover:bg-slate-800/40">
+                      <td className="px-3 py-2.5">
                         <p className="font-semibold text-slate-900 dark:text-white text-xs">{st.name}</p>
                         <p className="text-[10px] text-slate-400">
                           {st.className} • #{st.rollNo} • {st.dueMonths}
                         </p>
                       </td>
-                      <td className="px-2 py-2 font-bold text-rose-600 dark:text-rose-400 tabular-nums text-xs">
+                      <td className="px-2 py-2.5 font-bold text-rose-600 dark:text-rose-400 tabular-nums text-xs">
                         ₹{st.dueAmount.toLocaleString("en-IN")}
                       </td>
-                      <td className="px-3 py-2 text-right">
+                      <td className="px-3 py-2.5 text-right">
                         <div className="inline-flex items-center justify-end gap-1.5">
                           <button
                             type="button"
                             onClick={() => handleSendWhatsAppFeeDemand(st)}
-                            className="px-2 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-semibold text-[10px] inline-flex items-center gap-1 cursor-pointer whitespace-nowrap"
+                            className="px-2.5 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-semibold text-[10px] inline-flex items-center gap-1 cursor-pointer whitespace-nowrap transition-colors"
                             title="WhatsApp par Slip bhejein"
                           >
                             <Send className="w-3 h-3" />
@@ -6548,7 +6863,7 @@ export const SchoolAdminPanel: React.FC<Props> = ({
                               })
                             }
                             disabled={sendingNstaSlipId === st.id}
-                            className={`px-2 py-1 rounded-lg text-white font-semibold text-[10px] inline-flex items-center gap-1 cursor-pointer disabled:opacity-60 whitespace-nowrap transition-colors ${
+                            className={`px-2.5 py-1.5 rounded-lg text-white font-semibold text-[10px] inline-flex items-center gap-1 cursor-pointer disabled:opacity-60 whitespace-nowrap transition-colors ${
                               sentNstaSlipIds[st.id]
                                 ? "bg-indigo-700"
                                 : "bg-indigo-600 hover:bg-indigo-500"
@@ -6576,21 +6891,23 @@ export const SchoolAdminPanel: React.FC<Props> = ({
           {/* Right: Compact Birthdays + Calendar */}
           <div className="space-y-3">
             {todaysBirthdayStudents.length > 0 && (
-              <div className="p-3.5 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-xs space-y-2.5">
-                <div className="flex items-center justify-between gap-2">
-                  <h3 className="text-xs sm:text-sm font-bold text-slate-900 dark:text-white flex items-center gap-1.5">
-                    <Cake className="w-4 h-4 text-rose-500 shrink-0" />
+              <div className="p-4 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200/90 dark:border-slate-800 shadow-xs space-y-2.5">
+                <div className="flex items-center justify-between gap-2 pb-1 border-b border-slate-100 dark:border-slate-800">
+                  <h3 className="text-xs sm:text-sm font-bold text-slate-900 dark:text-white flex items-center gap-2">
+                    <span className="p-1.5 rounded-lg bg-rose-50 dark:bg-rose-950/60 text-rose-500 shrink-0">
+                      <Cake className="w-3.5 h-3.5" />
+                    </span>
                     <span>आज के जन्मदिन ({todaysBirthdayStudents.length})</span>
                   </h3>
-                  <span className="px-2 py-0.5 rounded-full bg-rose-50 dark:bg-rose-950/60 text-rose-700 dark:text-rose-300 text-[10px] font-semibold">
+                  <span className="text-[11px] font-semibold text-rose-600 dark:text-rose-400">
                     Auto NSTA Desk
                   </span>
                 </div>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                <div className="divide-y divide-slate-100 dark:divide-slate-800">
                   {todaysBirthdayStudents.map((st) => {
                     const cName = displayedClasses.find((c) => c.id === st.classId)?.name || "Class";
                     return (
-                      <div key={st.id} className="bg-slate-50 dark:bg-slate-950/60 rounded-xl p-2 border border-slate-200/70 dark:border-slate-800 flex items-center justify-between gap-2">
+                      <div key={st.id} className="py-2 first:pt-0 last:pb-0 flex items-center justify-between gap-2">
                         <div className="min-w-0">
                           <p className="font-semibold text-xs text-slate-900 dark:text-white truncate">{st.name}</p>
                           <p className="text-[10px] text-slate-500 truncate">{cName} • #{st.rollNo || "—"}</p>
@@ -6599,7 +6916,7 @@ export const SchoolAdminPanel: React.FC<Props> = ({
                           type="button"
                           onClick={() => handleSendManualBirthdayWish(st)}
                           disabled={birthdayWishSending === st.id}
-                          className="px-2.5 py-1 rounded-lg bg-rose-600 hover:bg-rose-500 text-white text-[10px] font-semibold shrink-0 cursor-pointer flex items-center gap-1 whitespace-nowrap"
+                          className="px-3 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-500 text-white text-[11px] font-semibold shrink-0 cursor-pointer flex items-center gap-1 whitespace-nowrap transition-colors"
                         >
                           {birthdayWishSending === st.id ? <Loader2 className="w-3 h-3 animate-spin" /> : <Gift className="w-3 h-3" />}
                           <span>Wish</span>
@@ -7900,7 +8217,22 @@ export const SchoolAdminPanel: React.FC<Props> = ({
           <DeviceAdminProtectionModal
             isOpen={showDeviceAdminModal}
             onClose={() => setShowDeviceAdminModal(false)}
+            schoolId={schoolId}
+            schoolName={school?.name}
+            schoolPinHash={school?.uninstallGuardPinHash}
             schoolLockCode={school?.lockCode}
+            canEditPin={true}
+            onSchoolPinChanged={(nextHash) => {
+              setSchool((prev) =>
+                prev
+                  ? {
+                      ...prev,
+                      uninstallGuardPinHash: nextHash,
+                      uninstallGuardPinUpdatedAt: new Date().toISOString(),
+                    }
+                  : prev
+              );
+            }}
           />
         )}
 
@@ -8042,10 +8374,10 @@ export const SchoolAdminPanel: React.FC<Props> = ({
             onSuccess={(newStudent, admFee) => {
               setShowDirectAdmissionModal(false);
               setStudents(prev => [newStudent, ...prev.filter(s => s.id !== newStudent.id)]);
-              setAdmissionPrintPayload({
+              toast.success(`✅ ${newStudent.name} ka admission ho gaya — ID Card aur 512×512 QR tayyar hai!`);
+              setSelectedStudentForIdCard({
                 student: newStudent,
-                fee: admFee || null,
-                mode: admFee ? "combined" : "form_only",
+                admissionFee: admFee || null,
               });
             }}
           />
@@ -8061,7 +8393,39 @@ export const SchoolAdminPanel: React.FC<Props> = ({
               admissionPrintPayload.student.className ||
               ""
             }
+            feeRecord={admissionPrintPayload.fee || null}
             initialMode={admissionPrintPayload.mode}
+            onOpenStudentIdCard={() => {
+              const curPayload = admissionPrintPayload;
+              setAdmissionPrintPayload(null);
+              if (curPayload?.student) {
+                setSelectedStudentForIdCard({
+                  student: curPayload.student,
+                  admissionFee: curPayload.fee || null,
+                });
+              }
+            }}
+          />
+        )}
+        {school && selectedStudentForIdCard && (
+          <StudentIdCardModal
+            isOpen={true}
+            student={selectedStudentForIdCard.student}
+            school={school}
+            classes={displayedClasses}
+            admissionFee={selectedStudentForIdCard.admissionFee || null}
+            onClose={() => setSelectedStudentForIdCard(null)}
+            onOpenAdmissionForm={() => {
+              const curCard = selectedStudentForIdCard;
+              setSelectedStudentForIdCard(null);
+              if (curCard?.student) {
+                setAdmissionPrintPayload({
+                  student: curCard.student,
+                  fee: curCard.admissionFee || null,
+                  mode: curCard.admissionFee ? "combined" : "form_only",
+                });
+              }
+            }}
           />
         )}
         {school && selectedTeacherForIdCard && (
@@ -8877,20 +9241,33 @@ export const SchoolAdminPanel: React.FC<Props> = ({
             schoolId={school.id}
             schoolName={school.name}
             schoolUpiId={school.upiId}
+            callerUserId={adminUid || "STAFF_ADMIN"}
             callerUserName={school.principalName || "Principal / Admin"}
+            callerUserRole="ADMIN"
             students={students}
             classes={classes}
             fees={dashboardFeeHistory.length > 0 ? dashboardFeeHistory : allFees}
             feeCallFollowUps={feeCallFollowUps}
             absentStudentIds={todayAbsentStudentIds}
             inquiries={inquiries}
-            onCollectFee={(_studentId, classId) => {
+            onCollectFee={(studentId, classId) => {
+              setFeePreselectTarget({ studentId, action: "collect_fee" });
               const targetCls = classes.find((c) => c.id === classId);
               if (targetCls) {
                 setFeeClassSelected(targetCls);
                 setView("fee_class");
               } else {
-                setView("fees_hub");
+                setView("fee_all");
+              }
+            }}
+            onUpdateFee={(studentId, classId) => {
+              setFeePreselectTarget({ studentId, action: "fee_update" });
+              const targetCls = classes.find((c) => c.id === classId);
+              if (targetCls) {
+                setFeeClassSelected(targetCls);
+                setView("fee_class");
+              } else {
+                setView("fee_all");
               }
             }}
           />
@@ -8903,6 +9280,7 @@ export const SchoolAdminPanel: React.FC<Props> = ({
           currentUserId={adminUid || "STAFF_ADMIN"}
           currentUserName={school?.principalName || "Principal / Admin"}
           currentUserRole="ADMIN"
+          schoolAdminUid={school?.adminUid || adminUid}
           teachers={teachers}
           accountants={accountants}
           messages={walkieMessages}
@@ -8953,6 +9331,7 @@ export const SchoolAdminPanel: React.FC<Props> = ({
                     <Loader2 className="w-4 h-4 animate-spin text-emerald-500" />
                     <span className="text-xs font-semibold">Loading module...</span>
                   </div>
+                  <DevelopedByCredit tone="auto" />
                 </div>
               }
             >
@@ -8993,6 +9372,7 @@ export const SchoolAdminPanel: React.FC<Props> = ({
               <Loader2 className="w-4 h-4 animate-spin text-blue-500" />
               <p className="text-sm text-slate-500">Loading school details...</p>
             </div>
+            <DevelopedByCredit tone="auto" />
           </>
         ) : (
           <>
@@ -10187,7 +10567,7 @@ export const SchoolAdminPanel: React.FC<Props> = ({
             : "bg-[#0b1936]/95 border-slate-800 text-slate-400"
         }`}
       >
-        <div className="grid grid-cols-5 min-h-[56px] pb-[env(safe-area-inset-bottom)]">
+        <div className="grid grid-cols-5 min-h-[62px] pb-[env(safe-area-inset-bottom)]">
           {navItems.map((item) => {
             const IconComp = item.icon;
             return (
@@ -10195,7 +10575,7 @@ export const SchoolAdminPanel: React.FC<Props> = ({
                 key={item.id}
                 type="button"
                 onClick={() => setView(item.id as any)}
-                className={`flex flex-col items-center justify-center gap-0.5 py-1.5 text-[10px] font-semibold transition cursor-pointer ${
+                className={`flex flex-col items-center justify-center gap-1 py-2 text-[11px] font-bold transition cursor-pointer ${
                   item.active
                     ? isWhite
                       ? "text-indigo-600"
@@ -10205,8 +10585,8 @@ export const SchoolAdminPanel: React.FC<Props> = ({
                     : "text-slate-400 hover:text-slate-200"
                 }`}
               >
-                <IconComp className="w-4 h-4 shrink-0" />
-                <span className="truncate max-w-[64px]">{item.label}</span>
+                <IconComp className="w-5 h-5 shrink-0" />
+                <span className="truncate max-w-[68px]">{item.label}</span>
               </button>
             );
           })}
@@ -10225,6 +10605,9 @@ export const SchoolAdminPanel: React.FC<Props> = ({
         school={school || undefined}
         sessionId={activeSession?.id || ""}
         adminId={adminUid}
+        initialStudentId={feePreselectTarget?.studentId}
+        initialStudentAction={feePreselectTarget?.action}
+        onInitialStudentActionHandled={() => setFeePreselectTarget(null)}
         onBack={() => setView("fees")}
       />
     );
@@ -10239,6 +10622,9 @@ export const SchoolAdminPanel: React.FC<Props> = ({
         school={school || undefined}
         sessionId={activeSession?.id || ""}
         adminId={adminUid}
+        initialStudentId={feePreselectTarget?.studentId}
+        initialStudentAction={feePreselectTarget?.action}
+        onInitialStudentActionHandled={() => setFeePreselectTarget(null)}
         onBack={() => setView("fees")}
       />
     );
@@ -13624,6 +14010,25 @@ export const SchoolAdminPanel: React.FC<Props> = ({
                 </div>
               </div>
 
+              <label className="flex items-start gap-2.5 p-3 rounded-xl bg-slate-50 dark:bg-slate-900/60 border border-slate-200 dark:border-slate-700 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={Boolean(teacherForm.hidePhoneFromParentCallerId)}
+                  onChange={e =>
+                    setTeacherForm(p => ({ ...p, hidePhoneFromParentCallerId: e.target.checked }))
+                  }
+                  className="mt-0.5 w-4 h-4 rounded accent-indigo-600 cursor-pointer shrink-0"
+                />
+                <div className="min-w-0">
+                  <span className="text-xs font-bold text-slate-800 dark:text-slate-100 block">
+                    Parent Caller ID se personal number chhupayein (Privacy)
+                  </span>
+                  <span className="text-[11px] text-slate-500 dark:text-slate-400 block">
+                    On karne par Parents ke app me is Teacher / Staff ka personal mobile number sync nahi hoga.
+                  </span>
+                </div>
+              </label>
+
               <div className="flex gap-2 pt-1">
                 <button
                   type="button"
@@ -13949,6 +14354,25 @@ export const SchoolAdminPanel: React.FC<Props> = ({
                           </div>
                         </div>
 
+                        <label className="flex items-start gap-2.5 p-3 rounded-xl bg-slate-50 dark:bg-slate-900/50 border border-slate-200 dark:border-slate-700 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={Boolean(editTeacherForm.hidePhoneFromParentCallerId)}
+                            onChange={e =>
+                              setEditTeacherForm(p => ({ ...p, hidePhoneFromParentCallerId: e.target.checked }))
+                            }
+                            className="mt-0.5 w-4 h-4 accent-indigo-600 rounded cursor-pointer"
+                          />
+                          <div>
+                            <span className="text-xs font-bold text-slate-800 dark:text-slate-100 block">
+                              Parent Caller ID me number chhupayein (Privacy Mode)
+                            </span>
+                            <span className="text-[11px] text-slate-500 dark:text-slate-400">
+                              On karne par is teacher ka personal number Parents ke phone me sync nahi hoga (staff calls chalu rahengi).
+                            </span>
+                          </div>
+                        </label>
+
                         <div className="flex gap-2 pt-1">
                           <button
                             type="button"
@@ -14182,6 +14606,7 @@ export const SchoolAdminPanel: React.FC<Props> = ({
                                 email: t.email || "",
                                 monthlySalary: currentPay,
                                 hasReferralIncentive: Boolean(t.hasReferralIncentive),
+                                hidePhoneFromParentCallerId: Boolean(t.hidePhoneFromParentCallerId),
                                 staffRole: (t as any)._isAccountantOnly
                                   ? "ACCOUNTANT"
                                   : (t as any)._isAccountant
@@ -14964,6 +15389,14 @@ export const SchoolAdminPanel: React.FC<Props> = ({
                     title="Student Quick View (👁️ बायो-डेटा, आईडी कार्ड, फीस, हाजिरी, अंक व तुरंत एडिट)"
                   >
                     <Eye className="w-4 h-4" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setSelectedStudentForIdCard({ student: s })}
+                    className="p-1.5 rounded-lg hover:bg-purple-50 dark:hover:bg-purple-900/20 text-purple-600 dark:text-purple-400 cursor-pointer"
+                    title="Student ID Card & 512×512 Easy-Scan QR"
+                  >
+                    <QrCode className="w-4 h-4" />
                   </button>
                   <button
                     type="button"

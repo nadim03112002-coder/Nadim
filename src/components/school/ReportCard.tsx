@@ -3,6 +3,7 @@ import React, { useState, useEffect } from "react";
 import { getStudents, getExams, getMonthlyAttendance, currentMonthStr, getSchool, getTeachers, getClasses } from "../../school-firebase";
 import type { School, SchoolTeacher, SchoolStudent, ExamEntry } from "../../school-types";
 import { Download, User, Award, Calendar, ChevronLeft } from "lucide-react";
+import { DevelopedByCredit } from "./DevelopedByFooter";
 
 interface Props {
   schoolId: string;
@@ -185,7 +186,12 @@ tr:last-child td{border:none}
     students.forEach(s => downloadReportCard(s));
   };
 
-  if (loading) return <div className="flex items-center justify-center h-48 text-slate-400">Loading...</div>;
+  if (loading) return (
+    <div className="flex flex-col items-center justify-center h-48 text-slate-400">
+      <p>Loading...</p>
+      <DevelopedByCredit tone="auto" />
+    </div>
+  );
 
   return (
     <div className="min-h-screen bg-slate-50 dark:bg-slate-900">

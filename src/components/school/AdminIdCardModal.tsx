@@ -13,6 +13,7 @@ import { printElementInIframe } from "./AdmissionFormPrintModal";
 import { safeOpenExternalUrl, getDynamicAcademicSessionLabel } from "../../utils/safeBrowserActions";
 import { buildStaffIdCardQrUrl } from "../../utils/qrVerifyUrl";
 import { exportElementToPdf } from "../../utils/universalPdfExport";
+import { EasyScanQrPanel } from "./EasyScanQrPanel";
 
 interface Props {
   isOpen: boolean;
@@ -453,8 +454,21 @@ export const AdminIdCardModal: React.FC<Props> = ({
             )}
           </div>
 
+          {/* 512x512 Easy-Scan QR Panel (Excluded from Print / PDF) */}
+          <div className="w-full print:hidden">
+            <EasyScanQrPanel
+              qrValue={qrVerifyUrl}
+              personName={principalName}
+              personRoleLabel={principalTitle}
+              identifierLabel={`Admin ID: ${adminId}`}
+              scanInstruction="Arrival / Departure punch-in aur admin verification ke liye 512×512 Easy-Scan QR"
+              downloadFileName={`Admin_QR_512x512_${principalName}`}
+              accent="amber"
+            />
+          </div>
+
           {/* Quick Copy Info Box */}
-          <div className="w-full bg-slate-50 dark:bg-slate-800/60 rounded-2xl p-4 border border-slate-200 dark:border-slate-700 space-y-2 text-xs">
+          <div className="print:hidden w-full bg-slate-50 dark:bg-slate-800/60 rounded-2xl p-4 border border-slate-200 dark:border-slate-700 space-y-2 text-xs">
             <h6 className="font-black text-slate-800 dark:text-white flex items-center gap-1.5">
               <Shield className="w-4 h-4 text-amber-500" />
               <span>School Admin Official Credentials &amp; Verification Details</span>

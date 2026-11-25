@@ -34,6 +34,8 @@ import {
   type GlobalWebsiteDeveloperConfig,
 } from "../../utils/globalDeveloperConfig";
 import { useBackHandler } from "../../utils/backNavigation";
+import { ScreenInfoGuideButton } from "./ScreenInfoGuideButton";
+import { LanguageToggleButton } from "./LanguageToggleButton";
 
 interface Props {
   adminUid: string;
@@ -1616,6 +1618,8 @@ export const SuperAdminPanel: React.FC<Props> = ({ adminUid, onBack, onLogout })
             <p className="text-slate-700 dark:text-slate-400 text-sm font-medium mt-1">Manage all schools in the ecosystem</p>
           </div>
           <div className="flex items-center gap-2 shrink-0">
+            <LanguageToggleButton tone="auto" compact />
+            <ScreenInfoGuideButton portal="super_admin" screenKey={dashTab || "super_admin"} tone="auto" />
             <button
               type="button"
               onClick={handlePerformLogout}

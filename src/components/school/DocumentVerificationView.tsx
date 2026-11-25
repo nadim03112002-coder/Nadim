@@ -20,6 +20,7 @@ import {
   Sparkles,
 } from "lucide-react";
 import { printElementInIframe } from "./AdmissionFormPrintModal";
+import { DevelopedByCredit } from "./DevelopedByFooter";
 import { exportElementToPdf } from "../../utils/universalPdfExport";
 import {
   getAllSchools,
@@ -777,6 +778,7 @@ export const DocumentVerificationView: React.FC<Props> = ({
             <ShieldCheck className="w-7 h-7 text-emerald-400" />
           </div>
           <p className="text-sm font-bold text-slate-300">Verifying Official Document...</p>
+          <DevelopedByCredit tone="dark" />
         </div>
       </div>
     );

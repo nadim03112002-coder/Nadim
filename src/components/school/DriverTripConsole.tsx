@@ -31,6 +31,8 @@ import {
   type StudentHomePin,
 } from "../../utils/busProximity";
 import { sendSchoolPushNotification } from "../../utils/schoolPushClient";
+import { ScreenInfoGuideButton } from "./ScreenInfoGuideButton";
+import { LanguageToggleButton } from "./LanguageToggleButton";
 
 export interface DriverBusConfig {
   id: string;
@@ -711,7 +713,7 @@ export const DriverTripConsole: React.FC<Props> = ({
           </div>
         </div>
 
-        {/* Live Pulse Indicator + Optional Logout */}
+        {/* Live Pulse Indicator + Guide + Optional Logout */}
         <div className="flex items-center gap-2 shrink-0">
           {isTripActive ? (
             <span className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-emerald-500/20 text-emerald-400 border border-emerald-500/40 text-xs font-bold animate-pulse">
@@ -722,6 +724,8 @@ export const DriverTripConsole: React.FC<Props> = ({
               Idle in Depot
             </span>
           )}
+          <LanguageToggleButton tone="current" compact />
+          <ScreenInfoGuideButton portal="driver" screenKey="driver_console" tone="current" />
           {onLogout && (
             <button
               type="button"

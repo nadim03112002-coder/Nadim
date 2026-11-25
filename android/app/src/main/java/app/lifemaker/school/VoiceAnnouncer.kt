@@ -114,7 +114,7 @@ object VoiceAnnouncer {
 
         Thread({
             try {
-                ToneGenerator(AudioManager.STREAM_NOTIFICATION, 85).apply {
+                ToneGenerator(AudioManager.STREAM_MUSIC, 90).apply {
                     startTone(ToneGenerator.TONE_PROP_BEEP2, 160)
                     Thread.sleep(190)
                     release()
@@ -123,6 +123,8 @@ object VoiceAnnouncer {
 
             if (cleanAudio.isNotBlank()) {
                 var tempFile: File? = null
+                var walkieFocusReq: AudioFocusRequest? = null
+                val audioManager = ctx.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
                 try {
                     val b64Payload = if (cleanAudio.contains(",")) cleanAudio.substringAfter(",") else cleanAudio
                     val bytes = Base64.decode(b64Payload, Base64.DEFAULT)
@@ -135,16 +137,40 @@ object VoiceAnnouncer {
                     tempFile = File.createTempFile("walkie_", ".$ext", ctx.cacheDir).apply {
                         writeBytes(bytes)
                     }
-                    val player = MediaPlayer()
-                    val attrs = AudioAttributes.Builder()
-                        .setUsage(AudioAttributes.USAGE_NOTIFICATION_EVENT)
+                    val mediaAttrs = AudioAttributes.Builder()
+                        .setUsage(AudioAttributes.USAGE_MEDIA)
                         .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
                         .build()
-                    player.setAudioAttributes(attrs)
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                        walkieFocusReq = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK)
+                            .setAudioAttributes(mediaAttrs)
+                            .setAcceptsDelayedFocusGain(false)
+                            .build()
+                        walkieFocusReq.let { audioManager?.requestAudioFocus(it) }
+                    } else {
+                        @Suppress("DEPRECATION")
+                        audioManager?.requestAudioFocus(
+                            null,
+                            AudioManager.STREAM_MUSIC,
+                            AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK
+                        )
+                    }
+
+                    val player = MediaPlayer()
+                    player.setAudioAttributes(mediaAttrs)
                     player.setDataSource(tempFile.absolutePath)
+                    player.setVolume(1.0f, 1.0f)
                     val cleanup = {
                         try { player.release() } catch (_: Exception) {}
                         try { tempFile.delete() } catch (_: Exception) {}
+                        try {
+                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                                walkieFocusReq?.let { audioManager?.abandonAudioFocusRequest(it) }
+                            } else {
+                                @Suppress("DEPRECATION")
+                                audioManager?.abandonAudioFocus(null)
+                            }
+                        } catch (_: Exception) {}
                     }
                     player.setOnCompletionListener { cleanup() }
                     player.setOnErrorListener { _, _, _ ->
@@ -159,6 +185,14 @@ object VoiceAnnouncer {
                     return@Thread
                 } catch (_: Exception) {
                     try { tempFile?.delete() } catch (_: Exception) {}
+                    try {
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                            walkieFocusReq?.let { audioManager?.abandonAudioFocusRequest(it) }
+                        } else {
+                            @Suppress("DEPRECATION")
+                            audioManager?.abandonAudioFocus(null)
+                        }
+                    } catch (_: Exception) {}
                 }
             }
 

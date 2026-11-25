@@ -28,6 +28,7 @@ import {
 import { buildStudentIdCardQrUrl } from "../../utils/qrVerifyUrl";
 import { normalizeWhatsappOrPhone, sanitizeIndianPhoneInput } from "../../utils/schoolReferralSiblingEngine";
 import { exportHtmlDocumentToPdf } from "../../utils/universalPdfExport";
+import { EasyScanQrPanel } from "./EasyScanQrPanel";
 
 export type StudentQuickActionTab =
   | "profile"
@@ -2109,6 +2110,34 @@ export const StudentQuickActionModal: React.FC<Props> = ({
                   <Printer className="w-4 h-4" />
                   <span>Print ID Card (A4 / PVC)</span>
                 </button>
+              </div>
+
+              <div className="w-full pt-1">
+                <EasyScanQrPanel
+                  qrValue={buildStudentIdCardQrUrl({
+                    schoolId: school?.id || cur.schoolId || "",
+                    studentId: cur.id || "",
+                    rollNo: cur.rollNo || "",
+                    classId: cur.classId || "",
+                    studentName: cur.name || "",
+                    admissionNo: cur.admissionNo || "",
+                    phone: cur.phone || "",
+                    fatherName: cur.fatherName || "",
+                    motherName: cur.motherName || "",
+                    bloodGroup: cur.bloodGroup || "",
+                    dob: cur.dateOfBirth || "",
+                    address: cur.address || "",
+                    monthlyFee: cur.monthlyFee || 0,
+                    className,
+                    schoolName,
+                  })}
+                  personName={cur.name || "Student"}
+                  personRoleLabel={className}
+                  identifierLabel={`Roll #${cur.rollNo || "—"} · Adm: ${cur.admissionNo || "—"}`}
+                  scanInstruction="Screen se turant scan karne ke liye 512×512 Easy-Scan QR (Print ID Card apne original size me rahega)"
+                  downloadFileName={`Student_QR_512x512_${cur.name || "Student"}_${cur.admissionNo || cur.id}`}
+                  accent="blue"
+                />
               </div>
             </div>
           )}

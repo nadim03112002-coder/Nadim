@@ -11,6 +11,7 @@ import {
 } from "lucide-react";
 import { printHtmlInIframe } from "./AdmissionFormPrintModal";
 import { formatAcademicSession } from "./feeReceiptUtils";
+import { DevelopedByCredit } from "./DevelopedByFooter";
 
 interface Props {
   schoolId: string;
@@ -438,6 +439,7 @@ export const ExamResultsPanel: React.FC<Props> = ({
           <div className="text-center">
             <BookOpen className="w-10 h-10 mx-auto mb-3 opacity-30 animate-pulse" />
             <p className="font-bold text-sm">Exam data load ho raha hai...</p>
+            <DevelopedByCredit tone="auto" />
           </div>
         </div>
       ) : (

@@ -2,6 +2,7 @@
 import React, { useState, useEffect, lazy, Suspense } from "react";
 import {
   getSchoolUserProfile,
+  saveSchoolUserProfile,
   getLocalStudents,
   getStudents,
   setLocalStudents,
@@ -21,6 +22,7 @@ import {
   verifyLinkedStudentsAuthoritative,
   findStudentInSchoolRemote,
   getSchool,
+  updateSchool,
   subscribeToAllSchools,
   shouldUseDemoForSchool,
   getLocalSchools,
@@ -29,11 +31,18 @@ import {
   detachUserFromSchool,
   deleteSchool,
 } from "../../school-firebase";
+import { saveUserToLive } from "../../firebase";
+import {
+  computeDeviceAdminPinHash,
+  getCachedSchoolAdminPinHash,
+  syncSchoolAdminPinHashToNative,
+} from "../../utils/androidDeviceAdmin";
 import { toast } from "sonner";
 import { getDemoSchoolDataset, isDemoDataEnabled, setDemoDataEnabled } from "./demoDataStore";
 import { syncLinkedStudentsToPushSubscription } from "../../utils/schoolPushClient";
 import { speakNotification } from "../../utils/voiceNotifyEngine";
 import { QrScannerModal } from "../QrScannerModal";
+import { DevelopedByCredit } from "./DevelopedByFooter";
 import { useBackHandler } from "../../utils/backNavigation";
 import type { School, SchoolUserProfile } from "../../school-types";
 import {
@@ -268,6 +277,7 @@ const PanelLoadingFallback = ({
       <p className={`text-xs ${isWhite ? "text-slate-500" : "text-slate-400"}`}>
         Synchronizing school data
       </p>
+      <DevelopedByCredit tone={isWhite ? "light" : "dark"} />
     </div>
   );
 };
@@ -313,6 +323,36 @@ export const SchoolEcosystem: React.FC<Props> = ({
       }
     } catch {}
     return true;
+  });
+  const [hydratingLinkedAccount, setHydratingLinkedAccount] = useState<boolean>(() => {
+    try {
+      const r = (userRole || user?.role || "").toUpperCase();
+      const em = (email || user?.email || "").trim().toLowerCase();
+      if (
+        isSuperAdmin ||
+        forceAdminView ||
+        user?.provider === "qr_teacher_id" ||
+        user?.provider === "qr_student_id" ||
+        user?.provider === "face_recognition_login" ||
+        user?.provider === "student_record" ||
+        (user?.userType === "SCHOOL_STUDENT" && Boolean(user?.admissionNo || user?.studentId)) ||
+        ["ADMIN", "SUPERADMIN", "SCHOOL_ADMIN", "PRINCIPAL", "SCHOOL_SUB_ADMIN", "TEACHER", "STAFF", "ACCOUNTANT", "CASHIER"].includes(r) ||
+        isSuperAdminEmail(em) ||
+        isSchoolAdminEmail(em) ||
+        Boolean(getLocalLinkedTeacher(uid)) ||
+        Boolean(getLocalUserLinkedStudents(uid)?.students?.length)
+      ) {
+        return false;
+      }
+      const lsRaw = localStorage.getItem(`nst_user_linked_students_${uid}`);
+      if (lsRaw) {
+        const parsed = JSON.parse(lsRaw);
+        if (parsed && Array.isArray(parsed.students) && parsed.students.length > 0) {
+          return false;
+        }
+      }
+    } catch {}
+    return Boolean(uid);
   });
   const [adminPreviewRole, setAdminPreviewRole] = useState<"ADMIN" | "TEACHER" | "STUDENT" | "ACCOUNTANT">("ADMIN");
   const [demoEnabled, setDemoEnabled] = useState<boolean>(() => isDemoDataEnabled());
@@ -501,6 +541,13 @@ export const SchoolEcosystem: React.FC<Props> = ({
       if (localBundle && Array.isArray(localBundle.students) && localBundle.students.length > 0) {
         return localBundle.students.map(sanitizeStudentLink).filter(Boolean);
       }
+      const lsRaw = localStorage.getItem(`nst_user_linked_students_${uid}`);
+      if (lsRaw) {
+        const parsed = JSON.parse(lsRaw);
+        if (parsed && Array.isArray(parsed.students) && parsed.students.length > 0) {
+          return parsed.students.map(sanitizeStudentLink).filter(Boolean);
+        }
+      }
     } catch {}
     return [];
   });
@@ -575,14 +622,24 @@ export const SchoolEcosystem: React.FC<Props> = ({
 
   // Hydrate linked students from Firebase AND prune any students deleted/deactivated in their school!
   useEffect(() => {
-    if (!uid || isExplicitAdmin || isTeacherRole || user?.provider === "qr_teacher_id") return;
+    if (!uid || isExplicitAdmin || isTeacherRole || isAccountantRole || user?.provider === "qr_teacher_id") {
+      setHydratingLinkedAccount(false);
+      return;
+    }
     let mounted = true;
+    const safetyTimer = window.setTimeout(() => {
+      if (mounted) setHydratingLinkedAccount(false);
+    }, 3500);
 
     const hydrateAndPrune = async () => {
       try {
-        const bundle = await getUserLinkedStudents(uid);
+        const [bundle, freshProfile] = await Promise.all([
+          getUserLinkedStudents(uid),
+          profile === undefined ? getSchoolUserProfile(uid, effectiveEmail).catch(() => null) : Promise.resolve(profile),
+        ]);
         if (!mounted) return;
 
+        const resolvedProf = freshProfile ?? profile;
         const cleanedRemote = Array.isArray(bundle?.students)
           ? bundle!.students.map(sanitizeStudentLink).filter(Boolean)
           : [];
@@ -597,11 +654,37 @@ export const SchoolEcosystem: React.FC<Props> = ({
         });
 
         // Preserve any freshly initialized direct QR/Face login student or offline un-synced entries
-        if (!remoteHasExplicitList || isDirectStudentLoginProvider) {
+        if (!remoteHasExplicitList || isDirectStudentLoginProvider || cleanedRemote.length === 0) {
           linkedStudents.forEach((s: any) => {
             const k = getStudentLinkKey(s, defaultSchoolId);
             if (k && !candidateMap.has(k)) candidateMap.set(k, s);
           });
+        }
+
+        // Recovery fallback: if user account already has a studentRef/studentId bound on their profile, restore automatically without re-asking QR!
+        const fallbackStudentId = resolvedProf?.studentRef || user?.studentId || "";
+        const fallbackSchoolId = resolvedProf?.schoolId || user?.schoolId || defaultSchoolId;
+        if (candidateMap.size === 0 && fallbackStudentId && fallbackSchoolId) {
+          try {
+            const foundByRef = await findStudentInSchoolRemote(
+              fallbackSchoolId,
+              fallbackStudentId,
+              user?.admissionNo
+            );
+            if (foundByRef && foundByRef.id) {
+              const sanitized = sanitizeStudentLink({
+                ...foundByRef,
+                type: "STUDENT",
+                schoolId: foundByRef.schoolId || fallbackSchoolId,
+                schoolName: (foundByRef as any).schoolName || user?.schoolName || "",
+              });
+              if (sanitized) {
+                const rk = getStudentLinkKey(sanitized, fallbackSchoolId);
+                candidateMap.set(rk, sanitized);
+                void saveUserLinkedStudents(uid, [sanitized], rk);
+              }
+            }
+          } catch {}
         }
 
         const candidates = Array.from(candidateMap.values());
@@ -660,7 +743,7 @@ export const SchoolEcosystem: React.FC<Props> = ({
 
         setActiveStudentKey(nextActiveKey);
 
-        if (removedStudents.length > 0 || verifiedAnySchool) {
+        if (removedStudents.length > 0 || verifiedAnySchool || cleanedValid.length > 0) {
           try {
             setLocalUserLinkedStudents(uid, cleanedValid, nextActiveKey);
             localStorage.setItem("nst_linked_students", JSON.stringify(cleanedValid));
@@ -685,13 +768,18 @@ export const SchoolEcosystem: React.FC<Props> = ({
           }
         }
       } catch {}
+      finally {
+        window.clearTimeout(safetyTimer);
+        if (mounted) setHydratingLinkedAccount(false);
+      }
     };
 
     void hydrateAndPrune();
     return () => {
       mounted = false;
+      window.clearTimeout(safetyTimer);
     };
-  }, [uid, isExplicitAdmin, isTeacherRole, defaultSchoolId, isDirectStudentLoginProvider]);
+  }, [uid, isExplicitAdmin, isTeacherRole, isAccountantRole, defaultSchoolId, isDirectStudentLoginProvider]);
 
   // Auto-attach siblings linked via Admin (familyGroupId / siblingStudentIds) to the Parent's linkedStudents list
   useEffect(() => {
@@ -889,6 +977,58 @@ export const SchoolEcosystem: React.FC<Props> = ({
     (isExplicitAdmin && selectedAdminSchoolId)
       ? selectedAdminSchoolId
       : (linkedEntity?.schoolId || profile?.schoolId || user?.schoolId || defaultSchoolId || (allSchools[0]?.id || ""));
+
+  // ── CENTRALIZED SCHOOL UNINSTALL GUARD PIN SYNC (ONE SCHOOL PIN FOR ALL ROLES & DEVICES) ──
+  useEffect(() => {
+    const targetSchoolId = (effectiveSchoolId || "").trim();
+    if (!targetSchoolId) return;
+    let cancelled = false;
+
+    const applySchoolSecurityPin = async () => {
+      try {
+        let schoolObj: School | null =
+          allSchools.find((s) => s.id === targetSchoolId) ||
+          getLocalSchools().find((s) => s.id === targetSchoolId) ||
+          null;
+
+        if (!schoolObj || (!schoolObj.uninstallGuardPinHash && !schoolObj.lockCode)) {
+          const remoteSchool = await getSchool(targetSchoolId).catch(() => null);
+          if (remoteSchool) schoolObj = remoteSchool;
+        }
+        if (cancelled) return;
+
+        let targetHash = (schoolObj?.uninstallGuardPinHash || "").trim();
+        if (!targetHash && schoolObj?.lockCode && schoolObj.lockCodeActive !== false) {
+          targetHash = await computeDeviceAdminPinHash(String(schoolObj.lockCode).trim());
+        }
+
+        // Auto-migrate legacy local Admin PIN up to School cloud record so Student/Staff phones get it
+        if (!targetHash && isExplicitAdmin) {
+          const legacyHash = getCachedSchoolAdminPinHash(targetSchoolId);
+          if (legacyHash) {
+            targetHash = legacyHash;
+            updateSchool(targetSchoolId, {
+              uninstallGuardPinHash: legacyHash,
+              uninstallGuardPinUpdatedAt: new Date().toISOString(),
+            }).catch(() => {});
+          }
+        }
+
+        if (!targetHash) {
+          targetHash = getCachedSchoolAdminPinHash(targetSchoolId);
+        }
+
+        if (targetHash && !cancelled) {
+          syncSchoolAdminPinHashToNative(targetHash, targetSchoolId);
+        }
+      } catch {}
+    };
+
+    void applySchoolSecurityPin();
+    return () => {
+      cancelled = true;
+    };
+  }, [effectiveSchoolId, allSchools, isExplicitAdmin]);
 
   const [dualPortalChoice, setDualPortalChoice] = useState<"AUTO" | "TEACHER" | "ACCOUNTANT">("AUTO");
   const [dualRoleMatch, setDualRoleMatch] = useState<{
@@ -1221,24 +1361,65 @@ export const SchoolEcosystem: React.FC<Props> = ({
         setLocalStudents(resolvedSchoolId, updatedLocals as any);
       } catch {}
 
-      // Append or update in multi-school + multi-student list using strict composite key (schoolId__studentId)
-      setLinkedStudents((prev) => {
-        const filtered = prev.filter((item) => {
+      // Persist updated user metadata locally + to cloud so future logins go straight to Student Portal without re-scanning QR
+      const persistStudentBinding = (studentList: any[], primaryStudent: any) => {
+        void saveUserLinkedStudents(uid, studentList, recordCompositeKey);
+        void syncLinkedStudentsToPushSubscription(uid, studentList);
+        void saveSchoolUserProfile({
+          uid,
+          schoolId: resolvedSchoolId,
+          role: "SCHOOL_STUDENT",
+          name: primaryStudent?.name || user?.name || displayName || "Student",
+          email: effectiveEmail || user?.email || "",
+          studentRef: primaryStudent?.id,
+          classId: primaryStudent?.classId || "cls_nursery",
+          sessionId: "2026-27",
+        });
+        try {
+          const curRaw = localStorage.getItem("nst_current_user");
+          const curObj = curRaw ? JSON.parse(curRaw) : (user || { id: uid, uid });
+          const nextUserObj = {
+            ...curObj,
+            schoolId: resolvedSchoolId,
+            schoolName: primaryStudent?.schoolName || curObj?.schoolName || "",
+            studentId: primaryStudent?.id || curObj?.studentId,
+            admissionNo: primaryStudent?.admissionNo || curObj?.admissionNo,
+            classId: primaryStudent?.classId || curObj?.classId,
+            className: primaryStudent?.className || curObj?.className,
+            rollNo: primaryStudent?.rollNo || curObj?.rollNo,
+            userType: "SCHOOL_STUDENT",
+          };
+          localStorage.setItem("nst_current_user", JSON.stringify(nextUserObj));
+          localStorage.setItem("nsta_cached_user", JSON.stringify(nextUserObj));
+          localStorage.setItem("nst_active_school_id", resolvedSchoolId);
+          void saveUserToLive(nextUserObj, { immediate: true }).catch(() => {});
+        } catch {}
+      };
+
+      const mergeLinkedList = (prevList: any[], recordToMerge: any) => {
+        const filtered = prevList.filter((item) => {
           const itemSchool = item.schoolId || defaultSchoolId;
           if (itemSchool !== resolvedSchoolId) return true; // NEVER collide across different schools!
-          if (item.id === finalRecord.id) return false;
-          if (item.admissionNo && finalRecord.admissionNo && item.admissionNo.toLowerCase() === finalRecord.admissionNo.toLowerCase()) {
+          if (item.id === recordToMerge.id) return false;
+          if (
+            item.admissionNo &&
+            recordToMerge.admissionNo &&
+            item.admissionNo.toLowerCase() === recordToMerge.admissionNo.toLowerCase()
+          ) {
             return false;
           }
           return true;
         });
-        const updatedList = [...filtered, finalRecord];
-        void saveUserLinkedStudents(uid, updatedList, recordCompositeKey);
-        void syncLinkedStudentsToPushSubscription(uid, updatedList);
-        return updatedList;
-      });
+        return [...filtered, recordToMerge];
+      };
+
+      // Append or update in multi-school + multi-student list using strict composite key (schoolId__studentId)
+      const initialUpdatedList = mergeLinkedList(linkedStudents, finalRecord);
+      setLinkedStudents(initialUpdatedList);
       setActiveStudentKey(recordCompositeKey);
+      setHydratingLinkedAccount(false);
       setIsQrModalOpen(false);
+      persistStudentBinding(initialUpdatedList, finalRecord);
 
       if (finalRecord.schoolName) {
         localStorage.setItem('nst_last_school_name', finalRecord.schoolName);
@@ -1253,23 +1434,20 @@ export const SchoolEcosystem: React.FC<Props> = ({
         !finalRecord.schoolName ? getSchool(resolvedSchoolId) : Promise.resolve(null),
       ]).then(([remoteSt, remoteSch]) => {
         if (!remoteSt && !remoteSch) return;
-        setLinkedStudents((prev) => {
-          const enrichedList = prev.map((item) => {
-            if (getStudentLinkKey(item, defaultSchoolId) !== recordCompositeKey) return item;
-            return {
-              ...item,
-              ...(remoteSt || {}),
-              id: remoteSt?.id || item.id,
-              schoolId: resolvedSchoolId,
-              schoolName: item.schoolName || remoteSch?.name || (remoteSt as any)?.schoolName || "",
-              className: item.className || (remoteSt as any)?.className,
-              monthlyFee: remoteSt?.monthlyFee ?? item.monthlyFee,
-            };
-          });
-          void saveUserLinkedStudents(uid, enrichedList, recordCompositeKey);
-          void syncLinkedStudentsToPushSubscription(uid, enrichedList);
-          return enrichedList;
-        });
+        const enrichedRecord = {
+          ...finalRecord,
+          ...(remoteSt || {}),
+          id: remoteSt?.id || finalRecord.id,
+          schoolId: resolvedSchoolId,
+          schoolName: finalRecord.schoolName || remoteSch?.name || (remoteSt as any)?.schoolName || "",
+          className: finalRecord.className || (remoteSt as any)?.className,
+          monthlyFee: remoteSt?.monthlyFee ?? finalRecord.monthlyFee,
+        };
+        const enrichedKey = getStudentLinkKey(enrichedRecord, resolvedSchoolId);
+        const enrichedList = mergeLinkedList(initialUpdatedList, enrichedRecord);
+        setLinkedStudents(enrichedList);
+        if (enrichedKey) setActiveStudentKey(enrichedKey);
+        persistStudentBinding(enrichedList, enrichedRecord);
       }).catch(() => {});
     } catch (err: any) {
       setLinkError("QR code decode nahi ho saka. Sahi QR image chunein ya Admission No dalein.");
@@ -1308,7 +1486,14 @@ export const SchoolEcosystem: React.FC<Props> = ({
     setLinkedTeacher(null);
   };
 
-  if (loading) {
+  if (
+    loading ||
+    (hydratingLinkedAccount &&
+      !linkedEntity &&
+      !isExplicitAdmin &&
+      !isTeacherRole &&
+      !isAccountantRole)
+  ) {
     return (
       <div className={`min-h-screen min-h-[100dvh] w-full flex items-center justify-center p-6 ${shellThemeClass}`}>
         <div className="text-center flex flex-col items-center">
@@ -1321,8 +1506,11 @@ export const SchoolEcosystem: React.FC<Props> = ({
           />
           <div className="flex items-center justify-center gap-2">
             <Loader2 className={`w-4 h-4 animate-spin ${erpTheme === "white" ? "text-emerald-600" : "text-emerald-500"}`} />
-            <p className={`text-sm font-medium ${erpTheme === "white" ? "text-slate-600" : "text-slate-400"}`}>Verifying school credentials...</p>
+            <p className={`text-sm font-medium ${erpTheme === "white" ? "text-slate-600" : "text-slate-400"}`}>
+              {hydratingLinkedAccount ? "Loading linked school account..." : "Verifying school credentials..."}
+            </p>
           </div>
+          <DevelopedByCredit tone={erpTheme === "white" ? "light" : "dark"} />
         </div>
       </div>
     );
@@ -1666,27 +1854,35 @@ export const SchoolEcosystem: React.FC<Props> = ({
                 setLocalStudents(resolvedSchoolId, updatedLocals as any);
               } catch {}
 
-              setLinkedStudents((prev) => {
-                const filtered = prev.filter((item) => {
-                  const itemSchool = item.schoolId || defaultSchoolId;
-                  if (itemSchool !== resolvedSchoolId) return true;
-                  if (item.id === finalRecord.id) return false;
-                  if (
-                    item.admissionNo &&
-                    finalRecord.admissionNo &&
-                    item.admissionNo.toLowerCase() === finalRecord.admissionNo.toLowerCase()
-                  ) {
-                    return false;
-                  }
-                  return true;
-                });
-                const updatedList = [...filtered, finalRecord];
-                void saveUserLinkedStudents(uid, updatedList, recordCompositeKey);
-                void syncLinkedStudentsToPushSubscription(uid, updatedList);
-                return updatedList;
+              const filteredPrev = linkedStudents.filter((item) => {
+                const itemSchool = item.schoolId || defaultSchoolId;
+                if (itemSchool !== resolvedSchoolId) return true;
+                if (item.id === finalRecord.id) return false;
+                if (
+                  item.admissionNo &&
+                  finalRecord.admissionNo &&
+                  item.admissionNo.toLowerCase() === finalRecord.admissionNo.toLowerCase()
+                ) {
+                  return false;
+                }
+                return true;
+              });
+              const updatedList = [...filteredPrev, finalRecord];
+              setLinkedStudents(updatedList);
+              setActiveStudentKey(recordCompositeKey);
+              void saveUserLinkedStudents(uid, updatedList, recordCompositeKey);
+              void syncLinkedStudentsToPushSubscription(uid, updatedList);
+              void saveSchoolUserProfile({
+                uid,
+                schoolId: resolvedSchoolId,
+                role: "SCHOOL_STUDENT",
+                name: finalRecord.name,
+                email: effectiveEmail || user?.email || "",
+                studentRef: finalRecord.id,
+                classId: finalRecord.classId,
+                sessionId: "2026-27",
               });
 
-              setActiveStudentKey(recordCompositeKey);
               if (finalRecord.schoolName) {
                 try {
                   localStorage.setItem("nst_last_school_name", finalRecord.schoolName);

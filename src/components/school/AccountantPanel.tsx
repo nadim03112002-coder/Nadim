@@ -104,7 +104,8 @@ import {
   getSchoolPublicInquiries,
   getLocalAttendance,
   syncPendingFeeCallFollowUps,
-  getPendingFeeFollowUpSyncCount
+  getPendingFeeFollowUpSyncCount,
+  subscribeSchoolUpiProofs
 } from "../../school-firebase";
 import { sendSchoolPushNotification } from "../../utils/schoolPushClient";
 import { DEMO_SESSION_ID, setDemoDataEnabled } from "./demoDataStore";
@@ -127,6 +128,7 @@ import { printElementInIframe, printHtmlInIframe } from "./AdmissionFormPrintMod
 import { exportElementToPdf } from "../../utils/universalPdfExport";
 import { TeacherRulesRegulationsView } from "./TeacherRulesRegulationsView";
 import { resolveAccountantPermissions } from "../../utils/schoolRolePermissions";
+import { ScreenInfoGuideButton } from "./ScreenInfoGuideButton";
 import {
   printPosSlipDirect,
   printA6SlipDirect,
@@ -137,6 +139,8 @@ import {
 import { useBackHandler } from "../../utils/backNavigation";
 import { NstaCallPortalHost } from "./NstaCallModal";
 import { CallerIdSettingsCard } from "./CallerIdSettingsCard";
+import { CallSetupChecklistBanner } from "./CallSetupChecklistBanner";
+import { ApkUpdateBanner } from "./ApkUpdateBanner";
 import { IncomingParentCallModal } from "./IncomingParentCallModal";
 import { syncSchoolDirectoryToAndroid, extractTodayAbsentStudentIds } from "../../utils/schoolCallerId";
 import {
@@ -144,9 +148,15 @@ import {
   hasEliteWalkieAccess,
   hasEliteFeeTagadaAccess,
   type SchoolPublicInquiry,
+  type UpiPaymentProofRecord,
 } from "../../school-types";
+import { LanguageToggleButton } from "./LanguageToggleButton";
+import { PendingUpiApprovalsPanel } from "./PendingUpiApprovalsPanel";
+import { OfficialFeeReceiptModal } from "./OfficialFeeReceiptModal";
+import { pickLang, useAppLang } from "../../utils/appLang";
 import { useSchoolWalkieChannel } from "../../utils/schoolWalkieService";
 import { WalkieTalkieModal } from "./WalkieTalkieModal";
+import { syncNativeAndroidIdentity } from "../NotificationManager";
 import { EliteFeatureLockCard } from "./EliteFeatureLockCard";
 
 interface Props {
@@ -262,6 +272,17 @@ export const AccountantPanel: React.FC<Props> = ({
   const [activeTab, setActiveTab] = useState<AccountantTab>(() =>
     getPendingActiveTagadaCall(schoolId) ? "fee_tagada" : "home"
   );
+  const [lang] = useAppLang();
+  const [upiProofs, setUpiProofs] = useState<UpiPaymentProofRecord[]>([]);
+  const [showUpiDesk, setShowUpiDesk] = useState(false);
+  const [approvedUpiReceiptFee, setApprovedUpiReceiptFee] = useState<MonthlyFee | null>(null);
+
+  useEffect(() => {
+    if (!schoolId) return;
+    return subscribeSchoolUpiProofs(schoolId, setUpiProofs);
+  }, [schoolId]);
+  const pendingUpiCount = upiProofs.filter((p) => p.status === "PENDING").length;
+
   const [school, setSchool] = useState<School | null>(() => cachedBootstrap?.sch || null);
   const [classes, setClasses] = useState<SchoolClass[]>(() => cachedBootstrap?.clsFiltered || []);
   const [allClasses, setAllClasses] = useState<SchoolClass[]>(() => cachedBootstrap?.clsAll || []);
@@ -367,6 +388,10 @@ export const AccountantPanel: React.FC<Props> = ({
     saving: boolean;
   } | null>(null);
   const [showWalkieModal, setShowWalkieModal] = useState(false);
+  const [feePreselectTarget, setFeePreselectTarget] = useState<{
+    studentId: string;
+    action: "collect_fee" | "fee_update";
+  } | null>(null);
 
   useBackHandler(showWalkieModal, () => setShowWalkieModal(false), 26);
   useBackHandler(Boolean(duesSettlementModal), () => setDuesSettlementModal(null), 22);
@@ -565,6 +590,18 @@ export const AccountantPanel: React.FC<Props> = ({
     window.addEventListener("android-open-walkie", onOpenWalkie);
     return () => window.removeEventListener("android-open-walkie", onOpenWalkie);
   }, []);
+
+  useEffect(() => {
+    if (!schoolId) return;
+    try {
+      localStorage.setItem("nst_active_school_id", schoolId);
+    } catch {}
+    syncNativeAndroidIdentity({
+      userId: accountantId || "accountant_admin",
+      schoolId,
+      extraIds: ["accountant_admin"],
+    }).catch(() => {});
+  }, [schoolId, accountantId]);
 
   useEffect(() => {
     if (!schoolId) return;
@@ -962,6 +999,9 @@ export const AccountantPanel: React.FC<Props> = ({
               <Smartphone className="w-4 h-4" />
             )}
           </button>
+
+          <LanguageToggleButton tone={appTheme} compact />
+          <ScreenInfoGuideButton portal="accountant" screenKey={activeTab} tone={appTheme} />
 
           {onBack && (
             <button
@@ -1790,6 +1830,9 @@ export const AccountantPanel: React.FC<Props> = ({
           {/* TAB 0: HOME DASHBOARD (मुख्य विद्यालय व वित्तीय अवलोकन) */}
           {activeTab === "home" && (
             <div className="max-w-6xl mx-auto space-y-6">
+              <ApkUpdateBanner school={school} />
+              <CallSetupChecklistBanner mode="staff" schoolName={school?.name} />
+
               {/* Hero Banner */}
               <div className="bg-white dark:bg-slate-900 p-5 sm:p-7 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-xs flex flex-col md:flex-row items-start md:items-center justify-between gap-6">
                 <div className="space-y-2">
@@ -2406,6 +2449,52 @@ export const AccountantPanel: React.FC<Props> = ({
                 </div>
               )}
 
+              {/* ── ACCOUNTANT PERSONAL NUMBER PRIVACY FOR PARENTS ─────────── */}
+              {activeAccountant && (
+                <div className="p-4 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-xs flex items-center justify-between gap-3">
+                  <div className="flex items-start gap-2.5 min-w-0">
+                    <ShieldCheck className="w-4.5 h-4.5 text-indigo-600 dark:text-indigo-400 mt-0.5 shrink-0" />
+                    <div className="min-w-0">
+                      <p className="text-xs sm:text-sm font-bold text-slate-900 dark:text-white">
+                        Parent Caller ID se mera personal number chhupayein
+                      </p>
+                      <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                        {activeAccountant.hidePhoneFromParentCallerId
+                          ? "Abhi chhupa hua hai — Parents ke app me aapka personal number nahi dikhega."
+                          : "Abhi chalu hai — School se call karne par Parents ko aapka verified card dikhega."}
+                      </p>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      const nextVal = !activeAccountant.hidePhoneFromParentCallerId;
+                      const updatedAcc = { ...activeAccountant, hidePhoneFromParentCallerId: nextVal };
+                      setAccountants((prev) =>
+                        prev.map((item) => (item.id === activeAccountant.id ? updatedAcc : item))
+                      );
+                      try {
+                        await saveAccountant(updatedAcc);
+                        toast.success(
+                          nextVal
+                            ? "Privacy On: Aapka number Parents ke Caller ID se hata diya gaya."
+                            : "Privacy Off: Parents ko aapka verified call card dikhega."
+                        );
+                      } catch {
+                        toast.error("Privacy setting save nahi ho saki.");
+                      }
+                    }}
+                    className={`px-3 py-1.5 rounded-xl text-xs font-bold shrink-0 cursor-pointer transition ${
+                      activeAccountant.hidePhoneFromParentCallerId
+                        ? "bg-indigo-600 text-white"
+                        : "bg-slate-200 dark:bg-slate-800 text-slate-700 dark:text-slate-200"
+                    }`}
+                  >
+                    {activeAccountant.hidePhoneFromParentCallerId ? "Hidden (On)" : "Visible (Off)"}
+                  </button>
+                </div>
+              )}
+
               {/* ── PARENT CALLER ID (ULTA DIRECTORY) SETTINGS ─────────────── */}
               <CallerIdSettingsCard
                 mode="staff"
@@ -2414,12 +2503,60 @@ export const AccountantPanel: React.FC<Props> = ({
                 isEliteLocked={!hasEliteFeeTagadaAccess(school)}
               />
 
-              {/* ── 6 QUICK ACTION CARDS ─────────────────────────────────────── */}
+              {/* ── PENDING UPI SCREENSHOT VERIFICATIONS ─────────────────────── */}
+              {(showUpiDesk || pendingUpiCount > 0) && (
+                <PendingUpiApprovalsPanel
+                  schoolId={schoolId}
+                  proofs={upiProofs}
+                  approverName={activeAccountant?.name || "Accountant"}
+                  approverRole="accountant"
+                  onClose={showUpiDesk ? () => setShowUpiDesk(false) : undefined}
+                  onApprovedReceipt={(approvedFee) => {
+                    setFees((prev) => {
+                      const next = prev.filter(
+                        (f) => !(f.studentId === approvedFee.studentId && f.month === approvedFee.month)
+                      );
+                      return [approvedFee, ...next];
+                    });
+                    setApprovedUpiReceiptFee(approvedFee);
+                  }}
+                />
+              )}
+
+              {/* ── QUICK ACTION CARDS ──────────────────────────────────────── */}
               <div className="space-y-3">
                 <h3 className="text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
-                  त्वरित कार्य (Quick Actions)
+                  {pickLang(lang, "त्वरित कार्य (Quick Actions)", "Quick Actions")}
                 </h3>
                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3.5">
+                  <button
+                    type="button"
+                    onClick={() => setShowUpiDesk((prev) => !prev)}
+                    className="p-4 rounded-2xl bg-white dark:bg-slate-900 hover:bg-slate-50 dark:hover:bg-slate-800/70 border border-slate-200 dark:border-slate-800 hover:border-emerald-300 dark:hover:border-emerald-500/40 text-left transition flex items-start gap-3.5 cursor-pointer group shadow-xs"
+                  >
+                    <div className="w-10 h-10 rounded-xl bg-emerald-50 dark:bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 flex items-center justify-center shrink-0">
+                      <QrCode className="w-5 h-5" />
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center justify-between gap-2">
+                        <h4 className="font-bold text-sm text-slate-900 dark:text-white group-hover:text-emerald-600 dark:group-hover:text-emerald-400 transition">
+                          {pickLang(lang, "UPI स्क्रीनशॉट सत्यापन", "UPI Screenshot Verify")}
+                        </h4>
+                        {pendingUpiCount > 0 && (
+                          <span className="px-2 py-0.5 rounded-full bg-amber-500 text-slate-950 text-[10px] font-black tabular-nums">
+                            {pendingUpiCount}
+                          </span>
+                        )}
+                      </div>
+                      <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                        {pickLang(
+                          lang,
+                          "अभिभावक के UPI पेमेंट स्क्रीनशॉट जाँचकर 1-क्लिक रसीद बनाएँ।",
+                          "Verify parent UPI screenshots and generate receipt in 1 click."
+                        )}
+                      </p>
+                    </div>
+                  </button>
                   {/* Action 1: Fee Collection */}
                   {permissions.canCollectFee && (
                     <button
@@ -2846,6 +2983,9 @@ export const AccountantPanel: React.FC<Props> = ({
                   actorName={activeAccountant?.name || "Accountant"}
                   allowDiscountOverride={Boolean(permissions.canGrantDiscount)}
                   maxDiscountLimitPct={permissions.maxDiscountLimitPct}
+                  initialStudentId={feePreselectTarget?.studentId}
+                  initialStudentAction={feePreselectTarget?.action}
+                  onInitialStudentActionHandled={() => setFeePreselectTarget(null)}
                   onBack={() => setActiveTab("counter")}
                 />
               </div>
@@ -3684,14 +3824,21 @@ export const AccountantPanel: React.FC<Props> = ({
           schoolId={school.id}
           schoolName={school.name}
           schoolUpiId={school.upiId}
+          callerUserId={activeAccountant?.id || "STAFF_ACCOUNTANT"}
           callerUserName={activeAccountant?.name || "School Accountant"}
+          callerUserRole="ACCOUNTANT"
           students={allStudents.length > 0 ? allStudents : students}
           classes={allClasses.length > 0 ? allClasses : classes}
           fees={allHistoryFees.length > 0 ? allHistoryFees : fees}
           feeCallFollowUps={feeCallFollowUps}
           absentStudentIds={todayAbsentStudentIds}
           inquiries={inquiries}
-          onCollectFee={() => {
+          onCollectFee={(studentId) => {
+            setFeePreselectTarget({ studentId, action: "collect_fee" });
+            setActiveTab(permissions.canCollectFee ? "fee_collection" : "home");
+          }}
+          onUpdateFee={(studentId) => {
+            setFeePreselectTarget({ studentId, action: "fee_update" });
             setActiveTab(permissions.canCollectFee ? "fee_collection" : "home");
           }}
         />
@@ -3704,11 +3851,22 @@ export const AccountantPanel: React.FC<Props> = ({
         currentUserId={accountantId || "accountant_admin"}
         currentUserName={activeAccountant?.name || "School Accountant"}
         currentUserRole="ACCOUNTANT"
+        schoolAdminUid={school?.adminUid}
         teachers={teachers}
         accountants={accountants}
         messages={walkieMessages}
         schedule={walkieSchedule}
       />
+      {approvedUpiReceiptFee && school && (
+        <OfficialFeeReceiptModal
+          isOpen={Boolean(approvedUpiReceiptFee)}
+          onClose={() => setApprovedUpiReceiptFee(null)}
+          school={school}
+          fee={approvedUpiReceiptFee}
+          className={approvedUpiReceiptFee.className || "Class"}
+          initialFormat="pos"
+        />
+      )}
     </div>
   );
 };

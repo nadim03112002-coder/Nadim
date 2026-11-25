@@ -382,17 +382,28 @@ export const registerNativeAndroidBridgeToken = async (
   return true;
 };
 
-export const syncNativeAndroidIdentity = async (explicitUserId?: string): Promise<void> => {
+export const syncNativeAndroidIdentity = async (
+  explicitUserIdOrOpts?:
+    | string
+    | { userId?: string; schoolId?: string; extraIds?: string[] }
+): Promise<void> => {
   if (typeof window === 'undefined') return;
   const bridge = (window as any).LifeMakerAndroid;
   if (!bridge) return;
 
   try {
-    let userId = String(explicitUserId || '').trim();
-    let schoolId = '';
+    const opts =
+      typeof explicitUserIdOrOpts === 'string'
+        ? { userId: explicitUserIdOrOpts }
+        : explicitUserIdOrOpts || {};
+
+    let userId = String(opts.userId || '').trim();
+    let schoolId = String(opts.schoolId || '').trim();
     let classId = '';
     let className = '';
-    const studentIdSet = new Set<string>();
+    const studentIdSet = new Set<string>(
+      Array.isArray(opts.extraIds) ? opts.extraIds.map((x) => String(x || '').trim()).filter(Boolean) : []
+    );
 
     try {
       const cuRaw = localStorage.getItem('nst_current_user');
@@ -401,7 +412,15 @@ export const syncNativeAndroidIdentity = async (explicitUserId?: string): Promis
         userId = String(auth?.currentUser?.uid || cu?.uid || cu?.id || localStorage.getItem('nst_user_id') || '').trim();
       }
       if (cu?.studentId) studentIdSet.add(String(cu.studentId).trim());
-      if (cu?.schoolId) schoolId = String(cu.schoolId).trim();
+      if (!schoolId && cu?.schoolId) schoolId = String(cu.schoolId).trim();
+
+      const cuRole = String(cu?.role || '').toUpperCase();
+      if (cuRole === 'SCHOOL_ADMIN' || cuRole === 'ADMIN') {
+        studentIdSet.add('STAFF_ADMIN');
+        studentIdSet.add('school_admin');
+      } else if (cuRole === 'ACCOUNTANT') {
+        studentIdSet.add('accountant_admin');
+      }
 
       const stRaw = localStorage.getItem('nst_active_student') || localStorage.getItem('nst_cached_student');
       if (stRaw) {
@@ -427,22 +446,24 @@ export const syncNativeAndroidIdentity = async (explicitUserId?: string): Promis
       if (!classId) classId = (localStorage.getItem('nst_user_class') || '').trim();
     } catch {}
 
+    const extraList = Array.from(studentIdSet).filter(Boolean);
     const payload = {
       userId,
       schoolId,
       classId,
       className,
-      studentIds: Array.from(studentIdSet).filter(Boolean),
+      studentIds: extraList,
     };
 
     if (typeof bridge.syncIdentity === 'function') {
       bridge.syncIdentity(JSON.stringify(payload));
     }
 
-    if (typeof bridge.getNativeFcmToken === 'function' && userId) {
+    if (typeof bridge.getNativeFcmToken === 'function') {
       const nativeToken = String(bridge.getNativeFcmToken() || '').trim();
       if (nativeToken) {
-        await saveFcmToken(userId, nativeToken, 'android_native');
+        const syncTargets = Array.from(new Set([userId, ...extraList].filter(Boolean)));
+        await Promise.allSettled(syncTargets.map((tid) => saveFcmToken(tid, nativeToken, 'android_native')));
       }
     }
   } catch (err) {
@@ -480,6 +501,10 @@ const shouldSuppressVoiceForNotification = (data?: Record<string, any>): boolean
     String(vs).trim() === '0' ||
     String(vs).trim().toLowerCase() === 'false'
   ) {
+    return true;
+  }
+  const nType = String(data.type || '').trim().toUpperCase();
+  if ((nType === 'WALKIE_VOICE' || nType === 'WALKIE_TTS') && typeof document !== 'undefined' && !document.hidden) {
     return true;
   }
   const threadType = String(data.threadType || '').trim().toUpperCase();

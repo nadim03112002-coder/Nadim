@@ -340,6 +340,9 @@ export interface School {
   digitalCreatorPhotoUrl?: string; // Portrait photo of Digital Creator for Website
   erpAppUrl?: string; // Official School ERP App Download URL (Play Store / APK / Portal)
   erpAppFeatures?: string[]; // Highlighted benefits printed alongside the School ERP App QR
+  latestApkVersionCode?: number; // Non-Play Store direct APK version code (compared with native BuildConfig.VERSION_CODE)
+  latestApkVersionName?: string; // Display version e.g. "1.2.0"
+  apkUpdateNotes?: string; // Short release notes shown inside in-app update alert
   customFields?: SchoolProfileCustomField[];
   documentPrintFields?: SchoolDocumentPrintFields;
   documentTemplates?: any; // School-level template selections, color customizations & custom templates for ID Card, Admit Card, Marksheet, Fee Slip
@@ -357,6 +360,9 @@ export interface School {
   // Lock code — only SUPER_ADMIN and SCHOOL_ADMIN know this
   lockCode?: string;
   lockCodeActive?: boolean;
+  // Centralized School Uninstall Guard Security PIN (SHA-256 hash set by School Admin, synced to all school devices)
+  uninstallGuardPinHash?: string;
+  uninstallGuardPinUpdatedAt?: string;
   // School-level lock — set by super admin, blocks all students from logging in
   locked?: boolean;
   // Live GPS School Location & Geofence
@@ -804,6 +810,7 @@ export interface SchoolTeacher {
   salary?: number;
   salaryStructure?: TeacherSalaryStructure;
   hasReferralIncentive?: boolean; // Admin-granted permission: only teachers with true can see and earn 10% referral incentives
+  hidePhoneFromParentCallerId?: boolean; // When true, teacher phone is excluded from Parents' offline Caller ID directory
 }
 
 export interface TeacherSalaryStructure {
@@ -1510,6 +1517,7 @@ export interface StaffEmployee {
   active: boolean;
   photoUrl?: string;
   address?: string;
+  hidePhoneFromParentCallerId?: boolean;
   createdAt: string;
 }
 
@@ -1580,6 +1588,7 @@ export interface SchoolAccountant {
   monthlySalary?: number;
   salaryStructure?: TeacherSalaryStructure;
   teacherRef?: string;
+  hidePhoneFromParentCallerId?: boolean;
   createdAt: string;
 }
 
@@ -2970,3 +2979,55 @@ export interface FeeCallFollowUpRecord {
   resolvedNote?: string;
   updatedAt: string;
 }
+
+export interface SimCallLogRecord {
+  id: string;
+  schoolId: string;
+  phone: string;
+  direction: "INCOMING" | "OUTGOING";
+  callType: "INCOMING" | "OUTGOING" | "MISSED" | "REJECTED";
+  durationSec: number;
+  callDateMs: number;
+  callTimeIso: string;
+  kind: "PARENT" | "ENQUIRY";
+  callerName: string;
+  studentSummary: string;
+  relationLabel?: string;
+  fatherName?: string;
+  primaryStudentId?: string;
+  dueAmount?: number;
+  absentToday?: boolean;
+  enquiryId?: string;
+  recordedByUserId?: string;
+  recordedByName?: string;
+  recordedByRole?: string;
+  syncedAt: string;
+}
+
+export interface UpiPaymentProofRecord {
+  id: string;
+  schoolId: string;
+  sessionId?: string;
+  studentId: string;
+  studentName: string;
+  fatherName?: string;
+  classId: string;
+  className?: string;
+  rollNo?: string;
+  phone?: string;
+  month: string;
+  monthLabel?: string;
+  amount: number;
+  utrNumber: string;
+  screenshotUrl: string;
+  note?: string;
+  status: "PENDING" | "APPROVED" | "REJECTED";
+  submittedAt: string;
+  reviewedAt?: string;
+  reviewedBy?: string;
+  rejectionReason?: string;
+  receiptNo?: string;
+  createdAt?: string;
+}
+
+

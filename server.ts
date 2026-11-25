@@ -265,7 +265,7 @@ async function getCachedFcmTokens(): Promise<Record<string, any> | null> {
 async function dispatchFcmToUsers(
   recipientIds: string[],
   broadcast: boolean,
-  payload: { id?: string; title: string; body: string; type?: string; threadType?: string; voiceSpeak?: boolean | string; url?: string; icon?: string; senderId?: string; senderDeviceId?: string },
+  payload: { id?: string; title: string; body: string; type?: string; threadType?: string; voiceSpeak?: boolean | string; url?: string; icon?: string; senderId?: string; senderDeviceId?: string; walkieSpeechText?: string; walkieMimeType?: string },
   filter?: { schoolId?: string; classId?: string; className?: string },
   exclude?: { senderIds?: string[]; senderFcmToken?: string; senderDeviceId?: string }
 ): Promise<number> {
@@ -364,6 +364,12 @@ async function dispatchFcmToUsers(
         schoolId: String(filter?.schoolId || target.schoolId || ""),
         voiceSpeak: suppressVoice ? "0" : "1",
         urgent: "1",
+        ...(payload.walkieSpeechText
+          ? { walkieSpeechText: String(payload.walkieSpeechText).slice(0, 300) }
+          : {}),
+        ...(payload.walkieMimeType
+          ? { walkieMimeType: String(payload.walkieMimeType).slice(0, 80) }
+          : {}),
       };
 
       const fcmMessage = isNativeAndroid
@@ -1311,6 +1317,8 @@ async function startServer() {
         urgent = true,
         icon,
         senderPhoto,
+        walkieSpeechText,
+        walkieMimeType,
       } = req.body || {};
 
       if (!title || !body) {
@@ -1472,6 +1480,8 @@ async function startServer() {
           icon: effectiveIcon,
           senderId: senderId ? String(senderId) : "",
           senderDeviceId: cleanSenderDeviceId,
+          walkieSpeechText: walkieSpeechText ? String(walkieSpeechText).slice(0, 300) : undefined,
+          walkieMimeType: walkieMimeType ? String(walkieMimeType).slice(0, 80) : undefined,
         },
         { schoolId, classId, className },
         isSelfAllowed
@@ -2226,6 +2236,15 @@ async function startServer() {
         ".aistudio",
         "dist",
         ".vite",
+        ".gradle",
+      ]);
+      const excludedRelPaths = new Set([
+        "android/build",
+        "android/app/build",
+        "android/.gradle",
+      ]);
+      const referencedAiStudioAssets = new Set([
+        "public/assets/aistudio/IMG-20261115-WA0004_d6deea08.jpg",
       ]);
       const excludedFiles = new Set([
         ".vapid-keys.json",
@@ -2250,13 +2269,19 @@ async function startServer() {
           if (!fullPath.startsWith(rootBoundary)) continue;
 
           if (entry.isDirectory()) {
-            if (excludedDirs.has(entry.name)) continue;
-            if (!includeAssets && relPath === "public/assets/aistudio") continue;
+            if (excludedDirs.has(entry.name) || excludedRelPaths.has(relPath)) continue;
             if (!includeModels && relPath === "public/models") continue;
             if (!includeWasm && relPath === "public/onnx-wasm") continue;
             walkDir(fullPath, relPath);
           } else if (entry.isFile()) {
             if (isSensitiveOrArchive(entry.name)) continue;
+            if (
+              !includeAssets &&
+              relPath.startsWith("public/assets/aistudio/") &&
+              !referencedAiStudioAssets.has(relPath)
+            ) {
+              continue;
+            }
             zip.file(relPath, fs.readFileSync(fullPath));
           }
         }

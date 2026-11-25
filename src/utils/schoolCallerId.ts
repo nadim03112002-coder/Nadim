@@ -2,13 +2,15 @@ import type {
   AttendanceRecord,
   FeeCallFollowUpRecord,
   SchoolPublicInquiry,
+  SimCallLogRecord,
 } from "../school-types";
+import { saveMatchedSimCallLogsBatch } from "../school-firebase";
 
 /**
  * Smart Caller Name Announcement & Offline School Caller ID Bridge
  * - Option A: Online pre-call voice announcement + NSTA Voice/Video Call spoken caller ID
  * - Option B: Syncs School / Teacher / Staff / Accountant + Reverse Parent & Enquiry Directory to Android APK
- *             for 100% offline CallScreeningService, Truecaller-style Floating Overlay & 4-fact Caller Card.
+ *             for 100% offline CallScreeningService (Incoming + Outgoing), Truecaller-style Floating Overlay & Call Log Sync.
  */
 
 export const CALLER_VOICE_ANNOUNCE_KEY = "nst_caller_voice_announce_v1";
@@ -17,6 +19,8 @@ export const PARENT_CALLER_DUE_VOICE_KEY = "nst_parent_caller_due_voice_v1";
 export const PARENT_CALLER_SCHEDULE_VOICE_KEY = "nst_parent_caller_schedule_voice_v1";
 export const PARENT_CALLER_CARD_POPUP_KEY = "nst_parent_caller_card_popup_v1";
 export const PARENT_CALLER_OVERLAY_KEY = "nst_parent_caller_overlay_v1";
+export const PARENT_OUTGOING_CALL_ID_KEY = "nst_parent_outgoing_call_id_v1";
+export const PARENT_AUTO_CALL_LOG_SYNC_KEY = "nst_parent_auto_call_log_sync_v1";
 export const CACHED_PARENT_CALLER_DIR_KEY = "nst_cached_parent_caller_dir_v1";
 export const CACHED_ENQUIRY_CALLER_DIR_KEY = "nst_cached_enquiry_caller_dir_v1";
 
@@ -26,6 +30,8 @@ export interface ParentCallerIdOptions {
   scheduleVoiceEnabled: boolean;
   cardPopupEnabled: boolean;
   overlayEnabled: boolean;
+  outgoingCallEnabled: boolean;
+  autoCallLogSyncEnabled: boolean;
 }
 
 export interface ParentCallerChildSummary {
@@ -100,6 +106,9 @@ export interface CachedParentCallerInfo {
   enquiryNote?: string;
   counsellorName?: string;
   postCall?: boolean;
+  direction?: "INCOMING" | "OUTGOING";
+  durationSec?: number;
+  callType?: "INCOMING" | "OUTGOING" | "MISSED" | "REJECTED";
   children: ParentCallerChildSummary[];
   isTestSample?: boolean;
 }
@@ -109,6 +118,7 @@ export interface NativeCallerIdStatus {
   supported: boolean;
   isRoleHeld: boolean;
   hasPhonePerms: boolean;
+  hasCallLogPerm?: boolean;
   isReady: boolean;
   cachedCount: number;
   schoolName: string;
@@ -119,6 +129,8 @@ export interface NativeCallerIdStatus {
   parentScheduleVoiceEnabled: boolean;
   parentCardPopupEnabled: boolean;
   parentOverlayEnabled: boolean;
+  outgoingCallEnabled: boolean;
+  autoCallLogSyncEnabled: boolean;
   canDrawOverlays: boolean;
 }
 
@@ -132,13 +144,26 @@ interface CallerIdAndroidBridge {
   clearLastIncomingParentCall?: () => void;
   getCallerIdStatus?: () => string;
   requestOfflineCallerIdPermission?: () => void;
+  hasAutoCallLogPermission?: () => boolean;
+  requestAutoCallLogPermission?: () => void;
+  getMatchedSchoolCallLogs?: (sinceMs: number) => string;
   hasOverlayPermission?: () => boolean;
   requestOverlayPermission?: () => void;
+  previewVerifiedSchoolCallOverlay?: (
+    schoolName: string,
+    staffName: string,
+    staffRole: string,
+    phone: string
+  ) => boolean;
   isIgnoringBatteryOptimizations?: () => boolean;
   openBatteryOptimizationSettings?: () => void;
   speakNativeIncomingCall?: (text: string, dedupeKey: string) => void;
   speakNativeVoice?: (text: string, dedupeKey: string) => void;
   stopNativeVoice?: () => void;
+  getAppVersionInfo?: () => string;
+  getMissedSchoolCalls?: () => string;
+  dismissMissedSchoolCall?: (phone: string, callDateMs: number) => void;
+  clearAllMissedSchoolCalls?: () => void;
 }
 
 function getBridge(): CallerIdAndroidBridge | undefined {
@@ -207,6 +232,8 @@ export function getParentCallerIdOptions(): ParentCallerIdOptions {
     scheduleVoiceEnabled: readBoolPref(PARENT_CALLER_SCHEDULE_VOICE_KEY, false),
     cardPopupEnabled: readBoolPref(PARENT_CALLER_CARD_POPUP_KEY, true),
     overlayEnabled: readBoolPref(PARENT_CALLER_OVERLAY_KEY, true),
+    outgoingCallEnabled: readBoolPref(PARENT_OUTGOING_CALL_ID_KEY, true),
+    autoCallLogSyncEnabled: readBoolPref(PARENT_AUTO_CALL_LOG_SYNC_KEY, true),
   };
 }
 
@@ -246,6 +273,14 @@ export function setParentCallerIdOptions(
       typeof partial.overlayEnabled === "boolean"
         ? partial.overlayEnabled
         : current.overlayEnabled,
+    outgoingCallEnabled:
+      typeof partial.outgoingCallEnabled === "boolean"
+        ? partial.outgoingCallEnabled
+        : current.outgoingCallEnabled,
+    autoCallLogSyncEnabled:
+      typeof partial.autoCallLogSyncEnabled === "boolean"
+        ? partial.autoCallLogSyncEnabled
+        : current.autoCallLogSyncEnabled,
   };
 
   if (typeof window !== "undefined") {
@@ -269,6 +304,14 @@ export function setParentCallerIdOptions(
       localStorage.setItem(
         PARENT_CALLER_OVERLAY_KEY,
         next.overlayEnabled ? "true" : "false"
+      );
+      localStorage.setItem(
+        PARENT_OUTGOING_CALL_ID_KEY,
+        next.outgoingCallEnabled ? "true" : "false"
+      );
+      localStorage.setItem(
+        PARENT_AUTO_CALL_LOG_SYNC_KEY,
+        next.autoCallLogSyncEnabled ? "true" : "false"
       );
     } catch {}
     syncParentCallerOptionsToAndroid(next);
@@ -330,6 +373,7 @@ export function getNativeCallerIdStatus(): NativeCallerIdStatus {
       supported: false,
       isRoleHeld: false,
       hasPhonePerms: false,
+      hasCallLogPerm: false,
       isReady: false,
       cachedCount: 0,
       schoolName: "",
@@ -340,6 +384,8 @@ export function getNativeCallerIdStatus(): NativeCallerIdStatus {
       parentScheduleVoiceEnabled: localParentOpts.scheduleVoiceEnabled,
       parentCardPopupEnabled: localParentOpts.cardPopupEnabled,
       parentOverlayEnabled: localParentOpts.overlayEnabled,
+      outgoingCallEnabled: localParentOpts.outgoingCallEnabled,
+      autoCallLogSyncEnabled: localParentOpts.autoCallLogSyncEnabled,
       canDrawOverlays: false,
     };
   }
@@ -359,12 +405,19 @@ export function getNativeCallerIdStatus(): NativeCallerIdStatus {
         : typeof bridge.hasOverlayPermission === "function"
           ? Boolean(bridge.hasOverlayPermission())
           : false;
+    const callLogPerm =
+      typeof parsed?.hasCallLogPerm === "boolean"
+        ? parsed.hasCallLogPerm
+        : typeof bridge.hasAutoCallLogPermission === "function"
+          ? Boolean(bridge.hasAutoCallLogPermission())
+          : Boolean(parsed?.hasPhonePerms);
 
     return {
       isNativeApp: true,
       supported: Boolean(parsed?.supported),
       isRoleHeld: Boolean(parsed?.isRoleHeld),
       hasPhonePerms: Boolean(parsed?.hasPhonePerms),
+      hasCallLogPerm: callLogPerm,
       isReady: Boolean(parsed?.isReady),
       cachedCount: Number(parsed?.cachedCount || 0),
       schoolName: String(parsed?.schoolName || ""),
@@ -391,6 +444,14 @@ export function getNativeCallerIdStatus(): NativeCallerIdStatus {
         typeof parsed?.parentOverlayEnabled === "boolean"
           ? parsed.parentOverlayEnabled
           : localParentOpts.overlayEnabled,
+      outgoingCallEnabled:
+        typeof parsed?.outgoingCallEnabled === "boolean"
+          ? parsed.outgoingCallEnabled
+          : localParentOpts.outgoingCallEnabled,
+      autoCallLogSyncEnabled:
+        typeof parsed?.autoCallLogSyncEnabled === "boolean"
+          ? parsed.autoCallLogSyncEnabled
+          : localParentOpts.autoCallLogSyncEnabled,
       canDrawOverlays: overlayPerm,
     };
   } catch {
@@ -399,6 +460,7 @@ export function getNativeCallerIdStatus(): NativeCallerIdStatus {
       supported: false,
       isRoleHeld: false,
       hasPhonePerms: false,
+      hasCallLogPerm: false,
       isReady: false,
       cachedCount: 0,
       schoolName: "",
@@ -409,9 +471,127 @@ export function getNativeCallerIdStatus(): NativeCallerIdStatus {
       parentScheduleVoiceEnabled: localParentOpts.scheduleVoiceEnabled,
       parentCardPopupEnabled: localParentOpts.cardPopupEnabled,
       parentOverlayEnabled: localParentOpts.overlayEnabled,
+      outgoingCallEnabled: localParentOpts.outgoingCallEnabled,
+      autoCallLogSyncEnabled: localParentOpts.autoCallLogSyncEnabled,
       canDrawOverlays: false,
     };
   }
+}
+
+export function requestNativeAutoCallLogPermission(): boolean {
+  const bridge = getBridge();
+  if (!bridge || typeof bridge.requestAutoCallLogPermission !== "function") {
+    return false;
+  }
+  try {
+    bridge.requestAutoCallLogPermission();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export interface RawNativeMatchedCallLog {
+  phone: string;
+  direction: "INCOMING" | "OUTGOING";
+  callType: "INCOMING" | "OUTGOING" | "MISSED" | "REJECTED";
+  durationSec: number;
+  callDateMs: number;
+  kind: "PARENT" | "ENQUIRY";
+  name: string;
+  studentSummary: string;
+  relationLabel?: string;
+  fatherName?: string;
+  primaryStudentId?: string;
+  dueAmount?: number;
+  absentToday?: boolean;
+  enquiryId?: string;
+}
+
+export function getNativeMatchedSchoolCallLogs(sinceMs?: number): RawNativeMatchedCallLog[] {
+  const bridge = getBridge();
+  if (!bridge || typeof bridge.getMatchedSchoolCallLogs !== "function") return [];
+  try {
+    const resolvedSince = sinceMs ?? Date.now() - 7 * 24 * 60 * 60 * 1000;
+    const raw = bridge.getMatchedSchoolCallLogs(resolvedSince);
+    const parsed = raw ? JSON.parse(raw) : [];
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .filter((item) => Boolean(item?.phone && item?.callDateMs))
+      .map((item) => ({
+        phone: String(item.phone || ""),
+        direction: item.direction === "OUTGOING" ? "OUTGOING" : "INCOMING",
+        callType:
+          item.callType === "OUTGOING" ||
+          item.callType === "MISSED" ||
+          item.callType === "REJECTED"
+            ? item.callType
+            : "INCOMING",
+        durationSec: Number(item.durationSec || 0),
+        callDateMs: Number(item.callDateMs || 0),
+        kind: item.kind === "ENQUIRY" ? "ENQUIRY" : "PARENT",
+        name: String(item.name || "Parent"),
+        studentSummary: String(item.studentSummary || ""),
+        relationLabel: item.relationLabel ? String(item.relationLabel) : undefined,
+        fatherName: item.fatherName ? String(item.fatherName) : undefined,
+        primaryStudentId: item.primaryStudentId ? String(item.primaryStudentId) : undefined,
+        dueAmount: Number(item.dueAmount || 0),
+        absentToday: Boolean(item.absentToday),
+        enquiryId: item.enquiryId ? String(item.enquiryId) : undefined,
+      }));
+  } catch {
+    return [];
+  }
+}
+
+export async function syncNativeSimCallLogsToSchool(params: {
+  schoolId: string;
+  recordedByUserId?: string;
+  recordedByName?: string;
+  recordedByRole?: string;
+  sinceMs?: number;
+}): Promise<number> {
+  if (!params.schoolId) return 0;
+  const opts = getParentCallerIdOptions();
+  if (!opts.parentCallerEnabled || !opts.autoCallLogSyncEnabled) return 0;
+
+  const rawLogs = getNativeMatchedSchoolCallLogs(params.sinceMs);
+  if (rawLogs.length === 0) return 0;
+
+  const staffTag = (params.recordedByUserId || params.recordedByName || "staff")
+    .replace(/[^a-zA-Z0-9_-]/g, "")
+    .slice(0, 16);
+  const nowIso = new Date().toISOString();
+
+  const records: SimCallLogRecord[] = rawLogs.map((item) => {
+    const bucket = Math.round(item.callDateMs / 5000);
+    const id = `sim_${item.phone}_${bucket}_${staffTag || "dev"}`;
+    return {
+      id,
+      schoolId: params.schoolId,
+      phone: item.phone,
+      direction: item.direction,
+      callType: item.callType,
+      durationSec: item.durationSec,
+      callDateMs: item.callDateMs,
+      callTimeIso: new Date(item.callDateMs).toISOString(),
+      kind: item.kind,
+      callerName: item.name,
+      studentSummary: item.studentSummary,
+      relationLabel: item.relationLabel,
+      fatherName: item.fatherName,
+      primaryStudentId: item.primaryStudentId,
+      dueAmount: item.dueAmount,
+      absentToday: item.absentToday,
+      enquiryId: item.enquiryId,
+      recordedByUserId: params.recordedByUserId,
+      recordedByName: params.recordedByName,
+      recordedByRole: params.recordedByRole,
+      syncedAt: nowIso,
+    };
+  });
+
+  return saveMatchedSimCallLogsBatch(params.schoolId, records);
 }
 
 export function getLastNativeIncomingParentCall(): Partial<CachedParentCallerInfo> & {
@@ -465,6 +645,30 @@ export function requestAndroidOverlayPermission(): boolean {
   }
 }
 
+export function previewNativeVerifiedSchoolCallOverlay(params?: {
+  schoolName?: string;
+  staffName?: string;
+  staffRole?: string;
+  phone?: string;
+}): boolean {
+  const bridge = getBridge();
+  if (!bridge || typeof bridge.previewVerifiedSchoolCallOverlay !== "function") {
+    return false;
+  }
+  try {
+    return Boolean(
+      bridge.previewVerifiedSchoolCallOverlay(
+        String(params?.schoolName || "School"),
+        String(params?.staffName || "Rajesh Sir"),
+        String(params?.staffRole || "Class Teacher"),
+        String(params?.phone || "9876543210")
+      )
+    );
+  } catch {
+    return false;
+  }
+}
+
 export function isAndroidBatteryUnrestricted(): boolean {
   const bridge = getBridge();
   if (!bridge) return false;
@@ -502,6 +706,77 @@ export function requestNativeOfflineCallerIdPermission(): boolean {
   } catch {
     return false;
   }
+}
+
+export interface NativeAppVersionInfo {
+  supported: boolean;
+  versionCode: number;
+  versionName: string;
+}
+
+export function getNativeAppVersionInfo(): NativeAppVersionInfo {
+  const bridge = getBridge();
+  if (!bridge || typeof bridge.getAppVersionInfo !== "function") {
+    return { supported: false, versionCode: 0, versionName: "" };
+  }
+  try {
+    const raw = bridge.getAppVersionInfo();
+    const parsed = raw ? JSON.parse(raw) : {};
+    return {
+      supported: Boolean(parsed?.supported),
+      versionCode: Number(parsed?.versionCode || 0),
+      versionName: String(parsed?.versionName || ""),
+    };
+  } catch {
+    return { supported: false, versionCode: 0, versionName: "" };
+  }
+}
+
+export interface MissedSchoolCallRecord {
+  phone: string;
+  name: string;
+  role: string;
+  schoolName: string;
+  callDateMs: number;
+}
+
+export function getNativeMissedSchoolCalls(): MissedSchoolCallRecord[] {
+  const bridge = getBridge();
+  if (!bridge || typeof bridge.getMissedSchoolCalls !== "function") {
+    return [];
+  }
+  try {
+    const raw = bridge.getMissedSchoolCalls();
+    const parsed = raw ? JSON.parse(raw) : [];
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .filter((item) => Boolean(item?.phone && item?.callDateMs))
+      .map((item) => ({
+        phone: String(item.phone || ""),
+        name: String(item.name || "School Staff"),
+        role: String(item.role || "School Staff"),
+        schoolName: String(item.schoolName || "School"),
+        callDateMs: Number(item.callDateMs || 0),
+      }));
+  } catch {
+    return [];
+  }
+}
+
+export function dismissNativeMissedSchoolCall(phone: string, callDateMs: number): void {
+  const bridge = getBridge();
+  if (!bridge || typeof bridge.dismissMissedSchoolCall !== "function") return;
+  try {
+    bridge.dismissMissedSchoolCall(phone, callDateMs);
+  } catch {}
+}
+
+export function clearAllNativeMissedSchoolCalls(): void {
+  const bridge = getBridge();
+  if (!bridge || typeof bridge.clearAllMissedSchoolCalls !== "function") return;
+  try {
+    bridge.clearAllMissedSchoolCalls();
+  } catch {}
 }
 
 const INVALID_DUMMY_PHONES = new Set([
@@ -553,9 +828,27 @@ export function syncSchoolDirectoryToAndroid(params: {
     principalName?: string;
   } | null;
   schoolName?: string;
-  teachers?: Array<{ name?: string; phone?: string; designation?: string; subject?: string }>;
-  accountants?: Array<{ name?: string; phone?: string; designation?: string }>;
-  staffEmployees?: Array<{ name?: string; phone?: string; designation?: string; role?: string }>;
+  teachers?: Array<{
+    name?: string;
+    phone?: string;
+    designation?: string;
+    subject?: string;
+    hidePhoneFromParentCallerId?: boolean;
+  }>;
+  accountants?: Array<{
+    name?: string;
+    phone?: string;
+    designation?: string;
+    hidePhoneFromParentCallerId?: boolean;
+  }>;
+  staffEmployees?: Array<{
+    name?: string;
+    phone?: string;
+    designation?: string;
+    role?: string;
+    hidePhoneFromParentCallerId?: boolean;
+  }>;
+  respectTeacherPrivacy?: boolean;
   students?: Array<{
     id?: string;
     name?: string;
@@ -590,6 +883,28 @@ export function syncSchoolDirectoryToAndroid(params: {
     params.school?.name || params.schoolName || "School"
   ).trim();
 
+  const hiddenTeacherPhones = new Set<string>();
+  if (params.respectTeacherPrivacy) {
+    for (const t of params.teachers || []) {
+      if (t?.hidePhoneFromParentCallerId === true && t?.phone) {
+        const key = normalizePhoneLast10(t.phone);
+        if (key) hiddenTeacherPhones.add(key);
+      }
+    }
+    for (const a of params.accountants || []) {
+      if (a?.hidePhoneFromParentCallerId === true && a?.phone) {
+        const key = normalizePhoneLast10(a.phone);
+        if (key) hiddenTeacherPhones.add(key);
+      }
+    }
+    for (const s of params.staffEmployees || []) {
+      if (s?.hidePhoneFromParentCallerId === true && s?.phone) {
+        const key = normalizePhoneLast10(s.phone);
+        if (key) hiddenTeacherPhones.add(key);
+      }
+    }
+  }
+
   const seenStaff = new Set<string>();
   const seenParentPhones = new Set<string>();
   const entries: CallerDirectoryEntry[] = [];
@@ -599,11 +914,13 @@ export function syncSchoolDirectoryToAndroid(params: {
   const pushStaffEntry = (
     rawPhone: string | undefined,
     rawName: string | undefined,
-    rawRole: string
+    rawRole: string,
+    allowPrivateBypass = false
   ) => {
     const key = normalizePhoneLast10(rawPhone);
     const name = String(rawName || "").trim();
     if (!key || !name || seenStaff.has(key)) return;
+    if (!allowPrivateBypass && hiddenTeacherPhones.has(key)) return;
     seenStaff.add(key);
     entries.push({
       phone: key,
@@ -618,13 +935,20 @@ export function syncSchoolDirectoryToAndroid(params: {
     pushStaffEntry(
       params.school.phone,
       params.school.principalName?.trim() || resolvedSchoolName,
-      "Principal / School Office"
+      "Principal / School Office",
+      true
     );
   }
 
   for (const t of params.teachers || []) {
     if (!t?.phone) continue;
-    pushStaffEntry(t.phone, t.name, t.designation || "Teacher");
+    const baseRole = String(t.designation || "").trim() || "Teacher";
+    const subjectStr = String(t.subject || "").trim();
+    const roleLabel =
+      subjectStr && !baseRole.toLowerCase().includes(subjectStr.toLowerCase())
+        ? `${baseRole} · ${subjectStr}`
+        : baseRole;
+    pushStaffEntry(t.phone, t.name, roleLabel);
   }
 
   for (const a of params.accountants || []) {
@@ -1028,7 +1352,10 @@ export function syncSchoolDirectoryToAndroid(params: {
     return entries.length;
   }
 
-  const sig = `${resolvedSchoolName}|${entries
+  const privacySig = params.respectTeacherPrivacy
+    ? `priv:${Array.from(hiddenTeacherPhones).sort().join(",")}`
+    : "staff";
+  const sig = `${resolvedSchoolName}|${privacySig}|${entries
     .map(
       (e) =>
         `${e.phone}:${e.kind || "STAFF"}:${e.name}:${e.dueAmount ?? 0}:${e.promiseDate || ""}:${e.nextCallDate || ""}:${e.solvedToday ? 1 : 0}:${e.absentToday ? 1 : 0}:${e.enquiryStage || ""}:${e.lastNote || ""}`
@@ -1257,7 +1584,7 @@ export function triggerTestParentCallerPreview(
   const realCandidate =
     cachedList.find((p) => p.kind !== "ENQUIRY" && p.dueAmount > 0) || cachedList[0] || null;
 
-  const sample: CachedParentCallerInfo = sampleOverride?.studentSummary
+  const baseSample: CachedParentCallerInfo = sampleOverride?.studentSummary
     ? {
         phone: sampleOverride.phone || "9876543210",
         name: sampleOverride.name || "Ramesh Sharma ji (Father)",
@@ -1287,6 +1614,9 @@ export function triggerTestParentCallerPreview(
         enquiryNote: sampleOverride.enquiryNote,
         counsellorName: sampleOverride.counsellorName,
         postCall: sampleOverride.postCall,
+        direction: sampleOverride.direction,
+        durationSec: sampleOverride.durationSec,
+        callType: sampleOverride.callType,
         children: sampleOverride.children || [
           {
             id: sampleOverride.primaryStudentId || "sample_student",
@@ -1299,7 +1629,13 @@ export function triggerTestParentCallerPreview(
         isTestSample: sampleOverride.isTestSample,
       }
     : realCandidate
-      ? { ...realCandidate, isTestSample: false }
+      ? {
+          ...realCandidate,
+          isTestSample: false,
+          direction: sampleOverride?.direction,
+          postCall: sampleOverride?.postCall,
+          durationSec: sampleOverride?.durationSec,
+        }
       : {
           phone: "9876500001",
           name: "Rajesh Sharma ji (Father)",
@@ -1318,6 +1654,9 @@ export function triggerTestParentCallerPreview(
           solvedToday: false,
           settled: false,
           absentToday: false,
+          direction: sampleOverride?.direction,
+          postCall: sampleOverride?.postCall,
+          durationSec: sampleOverride?.durationSec,
           lastNote: "Parent ne salary aate hi fee dene ka promise kiya hai.",
           children: [
             {
@@ -1331,21 +1670,23 @@ export function triggerTestParentCallerPreview(
           isTestSample: true,
         };
 
-  announceIncomingParentCall({
-    info: sample,
-    dedupeKey: `test_parent_call_${Date.now()}`,
-    force: true,
-  });
+  if (baseSample.direction !== "OUTGOING") {
+    announceIncomingParentCall({
+      info: baseSample,
+      dedupeKey: `test_parent_call_${Date.now()}`,
+      force: true,
+    });
+  }
 
   if (typeof window !== "undefined") {
     try {
       window.dispatchEvent(
-        new CustomEvent("nsta-test-incoming-parent-call", { detail: sample })
+        new CustomEvent("nsta-test-incoming-parent-call", { detail: baseSample })
       );
     } catch {}
   }
 
-  return sample;
+  return baseSample;
 }
 
 export function buildIncomingCallerSpeechText(params: {

@@ -28,6 +28,7 @@ class ParentCallOverlayService : Service() {
 
     companion object {
         const val ACTION_SHOW_RINGING = "app.lifemaker.school.OVERLAY_SHOW_RINGING"
+        const val ACTION_SHOW_OUTGOING = "app.lifemaker.school.OVERLAY_SHOW_OUTGOING"
         const val ACTION_SHOW_POST_CALL = "app.lifemaker.school.OVERLAY_SHOW_POST_CALL"
         const val ACTION_HIDE = "app.lifemaker.school.OVERLAY_HIDE"
         const val EXTRA_CALLER_JSON = "extra_caller_json"
@@ -36,18 +37,43 @@ class ParentCallOverlayService : Service() {
             if (!canDrawOverlays(context)) return
             val intent = Intent(context, ParentCallOverlayService::class.java).apply {
                 action = ACTION_SHOW_RINGING
-                putExtra(EXTRA_CALLER_JSON, match.toJson(postCall = false).toString())
+                putExtra(EXTRA_CALLER_JSON, match.toJson(postCall = false, direction = "INCOMING").toString())
             }
             try {
                 context.startService(intent)
             } catch (_: Exception) {}
         }
 
-        fun showPostCall(context: Context, match: CallerDirectoryMatch) {
+        fun showOutgoing(context: Context, match: CallerDirectoryMatch) {
+            if (!canDrawOverlays(context)) return
+            val intent = Intent(context, ParentCallOverlayService::class.java).apply {
+                action = ACTION_SHOW_OUTGOING
+                putExtra(EXTRA_CALLER_JSON, match.toJson(postCall = false, direction = "OUTGOING").toString())
+            }
+            try {
+                context.startService(intent)
+            } catch (_: Exception) {}
+        }
+
+        fun showPostCall(
+            context: Context,
+            match: CallerDirectoryMatch,
+            direction: String = "INCOMING",
+            durationSec: Int = 0,
+            callType: String = ""
+        ) {
             if (!canDrawOverlays(context)) return
             val intent = Intent(context, ParentCallOverlayService::class.java).apply {
                 action = ACTION_SHOW_POST_CALL
-                putExtra(EXTRA_CALLER_JSON, match.toJson(postCall = true).toString())
+                putExtra(
+                    EXTRA_CALLER_JSON,
+                    match.toJson(
+                        postCall = true,
+                        direction = direction,
+                        durationSec = durationSec,
+                        callType = callType
+                    ).toString()
+                )
             }
             try {
                 context.startService(intent)
@@ -104,8 +130,9 @@ class ParentCallOverlayService : Service() {
         }
 
         val isPostCall = action == ACTION_SHOW_POST_CALL
+        val forceOutgoing = action == ACTION_SHOW_OUTGOING
         mainHandler.post {
-            showOrUpdateOverlay(rawJson, isPostCall)
+            showOrUpdateOverlay(rawJson, isPostCall, forceOutgoing)
         }
         return START_NOT_STICKY
     }
@@ -137,7 +164,7 @@ class ParentCallOverlayService : Service() {
     }
 
     @SuppressLint("ClickableViewAccessibility")
-    private fun showOrUpdateOverlay(rawJson: String, isPostCall: Boolean) {
+    private fun showOrUpdateOverlay(rawJson: String, isPostCall: Boolean, forceOutgoing: Boolean = false) {
         val data = try {
             JSONObject(rawJson)
         } catch (_: Exception) {
@@ -177,12 +204,29 @@ class ParentCallOverlayService : Service() {
         }
         layoutParams = params
 
+        val direction = if (forceOutgoing) {
+            "OUTGOING"
+        } else {
+            data.optString("direction", "INCOMING").ifBlank { "INCOMING" }
+        }
+        val isOutgoing = direction.equals("OUTGOING", ignoreCase = true)
+        val durationSec = data.optInt("durationSec", 0).coerceAtLeast(0)
+        val durationSuffix = if (durationSec > 0) {
+            val mins = durationSec / 60
+            val secs = durationSec % 60
+            if (mins > 0) " (${mins}m ${secs}s)" else " (${secs}s)"
+        } else {
+            ""
+        }
         val kind = data.optString("kind", "PARENT").ifBlank { "PARENT" }
+        val isParentCaller = kind.equals("PARENT", ignoreCase = true)
         val isEnquiry = kind.equals("ENQUIRY", ignoreCase = true)
+        val isStaff = !isParentCaller && !isEnquiry
         val absentToday = data.optBoolean("absentToday", false)
         val phone = data.optString("phone", "").trim()
         val schoolName = data.optString("schoolName", "School").ifBlank { "School" }
         val name = data.optString("name", "Caller").trim()
+        val role = data.optString("role", "School Staff").trim().ifBlank { "School Staff" }
         val studentSummary = data.optString("studentSummary", "").trim()
         val relationLabel = data.optString("relationLabel", "Parent").ifBlank { "Parent" }
         val fatherName = data.optString("fatherName", "").trim()
@@ -203,9 +247,11 @@ class ParentCallOverlayService : Service() {
             cornerRadius = dp(18).toFloat()
             setStroke(dp(1), Color.parseColor(
                 when {
+                    isStaff -> "#0EA5E9"
                     isPostCall -> "#4F46E5"
                     absentToday -> "#E11D48"
                     isEnquiry -> "#0284C7"
+                    isOutgoing -> "#0D9488"
                     else -> "#10B981"
                 }
             ))
@@ -221,9 +267,12 @@ class ParentCallOverlayService : Service() {
         val headerBg = GradientDrawable().apply {
             setColor(Color.parseColor(
                 when {
+                    isStaff && isOutgoing -> "#0F3A4A"
+                    isStaff -> "#0C4A6E"
                     isPostCall -> "#1E1B4B"
                     absentToday -> "#4C0519"
                     isEnquiry -> "#082F49"
+                    isOutgoing -> "#134E4A"
                     else -> "#064E3B"
                 }
             ))
@@ -243,13 +292,20 @@ class ParentCallOverlayService : Service() {
 
         val tagText = TextView(this).apply {
             text = when {
-                isPostCall -> "CALL ENDED · UPDATE STATUS"
+                isStaff && isOutgoing -> "✓ VERIFIED SCHOOL CALL · OUTGOING"
+                isStaff -> "✓ VERIFIED SCHOOL CALL · $schoolName"
+                isPostCall && isOutgoing -> "OUTGOING CALL ENDED$durationSuffix · UPDATE"
+                isPostCall -> "CALL ENDED$durationSuffix · UPDATE STATUS"
+                isOutgoing && isEnquiry -> "OUTGOING ENQUIRY · $schoolName"
+                isOutgoing && absentToday -> "OUTGOING ABSENT ALERT · $schoolName"
+                isOutgoing -> "OUTGOING PARENT CALL · $schoolName"
                 isEnquiry -> "ADMISSION ENQUIRY · $schoolName"
                 absentToday -> "ABSENT TODAY ALERT · $schoolName"
                 else -> "PARENT CALLER ID · $schoolName"
             }
             setTextColor(Color.parseColor(
                 when {
+                    isStaff -> "#7DD3FC"
                     isPostCall -> "#C7D2FE"
                     absentToday -> "#FDA4AF"
                     isEnquiry -> "#7DD3FC"
@@ -315,13 +371,13 @@ class ParentCallOverlayService : Service() {
         }
 
         val callerTitle = TextView(this).apply {
-            text = if (isEnquiry) {
-                if (studentSummary.isNotBlank()) "$name · $studentSummary" else name
-            } else {
-                if (studentSummary.isNotBlank()) "$studentSummary ke $relationLabel" else name
+            text = when {
+                isStaff -> name
+                isEnquiry -> if (studentSummary.isNotBlank()) "$name · $studentSummary" else name
+                else -> if (studentSummary.isNotBlank()) "$studentSummary ke $relationLabel" else name
             }
             setTextColor(Color.WHITE)
-            textSize = 16f
+            textSize = if (isStaff) 17f else 16f
             setTypeface(null, Typeface.BOLD)
             maxLines = 2
             ellipsize = TextUtils.TruncateAt.END
@@ -329,23 +385,39 @@ class ParentCallOverlayService : Service() {
         body.addView(callerTitle)
 
         val subLine = TextView(this).apply {
-            text = buildString {
-                if (!isEnquiry && fatherName.isNotBlank()) {
-                    append(fatherName)
-                    append(" • ")
+            text = if (isStaff) {
+                buildString {
+                    append(role)
+                    if (phone.isNotBlank()) {
+                        append(" • ")
+                        append(phone)
+                    }
                 }
-                append(phone)
-                if (absentToday && !isEnquiry) {
-                    append(" • Aaj School me Absent Hain")
+            } else {
+                buildString {
+                    if (!isEnquiry && fatherName.isNotBlank()) {
+                        append(fatherName)
+                        append(" • ")
+                    }
+                    append(phone)
+                    if (absentToday && !isEnquiry) {
+                        append(" • Aaj School me Absent Hain")
+                    }
                 }
             }
-            setTextColor(Color.parseColor(if (absentToday && !isEnquiry) "#FDA4AF" else "#94A3B8"))
+            setTextColor(Color.parseColor(
+                when {
+                    isStaff -> "#7DD3FC"
+                    absentToday && !isEnquiry -> "#FDA4AF"
+                    else -> "#94A3B8"
+                }
+            ))
             textSize = 12f
             setPadding(0, dp(2), 0, dp(10))
         }
         body.addView(subLine)
 
-        // 2x2 Fact Grid
+        // Fact Grid
         fun createFactCell(label: String, value: String, valueColor: String): LinearLayout {
             val cellBg = GradientDrawable().apply {
                 setColor(Color.parseColor("#1E293B"))
@@ -389,7 +461,12 @@ class ParentCallOverlayService : Service() {
             layoutParams = LinearLayout.LayoutParams(dp(6), 1)
         }
 
-        if (isEnquiry) {
+        if (isStaff) {
+            row1.addView(createFactCell("School Directory", schoolName, "#F8FAFC"))
+            row1.addView(gapView1)
+            row1.addView(createFactCell("Verified Role", role, "#34D399"))
+            body.addView(row1)
+        } else if (isEnquiry) {
             val stageLabel = when (enquiryStage.lowercase()) {
                 "visit_scheduled" -> "Visit Scheduled"
                 "contacted" -> "Contacted"
@@ -414,6 +491,8 @@ class ParentCallOverlayService : Service() {
                     "#E2E8F0"
                 )
             )
+            body.addView(row1)
+            body.addView(row2)
         } else {
             val dueStr = if (dueAmount > 0L) "₹${AppPrefs.formatIndianRupees(dueAmount)}" else "₹0 · Clear"
             val dueColor = if (dueAmount > 0L) "#FB7185" else "#34D399"
@@ -442,10 +521,9 @@ class ParentCallOverlayService : Service() {
             row2.addView(createFactCell("3. Next Call", nextCallStr, "#38BDF8"))
             row2.addView(gapView2)
             row2.addView(createFactCell("4. Aaj Solve?", solveStr, solveColor))
+            body.addView(row1)
+            body.addView(row2)
         }
-
-        body.addView(row1)
-        body.addView(row2)
 
         // Action Row
         val actionRow = LinearLayout(this).apply {
@@ -454,11 +532,21 @@ class ParentCallOverlayService : Service() {
         }
 
         val openBtnBg = GradientDrawable().apply {
-            setColor(Color.parseColor(if (isPostCall) "#4F46E5" else "#059669"))
+            setColor(Color.parseColor(
+                when {
+                    isStaff -> "#0284C7"
+                    isPostCall -> "#4F46E5"
+                    else -> "#059669"
+                }
+            ))
             cornerRadius = dp(10).toFloat()
         }
         val openBtn = TextView(this).apply {
-            text = if (isPostCall) "Promise / Solve Update Karein" else "Open Full Card / Collect"
+            text = when {
+                isStaff -> "Open School App"
+                isPostCall -> "Promise / Solve Update Karein"
+                else -> "Open Full Card / Collect"
+            }
             setTextColor(Color.WHITE)
             textSize = 12f
             setTypeface(null, Typeface.BOLD)
@@ -467,13 +555,19 @@ class ParentCallOverlayService : Service() {
             setPadding(dp(12), dp(10), dp(12), dp(10))
             layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
             setOnClickListener {
-                val postParam = if (isPostCall) "&postCall=1" else ""
-                val url = NotificationHelper.sanitizeAppUrl(
-                    "/?incomingParentPhone=${Uri.encode(phone)}&incomingParentCall=1$postParam"
-                )
-                val launch = Intent(this@ParentCallOverlayService, MainActivity::class.java).apply {
-                    flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
-                    putExtra(NotificationHelper.EXTRA_TARGET_URL, url)
+                val launch = if (isStaff) {
+                    Intent(this@ParentCallOverlayService, MainActivity::class.java).apply {
+                        flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
+                    }
+                } else {
+                    val postParam = if (isPostCall) "&postCall=1" else ""
+                    val url = NotificationHelper.sanitizeAppUrl(
+                        "/?incomingParentPhone=${Uri.encode(phone)}&incomingParentCall=1$postParam"
+                    )
+                    Intent(this@ParentCallOverlayService, MainActivity::class.java).apply {
+                        flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
+                        putExtra(NotificationHelper.EXTRA_TARGET_URL, url)
+                    }
                 }
                 try {
                     startActivity(launch)
@@ -515,7 +609,11 @@ class ParentCallOverlayService : Service() {
         try {
             wm.addView(root, params)
             overlayView = root
-            val timeoutMs = if (isPostCall) 25_000L else 65_000L
+            val timeoutMs = when {
+                isStaff -> 45_000L
+                isPostCall -> 25_000L
+                else -> 65_000L
+            }
             mainHandler.postDelayed(autoDismissRunnable, timeoutMs)
         } catch (_: Exception) {
             stopSelf()

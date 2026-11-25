@@ -42,7 +42,7 @@ import {
   Sun, Moon, Palette,
   Cake, Gift,
   Smartphone, Laptop, Monitor,
-  Camera, Lock, ShieldCheck, PenTool, Radio
+  Camera, Lock, ShieldCheck, PenTool, Radio, EyeOff
 } from "lucide-react";
 import { TimetableManager } from "./TimetableManager";
 import { lazyWithRetry, LazyPanelBoundary, scheduleIdlePreload } from "../../utils/lazyWithRetry";
@@ -62,6 +62,7 @@ import { AbsenteeActionPage } from "./AbsenteeActionPage";
 const OnlineAdmissionManager = lazyWithRetry(loadOnlineAdmissionManager, "Online Admission Manager");
 import { DirectAdmissionModal } from "./DirectAdmissionModal";
 import { AdmissionFormPrintModal } from "./AdmissionFormPrintModal";
+import { StudentIdCardModal } from "./StudentIdCardModal";
 import { getSavedSchoolLogo } from "./feeReceiptUtils";
 import { ClassCurriculumNotesManager } from "./ClassCurriculumNotesManager";
 import {
@@ -84,12 +85,16 @@ import { HomeDailyRoutineWidget } from "./HomeDailyRoutineWidget";
 import { AccountRecoveryCard } from "./AccountRecoveryCard";
 import { rotateToLandscape, rotateToPortrait, setDesktopMode, useDeviceOrientation } from "../../utils/displayPrefs";
 import { autoSyncSchoolPushIfPermitted } from "../../utils/schoolPushClient";
-import { subscribeUserToPush } from "../NotificationManager";
+import { subscribeUserToPush, syncNativeAndroidIdentity } from "../NotificationManager";
 import { resolveTeacherPermissions, getTeacherScopedClasses } from "../../utils/schoolRolePermissions";
 import { useBackHandler } from "../../utils/backNavigation";
 import { NstaCallPortalHost } from "./NstaCallModal";
 import { CallerIdSettingsCard } from "./CallerIdSettingsCard";
+import { CallSetupChecklistBanner } from "./CallSetupChecklistBanner";
+import { ApkUpdateBanner } from "./ApkUpdateBanner";
 import { IncomingParentCallModal } from "./IncomingParentCallModal";
+import { ScreenInfoGuideButton } from "./ScreenInfoGuideButton";
+import { LanguageToggleButton } from "./LanguageToggleButton";
 import { syncSchoolDirectoryToAndroid, extractTodayAbsentStudentIds } from "../../utils/schoolCallerId";
 import { useSchoolWalkieChannel } from "../../utils/schoolWalkieService";
 import { WalkieTalkieModal } from "./WalkieTalkieModal";
@@ -345,6 +350,10 @@ export const TeacherPanel: React.FC<Props> = ({
     fee: MonthlyFee | null;
     mode: "combined" | "form_only";
   } | null>(null);
+  const [selectedStudentForIdCard, setSelectedStudentForIdCard] = useState<{
+    student: SchoolStudent;
+    admissionFee?: MonthlyFee | null;
+  } | null>(null);
   const [confirmDeleteSubjectId, setConfirmDeleteSubjectId] = useState<string | null>(null);
 
   // Multi-book addition state
@@ -385,6 +394,7 @@ export const TeacherPanel: React.FC<Props> = ({
   useBackHandler(showFaceStudio, () => setShowFaceStudio(false), 30);
   useBackHandler(showWalkieModal, () => setShowWalkieModal(false), 26);
   useBackHandler(Boolean(admissionPrintPayload), () => setAdmissionPrintPayload(null), 22);
+  useBackHandler(Boolean(selectedStudentForIdCard), () => setSelectedStudentForIdCard(null), 22);
   useBackHandler(Boolean(confirmDeleteSubjectId), () => setConfirmDeleteSubjectId(null), 22);
   useBackHandler(showMySignatureModal, () => setShowMySignatureModal(false), 22);
   useBackHandler(showMyAppointmentLetter, () => setShowMyAppointmentLetter(false), 20);
@@ -538,7 +548,7 @@ export const TeacherPanel: React.FC<Props> = ({
     syncSchoolDirectoryToAndroid({
       school: targetSchool,
       schoolName: targetSchool?.name,
-      teachers: latestTeachersRef.current,
+      teachers: teachersList.length > 0 ? teachersList : latestTeachersRef.current,
       students: allowParentCaller ? allStudents : [],
       classes: allowParentCaller ? classes : [],
       fees: allowParentCaller ? schoolFees : [],
@@ -550,6 +560,7 @@ export const TeacherPanel: React.FC<Props> = ({
     schoolId,
     school,
     currentTeacher,
+    teachersList,
     allStudents,
     classes,
     schoolFees,
@@ -565,6 +576,11 @@ export const TeacherPanel: React.FC<Props> = ({
       localStorage.setItem("nst_active_school_id", schoolId);
       window.dispatchEvent(new CustomEvent("nst_school_identity_updated", { detail: { schoolId, teacherId } }));
     } catch {}
+    syncNativeAndroidIdentity({
+      userId: teacherId,
+      schoolId,
+      extraIds: [teacherId],
+    }).catch(() => {});
     if (typeof Notification !== "undefined" && Notification.permission === "granted") {
       autoSyncSchoolPushIfPermitted({
         userId: teacherId,
@@ -1834,6 +1850,9 @@ export const TeacherPanel: React.FC<Props> = ({
             )}
           </button>
 
+          <LanguageToggleButton tone={appTheme} compact />
+          <ScreenInfoGuideButton portal="teacher" screenKey={view} tone={appTheme} />
+
           <button
             type="button"
             onClick={() => setView("profile")}
@@ -1941,6 +1960,51 @@ export const TeacherPanel: React.FC<Props> = ({
                 <span className="text-[10px] font-bold uppercase text-slate-400 block">Registered Phone</span>
                 <span className="font-mono font-bold text-slate-800 dark:text-slate-200">{currentTeacher?.phone || "Not set"}</span>
               </div>
+            </div>
+
+            <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-950/60 border border-slate-200/80 dark:border-slate-800 flex items-center justify-between gap-3">
+              <div className="flex items-start gap-2.5 min-w-0">
+                <EyeOff className="w-4 h-4 text-indigo-600 dark:text-indigo-400 mt-0.5 shrink-0" />
+                <div className="min-w-0">
+                  <p className="text-xs font-bold text-slate-800 dark:text-slate-100">
+                    Parent Caller ID se mera number chhupayein
+                  </p>
+                  <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                    {currentTeacher?.hidePhoneFromParentCallerId
+                      ? "Abhi chhupa hua hai — Parents ke app me aapka number sync nahi hoga."
+                      : "Abhi chalu hai — School call par Parents ko aapka verified card dikhega."}
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={async () => {
+                  const nextVal = !currentTeacher?.hidePhoneFromParentCallerId;
+                  setCurrentTeacher((prev) => (prev ? { ...prev, hidePhoneFromParentCallerId: nextVal } : prev));
+                  setTeachersList((prev) =>
+                    prev.map((item) => (item.id === tUid ? { ...item, hidePhoneFromParentCallerId: nextVal } : item))
+                  );
+                  if (schoolId && tUid) {
+                    try {
+                      await updateTeacher(schoolId, tUid, { hidePhoneFromParentCallerId: nextVal });
+                      toast.success(
+                        nextVal
+                          ? "Privacy On: Aapka number Parents ke Caller ID se hata diya gaya."
+                          : "Privacy Off: Parents ko aapka verified call card dikhega."
+                      );
+                    } catch {
+                      toast.error("Privacy setting save nahi ho saki.");
+                    }
+                  }
+                }}
+                className={`px-3 py-1.5 rounded-xl text-xs font-bold shrink-0 cursor-pointer transition ${
+                  currentTeacher?.hidePhoneFromParentCallerId
+                    ? "bg-indigo-600 text-white"
+                    : "bg-slate-200 dark:bg-slate-800 text-slate-700 dark:text-slate-200"
+                }`}
+              >
+                {currentTeacher?.hidePhoneFromParentCallerId ? "Hidden (On)" : "Visible (Off)"}
+              </button>
             </div>
           </div>
 
@@ -3225,6 +3289,8 @@ export const TeacherPanel: React.FC<Props> = ({
     // ── DEFAULT: HOME DASHBOARD VIEW ─────────────────────────────────────────
     return (
       <div className="space-y-5 animate-in fade-in duration-200">
+        <ApkUpdateBanner school={school} />
+        <CallSetupChecklistBanner mode="staff" schoolName={school?.name} />
         {/* Active Role & Scope Banner */}
         <div className="bg-white dark:bg-slate-900 rounded-2xl p-4 border border-slate-200 dark:border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
           <div className="flex items-center gap-2.5 text-xs text-slate-700 dark:text-slate-200">
@@ -3948,11 +4014,31 @@ export const TeacherPanel: React.FC<Props> = ({
             setShowDirectAdmissionModal(false);
             setAllStudents((prev) => [newStudent, ...prev.filter((s) => s.id !== newStudent.id)]);
             toast.success(`✅ ${newStudent.name} का सीधा दाखिला हो गया (Roll #${newStudent.rollNo})!`);
-            setAdmissionPrintPayload({
+            setSelectedStudentForIdCard({
               student: newStudent,
-              fee: admFee || null,
-              mode: admFee ? "combined" : "form_only",
+              admissionFee: admFee || null,
             });
+          }}
+        />
+      )}
+      {school && selectedStudentForIdCard && (
+        <StudentIdCardModal
+          isOpen={true}
+          student={selectedStudentForIdCard.student}
+          school={school}
+          classes={classes}
+          admissionFee={selectedStudentForIdCard.admissionFee || null}
+          onClose={() => setSelectedStudentForIdCard(null)}
+          onOpenAdmissionForm={() => {
+            const curCard = selectedStudentForIdCard;
+            setSelectedStudentForIdCard(null);
+            if (curCard?.student) {
+              setAdmissionPrintPayload({
+                student: curCard.student,
+                fee: curCard.admissionFee || null,
+                mode: curCard.admissionFee ? "combined" : "form_only",
+              });
+            }
           }}
         />
       )}
@@ -3968,7 +4054,17 @@ export const TeacherPanel: React.FC<Props> = ({
             ""
           }
           feeRecord={admissionPrintPayload.fee}
-          mode={admissionPrintPayload.mode}
+          initialMode={admissionPrintPayload.mode}
+          onOpenStudentIdCard={() => {
+            const curPayload = admissionPrintPayload;
+            setAdmissionPrintPayload(null);
+            if (curPayload?.student) {
+              setSelectedStudentForIdCard({
+                student: curPayload.student,
+                admissionFee: curPayload.fee || null,
+              });
+            }
+          }}
         />
       )}
       {school?.id && hasEliteFeeTagadaAccess(school) && (
@@ -3976,7 +4072,9 @@ export const TeacherPanel: React.FC<Props> = ({
           schoolId={school.id}
           schoolName={school.name}
           schoolUpiId={school.upiId}
+          callerUserId={teacherId}
           callerUserName={currentTeacher?.name || teacherName}
+          callerUserRole="TEACHER"
           students={allStudents}
           classes={classes}
           fees={schoolFees}
@@ -3993,6 +4091,7 @@ export const TeacherPanel: React.FC<Props> = ({
         currentUserId={teacherId}
         currentUserName={currentTeacher?.name || teacherName}
         currentUserRole="TEACHER"
+        schoolAdminUid={school?.adminUid}
         teachers={teachersList}
         messages={walkieMessages}
         schedule={walkieSchedule}

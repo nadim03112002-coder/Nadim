@@ -20,6 +20,7 @@ import { DocumentTemplateStudioModal } from "./DocumentTemplateStudioModal";
 import { resolveActiveDocumentTemplate, DOCUMENT_TEMPLATE_EVENT, getLayoutArchitecture } from "../../utils/schoolDocumentTemplates";
 import { printElementInIframe } from "./AdmissionFormPrintModal";
 import { exportElementToPdf, exportMultiPageElementsToPdf } from "../../utils/universalPdfExport";
+import { EasyScanQrPanel } from "./EasyScanQrPanel";
 
 interface Props {
   school: School;
@@ -2102,6 +2103,68 @@ export const IdCardManager: React.FC<Props> = ({
                       <Building2 className="w-4 h-4 text-indigo-500" /> School Details Edit
                     </button>
                   </div>
+
+                  {/* 512x512 Easy-Scan On-Screen QR Panel (Strictly Excluded from Print & PDF) */}
+                  {(() => {
+                    const activeItem = activeTab === "students" ? selectedStudent : selectedStaff;
+                    if (!activeItem) return null;
+                    const isStaffItem = activeTab === "staff";
+                    const itemClassName = !isStaffItem
+                      ? (classes.find(c => c.id === activeItem.classId)?.name || activeItem.className || "Class")
+                      : (activeItem.designation || "Staff");
+                    const itemQrValue = isStaffItem
+                      ? buildStaffIdCardQrUrl({
+                          isAdmin: false,
+                          schoolId: school?.id || "",
+                          staffId: activeItem.id || "",
+                          empId: activeItem.rollNo || activeItem.employeeId || "",
+                          department: activeItem.classId || activeItem.department || "",
+                          name: (activeItem.name || "").slice(0, 32),
+                          admNo: activeItem.admissionNo || "",
+                          phone: activeItem.phone || activeItem.mobile || "",
+                          fatherName: activeItem.fatherName || "",
+                          motherName: activeItem.motherName || "",
+                          bloodGroup: activeItem.bloodGroup || "",
+                          dob: activeItem.dateOfBirth || activeItem.dob || "",
+                          address: activeItem.address || activeItem.city || "",
+                          designation: itemClassName,
+                          schoolName: schoolDetails.schoolName || school?.name || "",
+                        })
+                      : buildStudentIdCardQrUrl({
+                          schoolId: school?.id || "",
+                          studentId: activeItem.id || "",
+                          rollNo: activeItem.rollNo || "",
+                          classId: activeItem.classId || "",
+                          studentName: (activeItem.name || "").slice(0, 32),
+                          admissionNo: activeItem.admissionNo || "",
+                          phone: activeItem.phone || activeItem.mobile || "",
+                          fatherName: activeItem.fatherName || "",
+                          motherName: activeItem.motherName || "",
+                          bloodGroup: activeItem.bloodGroup || "",
+                          dob: activeItem.dateOfBirth || activeItem.dob || "",
+                          address: activeItem.address || activeItem.city || "",
+                          monthlyFee: activeItem.monthlyFee ?? "",
+                          className: itemClassName,
+                          schoolName: schoolDetails.schoolName || school?.name || "",
+                        });
+                    return (
+                      <div className="w-full mt-5 print:hidden">
+                        <EasyScanQrPanel
+                          qrValue={itemQrValue}
+                          personName={activeItem.name || (isStaffItem ? "Staff" : "Student")}
+                          personRoleLabel={itemClassName}
+                          identifierLabel={
+                            isStaffItem
+                              ? `Emp ID: ${activeItem.employeeId || activeItem.id?.slice(-5)}`
+                              : `Roll #${activeItem.rollNo || "—"} · Adm: ${activeItem.admissionNo || "—"}`
+                          }
+                          scanInstruction="Screen se turant scan karne ke liye 512×512 Easy-Scan QR (Print aur PDF me CR80 card apne original size me rahega)"
+                          downloadFileName={`${isStaffItem ? "Staff" : "Student"}_QR_512x512_${activeItem.name || "ID"}`}
+                          accent={isStaffItem ? "purple" : "blue"}
+                        />
+                      </div>
+                    );
+                  })()}
                 </>
               ) : (
                 <div className="py-16 text-center text-slate-400 text-sm">
@@ -2129,6 +2192,7 @@ export const IdCardManager: React.FC<Props> = ({
 
       {showAddStudentModal && (
         <QuickAddStudentModal
+          isOpen={true}
           schoolId={school.id}
           classes={classes}
           defaultClassId={selectedClassId === "all" ? classes[0]?.id : selectedClassId}
@@ -2136,6 +2200,8 @@ export const IdCardManager: React.FC<Props> = ({
           onStudentAdded={(newStu) => {
             setStudents(prev => [newStu, ...prev]);
             setSelectedStudent(newStu);
+            setActiveTab("students");
+            setPrintAllMode(false);
           }}
         />
       )}
