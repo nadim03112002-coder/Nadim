@@ -12,12 +12,14 @@ import {
   saveStaffLeave,
   subscribeStaffLeaves,
   todayStr,
-  isStudentBirthdayToday, dispatchOfficialSchoolBirthdayWish
+  isStudentBirthdayToday, dispatchOfficialSchoolBirthdayWish, subscribeToFeeCallFollowUps,
+  getLocalAttendance, getSchoolPublicInquiries
 } from "../../school-firebase";
 import { getDemoSchoolDataset } from "./demoDataStore";
 import type {
   School, SchoolClass, SchoolSubject, SchoolLesson, SchoolStudent, SchoolSession,
-  MonthlyFee, TeacherReferralPayout, SchoolReferralSettings, SchoolTeacher, StaffLeave
+  MonthlyFee, TeacherReferralPayout, SchoolReferralSettings, SchoolTeacher, StaffLeave,
+  FeeCallFollowUpRecord, SchoolPublicInquiry
 } from "../../school-types";
 import { sortSchoolClasses } from "../../school-types";
 import {
@@ -40,26 +42,40 @@ import {
   Sun, Moon, Palette,
   Cake, Gift,
   Smartphone, Laptop, Monitor,
-  Camera, Lock, ShieldCheck, PenTool
+  Camera, Lock, ShieldCheck, PenTool, Radio
 } from "lucide-react";
 import { TimetableManager } from "./TimetableManager";
-import { ClassroomVideoArchive } from "./ClassroomVideoArchive";
+import { lazyWithRetry, LazyPanelBoundary, scheduleIdlePreload } from "../../utils/lazyWithRetry";
+const loadClassroomVideoArchive = () => import("./ClassroomVideoArchive").then(m => ({ default: m.ClassroomVideoArchive }));
+const loadNstaMessengerSuite = () => import("./NstaMessengerSuite").then(m => ({ default: m.NstaMessengerSuite }));
+const loadOnlineAdmissionManager = () => import("./OnlineAdmissionManager").then(m => ({ default: m.OnlineAdmissionManager }));
+const loadGroupStudyModal = () => import("../GroupStudyModal").then(m => ({ default: m.GroupStudyModal }));
+const loadUniversalFaceIdStudioModal = () => import("./UniversalFaceIdStudioModal").then(m => ({ default: m.UniversalFaceIdStudioModal }));
+const loadQuestionPaperBuilder = () => import("./QuestionPaperBuilder").then(m => ({ default: m.QuestionPaperBuilder }));
+
+const ClassroomVideoArchive = lazyWithRetry(loadClassroomVideoArchive, "Classroom Video Archive");
 import { HomeworkManager } from "./HomeworkManager";
 import { LibraryManager } from "./LibraryManager";
 import { ParentTeacherQueryManager } from "./ParentTeacherQueryManager";
-import { NstaMessengerSuite } from "./NstaMessengerSuite";
+const NstaMessengerSuite = lazyWithRetry(loadNstaMessengerSuite, "NSTA Messenger");
 import { AbsenteeActionPage } from "./AbsenteeActionPage";
-import { OnlineAdmissionManager } from "./OnlineAdmissionManager";
+const OnlineAdmissionManager = lazyWithRetry(loadOnlineAdmissionManager, "Online Admission Manager");
 import { DirectAdmissionModal } from "./DirectAdmissionModal";
 import { AdmissionFormPrintModal } from "./AdmissionFormPrintModal";
 import { getSavedSchoolLogo } from "./feeReceiptUtils";
 import { ClassCurriculumNotesManager } from "./ClassCurriculumNotesManager";
-import { isSchoolEliteCurriculum, hasFaceAttendanceAccess } from "../../school-types";
-import { GroupStudyModal } from "../GroupStudyModal";
+import {
+  isSchoolEliteCurriculum,
+  hasFaceAttendanceAccess,
+  hasEliteCallAccess,
+  hasEliteWalkieAccess,
+  hasEliteFeeTagadaAccess,
+} from "../../school-types";
+const GroupStudyModal = lazyWithRetry(loadGroupStudyModal, "Study Room");
 import { ParentLeaveManager } from "./ParentLeaveManager";
 import { PtmSchedulerModal } from "./PtmSchedulerModal";
-import { UniversalFaceIdStudioModal } from "./UniversalFaceIdStudioModal";
-import { QuestionPaperBuilder } from "./QuestionPaperBuilder";
+const UniversalFaceIdStudioModal = lazyWithRetry(loadUniversalFaceIdStudioModal, "Face ID Studio");
+const QuestionPaperBuilder = lazyWithRetry(loadQuestionPaperBuilder, "Question Paper Builder");
 import { TeacherAdminGrowthHub } from "./TeacherAdminGrowthHub";
 import { TeacherRulesRegulationsView } from "./TeacherRulesRegulationsView";
 import { TeacherSignatureModal } from "./TeacherSignatureModal";
@@ -72,6 +88,11 @@ import { subscribeUserToPush } from "../NotificationManager";
 import { resolveTeacherPermissions, getTeacherScopedClasses } from "../../utils/schoolRolePermissions";
 import { useBackHandler } from "../../utils/backNavigation";
 import { NstaCallPortalHost } from "./NstaCallModal";
+import { CallerIdSettingsCard } from "./CallerIdSettingsCard";
+import { IncomingParentCallModal } from "./IncomingParentCallModal";
+import { syncSchoolDirectoryToAndroid, extractTodayAbsentStudentIds } from "../../utils/schoolCallerId";
+import { useSchoolWalkieChannel } from "../../utils/schoolWalkieService";
+import { WalkieTalkieModal } from "./WalkieTalkieModal";
 
 interface Props {
   schoolId: string;
@@ -123,6 +144,10 @@ export const TeacherPanel: React.FC<Props> = ({
   onLogout,
   onOpenPlatformContent
 }) => {
+  useEffect(() => {
+    return scheduleIdlePreload([loadNstaMessengerSuite, loadQuestionPaperBuilder], 1800);
+  }, []);
+
   const handleExploreFullApp = () => {
     if (!onOpenPlatformContent && !onBack) return;
     if (onOpenPlatformContent) {
@@ -148,6 +173,9 @@ export const TeacherPanel: React.FC<Props> = ({
   const [selectedSubject, setSelectedSubject] = useState<SchoolSubject | null>(null);
   const [lessons, setLessons] = useState<SchoolLesson[]>([]);
   const [selectedLesson, setSelectedLesson] = useState<SchoolLesson | null>(null);
+  const [feeCallFollowUps, setFeeCallFollowUps] = useState<FeeCallFollowUpRecord[]>([]);
+  const [inquiries, setInquiries] = useState<SchoolPublicInquiry[]>([]);
+  const [attendanceTick, setAttendanceTick] = useState(0);
   const [smartMode, setSmartMode] = useState<"reading" | "writing" | "pdf" | "mcq">("reading");
   const [view, setView] = useState<TeacherView>("dashboard");
 
@@ -328,6 +356,8 @@ export const TeacherPanel: React.FC<Props> = ({
 
   // Current logged in Teacher record
   const [currentTeacher, setCurrentTeacher] = useState<SchoolTeacher | null>(null);
+  const [teachersList, setTeachersList] = useState<SchoolTeacher[]>([]);
+  const [showWalkieModal, setShowWalkieModal] = useState(false);
   const [showMySignatureModal, setShowMySignatureModal] = useState(false);
   const [showMyAppointmentLetter, setShowMyAppointmentLetter] = useState(false);
 
@@ -353,6 +383,7 @@ export const TeacherPanel: React.FC<Props> = ({
 
   // Android / Browser Back button step-by-step navigation across Teacher Portal
   useBackHandler(showFaceStudio, () => setShowFaceStudio(false), 30);
+  useBackHandler(showWalkieModal, () => setShowWalkieModal(false), 26);
   useBackHandler(Boolean(admissionPrintPayload), () => setAdmissionPrintPayload(null), 22);
   useBackHandler(Boolean(confirmDeleteSubjectId), () => setConfirmDeleteSubjectId(null), 22);
   useBackHandler(showMySignatureModal, () => setShowMySignatureModal(false), 22);
@@ -383,8 +414,18 @@ export const TeacherPanel: React.FC<Props> = ({
   }, 0);
 
   // Initial load
+  const latestSchoolRef = useRef<School | null>(null);
+  const latestTeachersRef = useRef<SchoolTeacher[]>([]);
   useEffect(() => {
-    getSchool(schoolId).then((s) => setSchool(s));
+    getSchool(schoolId).then((s) => {
+      setSchool(s);
+      latestSchoolRef.current = s;
+      syncSchoolDirectoryToAndroid({
+        school: s,
+        schoolName: s?.name,
+        teachers: latestTeachersRef.current,
+      });
+    });
 
     getSessions(schoolId).then((sess) => {
       setSessions(sess);
@@ -408,10 +449,18 @@ export const TeacherPanel: React.FC<Props> = ({
 
     const unsubTeachers = subscribeToTeachers(schoolId, (tchs) => {
       if (tchs && tchs.length > 0) {
+        latestTeachersRef.current = tchs;
+        setTeachersList(tchs);
         const me = tchs.find(
           (t) => t.id === teacherId || (t.name && teacherName && normalizePersonName(t.name) === normalizePersonName(teacherName))
         );
         if (me) setCurrentTeacher(me);
+        const curSchool = latestSchoolRef.current || school;
+        syncSchoolDirectoryToAndroid({
+          school: curSchool,
+          schoolName: curSchool?.name,
+          teachers: tchs,
+        });
       }
     });
 
@@ -431,19 +480,83 @@ export const TeacherPanel: React.FC<Props> = ({
       getSchoolFeeHistory(schoolId),
       getReferralPayouts(schoolId),
       getSchoolReferralSettings(schoolId),
+      getSchoolPublicInquiries(schoolId),
     ])
-      .then(([fees, payouts, refCfg]) => {
+      .then(([fees, payouts, refCfg, inqList]) => {
         setSchoolFees(fees || []);
         setReferralPayouts(payouts || []);
         setReferralSettings(refCfg || null);
+        setInquiries(Array.isArray(inqList) ? inqList : []);
       })
       .catch(() => {});
+
+    const unsubFollowUps = subscribeToFeeCallFollowUps(schoolId, setFeeCallFollowUps);
+    const handleAttendanceUpdate = () => setAttendanceTick((t) => t + 1);
+    window.addEventListener("attendance-updated", handleAttendanceUpdate);
 
     return () => {
       if (typeof unsubStudents === "function") unsubStudents();
       if (typeof unsubTeachers === "function") unsubTeachers();
+      if (typeof unsubFollowUps === "function") unsubFollowUps();
+      window.removeEventListener("attendance-updated", handleAttendanceUpdate);
     };
   }, [schoolId, teacherId, teacherName]);
+
+  const todayAbsentStudentIds = useMemo(() => {
+    if (!schoolId) return [];
+    try {
+      return extractTodayAbsentStudentIds(getLocalAttendance(schoolId));
+    } catch {
+      return [];
+    }
+  }, [schoolId, attendanceTick, allStudents.length]);
+
+  const {
+    messages: walkieMessages,
+    schedule: walkieSchedule,
+    isWithinHours: isWalkieSchoolHoursNow,
+  } = useSchoolWalkieChannel({
+    enabled: Boolean(schoolId && hasEliteWalkieAccess(school)),
+    schoolId,
+    userId: teacherId,
+    userRole: "TEACHER",
+    onOpenWalkie: () => setShowWalkieModal(true),
+  });
+
+  useEffect(() => {
+    const onOpenWalkie = () => setShowWalkieModal(true);
+    window.addEventListener("android-open-walkie", onOpenWalkie);
+    return () => window.removeEventListener("android-open-walkie", onOpenWalkie);
+  }, []);
+
+  useEffect(() => {
+    if (!schoolId || (!school && allStudents.length === 0 && latestTeachersRef.current.length === 0)) {
+      return;
+    }
+    const targetSchool = school || latestSchoolRef.current;
+    const allowParentCaller = hasEliteFeeTagadaAccess(targetSchool);
+    syncSchoolDirectoryToAndroid({
+      school: targetSchool,
+      schoolName: targetSchool?.name,
+      teachers: latestTeachersRef.current,
+      students: allowParentCaller ? allStudents : [],
+      classes: allowParentCaller ? classes : [],
+      fees: allowParentCaller ? schoolFees : [],
+      feeCallFollowUps: allowParentCaller ? feeCallFollowUps : [],
+      absentStudentIds: allowParentCaller ? todayAbsentStudentIds : [],
+      inquiries: allowParentCaller ? inquiries : [],
+    });
+  }, [
+    schoolId,
+    school,
+    currentTeacher,
+    allStudents,
+    classes,
+    schoolFees,
+    feeCallFollowUps,
+    todayAbsentStudentIds,
+    inquiries,
+  ]);
 
   // Auto-sync Teacher device for Web Push & RTDB School Alerts when permission is granted
   useEffect(() => {
@@ -1614,8 +1727,29 @@ export const TeacherPanel: React.FC<Props> = ({
           </div>
         </div>
 
-        {/* Right: Quick Routine Button + 3-Theme Switcher, Screen Rotate Toggle & Faculty Badge */}
+        {/* Right: Walkie + Quick Routine Button + 3-Theme Switcher, Screen Rotate Toggle & Faculty Badge */}
         <div className="flex items-center gap-2 shrink-0">
+          <button
+            type="button"
+            onClick={() => setShowWalkieModal(true)}
+            className={`inline-flex items-center gap-1 px-2.5 py-1.5 rounded-xl text-xs font-semibold transition cursor-pointer border whitespace-nowrap ${
+              !hasEliteWalkieAccess(school)
+                ? "bg-amber-50 hover:bg-amber-100 dark:bg-amber-950/50 text-amber-700 dark:text-amber-300 border-amber-200 dark:border-amber-700"
+                : isWalkieSchoolHoursNow
+                ? "bg-emerald-600 hover:bg-emerald-500 text-white border-emerald-500"
+                : "bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 text-slate-700 dark:text-slate-300 border-slate-200 dark:border-slate-700"
+            }`}
+            title={
+              hasEliteWalkieAccess(school)
+                ? "School-Hour Live Walkie-Talkie"
+                : "Elite Plan Only: School-Hour Walkie-Talkie"
+            }
+          >
+            <Radio className="w-3.5 h-3.5" />
+            <span className="hidden sm:inline">Walkie</span>
+            {!hasEliteWalkieAccess(school) && <Lock className="w-3 h-3" />}
+          </button>
+
           <button
             type="button"
             onClick={() => setView("timetable")}
@@ -1839,6 +1973,13 @@ export const TeacherPanel: React.FC<Props> = ({
               }
             }}
           />
+
+          <CallerIdSettingsCard
+            mode="staff"
+            schoolId={school?.id || schoolId}
+            schoolName={school?.name}
+            isEliteLocked={!hasEliteFeeTagadaAccess(school)}
+          />
         </div>
       );
     }
@@ -1992,17 +2133,19 @@ export const TeacherPanel: React.FC<Props> = ({
     // 6. Classroom Video Archive
     if (view === "video_lectures") {
       return (
-        <ClassroomVideoArchive
-          school={school!}
-          classes={classes}
-          subjects={allSubjects}
-          teachers={[{ id: teacherId, name: teacherName, schoolId } as any]}
-          activeSession={activeSession}
-          currentUserRole="TEACHER"
-          currentTeacherName={teacherName}
-          currentTeacherId={teacherId}
-          onBack={() => setView("dashboard")}
-        />
+        <LazyPanelBoundary title="Classroom Videos">
+          <ClassroomVideoArchive
+            school={school!}
+            classes={classes}
+            subjects={allSubjects}
+            teachers={[{ id: teacherId, name: teacherName, schoolId } as any]}
+            activeSession={activeSession}
+            currentUserRole="TEACHER"
+            currentTeacherName={teacherName}
+            currentTeacherId={teacherId}
+            onBack={() => setView("dashboard")}
+          />
+        </LazyPanelBoundary>
       );
     }
 
@@ -2022,25 +2165,27 @@ export const TeacherPanel: React.FC<Props> = ({
     // School Live Study Room
     if (view === "school_study_room") {
       return (
-        <GroupStudyModal
-          isOpen={true}
-          onClose={() => setView("dashboard")}
-          user={{
-            id: teacherId,
-            uid: teacherId,
-            name: teacherName,
-            role: "TEACHER",
-            isSchoolHost: true,
-            schoolId: school!.id,
-            schoolName: school?.name || "School",
-            subscriptionLevel: "ULTRA"
-          }}
-          tierTheme={{ primary: '#4f46e5' }}
-          isSchoolHost={true}
-          schoolId={school!.id}
-          schoolName={school?.name}
-          schoolClasses={classes}
-        />
+        <LazyPanelBoundary title="Live Study Room">
+          <GroupStudyModal
+            isOpen={true}
+            onClose={() => setView("dashboard")}
+            user={{
+              id: teacherId,
+              uid: teacherId,
+              name: teacherName,
+              role: "TEACHER",
+              isSchoolHost: true,
+              schoolId: school!.id,
+              schoolName: school?.name || "School",
+              subscriptionLevel: "ULTRA"
+            }}
+            tierTheme={{ primary: '#4f46e5' }}
+            isSchoolHost={true}
+            schoolId={school!.id}
+            schoolName={school?.name}
+            schoolClasses={classes}
+          />
+        </LazyPanelBoundary>
       );
     }
 
@@ -2101,16 +2246,18 @@ export const TeacherPanel: React.FC<Props> = ({
               : "top-0 inset-x-0 bottom-[calc(57px+env(safe-area-inset-bottom))] md:inset-0"
           } z-30 bg-slate-950 flex flex-col overflow-hidden`}
         >
-          <NstaMessengerSuite
-            school={school!}
-            classes={classes}
-            students={allStudents}
-            teachers={[{ id: teacherId, name: teacherName, schoolId } as any]}
-            currentUserId={teacherId}
-            currentUserName={teacherName}
-            currentUserRole="TEACHER"
-            onBack={() => setView("dashboard")}
-          />
+          <LazyPanelBoundary title="NSTA Messenger">
+            <NstaMessengerSuite
+              school={school!}
+              classes={classes}
+              students={allStudents}
+              teachers={[{ id: teacherId, name: teacherName, schoolId } as any]}
+              currentUserId={teacherId}
+              currentUserName={teacherName}
+              currentUserRole="TEACHER"
+              onBack={() => setView("dashboard")}
+            />
+          </LazyPanelBoundary>
         </div>
       );
     }
@@ -2163,7 +2310,9 @@ export const TeacherPanel: React.FC<Props> = ({
               <span>Back to Dashboard</span>
             </button>
           </div>
-          <QuestionPaperBuilder school={school} activeSession={activeSession} />
+          <LazyPanelBoundary title="Question Paper Builder">
+            <QuestionPaperBuilder school={school} activeSession={activeSession} />
+          </LazyPanelBoundary>
         </div>
       );
     }
@@ -2407,16 +2556,18 @@ export const TeacherPanel: React.FC<Props> = ({
         );
       }
       return (
-        <OnlineAdmissionManager
-          school={school}
-          classes={classes}
-          sessions={sessions}
-          activeSession={activeSession}
-          isAdmin={true}
-          viewMode="admissions_only"
-          initialTab="new_form"
-          onBack={() => setView("dashboard")}
-        />
+        <LazyPanelBoundary title="Online Admission">
+          <OnlineAdmissionManager
+            school={school}
+            classes={classes}
+            sessions={sessions}
+            activeSession={activeSession}
+            isAdmin={true}
+            viewMode="admissions_only"
+            initialTab="new_form"
+            onBack={() => setView("dashboard")}
+          />
+        </LazyPanelBoundary>
       );
     }
 
@@ -3697,7 +3848,7 @@ export const TeacherPanel: React.FC<Props> = ({
   return (
     <>
       {renderTeacherShell(renderViewContent())}
-      {school?.id && (
+      {school?.id && hasEliteCallAccess(school) && (
         <NstaCallPortalHost
           identity={{
             schoolId: school.id,
@@ -3711,20 +3862,22 @@ export const TeacherPanel: React.FC<Props> = ({
         />
       )}
       {showFaceStudio && (
-        <UniversalFaceIdStudioModal
-          isOpen={showFaceStudio}
-          onClose={() => setShowFaceStudio(false)}
-          hasFaceAccess={hasFaceAttendanceAccess(school)}
-          onOpenQrScanner={() => {
-            setShowFaceStudio(false);
-            setView("attendance");
-          }}
-          schoolId={schoolId}
-          students={allStudents}
-          teachers={currentTeacher ? [currentTeacher] : []}
-          classes={classes}
-          onEnrollmentUpdated={() => {}}
-        />
+        <LazyPanelBoundary title="Face ID Studio">
+          <UniversalFaceIdStudioModal
+            isOpen={showFaceStudio}
+            onClose={() => setShowFaceStudio(false)}
+            hasFaceAccess={hasFaceAttendanceAccess(school)}
+            onOpenQrScanner={() => {
+              setShowFaceStudio(false);
+              setView("attendance");
+            }}
+            schoolId={schoolId}
+            students={allStudents}
+            teachers={currentTeacher ? [currentTeacher] : []}
+            classes={classes}
+            onEnrollmentUpdated={() => {}}
+          />
+        </LazyPanelBoundary>
       )}
       {showMySignatureModal && (
         <TeacherSignatureModal
@@ -3818,6 +3971,32 @@ export const TeacherPanel: React.FC<Props> = ({
           mode={admissionPrintPayload.mode}
         />
       )}
+      {school?.id && hasEliteFeeTagadaAccess(school) && (
+        <IncomingParentCallModal
+          schoolId={school.id}
+          schoolName={school.name}
+          schoolUpiId={school.upiId}
+          callerUserName={currentTeacher?.name || teacherName}
+          students={allStudents}
+          classes={classes}
+          fees={schoolFees}
+          feeCallFollowUps={feeCallFollowUps}
+          absentStudentIds={todayAbsentStudentIds}
+          inquiries={inquiries}
+        />
+      )}
+      <WalkieTalkieModal
+        isOpen={showWalkieModal}
+        onClose={() => setShowWalkieModal(false)}
+        school={school}
+        schoolId={schoolId}
+        currentUserId={teacherId}
+        currentUserName={currentTeacher?.name || teacherName}
+        currentUserRole="TEACHER"
+        teachers={teachersList}
+        messages={walkieMessages}
+        schedule={walkieSchedule}
+      />
     </>
   );
 };

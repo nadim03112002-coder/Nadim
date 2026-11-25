@@ -6,15 +6,21 @@ import android.os.Handler
 import android.os.Looper
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
-import android.widget.Toast
 import java.util.Locale
 
 class SchoolUninstallGuardAccessibilityService : AccessibilityService() {
 
     private var connectedAtMs: Long = 0L
-    private var lastBlockedAtMs: Long = 0L
-    private var consecutiveBlocks: Int = 0
+    private var lastPromptLaunchedAtMs: Long = 0L
     private val mainHandler = Handler(Looper.getMainLooper())
+
+    // Never touch notification shade, volume panel, lockscreen, or permission dialogs!
+    private val ignoredPackages = listOf(
+        "com.android.systemui",
+        "systemui",
+        "permissioncontroller",
+        "com.google.android.permissioncontroller"
+    )
 
     private val watchedPackageHints = listOf(
         "settings",
@@ -22,12 +28,9 @@ class SchoolUninstallGuardAccessibilityService : AccessibilityService() {
         "installer",
         "securitycenter",
         "safecenter",
-        "permission",
         "vending",
-        "lool",
         "launcher",
         "home",
-        "systemui",
         "miui",
         "coloros",
         "oplus",
@@ -49,32 +52,55 @@ class SchoolUninstallGuardAccessibilityService : AccessibilityService() {
         "schooldeviceadminreceiver"
     )
 
-    private val dangerActionTokens = listOf(
+    // Passive screen viewing (e.g. App Info, Permissions, About App) is allowed.
+    // These keywords trigger ONLY when explicitly clicked OR inside an active uninstall/deactivation confirmation dialog.
+    private val clickedDangerButtonTokens = listOf(
         "uninstall",
+        "delete app",
+        "remove app",
         "deactivate",
         "remove active admin",
-        "device admin",
-        "device administrator",
         "force stop",
         "clear storage",
         "clear data",
-        "use school+",
-        "uninstall guard",
-        "delete app",
-        "remove app",
         "अनइंस्टॉल",
-        "हटाएं",
-        "बंद करें",
         "निष्क्रिय",
         "फ़ोर्स स्टॉप",
         "फोर्स स्टॉप"
     )
 
+    // Explicit confirmation prompts (not passive App Info page labels)
+    private val activeConfirmDialogTokens = listOf(
+        "do you want to uninstall",
+        "want to uninstall this app",
+        "uninstall this app",
+        "uninstall school+",
+        "delete school+",
+        "remove school+",
+        "remove active admin",
+        "deactivate this device admin",
+        "deactivate & uninstall",
+        "turn off school+ uninstall guard",
+        "stop school+ uninstall guard",
+        "use school+ uninstall guard",
+        "clear all data",
+        "delete app data",
+        "force stop?",
+        "misbehave",
+        "अनइंस्टॉल करें"
+    )
+
+    private val permissionDialogSafetyTokens = listOf(
+        "while using the app",
+        "only this time",
+        "don't allow",
+        "allow school+ to"
+    )
+
     override fun onServiceConnected() {
         super.onServiceConnected()
         connectedAtMs = System.currentTimeMillis()
-        lastBlockedAtMs = 0L
-        consecutiveBlocks = 0
+        lastPromptLaunchedAtMs = 0L
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
@@ -90,10 +116,15 @@ class SchoolUninstallGuardAccessibilityService : AccessibilityService() {
 
         val pkg = event.packageName?.toString()?.lowercase(Locale.US) ?: return
         if (pkg == packageName.lowercase(Locale.US)) return
+        if (ignoredPackages.any { pkg.contains(it) }) return
         if (watchedPackageHints.none { pkg.contains(it) }) return
 
-        // Throttle bursts
-        if (now - lastBlockedAtMs < 450L) return
+        // Cooldown so we don't spam PIN screen in rapid loops
+        if (now - lastPromptLaunchedAtMs < 1300L) return
+
+        val isViewClick = event.eventType == AccessibilityEvent.TYPE_VIEW_CLICKED
+        val isPackageInstaller = pkg.contains("packageinstaller") ||
+            (pkg.contains("installer") && !pkg.contains("permission"))
 
         val root = try {
             rootInActiveWindow ?: event.source
@@ -101,60 +132,94 @@ class SchoolUninstallGuardAccessibilityService : AccessibilityService() {
             null
         } ?: return
 
-        val collectedText = StringBuilder(512)
-        // Also seed with event text if present (e.g., dialog titles)
+        val screenBuilder = StringBuilder(512)
         event.text?.forEach { cs ->
             if (!cs.isNullOrBlank()) {
-                collectedText.append(cs.toString().lowercase(Locale.US)).append('\n')
+                screenBuilder.append(cs.toString().lowercase(Locale.US)).append('\n')
             }
         }
-        collectNodeText(root, collectedText, depth = 0, countHolder = intArrayOf(0))
+        collectNodeText(root, screenBuilder, depth = 0, countHolder = intArrayOf(0))
+        val screenSnapshot = screenBuilder.toString()
+        if (screenSnapshot.isBlank()) return
 
-        val snapshot = collectedText.toString()
-        if (snapshot.isBlank()) return
+        // Never block Android runtime permission popups
+        if (permissionDialogSafetyTokens.any { screenSnapshot.contains(it) }) return
 
-        val hasAppTarget = appTargetTokens.any { snapshot.contains(it) }
+        val hasAppTarget = appTargetTokens.any { screenSnapshot.contains(it) }
         if (!hasAppTarget) return
 
-        val isPackageInstaller = pkg.contains("installer")
-        val hasDangerKeyword = isPackageInstaller || dangerActionTokens.any { snapshot.contains(it) }
-        if (!hasDangerKeyword) return
+        var detectedReason: String? = null
 
-        val sinceLast = now - lastBlockedAtMs
-        lastBlockedAtMs = now
-        consecutiveBlocks = if (sinceLast < 3500L) consecutiveBlocks + 1 else 1
+        if (isViewClick) {
+            val clickedBuilder = StringBuilder(128)
+            event.text?.forEach { cs ->
+                if (!cs.isNullOrBlank()) {
+                    clickedBuilder.append(cs.toString().lowercase(Locale.US)).append(' ')
+                }
+            }
+            val src = try { event.source } catch (_: Exception) { null }
+            if (src != null) {
+                collectNodeText(src, clickedBuilder, depth = 0, countHolder = intArrayOf(0), maxDepth = 3, maxNodes = 16)
+                try {
+                    @Suppress("DEPRECATION")
+                    src.recycle()
+                } catch (_: Exception) {}
+            }
+            val clickedText = clickedBuilder.toString().trim()
+            if (clickedText.isNotEmpty() && clickedDangerButtonTokens.any { clickedText.contains(it) }) {
+                detectedReason = when {
+                    clickedText.contains("deactivate") || clickedText.contains("admin") -> "Device Admin Removal"
+                    clickedText.contains("force stop") || clickedText.contains("clear") -> "App Stop / Clear Data"
+                    else -> "App Uninstall Attempt"
+                }
+            }
+        }
 
-        // Immediately bounce out of Uninstall / Device Admin / Accessibility disable screen
+        if (detectedReason == null) {
+            if (isPackageInstaller && (screenSnapshot.contains("uninstall") || screenSnapshot.contains("अनइंस्टॉल"))) {
+                detectedReason = "App Uninstall Confirmation"
+            } else if (activeConfirmDialogTokens.any { screenSnapshot.contains(it) }) {
+                detectedReason = when {
+                    screenSnapshot.contains("admin") || screenSnapshot.contains("deactivate") -> "Device Admin Deactivation"
+                    screenSnapshot.contains("accessibility") || screenSnapshot.contains("uninstall guard") -> "Uninstall Guard Disable"
+                    screenSnapshot.contains("force stop") || screenSnapshot.contains("clear") -> "App Force Stop / Clear Data"
+                    else -> "App Uninstall Confirmation"
+                }
+            }
+        }
+
+        if (detectedReason == null) return
+
+        lastPromptLaunchedAtMs = now
+        val reasonToShow = detectedReason
+
+        // Close/dismiss the dangerous dialog first, then open native Admin PIN verification screen
         performGlobalAction(GLOBAL_ACTION_BACK)
 
-        if (consecutiveBlocks >= 2) {
-            mainHandler.postDelayed({
-                try {
-                    performGlobalAction(GLOBAL_ACTION_HOME)
-                    val bringFront = Intent(this, MainActivity::class.java).apply {
-                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
-                    }
-                    startActivity(bringFront)
-                } catch (_: Exception) {}
-            }, 90L)
-        }
-
-        mainHandler.post {
-            Toast.makeText(
-                applicationContext,
-                "🔒 SCHOOL+ Uninstall Lock Active! Hatane ke liye app me Admin PIN daalein.",
-                Toast.LENGTH_SHORT
-            ).show()
-        }
+        mainHandler.postDelayed({
+            try {
+                val pinIntent = Intent(this, UninstallPinPromptActivity::class.java).apply {
+                    addFlags(
+                        Intent.FLAG_ACTIVITY_NEW_TASK or
+                            Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                            Intent.FLAG_ACTIVITY_SINGLE_TOP
+                    )
+                    putExtra(UninstallPinPromptActivity.EXTRA_REASON, reasonToShow)
+                }
+                startActivity(pinIntent)
+            } catch (_: Exception) {}
+        }, 80L)
     }
 
     private fun collectNodeText(
         node: AccessibilityNodeInfo?,
         out: StringBuilder,
         depth: Int,
-        countHolder: IntArray
+        countHolder: IntArray,
+        maxDepth: Int = 12,
+        maxNodes: Int = 140
     ) {
-        if (node == null || depth > 12 || countHolder[0] >= 140) return
+        if (node == null || depth > maxDepth || countHolder[0] >= maxNodes) return
         countHolder[0]++
 
         try {
@@ -169,14 +234,14 @@ class SchoolUninstallGuardAccessibilityService : AccessibilityService() {
 
             val childCount = node.childCount
             for (i in 0 until childCount) {
-                if (countHolder[0] >= 140) break
+                if (countHolder[0] >= maxNodes) break
                 val child = try {
                     node.getChild(i)
                 } catch (_: Exception) {
                     null
                 }
                 if (child != null) {
-                    collectNodeText(child, out, depth + 1, countHolder)
+                    collectNodeText(child, out, depth + 1, countHolder, maxDepth, maxNodes)
                     try {
                         @Suppress("DEPRECATION")
                         child.recycle()

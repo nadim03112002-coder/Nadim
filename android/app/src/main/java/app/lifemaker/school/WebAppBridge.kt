@@ -93,6 +93,131 @@ class WebAppBridge(private val activity: MainActivity) {
     }
 
     @JavascriptInterface
+    fun speakNativeIncomingCall(text: String, dedupeKey: String?) {
+        if (!isTrustedHostActive) return
+        if (!AppPrefs.isCallerVoiceAnnounceEnabled(activity.applicationContext)) return
+        VoiceAnnouncer.speakIncomingCall(
+            context = activity.applicationContext,
+            rawText = text,
+            dedupeKey = dedupeKey,
+            bypassGlobalCooldown = true
+        )
+    }
+
+    @JavascriptInterface
+    fun stopNativeVoice() {
+        if (!isTrustedHostActive) return
+        VoiceAnnouncer.stopSpeaking()
+    }
+
+    @JavascriptInterface
+    fun syncSchoolCallerDirectory(jsonStr: String?): Int {
+        if (!isTrustedHostActive) return 0
+        val clean = jsonStr?.trim().orEmpty()
+        if (clean.isEmpty()) return 0
+        val count = AppPrefs.saveCallerDirectoryJson(activity.applicationContext, clean)
+        activity.runOnUiThread {
+            activity.pushCallerIdStatusToWebView()
+        }
+        return count
+    }
+
+    @JavascriptInterface
+    fun isCallerVoiceAnnounceEnabled(): Boolean {
+        if (!isTrustedHostActive) return false
+        return AppPrefs.isCallerVoiceAnnounceEnabled(activity.applicationContext)
+    }
+
+    @JavascriptInterface
+    fun setCallerVoiceAnnounceEnabled(enabled: Boolean) {
+        if (!isTrustedHostActive) return
+        AppPrefs.setCallerVoiceAnnounceEnabled(activity.applicationContext, enabled)
+        if (!enabled) {
+            VoiceAnnouncer.stopSpeaking()
+        }
+        activity.runOnUiThread {
+            activity.pushCallerIdStatusToWebView()
+        }
+    }
+
+    @JavascriptInterface
+    fun setParentCallerIdOptions(jsonStr: String?) {
+        if (!isTrustedHostActive) return
+        val clean = jsonStr?.trim().orEmpty()
+        if (clean.isEmpty()) return
+        AppPrefs.saveParentCallerIdOptions(activity.applicationContext, clean)
+        activity.runOnUiThread {
+            activity.pushCallerIdStatusToWebView()
+        }
+    }
+
+    @JavascriptInterface
+    fun getLastIncomingParentCall(): String {
+        if (!isTrustedHostActive) return ""
+        return AppPrefs.getLastIncomingParentCall(activity.applicationContext)
+    }
+
+    @JavascriptInterface
+    fun clearLastIncomingParentCall() {
+        if (!isTrustedHostActive) return
+        AppPrefs.clearLastIncomingParentCall(activity.applicationContext)
+    }
+
+    @JavascriptInterface
+    fun getCallerIdStatus(): String {
+        if (!isTrustedHostActive) {
+            return """{"supported":false,"isRoleHeld":false,"hasPhonePerms":false,"isReady":false,"cachedCount":0,"voiceEnabled":false,"batteryUnrestricted":false,"parentCallerEnabled":true,"parentDueVoiceEnabled":true,"parentScheduleVoiceEnabled":false,"parentCardPopupEnabled":true,"parentOverlayEnabled":true,"canDrawOverlays":false}"""
+        }
+        return activity.getCallerIdStatusJson().toString()
+    }
+
+    @JavascriptInterface
+    fun requestOfflineCallerIdPermission() {
+        if (!isTrustedHostActive) return
+        activity.runOnUiThread {
+            activity.requestOfflineCallerIdPermission()
+        }
+    }
+
+    @JavascriptInterface
+    fun hasOverlayPermission(): Boolean {
+        if (!isTrustedHostActive) return false
+        return ParentCallOverlayService.canDrawOverlays(activity.applicationContext)
+    }
+
+    @JavascriptInterface
+    fun requestOverlayPermission() {
+        if (!isTrustedHostActive) return
+        activity.runOnUiThread {
+            activity.requestOverlayPermission()
+        }
+    }
+
+    @JavascriptInterface
+    fun setWalkieOptions(jsonStr: String?) {
+        if (!isTrustedHostActive) return
+        val clean = jsonStr?.trim().orEmpty()
+        if (clean.isEmpty()) return
+        AppPrefs.saveWalkieOptions(activity.applicationContext, clean)
+    }
+
+    @JavascriptInterface
+    fun getWalkieStatus(): String {
+        if (!isTrustedHostActive) return "{}"
+        return try {
+            JSONObject().apply {
+                put("enabled", AppPrefs.isWalkieEnabled(activity.applicationContext))
+                put("autoPlay", AppPrefs.isWalkieAutoPlayEnabled(activity.applicationContext))
+                put("startTime", AppPrefs.getWalkieStartTime(activity.applicationContext))
+                put("endTime", AppPrefs.getWalkieEndTime(activity.applicationContext))
+                put("withinSchoolHours", AppPrefs.isWithinWalkieSchoolHoursNow(activity.applicationContext))
+            }.toString()
+        } catch (_: Exception) {
+            "{}"
+        }
+    }
+
+    @JavascriptInterface
     fun triggerHaptic(kind: String?) {
         if (!isTrustedHostActive) return
         activity.runOnUiThread {
@@ -106,6 +231,12 @@ class WebAppBridge(private val activity: MainActivity) {
         activity.runOnUiThread {
             activity.shareNativeContent(title.orEmpty(), text.orEmpty(), url.orEmpty())
         }
+    }
+
+    @JavascriptInterface
+    fun isIgnoringBatteryOptimizations(): Boolean {
+        if (!isTrustedHostActive) return false
+        return activity.isIgnoringBatteryOptimizations()
     }
 
     @JavascriptInterface
@@ -308,6 +439,21 @@ class WebAppBridge(private val activity: MainActivity) {
     fun unlockUninstallProtectionTemporarily(seconds: Int): Boolean {
         if (!isTrustedHostActive) return false
         return activity.unlockUninstallProtectionTemporarily(seconds)
+    }
+
+    @JavascriptInterface
+    fun syncAdminPinHash(pinHash: String?) {
+        if (!isTrustedHostActive) return
+        AppPrefs.setAdminPinHash(activity.applicationContext, pinHash)
+        activity.runOnUiThread {
+            activity.pushDeviceAdminStatusToWebView()
+        }
+    }
+
+    @JavascriptInterface
+    fun hasNativeAdminPin(): Boolean {
+        if (!isTrustedHostActive) return false
+        return AppPrefs.hasAdminPinHash(activity.applicationContext)
     }
 
     @JavascriptInterface

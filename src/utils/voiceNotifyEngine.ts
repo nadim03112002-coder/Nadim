@@ -4,6 +4,10 @@
  * Provides smart, human-grade text-to-speech for all incoming school & student notifications
  * (Fee alerts, Attendance in/out, Homework, Messenger chats, Store bookings, Driver updates).
  */
+import {
+  announceIncomingVoiceCaller,
+  isCallerVoiceAnnounceEnabled,
+} from "./schoolCallerId";
 
 export interface VoiceNotifyConfig {
   enabled: boolean;
@@ -269,6 +273,36 @@ if (typeof window !== "undefined") {
       detail?.voiceSpeak ??
       detail?.payload?.voiceSpeak ??
       detail?.payload?.data?.voiceSpeak;
+    const notifType = String(
+      detail?.type ||
+        detail?.payload?.type ||
+        detail?.payload?.data?.type ||
+        ""
+    )
+      .trim()
+      .toUpperCase();
+    const voiceExplicitlyOff =
+      rawVoice === false ||
+      rawVoice === 0 ||
+      String(rawVoice).trim() === "0" ||
+      String(rawVoice).trim().toLowerCase() === "false";
+
+    if (notifType === "CALL_INCOMING") {
+      if (voiceExplicitlyOff || !isCallerVoiceAnnounceEnabled()) return;
+      if (detail && (detail.title || detail.body)) {
+        const spokenText = [detail.title, detail.body].filter(Boolean).join(". ");
+        announceIncomingVoiceCaller({
+          callerName: detail.senderName || detail.title || "School Staff",
+          schoolName: detail.schoolName || "",
+          callType: String(detail.title || "").toLowerCase().includes("video") ? "video" : "sim",
+          dedupeKey: detail.id || detail.payload?.id || detail.payload?.data?.id,
+          force: Boolean(detail.force),
+        });
+        if (!spokenText) return;
+      }
+      return;
+    }
+
     const threadType = String(
       detail?.threadType ||
         detail?.payload?.threadType ||
@@ -281,10 +315,7 @@ if (typeof window !== "undefined") {
       detail?.url || detail?.payload?.url || detail?.payload?.data?.url || ""
     );
     if (
-      rawVoice === false ||
-      rawVoice === 0 ||
-      String(rawVoice).trim() === "0" ||
-      String(rawVoice).trim().toLowerCase() === "false" ||
+      voiceExplicitlyOff ||
       threadType === "TEACHER_CHAT" ||
       threadType === "STUDENT_CHAT" ||
       targetUrl.includes("subTab=teacher") ||

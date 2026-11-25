@@ -3,13 +3,15 @@ import React, { useState, useRef } from "react";
 import QRCode from "react-qr-code";
 import {
   X, Printer, Phone, Bus, Shield, User,
-  Share2, Check, Copy, QrCode, Route
+  Share2, Check, Copy, QrCode, Route, Download, Loader2
 } from "lucide-react";
+import { toast } from "sonner";
 import type { School } from "../../school-types";
 import { getSavedSchoolLogo, cleanLogoUrl, formatAcademicSession } from "./feeReceiptUtils";
 import { printElementInIframe } from "./AdmissionFormPrintModal";
 import { safeOpenExternalUrl } from "../../utils/safeBrowserActions";
 import { buildDriverIdCardQrUrl } from "../../utils/qrVerifyUrl";
+import { exportElementToPdf } from "../../utils/universalPdfExport";
 
 export interface DriverIdCardData {
   busId: string;
@@ -35,6 +37,7 @@ export const DriverIdCardModal: React.FC<Props> = ({
 }) => {
   const [orientation, setOrientation] = useState<"landscape" | "portrait">("landscape");
   const [copiedField, setCopiedField] = useState<string | null>(null);
+  const [downloadingPdf, setDownloadingPdf] = useState(false);
   const printAreaRef = useRef<HTMLDivElement>(null);
 
   if (!isOpen || !driver) return null;
@@ -75,7 +78,29 @@ export const DriverIdCardModal: React.FC<Props> = ({
   };
 
   const handlePrint = () => {
-    printElementInIframe(printAreaRef.current, `${driverName} - Driver ID Card`);
+    printElementInIframe(printAreaRef.current, `${driverName} - Driver ID Card`, "", orientation);
+  };
+
+  const handleDownloadPdf = async () => {
+    const cardEl = (printAreaRef.current?.firstElementChild as HTMLElement) || printAreaRef.current;
+    if (!cardEl || downloadingPdf) return;
+    setDownloadingPdf(true);
+    try {
+      await exportElementToPdf(cardEl, {
+        filename: `Driver_ID_Card_${driverName}_${driverIdCode}`,
+        format: "cr80",
+        orientation,
+        widthPx: orientation === "landscape" ? 360 : 240,
+        heightPx: orientation === "landscape" ? 224 : 380,
+        scale: 4,
+      });
+      toast.success("Driver ID Card PDF download ho gaya!");
+    } catch (err) {
+      console.error("Driver ID Card PDF error:", err);
+      toast.error("PDF generate karne me error aaya.");
+    } finally {
+      setDownloadingPdf(false);
+    }
   };
 
   const handleShareWhatsApp = () => {
@@ -171,7 +196,7 @@ export const DriverIdCardModal: React.FC<Props> = ({
             </button>
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
             <button
               type="button"
               onClick={handleShareWhatsApp}
@@ -179,6 +204,15 @@ export const DriverIdCardModal: React.FC<Props> = ({
             >
               <Share2 className="w-3.5 h-3.5" />
               <span>Share via WhatsApp</span>
+            </button>
+            <button
+              type="button"
+              onClick={handleDownloadPdf}
+              disabled={downloadingPdf}
+              className="px-3.5 py-1.5 rounded-xl bg-amber-500 hover:bg-amber-400 disabled:opacity-60 text-slate-950 font-black text-xs flex items-center gap-1.5 shadow-sm active:scale-95 transition cursor-pointer"
+            >
+              {downloadingPdf ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Download className="w-3.5 h-3.5" />}
+              <span>{downloadingPdf ? "Saving PDF..." : "Download PDF"}</span>
             </button>
             <button
               type="button"
@@ -474,13 +508,22 @@ export const DriverIdCardModal: React.FC<Props> = ({
           <p className="text-[11px] text-slate-500 dark:text-slate-400 hidden sm:block">
             Transport ERP • Driver ID Card Generator
           </p>
-          <div className="flex items-center gap-2 w-full sm:w-auto justify-end">
+          <div className="flex items-center gap-2 w-full sm:w-auto justify-end flex-wrap">
             <button
               type="button"
               onClick={onClose}
-              className="px-5 py-2.5 rounded-xl bg-slate-200 dark:bg-slate-800 hover:bg-slate-300 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 font-bold text-xs transition cursor-pointer"
+              className="px-4 py-2.5 rounded-xl bg-slate-200 dark:bg-slate-800 hover:bg-slate-300 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 font-bold text-xs transition cursor-pointer"
             >
               Close
+            </button>
+            <button
+              type="button"
+              onClick={handleDownloadPdf}
+              disabled={downloadingPdf}
+              className="px-5 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 text-white font-black text-xs flex items-center gap-1.5 shadow-md transition active:scale-95 cursor-pointer"
+            >
+              {downloadingPdf ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
+              <span>{downloadingPdf ? "Generating PDF..." : "Download PDF"}</span>
             </button>
             <button
               type="button"

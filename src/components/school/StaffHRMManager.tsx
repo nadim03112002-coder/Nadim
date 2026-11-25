@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from "react";
+import React, { useState, useEffect, useMemo, useRef } from "react";
 import type {
   MonthlyFee,
   ReferralCommissionDuration,
@@ -62,6 +62,8 @@ import {
   Clock,
   IndianRupee,
   Printer,
+  Download,
+  Loader2,
   Briefcase,
   CreditCard,
   Settings2,
@@ -81,6 +83,8 @@ import {
 import { TeacherIdCardModal } from "./TeacherIdCardModal";
 import { TeacherSignatureModal } from "./TeacherSignatureModal";
 import { speakNotification } from "../../utils/voiceNotifyEngine";
+import { printElementInIframe } from "./AdmissionFormPrintModal";
+import { exportElementToPdf } from "../../utils/universalPdfExport";
 
 export type HrmTab = "directory" | "accountants" | "referrals" | "leaves" | "salary";
 
@@ -1130,8 +1134,36 @@ export const StaffHRMManager: React.FC<Props> = ({
     setSettlingSlipBonus(false);
   };
 
-  const handlePrintSlip = () => {
-    window.print();
+  const slipRef = useRef<HTMLDivElement>(null);
+  const [downloadingSlipPdf, setDownloadingSlipPdf] = useState(false);
+
+  const handlePrintSlip = (personName?: string) => {
+    printElementInIframe(
+      slipRef.current,
+      `Payslip_${personName || selectedStaffForSlip?.name || "Staff"}`,
+      "",
+      "portrait"
+    );
+  };
+
+  const handleDownloadSlipPdf = async (personName?: string) => {
+    if (!slipRef.current || downloadingSlipPdf) return;
+    setDownloadingSlipPdf(true);
+    try {
+      await exportElementToPdf(slipRef.current, {
+        filename: `Payslip_${personName || selectedStaffForSlip?.name || "Staff"}`,
+        format: "a4",
+        orientation: "portrait",
+        pageMode: "fit_single",
+        widthPx: 760,
+        scale: 2,
+      });
+    } catch (err) {
+      console.warn("HRM Payslip PDF export failed, falling back to print:", err);
+      handlePrintSlip(personName);
+    } finally {
+      setDownloadingSlipPdf(false);
+    }
   };
 
   return (
@@ -2688,13 +2720,25 @@ export const StaffHRMManager: React.FC<Props> = ({
                   ))}
                 </select>
               </div>
-              <button
-                onClick={handlePrintSlip}
-                disabled={!activeSlipPerson}
-                className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white rounded-xl text-xs font-black flex items-center gap-1.5 shadow cursor-pointer"
-              >
-                <Printer className="w-3.5 h-3.5" /> Print Payslip
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => handleDownloadSlipPdf(activeSlipPerson?.name)}
+                  disabled={!activeSlipPerson || downloadingSlipPdf}
+                  className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white rounded-xl text-xs font-black flex items-center gap-1.5 shadow cursor-pointer"
+                >
+                  {downloadingSlipPdf ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Download className="w-3.5 h-3.5" />}
+                  <span>{downloadingSlipPdf ? "Saving..." : "Download PDF"}</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handlePrintSlip(activeSlipPerson?.name)}
+                  disabled={!activeSlipPerson}
+                  className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white rounded-xl text-xs font-black flex items-center gap-1.5 shadow cursor-pointer"
+                >
+                  <Printer className="w-3.5 h-3.5" /> Print Payslip
+                </button>
+              </div>
             </div>
 
             {activeSlipPerson ? (
@@ -2801,7 +2845,7 @@ export const StaffHRMManager: React.FC<Props> = ({
                   </div>
                 )}
 
-                <div className="bg-white rounded-2xl border-2 border-slate-900 p-8 shadow-xl max-w-2xl mx-auto text-slate-900 print:shadow-none print:border-2 print:m-0 print:max-w-none">
+                <div ref={slipRef} className="bg-white rounded-2xl border-2 border-slate-900 p-8 shadow-xl max-w-2xl mx-auto text-slate-900 print:shadow-none print:border-2 print:m-0 print:max-w-none">
                   <div className="text-center border-b-2 border-slate-900 pb-4 mb-4">
                     <h2 className="text-2xl font-black uppercase text-slate-900">{school.name}</h2>
                     <p className="text-xs text-slate-600">{school.address}</p>

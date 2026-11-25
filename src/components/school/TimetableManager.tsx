@@ -1,12 +1,15 @@
 // @ts-nocheck
-import React, { useState, useEffect, useMemo } from "react";
+import React, { useState, useEffect, useMemo, useRef } from "react";
 import { toast } from "sonner";
 import {
   Clock, Calendar, BookOpen, Users, Plus, Edit3, Trash2, Printer,
+  Download, Loader2,
   Save, AlertTriangle, CheckCircle2, ChevronLeft, Sparkles, Filter,
   Building2, ArrowRight, Youtube, Video, Check, Layers, UserCheck,
   Award, GraduationCap, Settings, X
 } from "lucide-react";
+import { printElementInIframe } from "./AdmissionFormPrintModal";
+import { exportElementToPdf } from "../../utils/universalPdfExport";
 import type {
   School, SchoolClass, SchoolSubject, SchoolTeacher, SchoolSession,
   TimetablePeriod, ClassWeeklyTimetable, DailyClassLecture
@@ -787,9 +790,37 @@ export const TimetableManager: React.FC<Props> = ({
     return Array.from(workload.values()).sort((a, b) => b.totalPeriods - a.totalPeriods);
   }, [liveTeachers, allTimetables, classes]);
 
+  const timetablePrintRef = useRef<HTMLDivElement>(null);
+  const [downloadingPdf, setDownloadingPdf] = useState(false);
+
   // Print Timetable
   const handlePrint = () => {
-    window.print();
+    printElementInIframe(
+      timetablePrintRef.current,
+      `Timetable_${selectedClass?.name || "Class"}_${selectedSection || "A"}`,
+      ".timetable-print-table { font-size: 9px !important; width: 100% !important; table-layout: fixed; } .timetable-print-table th, .timetable-print-table td { padding: 4px !important; min-width: 0 !important; position: static !important; }",
+      "landscape"
+    );
+  };
+
+  const handleDownloadPdf = async () => {
+    if (!timetablePrintRef.current || downloadingPdf) return;
+    setDownloadingPdf(true);
+    try {
+      await exportElementToPdf(timetablePrintRef.current, {
+        filename: `Timetable_${selectedClass?.name || "Class"}_${selectedSection || "A"}`,
+        format: "a4",
+        orientation: "landscape",
+        pageMode: "auto_slice",
+        widthPx: 1122,
+        scale: 1.8,
+      });
+    } catch (err) {
+      console.warn("Timetable PDF export failed, falling back to print:", err);
+      handlePrint();
+    } finally {
+      setDownloadingPdf(false);
+    }
   };
 
   return (
@@ -835,12 +866,22 @@ export const TimetableManager: React.FC<Props> = ({
               </div>
             </div>
 
-            {/* Print Icon Button (Icon only as requested) */}
+            {/* Download PDF & Print Buttons */}
             <div className="flex items-center gap-2">
               <button
                 type="button"
+                onClick={handleDownloadPdf}
+                disabled={downloadingPdf}
+                className="px-3 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-60 text-white text-xs font-black flex items-center gap-1.5 transition cursor-pointer active:scale-95 shadow-sm"
+                title="Download A4 PDF"
+              >
+                {downloadingPdf ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
+                <span>{downloadingPdf ? "Saving..." : "PDF"}</span>
+              </button>
+              <button
+                type="button"
                 onClick={handlePrint}
-                className="p-2.5 rounded-xl bg-white/10 hover:bg-white/20 text-white transition border border-white/20 cursor-pointer active:scale-95 shadow-sm"
+                className="p-2.5 rounded-xl bg-slate-900/80 dark:bg-white/10 hover:bg-slate-800 dark:hover:bg-white/20 text-white transition border border-white/20 cursor-pointer active:scale-95 shadow-sm"
                 title="Print A4 Routine"
                 aria-label="Print A4 Routine"
               >
@@ -948,7 +989,7 @@ export const TimetableManager: React.FC<Props> = ({
         </div>
       ) : (
         /* Main Container */
-        <div className="max-w-6xl mx-auto p-4 sm:p-6 space-y-4">
+        <div ref={timetablePrintRef} className="max-w-6xl mx-auto p-4 sm:p-6 space-y-4">
           {/* Printable Header (Visible only during print) */}
           <div className="hidden print:block text-center border-b-2 border-slate-800 pb-4 mb-4">
             <h2 className="text-2xl font-black text-slate-900">{school?.name || "School Timetable"}</h2>

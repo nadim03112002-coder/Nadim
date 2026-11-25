@@ -13,11 +13,14 @@ import {
   Phone,
   PhoneCall,
   PhoneMissed,
+  QrCode,
   RefreshCw,
   Search,
   ShieldCheck,
   User,
   Users,
+  Volume2,
+  VolumeX,
   Wifi,
   WifiOff,
   X,
@@ -34,12 +37,16 @@ import type {
   SchoolStudent,
 } from "../../school-types";
 import {
+  getLocalSchools,
   getPendingFeeFollowUpSyncCount,
   saveFeeCallFollowUp,
   saveFeeCallFollowUpBatch,
   subscribeToFeeCallFollowUps,
   syncPendingFeeCallFollowUps,
 } from "../../school-firebase";
+import { sendSchoolPushNotification } from "../../utils/schoolPushClient";
+import { CallerIdSettingsCard } from "./CallerIdSettingsCard";
+import { UpiQrShareModal } from "./UpiQrShareModal";
 
 export const ACTIVE_TAGADA_CALL_STORAGE_KEY = "nsta_active_tagada_call_v1";
 const ACTIVE_CALL_MAX_AGE_MS = 2 * 60 * 60 * 1000; // 2 hours safety window
@@ -432,6 +439,7 @@ const QUICK_REMARKS = [
 interface Props {
   schoolId: string;
   schoolName?: string;
+  schoolUpiId?: string;
   actorName?: string;
   classes: SchoolClass[];
   rows: TagadaStudentFeeRow[];
@@ -447,6 +455,7 @@ type ActiveTabType = "CALL_TODAY" | "NEVER_CALLED" | "SCHEDULED" | "PAID_SETTLED
 export const FeeTagadaCallerPage: React.FC<Props> = ({
   schoolId,
   schoolName = "School",
+  schoolUpiId,
   actorName = "Admin / Accounts",
   classes,
   rows,
@@ -490,7 +499,41 @@ export const FeeTagadaCallerPage: React.FC<Props> = ({
   const [autoLogInfo, setAutoLogInfo] = useState<{ verified: boolean; picked: boolean; callType?: string } | null>(null);
   const [editablePhone, setEditablePhone] = useState<string>("");
   const [noteText, setNoteText] = useState<string>("");
+  const [resolvedTodayInModal, setResolvedTodayInModal] = useState<boolean>(false);
   const [isSavingCall, setIsSavingCall] = useState(false);
+  const [showCallerIdSettings, setShowCallerIdSettings] = useState(false);
+  const [qrGroup, setQrGroup] = useState<TagadaFamilyGroup | null>(null);
+  const resolvedUpiId = useMemo(() => {
+    if (schoolUpiId?.trim()) return schoolUpiId.trim();
+    const matched = getLocalSchools().find(
+      (s) => s.id === schoolId || s.code === schoolId
+    );
+    return String(matched?.upiId || "").trim();
+  }, [schoolId, schoolUpiId]);
+  const [sendMissedCallReminder, setSendMissedCallReminder] = useState<boolean>(true);
+  const [announceDueAmount, setAnnounceDueAmount] = useState<boolean>(() => {
+    if (typeof window === "undefined") return false;
+    try {
+      return localStorage.getItem("nst_tagada_announce_due_amount_v1") === "true";
+    } catch {
+      return false;
+    }
+  });
+
+  const handleToggleAnnounceDueAmount = () => {
+    setAnnounceDueAmount((prev) => {
+      const next = !prev;
+      try {
+        localStorage.setItem("nst_tagada_announce_due_amount_v1", next ? "true" : "false");
+      } catch {}
+      toast.success(
+        next
+          ? "Due Voice ON — Parent ko call alert me exact baki ₹ amount bhi bolega."
+          : "Due Voice OFF — Privacy ke liye sirf school & caller ka naam bolega."
+      );
+      return next;
+    });
+  };
 
   // Child Picker modals for Multi-Sibling Family Cards
   const [collectPickerGroup, setCollectPickerGroup] = useState<TagadaFamilyGroup | null>(null);
@@ -584,6 +627,57 @@ export const FeeTagadaCallerPage: React.FC<Props> = ({
     setDirectNextCallDate(addDaysYmd(todayYmd, 1));
     setPromisedAmount(String(group.combinedDue || group.record?.promisedAmount || ""));
     setNoteText("");
+    setResolvedTodayInModal(group.record?.resolvedTodayDate === todayYmd);
+    setSendMissedCallReminder(true);
+  };
+
+  const handleToggleSolvedTodayForGroup = async (group: TagadaFamilyGroup) => {
+    const currentlySolved = group.record?.resolvedTodayDate === todayYmd;
+    const nextResolvedDate = currentlySolved ? "" : todayYmd;
+    const nowIso = new Date().toISOString();
+    const targetMembers = group.unpaidMembers.length > 0 ? group.unpaidMembers : [group.primaryRow];
+
+    const recordsToSave: FeeCallFollowUpRecord[] = targetMembers.map((member) => {
+      const existing = followUpMap.get(member.student.id);
+      return {
+        id: member.student.id,
+        schoolId,
+        studentId: member.student.id,
+        studentName: member.student.name,
+        fatherName: member.student.fatherName || existing?.fatherName || "",
+        classId: member.student.classId,
+        className: member.className,
+        rollNo: member.student.rollNo || "",
+        phone: group.phone || existing?.phone || "",
+        familyGroupId: group.familyKey,
+        siblingStudentIds: group.members.map((m) => m.student.id).filter((id) => id !== member.student.id),
+        lastCallAt: existing?.lastCallAt,
+        lastCallOutcome: existing?.lastCallOutcome,
+        lastCallDurationSec: existing?.lastCallDurationSec,
+        lastCallBy: existing?.lastCallBy || actorName,
+        lastNote: existing?.lastNote,
+        promisedAmount: existing?.promisedAmount,
+        promiseDate: existing?.promiseDate,
+        nextCallDate: existing?.nextCallDate,
+        totalCallsCount: existing?.totalCallsCount,
+        callHistory: existing?.callHistory,
+        settled: existing?.settled,
+        settledAt: existing?.settledAt,
+        settledReceiptNo: existing?.settledReceiptNo,
+        settledAmount: existing?.settledAmount,
+        settledBy: existing?.settledBy,
+        resolvedTodayDate: nextResolvedDate,
+        resolvedNote: nextResolvedDate ? "Aaj sab solve ho gaya" : "",
+        updatedAt: nowIso,
+      };
+    });
+
+    await saveFeeCallFollowUpBatch(recordsToSave);
+    toast.success(
+      nextResolvedDate
+        ? `Marked: ${group.primaryRow.student.name} — Aaj Sab Solve Ho Gaya ✅`
+        : `Reopened: ${group.primaryRow.student.name} — Abhi Pending`
+    );
   };
 
   // Query native READ_CALL_LOG safely if WebView reloaded during a SIM call
@@ -733,6 +827,32 @@ export const FeeTagadaCallerPage: React.FC<Props> = ({
 
     try {
       bridge?.triggerHaptic?.("light");
+    } catch {}
+
+    // Option A: Instant pre-call voice & notification alert to parent's SCHOOL+ app (non-blocking)
+    try {
+      const targetStudentIds = Array.from(
+        new Set(group.members.map((m) => String(m.student.id || "").trim()).filter(Boolean))
+      );
+      if (targetStudentIds.length > 0 && navigator.onLine !== false) {
+        const cleanSchool = (schoolName || "School").trim();
+        const cleanActor = (actorName || "School Office").trim();
+        const callBody =
+          announceDueAmount && group.combinedDue > 0
+            ? `${cleanSchool} se ${cleanActor} aapko ₹${group.combinedDue.toLocaleString("en-IN")} baki school fee ke liye call kar rahe hain.`
+            : `${cleanSchool} se ${cleanActor} aapko Fee Tagada ke liye call kar rahe hain.`;
+        void sendSchoolPushNotification({
+          schoolId,
+          studentIds: targetStudentIds,
+          senderName: cleanActor,
+          title: `📞 ${cleanSchool} se Call aa raha hai`,
+          body: callBody,
+          type: "CALL_INCOMING",
+          voiceSpeak: true,
+          urgent: true,
+          url: `/?schoolPortal=1&schoolId=${encodeURIComponent(schoolId)}`,
+        }).catch(() => {});
+      }
     } catch {}
 
     if (hasNativeCaller && bridge?.startOfflinePhoneCall) {
@@ -1006,6 +1126,8 @@ export const FeeTagadaCallerPage: React.FC<Props> = ({
         totalCallsCount: (existing?.totalCallsCount || 0) + 1,
         callHistory: nextHistory,
         settled: false,
+        resolvedTodayDate: resolvedTodayInModal ? todayYmd : "",
+        resolvedNote: resolvedTodayInModal ? noteText.trim() || "Aaj sab solve ho gaya" : "",
         updatedAt: nowIso,
       };
     });
@@ -1025,7 +1147,37 @@ export const FeeTagadaCallerPage: React.FC<Props> = ({
       clearPendingActiveTagadaCall();
       pendingDialRef.current = null;
       setPendingSyncCount(getPendingFeeFollowUpSyncCount(schoolId));
+      const savedGroupSnapshot = modalGroup;
       setModalGroup(null);
+
+      // Feature 3: Auto-send Fee Reminder push on NOT_PICKED / SWITCHED_OFF if enabled
+      if (
+        (outcome === "NOT_PICKED" || outcome === "SWITCHED_OFF") &&
+        sendMissedCallReminder &&
+        isOnline &&
+        savedGroupSnapshot
+      ) {
+        const pushStudentIds = Array.from(
+          new Set(savedGroupSnapshot.members.map((m) => String(m.student.id || "").trim()).filter(Boolean))
+        );
+        if (pushStudentIds.length > 0) {
+          const cleanSchool = (schoolName || "School").trim();
+          const dueLabel =
+            savedGroupSnapshot.combinedDue > 0
+              ? `₹${savedGroupSnapshot.combinedDue.toLocaleString("en-IN")} fee baki hai`
+              : "school fee reminder";
+          void sendSchoolPushNotification({
+            schoolId,
+            studentIds: pushStudentIds,
+            senderName: actorName,
+            title: `📞 Missed Call Fee Reminder • ${cleanSchool}`,
+            body: `${cleanSchool} se aapko Fee Tagada call kiya gaya tha (${dueLabel}). App me jaakar Quick Promise Date bhej sakte hain.`,
+            type: "MONTHLY_FEE",
+            voiceSpeak: true,
+            url: `/?schoolPortal=1&schoolId=${encodeURIComponent(schoolId)}&openFeeReminder=1`,
+          }).catch(() => {});
+        }
+      }
 
       const allSynced = res.syncedCount === res.total;
       if (outcome === "PROMISED_DATE" && finalPromiseDate && finalNextCallDate) {
@@ -1287,10 +1439,15 @@ export const FeeTagadaCallerPage: React.FC<Props> = ({
                     : `Next Call: ${formatShortDate(rec.nextCallDate)}`}
                 </span>
               )}
-              {isPaidGroup && rec.settledAt && (
+                  {isPaidGroup && rec.settledAt && (
                 <span className="text-emerald-700 dark:text-emerald-300 font-semibold">
                   Settled: {formatDateTimeShort(rec.settledAt)}
                   {rec.settledReceiptNo ? ` · Receipt: ${rec.settledReceiptNo}` : ""}
+                </span>
+              )}
+              {rec.resolvedTodayDate === todayYmd && (
+                <span className="text-emerald-700 dark:text-emerald-300 font-bold">
+                  Aaj Solve Ho Gaya ✅
                 </span>
               )}
             </div>
@@ -1342,6 +1499,32 @@ export const FeeTagadaCallerPage: React.FC<Props> = ({
             >
               <MessageCircle className="w-3.5 h-3.5 shrink-0" />
               <span>WhatsApp</span>
+            </button>
+
+            {group.combinedDue > 0 && (
+              <button
+                type="button"
+                onClick={() => setQrGroup(group)}
+                className="min-h-[42px] px-3.5 py-2 rounded-xl border border-indigo-300 dark:border-indigo-700 bg-indigo-50 hover:bg-indigo-100 dark:bg-indigo-950/40 dark:hover:bg-indigo-950/70 text-indigo-800 dark:text-indigo-300 text-xs font-bold inline-flex items-center justify-center gap-1.5 cursor-pointer transition whitespace-nowrap"
+                title="Exact ₹ UPI QR & Pay Link"
+              >
+                <QrCode className="w-3.5 h-3.5 shrink-0" />
+                <span>UPI QR</span>
+              </button>
+            )}
+
+            <button
+              type="button"
+              onClick={() => void handleToggleSolvedTodayForGroup(group)}
+              className={`min-h-[42px] px-3.5 py-2 rounded-xl border text-xs font-bold inline-flex items-center justify-center gap-1.5 cursor-pointer transition whitespace-nowrap ${
+                rec?.resolvedTodayDate === todayYmd
+                  ? "bg-emerald-600 border-emerald-600 text-white"
+                  : "border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 hover:border-emerald-500"
+              }`}
+              title="Aaj ka follow-up solve hua ya pending hai mark karein"
+            >
+              <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
+              <span>{rec?.resolvedTodayDate === todayYmd ? "Aaj Solve ✅" : "Mark Solve"}</span>
             </button>
           </div>
         )}
@@ -1402,6 +1585,20 @@ export const FeeTagadaCallerPage: React.FC<Props> = ({
 
             <button
               type="button"
+              onClick={handleToggleAnnounceDueAmount}
+              className={`min-h-[36px] px-2.5 py-1 rounded-lg text-[11px] font-bold inline-flex items-center gap-1 border cursor-pointer whitespace-nowrap transition ${
+                announceDueAmount
+                  ? "bg-amber-500 text-slate-950 border-amber-500"
+                  : "bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-300 border-slate-200 dark:border-slate-700 hover:border-amber-400"
+              }`}
+              title="Privacy Toggle: Parent ko call pre-alert me exact ₹ due amount bolna ON/OFF karein"
+            >
+              {announceDueAmount ? <Volume2 className="w-3.5 h-3.5 shrink-0" /> : <VolumeX className="w-3.5 h-3.5 shrink-0" />}
+              <span>Due Voice: {announceDueAmount ? "ON" : "OFF"}</span>
+            </button>
+
+            <button
+              type="button"
               onClick={() => setPowerQueueEnabled((v) => !v)}
               className={`min-h-[36px] px-2.5 py-1 rounded-lg text-[11px] font-bold inline-flex items-center gap-1 border cursor-pointer whitespace-nowrap transition ${
                 powerQueueEnabled
@@ -1425,6 +1622,20 @@ export const FeeTagadaCallerPage: React.FC<Props> = ({
               <span>{isOnline ? "Online" : "Offline"}</span>
             </span>
 
+            <button
+              type="button"
+              onClick={() => setShowCallerIdSettings((v) => !v)}
+              className={`min-h-[36px] px-2.5 py-1 rounded-lg text-[11px] font-bold inline-flex items-center gap-1 border cursor-pointer whitespace-nowrap transition ${
+                showCallerIdSettings
+                  ? "bg-emerald-600 text-white border-emerald-600"
+                  : "bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-300 border-slate-200 dark:border-slate-700 hover:border-emerald-500"
+              }`}
+              title="Parent Caller ID (Ulta Directory) Settings & Test Preview"
+            >
+              <Phone className="w-3.5 h-3.5 shrink-0" />
+              <span>Parent Caller ID</span>
+            </button>
+
             {pendingSyncCount > 0 && (
               <button
                 type="button"
@@ -1442,6 +1653,10 @@ export const FeeTagadaCallerPage: React.FC<Props> = ({
       </div>
 
       <div className="max-w-4xl mx-auto px-3 sm:px-5 pt-4 space-y-4">
+        {showCallerIdSettings && (
+          <CallerIdSettingsCard mode="staff" schoolId={schoolId} schoolName={schoolName} compact />
+        )}
+
         {/* Highlight Banner for Broken Promises / Today's Queue */}
         {callTodayList.length > 0 && (
           <div className="rounded-2xl border border-rose-300 dark:border-rose-800/80 bg-rose-50/80 dark:bg-rose-950/30 p-3.5 sm:p-4 flex flex-wrap items-center justify-between gap-3">
@@ -2253,6 +2468,32 @@ export const FeeTagadaCallerPage: React.FC<Props> = ({
                     onChange={(e) => setDirectNextCallDate(e.target.value)}
                     className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-xs text-white font-mono focus:outline-none focus:border-sky-500"
                   />
+
+                  {(outcome === "NOT_PICKED" || outcome === "SWITCHED_OFF") && (
+                    <div className="pt-2 border-t border-slate-800 space-y-2">
+                      <label className="flex items-start gap-2 text-[11px] text-emerald-300 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={sendMissedCallReminder}
+                          onChange={(e) => setSendMissedCallReminder(e.target.checked)}
+                          className="mt-0.5 rounded border-slate-600 text-emerald-500"
+                        />
+                        <span>
+                          Missed call par Parent ko <strong>Auto Fee Reminder Push</strong> bhejein (taaki wo Quick Promise Date reply kar sakein).
+                        </span>
+                      </label>
+                      {modalGroup && (
+                        <button
+                          type="button"
+                          onClick={() => handleOpenWhatsApp(modalGroup)}
+                          className="w-full py-2 px-3 rounded-xl bg-emerald-950/60 hover:bg-emerald-900/60 border border-emerald-700/60 text-emerald-300 text-[11px] font-bold flex items-center justify-center gap-1.5 cursor-pointer transition"
+                        >
+                          <MessageCircle className="w-3.5 h-3.5 shrink-0" />
+                          <span>WhatsApp Fee Reminder Bhejein</span>
+                        </button>
+                      )}
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -2281,6 +2522,18 @@ export const FeeTagadaCallerPage: React.FC<Props> = ({
                   className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-800 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500 resize-none"
                 />
               </div>
+
+              <label className="flex items-center gap-2.5 p-2.5 rounded-xl bg-emerald-950/40 border border-emerald-800/60 text-xs text-emerald-200 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={resolvedTodayInModal}
+                  onChange={(e) => setResolvedTodayInModal(e.target.checked)}
+                  className="h-4 w-4 accent-emerald-500 rounded cursor-pointer shrink-0"
+                />
+                <span>
+                  <strong>Aaj Sab Solve Ho Gaya</strong> — Aaj ke incoming call card par Solved ✅ dikhaye
+                </span>
+              </label>
 
               <div className="flex flex-wrap items-center gap-2 pt-1">
                 <button
@@ -2313,6 +2566,19 @@ export const FeeTagadaCallerPage: React.FC<Props> = ({
             </form>
           </div>
         </div>
+      )}
+
+      {qrGroup && (
+        <UpiQrShareModal
+          isOpen={Boolean(qrGroup)}
+          onClose={() => setQrGroup(null)}
+          upiId={resolvedUpiId}
+          schoolName={schoolName}
+          amount={qrGroup.combinedDue}
+          studentSummary={qrGroup.displayTitle}
+          fatherName={qrGroup.fatherName}
+          phone={qrGroup.phone}
+        />
       )}
     </div>
   );

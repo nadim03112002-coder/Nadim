@@ -1,8 +1,10 @@
 // @ts-nocheck
-import React, { useState, useMemo, useEffect } from "react";
+import React, { useState, useMemo, useEffect, useRef } from "react";
 import {
   FileText,
   Printer,
+  Download,
+  Loader2,
   Plus,
   Trash2,
   Edit3,
@@ -26,6 +28,8 @@ import {
 import { toast } from "sonner";
 import { School, SchoolSession } from "../../school-types";
 import { resolveExamPaperMasthead } from "../../utils/entrancePaperPdf";
+import { printElementInIframe } from "./AdmissionFormPrintModal";
+import { exportElementToPdf } from "../../utils/universalPdfExport";
 
 export interface ExamQuestion {
   id: string;
@@ -1271,11 +1275,45 @@ export const QuestionPaperBuilder: React.FC<Props> = ({ school, activeSession })
                 </div>
 
                 <button
-                  onClick={() => window.print()}
+                  onClick={async () => {
+                    const el = document.getElementById("exam-question-paper-print") as HTMLElement | null;
+                    if (!el) return;
+                    const tid = toast.loading("PDF तैयार हो रहा है...");
+                    try {
+                      await exportElementToPdf(el, {
+                        filename: `${selectedSubject}_${selectedClass}_${activePrintView === "MARKING_SCHEME" ? "AnswerKey" : "QuestionPaper"}`,
+                        format: "a4",
+                        orientation: "portrait",
+                        pageMode: "auto_slice",
+                        widthPx: 794,
+                        scale: 2,
+                      });
+                      toast.success("PDF डाउनलोड हो गया!", { id: tid });
+                    } catch (err) {
+                      toast.dismiss(tid);
+                      printElementInIframe(el, `${selectedSubject}_${selectedClass}_Paper`, "", "portrait");
+                    }
+                  }}
+                  className="px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-black text-xs flex items-center gap-2 shadow-lg shadow-emerald-600/25 cursor-pointer"
+                >
+                  <Download className="w-4 h-4" />
+                  <span>Download PDF</span>
+                </button>
+
+                <button
+                  onClick={() => {
+                    const el = document.getElementById("exam-question-paper-print") as HTMLElement | null;
+                    printElementInIframe(
+                      el,
+                      `${selectedSubject}_${selectedClass}_${activePrintView === "MARKING_SCHEME" ? "AnswerKey" : "QuestionPaper"}`,
+                      "",
+                      "portrait"
+                    );
+                  }}
                   className="px-5 py-2.5 rounded-xl bg-purple-600 hover:bg-purple-500 text-white font-black text-xs flex items-center gap-2 shadow-lg shadow-purple-600/30 cursor-pointer"
                 >
                   <Printer className="w-4 h-4" />
-                  <span>A4 प्रिंट करें (Print PDF)</span>
+                  <span>A4 प्रिंट करें</span>
                 </button>
 
                 <button

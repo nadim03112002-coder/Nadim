@@ -17,6 +17,7 @@ import {
   testVoiceNotificationSample,
   type VoiceNotifyConfig,
 } from '../utils/voiceNotifyEngine';
+import { CallerIdSettingsCard } from './school/CallerIdSettingsCard';
 
 interface Props {
   userId: string;
@@ -262,6 +263,11 @@ export const NotificationSettings: React.FC<Props> = ({ userId, placement = 'flo
                   </div>
                 </div>
               )}
+            </div>
+
+            {/* Smart Caller Name Voice & Offline School Caller ID */}
+            <div className="mb-5">
+              <CallerIdSettingsCard compact={true} />
             </div>
 
             <div className="mb-5 grid grid-cols-1 gap-3 sm:grid-cols-2">

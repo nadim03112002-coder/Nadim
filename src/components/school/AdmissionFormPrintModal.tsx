@@ -2,6 +2,7 @@ import React, { useState, useMemo, useRef } from "react";
 import { jsPDF } from "jspdf";
 import html2canvas from "html2canvas";
 import { renderHtmlToCanvasSafe } from "../../utils/safePdfCapture";
+import { isNativeAndroidApp, smartPrintHtmlDocument, type PdfExportOrientation } from "../../utils/universalPdfExport";
 import {
   X,
   Printer,
@@ -152,11 +153,25 @@ export function extractDocumentStylesHtml(): string {
 }
 
 /**
- * Prints an HTML document inside an invisible off-screen iframe so printing works
- * reliably inside preview iframes and Android Print Spooler without window.open popups.
+ * Prints an HTML document inside an invisible off-screen iframe on desktop/Chrome,
+ * and on Native Android APK routes through standalone Chrome `/api/print-document`
+ * (or instant binary PDF fallback) so printing NEVER crops to mobile viewport width.
  */
-export function printHtmlInIframe(htmlDocument: string, title = "Print Document"): void {
+export function printHtmlInIframe(
+  htmlDocument: string,
+  title = "Print Document",
+  orientation: PdfExportOrientation = "portrait"
+): void {
   if (typeof document === "undefined") return;
+
+  if (isNativeAndroidApp()) {
+    void smartPrintHtmlDocument(htmlDocument, title, orientation).then((handled) => {
+      if (!handled) {
+        toast.error("Print start nahi ho paya — kripya Download PDF button use karein.");
+      }
+    });
+    return;
+  }
 
   const existing = document.getElementById("nst-hidden-print-iframe");
   if (existing && existing.parentNode) {
@@ -170,8 +185,8 @@ export function printHtmlInIframe(htmlDocument: string, title = "Print Document"
   iframe.style.position = "fixed";
   iframe.style.left = "-12000px";
   iframe.style.top = "0";
-  iframe.style.width = "1180px";
-  iframe.style.height = "840px";
+  iframe.style.width = orientation === "landscape" ? "1180px" : "860px";
+  iframe.style.height = orientation === "landscape" ? "840px" : "1160px";
   iframe.style.border = "0";
   iframe.style.opacity = "0";
   iframe.style.pointerEvents = "none";
@@ -254,12 +269,14 @@ export function printHtmlInIframe(htmlDocument: string, title = "Print Document"
 }
 
 /**
- * Clones active stylesheets and prints a specific DOM element cleanly inside an isolated iframe.
+ * Clones active stylesheets and prints a specific DOM element cleanly inside an isolated iframe
+ * (or uncropped Chrome standalone print tab on Android APK).
  */
 export function printElementInIframe(
   element: HTMLElement | null,
   title = "Print Document",
-  extraCss = ""
+  extraCss = "",
+  orientation: PdfExportOrientation = "portrait"
 ): void {
   if (!element || typeof document === "undefined") return;
   const styles = extractDocumentStylesHtml();
@@ -268,10 +285,11 @@ export function printElementInIframe(
 <html>
 <head>
   <meta charset="utf-8" />
+  <meta name="viewport" content="width=${orientation === "landscape" ? "1160" : "860"}, initial-scale=1.0" />
   <title>${escapeHtml(title)}</title>
   ${styles}
   <style>
-    @page { size: auto; margin: 8mm; }
+    @page { size: A4 ${orientation}; margin: 8mm; }
     html, body {
       margin: 0 !important;
       padding: 8px !important;
@@ -296,7 +314,7 @@ export function printElementInIframe(
 </body>
 </html>`;
 
-  printHtmlInIframe(html, title);
+  printHtmlInIframe(html, title, orientation);
 }
 
 const ADMISSION_PRINT_CSS = `

@@ -1,11 +1,11 @@
 // @ts-nocheck
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import {
   School, Users, BookOpen, Calendar, IndianRupee, Megaphone,
   Briefcase, Award, CheckCircle2, AlertTriangle, Clock, Search,
   Filter, Plus, Trash2, Printer, Download, Eye, FileText,
   ChevronRight, Sparkles, Phone, MapPin, ShieldCheck, RefreshCw,
-  QrCode, UserCheck, Layers, Star, TrendingUp, X
+  QrCode, UserCheck, Layers, Star, TrendingUp, X, Loader2
 } from "lucide-react";
 import {
   getDemoSchoolDataset,
@@ -28,6 +28,8 @@ import { NoticeBoardManager } from "./NoticeBoardManager";
 import { getSchool } from "../../school-firebase";
 import { getSavedSchoolLogo, isAppLogo } from "./feeReceiptUtils";
 import { getDynamicAcademicSessionLabel } from "../../utils/safeBrowserActions";
+import { printElementInIframe } from "./AdmissionFormPrintModal";
+import { exportElementToPdf } from "../../utils/universalPdfExport";
 
 type MainTab =
   | "dashboard"
@@ -44,6 +46,9 @@ export function SchoolErpDashboard({ onNavigate }: { onNavigate?: (view: string)
   const [activeTab, setActiveTab] = useState<MainTab>("dashboard");
   const [showResetConfirm, setShowResetConfirm] = useState<boolean>(false);
   const [resetSuccessToast, setResetSuccessToast] = useState<boolean>(false);
+  const reportCardRef = useRef<HTMLDivElement>(null);
+  const feeReceiptRef = useRef<HTMLDivElement>(null);
+  const [downloadingErpPdf, setDownloadingErpPdf] = useState<string | null>(null);
   const [activeSchool, setActiveSchool] = useState<any>(() => {
     try {
       const preferredId = localStorage.getItem("nst_active_school_id");
@@ -1149,7 +1154,7 @@ export function SchoolErpDashboard({ onNavigate }: { onNavigate?: (view: string)
       {/* ── MODAL: OFFICIAL REPORT CARD ─────────────────────────────── */}
       {reportCardStudent && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-xs animate-in fade-in">
-          <div className="bg-white text-slate-900 rounded-3xl max-w-2xl w-full p-6 sm:p-8 shadow-2xl max-h-[90vh] overflow-y-auto space-y-5">
+          <div ref={reportCardRef} className="bg-white text-slate-900 rounded-3xl max-w-2xl w-full p-6 sm:p-8 shadow-2xl max-h-[90vh] overflow-y-auto space-y-5">
             <div className="flex items-center justify-between border-b-2 border-slate-900 pb-4">
               <div className="flex items-center gap-3">
                 {schoolLogo && !isAppLogo(schoolLogo) ? (
@@ -1235,10 +1240,35 @@ export function SchoolErpDashboard({ onNavigate }: { onNavigate?: (view: string)
               </table>
             </div>
 
-            <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-200">
+            <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-200 print:hidden">
               <button
-                onClick={() => window.print()}
-                className="px-4 py-2 bg-slate-900 hover:bg-slate-800 text-white rounded-xl text-xs font-black flex items-center gap-1.5 shadow"
+                onClick={async () => {
+                  if (!reportCardRef.current || downloadingErpPdf) return;
+                  setDownloadingErpPdf("report");
+                  try {
+                    await exportElementToPdf(reportCardRef.current, {
+                      filename: `Report_Card_${reportCardStudent.name}`,
+                      format: "a4",
+                      orientation: "portrait",
+                      pageMode: "fit_single",
+                      widthPx: 720,
+                      scale: 2,
+                    });
+                  } catch {
+                    printElementInIframe(reportCardRef.current, `Report_Card_${reportCardStudent.name}`, "", "portrait");
+                  } finally {
+                    setDownloadingErpPdf(null);
+                  }
+                }}
+                disabled={downloadingErpPdf === "report"}
+                className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 text-white rounded-xl text-xs font-black flex items-center gap-1.5 shadow cursor-pointer"
+              >
+                {downloadingErpPdf === "report" ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Download className="w-3.5 h-3.5" />}
+                <span>Download PDF</span>
+              </button>
+              <button
+                onClick={() => printElementInIframe(reportCardRef.current, `Report_Card_${reportCardStudent.name}`, "", "portrait")}
+                className="px-4 py-2 bg-slate-900 hover:bg-slate-800 text-white rounded-xl text-xs font-black flex items-center gap-1.5 shadow cursor-pointer"
               >
                 <Printer className="w-3.5 h-3.5" /> Print Report Card
               </button>
@@ -1250,7 +1280,7 @@ export function SchoolErpDashboard({ onNavigate }: { onNavigate?: (view: string)
       {/* ── MODAL: OFFICIAL FEE RECEIPT ─────────────────────────── */}
       {activeReceiptFee && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-xs animate-in fade-in">
-          <div className="bg-white text-slate-900 rounded-3xl max-w-lg w-full p-6 sm:p-8 shadow-2xl space-y-4">
+          <div ref={feeReceiptRef} className="bg-white text-slate-900 rounded-3xl max-w-lg w-full p-6 sm:p-8 shadow-2xl space-y-4">
             <div className="text-center border-b-2 border-slate-900 pb-3 flex flex-col items-center">
               {schoolLogo && !isAppLogo(schoolLogo) ? (
                 <img
@@ -1298,16 +1328,41 @@ export function SchoolErpDashboard({ onNavigate }: { onNavigate?: (view: string)
               </p>
             </div>
 
-            <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-200">
+            <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-200 print:hidden">
               <button
                 onClick={() => setActiveReceiptFee(null)}
-                className="px-4 py-2 text-xs font-bold text-slate-500 hover:bg-slate-100 rounded-xl"
+                className="px-4 py-2 text-xs font-bold text-slate-500 hover:bg-slate-100 rounded-xl cursor-pointer"
               >
                 Close
               </button>
               <button
-                onClick={() => window.print()}
-                className="px-5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-black shadow flex items-center gap-1.5"
+                onClick={async () => {
+                  if (!feeReceiptRef.current || downloadingErpPdf) return;
+                  setDownloadingErpPdf("receipt");
+                  try {
+                    await exportElementToPdf(feeReceiptRef.current, {
+                      filename: `Fee_Receipt_${activeReceiptFee.student.name}`,
+                      format: "a4",
+                      orientation: "portrait",
+                      pageMode: "fit_single",
+                      widthPx: 640,
+                      scale: 2.2,
+                    });
+                  } catch {
+                    printElementInIframe(feeReceiptRef.current, `Fee_Receipt_${activeReceiptFee.student.name}`, "", "portrait");
+                  } finally {
+                    setDownloadingErpPdf(null);
+                  }
+                }}
+                disabled={downloadingErpPdf === "receipt"}
+                className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-60 text-white rounded-xl text-xs font-black shadow flex items-center gap-1.5 cursor-pointer"
+              >
+                {downloadingErpPdf === "receipt" ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Download className="w-3.5 h-3.5" />}
+                <span>Download PDF</span>
+              </button>
+              <button
+                onClick={() => printElementInIframe(feeReceiptRef.current, `Fee_Receipt_${activeReceiptFee.student.name}`, "", "portrait")}
+                className="px-5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-black shadow flex items-center gap-1.5 cursor-pointer"
               >
                 <Printer className="w-3.5 h-3.5" /> Print Fee Receipt
               </button>

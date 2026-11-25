@@ -81,6 +81,7 @@ import type {
   NstaBirthdayData,
   NstaSchoolStatus
 } from "../../school-types";
+import { hasEliteCallAccess } from "../../school-types";
 import {
   saveNstaMessage,
   deleteNstaMessage,
@@ -1686,7 +1687,13 @@ export const NstaMessengerSuite: React.FC<Props> = ({
     activeFriend?.id,
   ]);
 
+  const canUseEliteCalls = hasEliteCallAccess(school);
+
   const handleLaunchThreadCall = async (callType: CallType) => {
+    if (!canUseEliteCalls) {
+      toast.error("Audio aur Video Call sirf Elite Plan schools ke liye uplabdh hai.");
+      return;
+    }
     if (callState.phase !== "idle") {
       toast.info("Pehle chal rahi call ko end karein.");
       return;
@@ -3090,6 +3097,10 @@ export const NstaMessengerSuite: React.FC<Props> = ({
   };
 
   const handleCallFromHistory = async (entry: CallHistoryEntry, callType: CallType) => {
+    if (!canUseEliteCalls) {
+      toast.error("Audio aur Video Call sirf Elite Plan schools ke liye uplabdh hai.");
+      return;
+    }
     if (callState.phase !== "idle") {
       toast.info("Pehle chal rahi call ko end karein.");
       return;
@@ -4792,7 +4803,7 @@ export const NstaMessengerSuite: React.FC<Props> = ({
                         <p className="text-[11px] text-slate-500 truncate">{entry.peerSubtitle}</p>
                       </div>
 
-                      {entry.canCallBack && (
+                      {entry.canCallBack && canUseEliteCalls && (
                         <div
                           className="flex items-center gap-1 shrink-0"
                           onClick={(e) => e.stopPropagation()}
@@ -5238,7 +5249,7 @@ export const NstaMessengerSuite: React.FC<Props> = ({
               </button>
             )}
 
-            {canStartHeaderCall && (
+            {canStartHeaderCall && canUseEliteCalls && (
               <>
                 <button
                   type="button"
@@ -5257,6 +5268,17 @@ export const NstaMessengerSuite: React.FC<Props> = ({
                   <Video className="w-4 h-4" />
                 </button>
               </>
+            )}
+            {canStartHeaderCall && !canUseEliteCalls && (
+              <button
+                type="button"
+                onClick={() => toast.error("Audio aur Video Call sirf Elite Plan schools ke liye uplabdh hai.")}
+                className="min-h-[38px] px-2.5 rounded-xl bg-slate-800/80 text-amber-300 border border-amber-500/30 flex items-center justify-center gap-1 text-[11px] font-bold cursor-pointer transition active:scale-95"
+                title="Elite Plan Only: Audio / Video Call"
+              >
+                <Lock className="w-3.5 h-3.5 shrink-0" />
+                <span className="hidden sm:inline">Elite Calls</span>
+              </button>
             )}
 
             <button
@@ -5456,7 +5478,7 @@ export const NstaMessengerSuite: React.FC<Props> = ({
         )}
 
       {/* ── ACTIVE CLASS GROUP LIVE CALL JOIN BAR ─────────────────────────── */}
-      {activeTab === "class" && activeClassCall && callState.phase === "idle" && (
+      {canUseEliteCalls && activeTab === "class" && activeClassCall && callState.phase === "idle" && (
         <div className="bg-emerald-950/90 border-b border-emerald-500/35 px-3 py-2 flex items-center justify-between gap-2 shrink-0 z-10">
           <div className="flex items-center gap-2.5 min-w-0">
             <div className="w-9 h-9 rounded-xl bg-emerald-500/20 border border-emerald-400/40 text-emerald-300 flex items-center justify-center shrink-0">
@@ -6524,7 +6546,7 @@ export const NstaMessengerSuite: React.FC<Props> = ({
                               </p>
                             </div>
                           </div>
-                          {canStartHeaderCall && (
+                          {canStartHeaderCall && canUseEliteCalls && (
                             <button
                               type="button"
                               onClick={(e) => {
@@ -8126,7 +8148,7 @@ export const NstaMessengerSuite: React.FC<Props> = ({
       />
 
       {/* ── LIVE VOICE & VIDEO CALL OVERLAY ── */}
-      <NstaCallPortalHost identity={callIdentity} />
+      {canUseEliteCalls && <NstaCallPortalHost identity={callIdentity} />}
       </div>
     </div>
   );

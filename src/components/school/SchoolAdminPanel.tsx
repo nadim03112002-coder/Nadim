@@ -14,7 +14,8 @@ import {
   isActiveSchoolTeacherRecord, isActiveStaffRecord, getDeletedTeacherIds,
   subscribeToRecycleBin, restoreTeacherFromRecycleBin, restoreStudentFromRecycleBin,
   permanentDeleteTeacherFromBin, permanentDeleteStudentFromBin,
-  subscribeStaffLeaves, autoSendFeeSlipToSchoolDesk
+  subscribeStaffLeaves, autoSendFeeSlipToSchoolDesk, subscribeToFeeCallFollowUps,
+  getSchoolPublicInquiries, getPendingFeeFollowUpSyncCount, syncPendingFeeCallFollowUps
 } from "../../school-firebase";
 import {
   subscribeAttendanceSchedule,
@@ -43,27 +44,49 @@ import { getDemoSchoolDataset, isDemoDataEnabled, setDemoDataEnabled } from "./d
 import { ContentManager } from "./ContentManager";
 import { SmartClass } from "./SmartClass";
 import { AttendanceManager } from "./AttendanceManager";
-const FaceAttendanceKioskModal = React.lazy(() => import("./FaceAttendanceKioskModal").then(m => ({ default: m.FaceAttendanceKioskModal })));
-const UniversalFaceIdStudioModal = React.lazy(() => import("./UniversalFaceIdStudioModal").then(m => ({ default: m.UniversalFaceIdStudioModal })));
+import { lazyWithRetry, LazyPanelBoundary, scheduleIdlePreload } from "../../utils/lazyWithRetry";
+const loadFaceAttendanceKiosk = () => import("./FaceAttendanceKioskModal").then(m => ({ default: m.FaceAttendanceKioskModal }));
+const loadUniversalFaceIdStudio = () => import("./UniversalFaceIdStudioModal").then(m => ({ default: m.UniversalFaceIdStudioModal }));
+const loadIdCardManager = () => import("./IdCardManager").then(m => ({ default: m.IdCardManager }));
+const loadAdmitCardManager = () => import("./AdmitCardManager").then(m => ({ default: m.AdmitCardManager }));
+const loadCertificateManager = () => import("./CertificateManager").then(m => ({ default: m.CertificateManager }));
+const loadMarksheetGenerator = () => import("./MarksheetGenerator").then(m => ({ default: m.MarksheetGenerator }));
+const loadStaffHRMManager = () => import("./StaffHRMManager").then(m => ({ default: m.StaffHRMManager }));
+const loadSchoolReportsHub = () => import("./SchoolReportsHub").then(m => ({ default: m.SchoolReportsHub }));
+const loadPublicSchoolWebsite = () => import("./PublicSchoolWebsite").then(m => ({ default: m.PublicSchoolWebsite }));
+const loadSchoolWebsiteCms = () => import("./SchoolWebsiteCms").then(m => ({ default: m.SchoolWebsiteCms }));
+const loadOnlineAdmissionManager = () => import("./OnlineAdmissionManager").then(m => ({ default: m.OnlineAdmissionManager }));
+const loadNstaMessengerSuite = () => import("./NstaMessengerSuite").then(m => ({ default: m.NstaMessengerSuite }));
+const loadAdminAccountsDirectory = () => import("./AdminAccountsDirectory").then(m => ({ default: m.AdminAccountsDirectory }));
+const loadSchoolBackupManager = () => import("./SchoolBackupManager").then(m => ({ default: m.SchoolBackupManager }));
+const loadQuestionPaperBuilder = () => import("./QuestionPaperBuilder").then(m => ({ default: m.QuestionPaperBuilder }));
+const loadMultiBranchManager = () => import("./MultiBranchManager").then(m => ({ default: m.MultiBranchManager }));
+const loadHostelMessManager = () => import("./HostelMessManager").then(m => ({ default: m.HostelMessManager }));
+const loadDocumentVerificationView = () => import("./DocumentVerificationView").then(m => ({ default: m.DocumentVerificationView }));
+const loadEntranceTestAdminManager = () => import("./EntranceTestAdminManager").then(m => ({ default: m.EntranceTestAdminManager }));
+const loadDocumentTemplateStudioModal = () => import("./DocumentTemplateStudioModal").then(m => ({ default: m.DocumentTemplateStudioModal }));
+
+const FaceAttendanceKioskModal = lazyWithRetry(loadFaceAttendanceKiosk, "Face Attendance Kiosk");
+const UniversalFaceIdStudioModal = lazyWithRetry(loadUniversalFaceIdStudio, "Face ID Studio");
 import { FeeManager } from "./FeeManager";
 import { ReportCard } from "./ReportCard";
 import { MarksManager } from "./MarksManager";
 import { ExamResultsPanel } from "./ExamResultsPanel";
 import { DirectUploadButton } from "../DirectUploadButton";
-const IdCardManager = React.lazy(() => import("./IdCardManager").then(m => ({ default: m.IdCardManager })));
-const AdmitCardManager = React.lazy(() => import("./AdmitCardManager").then(m => ({ default: m.AdmitCardManager })));
-const CertificateManager = React.lazy(() => import("./CertificateManager").then(m => ({ default: m.CertificateManager })));
-const MarksheetGenerator = React.lazy(() => import("./MarksheetGenerator").then(m => ({ default: m.MarksheetGenerator })));
+const IdCardManager = lazyWithRetry(loadIdCardManager, "ID Card Manager");
+const AdmitCardManager = lazyWithRetry(loadAdmitCardManager, "Admit Card Manager");
+const CertificateManager = lazyWithRetry(loadCertificateManager, "Certificate Manager");
+const MarksheetGenerator = lazyWithRetry(loadMarksheetGenerator, "Marksheet Generator");
 import { StudentReAdmissionManager } from "./StudentReAdmissionManager";
 import { NoticeBoardManager } from "./NoticeBoardManager";
-const StaffHRMManager = React.lazy(() => import("./StaffHRMManager").then(m => ({ default: m.StaffHRMManager })));
-const SchoolReportsHub = React.lazy(() => import("./SchoolReportsHub").then(m => ({ default: m.SchoolReportsHub })));
-const PublicSchoolWebsite = React.lazy(() => import("./PublicSchoolWebsite").then(m => ({ default: m.PublicSchoolWebsite })));
-const SchoolWebsiteCms = React.lazy(() => import("./SchoolWebsiteCms").then(m => ({ default: m.SchoolWebsiteCms })));
-const OnlineAdmissionManager = React.lazy(() => import("./OnlineAdmissionManager").then(m => ({ default: m.OnlineAdmissionManager })));
+const StaffHRMManager = lazyWithRetry(loadStaffHRMManager, "Staff HRM Manager");
+const SchoolReportsHub = lazyWithRetry(loadSchoolReportsHub, "School Reports Hub");
+const PublicSchoolWebsite = lazyWithRetry(loadPublicSchoolWebsite, "Public School Website");
+const SchoolWebsiteCms = lazyWithRetry(loadSchoolWebsiteCms, "School Website CMS");
+const OnlineAdmissionManager = lazyWithRetry(loadOnlineAdmissionManager, "Online Admission Manager");
 import { getStaffEmployees, saveStaffEmployee, getAccountants, saveAccountant, subscribeToAccountants, deleteAccountant, unassignTeacherForAccountantRole, saveSchoolGalleryItem, deleteSchoolGalleryItem } from "../../school-firebase";
 import { compressImageFileToDataUrl } from "../../utils/imageCompression";
-import type { MonthlyFee, StaffEmployee, StoreSaleRecord, SchoolAccountant } from "../../school-types";
+import type { MonthlyFee, StaffEmployee, StoreSaleRecord, SchoolAccountant, FeeCallFollowUpRecord, SchoolPublicInquiry } from "../../school-types";
 import { SchoolHeaderEditorModal, type SchoolHeaderDetails } from "./SchoolHeaderEditorModal";
 import { DigitalSignatureModal, type DigitalSignatureTab } from "./DigitalSignatureModal";
 import { getSavedSchoolLogo, getVisibleSchoolRegNo, isAppLogo, cleanLogoUrl } from "./feeReceiptUtils";
@@ -76,7 +99,7 @@ import { InventoryStoreManager } from "./InventoryStoreManager";
 import { TeacherIdCardModal } from "./TeacherIdCardModal";
 import { SchoolCommunityFeed } from "./SchoolCommunityFeed";
 import { SchoolMessengerBroadcastStudio } from "./SchoolMessengerBroadcastStudio";
-const NstaMessengerSuite = React.lazy(() => import("./NstaMessengerSuite").then(m => ({ default: m.NstaMessengerSuite })));
+const NstaMessengerSuite = lazyWithRetry(loadNstaMessengerSuite, "NSTA Messenger");
 import { AbsenteeActionPage } from "./AbsenteeActionPage";
 import { getPendingActiveTagadaCall } from "./FeeTagadaCallerPage";
 import { GroupStudyModal } from "../GroupStudyModal";
@@ -84,8 +107,19 @@ import { TeacherRulesRegulationsView } from "./TeacherRulesRegulationsView";
 import { TeacherSignatureModal } from "./TeacherSignatureModal";
 import { AppointmentLetterModal } from "./AppointmentLetterModal";
 import { AccountRecoveryCard } from "./AccountRecoveryCard";
-const AdminAccountsDirectory = React.lazy(() => import("./AdminAccountsDirectory").then(m => ({ default: m.AdminAccountsDirectory })));
+const AdminAccountsDirectory = lazyWithRetry(loadAdminAccountsDirectory, "Accounts Directory");
 import { NstaCallPortalHost } from "./NstaCallModal";
+import { CallerIdSettingsCard } from "./CallerIdSettingsCard";
+import { IncomingParentCallModal } from "./IncomingParentCallModal";
+import { TodayCommandDigestCard } from "./TodayCommandDigestCard";
+import { WalkieTalkieModal } from "./WalkieTalkieModal";
+import { EliteFeatureLockCard } from "./EliteFeatureLockCard";
+import { useSchoolWalkieChannel } from "../../utils/schoolWalkieService";
+import {
+  syncSchoolDirectoryToAndroid,
+  extractTodayAbsentStudentIds,
+  getTodayLocalYmd,
+} from "../../utils/schoolCallerId";
 import {
   Users, BookOpen, Calendar, IndianRupee, Plus, Trash2, Settings,
   ChevronRight, ChevronLeft, X, Edit3, FileText, Award,
@@ -98,7 +132,7 @@ import {
   Youtube, Check, Menu, BarChart3, PieChart, Camera, Share2, Film, CheckCheck, RefreshCw, Upload, ExternalLink, Filter, Send, RotateCw, RotateCcw, Bus, Sliders,
   Sun, Moon, Palette,
   Cake, Gift,
-  Smartphone, Laptop, Monitor, Compass, CalendarClock, PhoneCall
+  Smartphone, Laptop, Monitor, Compass, CalendarClock, PhoneCall, Radio
 } from "lucide-react";
 import { SchoolStore } from "./SchoolStore";
 import { SchoolPlanView } from "./SchoolPlanView";
@@ -109,7 +143,15 @@ import { DirectAdmissionModal } from "./DirectAdmissionModal";
 import { AdmissionFormPrintModal } from "./AdmissionFormPrintModal";
 import { BusTransportModal } from "./BusTransportModal";
 import { ClassCurriculumNotesManager } from "./ClassCurriculumNotesManager";
-import { isSchoolEliteCurriculum, hasFaceAttendanceAccess, hasEntranceExamAccess, isEntranceExamFeatureEnabled } from "../../school-types";
+import {
+  isSchoolEliteCurriculum,
+  hasFaceAttendanceAccess,
+  hasEntranceExamAccess,
+  isEntranceExamFeatureEnabled,
+  hasEliteCallAccess,
+  hasEliteWalkieAccess,
+  hasEliteFeeTagadaAccess,
+} from "../../school-types";
 import { SchoolBirthdayCalendar } from "./SchoolBirthdayCalendar";
 import { UniversalAttendanceDesk } from "./UniversalAttendanceDesk";
 import { UniversalAttendanceScannerModal } from "./UniversalAttendanceScannerModal";
@@ -117,29 +159,29 @@ import { SchoolLocationModal } from "./SchoolLocationModal";
 import { DeviceAdminProtectionModal } from "./DeviceAdminProtectionModal";
 import { speakNotification } from "../../utils/voiceNotifyEngine";
 import { getCombinedDiscountLedger, DISPLAY_DISCOUNT_LABEL } from "../../utils/schoolDiscountAndPayment";
-const SchoolBackupManager = React.lazy(() => import("./SchoolBackupManager").then(m => ({ default: m.SchoolBackupManager })));
+const SchoolBackupManager = lazyWithRetry(loadSchoolBackupManager, "Backup Manager");
 import { SchoolExpenseManager } from "./SchoolExpenseManager";
 import { ReceiptCancellationModal } from "./ReceiptCancellationModal";
 import { RazorpaySettingsModal } from "./RazorpaySettingsModal";
 import { ParentLeaveManager } from "./ParentLeaveManager";
 import { PtmSchedulerModal } from "./PtmSchedulerModal";
 import { StaffPayrollManager } from "./StaffPayrollManager";
-const QuestionPaperBuilder = React.lazy(() => import("./QuestionPaperBuilder").then(m => ({ default: m.QuestionPaperBuilder })));
+const QuestionPaperBuilder = lazyWithRetry(loadQuestionPaperBuilder, "Question Paper Builder");
 import { SiblingProfileManager } from "./SiblingProfileManager";
-const MultiBranchManager = React.lazy(() => import("./MultiBranchManager").then(m => ({ default: m.MultiBranchManager })));
-const HostelMessManager = React.lazy(() => import("./HostelMessManager").then(m => ({ default: m.HostelMessManager })));
+const MultiBranchManager = lazyWithRetry(loadMultiBranchManager, "Multi-Branch Manager");
+const HostelMessManager = lazyWithRetry(loadHostelMessManager, "Hostel & Mess Manager");
 import { SyllabusPacingTracker } from "./SyllabusPacingTracker";
 import { BusFleetLogbookModal } from "./BusFleetLogbookModal";
 import { VisitorGateSecurityManager } from "./VisitorGateSecurityManager";
-const DocumentVerificationView = React.lazy(() => import("./DocumentVerificationView").then(m => ({ default: m.DocumentVerificationView })));
+const DocumentVerificationView = lazyWithRetry(loadDocumentVerificationView, "Document Verification");
 import { AdmissionEnquiryCrm } from "./AdmissionEnquiryCrm";
 import { TeacherAdminGrowthHub } from "./TeacherAdminGrowthHub";
-const EntranceTestAdminManager = React.lazy(() => import("./EntranceTestAdminManager").then(m => ({ default: m.EntranceTestAdminManager })));
+const EntranceTestAdminManager = lazyWithRetry(loadEntranceTestAdminManager, "Entrance Test Hub");
 import { HomeDailyRoutineWidget } from "./HomeDailyRoutineWidget";
 import { AdminDashboardCharts } from "./AdminDashboardCharts";
 import { LessonTopicManagerPanel } from "./LessonTopicManagerPanel";
 import { RolesPermissionsManager } from "./RolesPermissionsManager";
-const DocumentTemplateStudioModal = React.lazy(() => import("./DocumentTemplateStudioModal").then(m => ({ default: m.DocumentTemplateStudioModal })));
+const DocumentTemplateStudioModal = lazyWithRetry(loadDocumentTemplateStudioModal, "Template Studio");
 const playAttendanceSuccessChimeLazy = () => {
   void import("../../utils/faceRecognitionEngine")
     .then((m) => m.playAttendanceSuccessChime?.())
@@ -248,6 +290,16 @@ export const SchoolAdminPanel: React.FC<Props> = ({
   const [showLeaveConfirmModal, setShowLeaveConfirmModal] = useState(false);
   const [leavingSchoolLoading, setLeavingSchoolLoading] = useState(false);
   const [schoolLoading, setSchoolLoading] = useState<boolean>(() => !initialCachedSchool);
+
+  useEffect(() => {
+    return scheduleIdlePreload([
+      loadNstaMessengerSuite,
+      loadIdCardManager,
+      loadAdmitCardManager,
+      loadCertificateManager,
+      loadMarksheetGenerator,
+    ], 1800);
+  }, []);
   const [sessions, setSessions] = useState<SchoolSession[]>([]);
   const [classes, setClasses] = useState<SchoolClass[]>([]);
   const [subjects, setSubjects] = useState<SchoolSubject[]>([]);
@@ -948,6 +1000,7 @@ export const SchoolAdminPanel: React.FC<Props> = ({
   const [showUniversalScannerModal, setShowUniversalScannerModal] = useState(false);
   const [showSchoolLocationModal, setShowSchoolLocationModal] = useState(false);
   const [showDeviceAdminModal, setShowDeviceAdminModal] = useState(false);
+  const [showWalkieModal, setShowWalkieModal] = useState(false);
   const [showFaceKioskModal, setShowFaceKioskModal] = useState(false);
   const [faceKioskInitialTestMode, setFaceKioskInitialTestMode] = useState(false);
   const [enrolledFaceIds, setEnrolledFaceIds] = useState<Record<string, boolean>>({});
@@ -966,6 +1019,7 @@ export const SchoolAdminPanel: React.FC<Props> = ({
   useBackHandler(showUniversalScannerModal, () => setShowUniversalScannerModal(false), 30);
   useBackHandler(showFaceKioskModal, () => setShowFaceKioskModal(false), 30);
   useBackHandler(showFaceStudioModal, () => setShowFaceStudioModal(false), 30);
+  useBackHandler(showWalkieModal, () => setShowWalkieModal(false), 26);
   useBackHandler(Boolean(signatureTargetTeacher), () => setSignatureTargetTeacher(null), 25);
   useBackHandler(Boolean(appointmentLetterTeacher), () => setAppointmentLetterTeacher(null), 23);
   useBackHandler(Boolean(selectedTeacherForIdCard), () => setSelectedTeacherForIdCard(null), 22);
@@ -1037,6 +1091,16 @@ export const SchoolAdminPanel: React.FC<Props> = ({
   const [allFees, setAllFees] = useState<MonthlyFee[]>([]);
   const [dashboardFeeHistory, setDashboardFeeHistory] = useState<MonthlyFee[]>([]);
   const [dashboardStoreSales, setDashboardStoreSales] = useState<StoreSaleRecord[]>([]);
+  const [feeCallFollowUps, setFeeCallFollowUps] = useState<FeeCallFollowUpRecord[]>([]);
+  const [inquiries, setInquiries] = useState<SchoolPublicInquiry[]>([]);
+  const [attendanceTick, setAttendanceTick] = useState(0);
+  const [pendingSyncCount, setPendingSyncCount] = useState<number>(() =>
+    schoolId ? getPendingFeeFollowUpSyncCount(schoolId) : 0
+  );
+  const [syncingPending, setSyncingPending] = useState(false);
+  const [isOnline, setIsOnline] = useState<boolean>(() =>
+    typeof navigator === "undefined" ? true : navigator.onLine !== false
+  );
   const [feeSummaryLoading, setFeeSummaryLoading] = useState(false);
 
   useEffect(() => {
@@ -1421,8 +1485,137 @@ export const SchoolAdminPanel: React.FC<Props> = ({
         checkAndDispatchTodaysBirthdays(schoolId).catch(() => {});
       }
     });
-    return () => { unsubSessions(); unsubTeachers(); unsubAccountants(); unsubStudents(); };
+    const unsubFollowUps = subscribeToFeeCallFollowUps(schoolId, setFeeCallFollowUps);
+    return () => {
+      unsubSessions();
+      unsubTeachers();
+      unsubAccountants();
+      unsubStudents();
+      unsubFollowUps();
+    };
   }, [schoolId]);
+
+  useEffect(() => {
+    if (!schoolId) return;
+    getSchoolPublicInquiries(schoolId)
+      .then((list) => {
+        if (Array.isArray(list)) setInquiries(list);
+      })
+      .catch(() => {});
+  }, [schoolId]);
+
+  useEffect(() => {
+    if (!schoolId) return;
+    const refreshPendingCount = () => {
+      setPendingSyncCount(getPendingFeeFollowUpSyncCount(schoolId));
+    };
+    const handleAttendanceUpdate = () => setAttendanceTick((t) => t + 1);
+    const handleFollowUpsUpdated = (ev: Event) => {
+      const detail = (ev as CustomEvent)?.detail;
+      if (detail?.schoolId && detail.schoolId !== schoolId) return;
+      refreshPendingCount();
+    };
+    const handleOnline = () => {
+      setIsOnline(true);
+      refreshPendingCount();
+      if (getPendingFeeFollowUpSyncCount(schoolId) > 0) {
+        syncPendingFeeCallFollowUps(schoolId)
+          .then(() => refreshPendingCount())
+          .catch(() => {});
+      }
+    };
+    const handleOffline = () => setIsOnline(false);
+
+    refreshPendingCount();
+    window.addEventListener("attendance-updated", handleAttendanceUpdate);
+    window.addEventListener("fee-call-followups-updated", handleFollowUpsUpdated);
+    window.addEventListener("online", handleOnline);
+    window.addEventListener("offline", handleOffline);
+    return () => {
+      window.removeEventListener("attendance-updated", handleAttendanceUpdate);
+      window.removeEventListener("fee-call-followups-updated", handleFollowUpsUpdated);
+      window.removeEventListener("online", handleOnline);
+      window.removeEventListener("offline", handleOffline);
+    };
+  }, [schoolId]);
+
+  const todayAbsentStudentIds = useMemo(() => {
+    if (!schoolId) return [];
+    try {
+      return extractTodayAbsentStudentIds(getLocalAttendance(schoolId));
+    } catch {
+      return [];
+    }
+  }, [schoolId, attendanceTick, students.length]);
+
+  const handleSyncPendingFromDigest = async () => {
+    if (!schoolId || syncingPending) return;
+    setSyncingPending(true);
+    try {
+      const res = await syncPendingFeeCallFollowUps(schoolId);
+      setPendingSyncCount(res.remaining);
+      if (res.synced > 0) {
+        toast.success(`${res.synced} pending offline call updates cloud me sync ho gaye.`);
+      } else if (res.remaining > 0) {
+        toast.info("Internet ya cloud connection check karein.");
+      } else {
+        toast.success("Sabhi call records up-to-date hain.");
+      }
+    } catch {
+      toast.error("Sync karte waqt error aayi.");
+    } finally {
+      setSyncingPending(false);
+    }
+  };
+
+  const {
+    messages: walkieMessages,
+    schedule: walkieSchedule,
+    isWithinHours: isWalkieSchoolHoursNow,
+  } = useSchoolWalkieChannel({
+    enabled: Boolean(schoolId && hasEliteWalkieAccess(school)),
+    schoolId,
+    userId: adminUid || "STAFF_ADMIN",
+    userRole: "ADMIN",
+    onOpenWalkie: () => setShowWalkieModal(true),
+  });
+
+  useEffect(() => {
+    const onOpenWalkie = () => setShowWalkieModal(true);
+    window.addEventListener("android-open-walkie", onOpenWalkie);
+    return () => window.removeEventListener("android-open-walkie", onOpenWalkie);
+  }, []);
+
+  useEffect(() => {
+    if (!schoolId) return;
+    const allowParentCaller = hasEliteFeeTagadaAccess(school);
+    syncSchoolDirectoryToAndroid({
+      school,
+      schoolName: school?.name,
+      teachers,
+      accountants,
+      staffEmployees: staffList,
+      students: allowParentCaller ? students : [],
+      classes: allowParentCaller ? classes : [],
+      fees: allowParentCaller ? (dashboardFeeHistory.length > 0 ? dashboardFeeHistory : allFees) : [],
+      feeCallFollowUps: allowParentCaller ? feeCallFollowUps : [],
+      absentStudentIds: allowParentCaller ? todayAbsentStudentIds : [],
+      inquiries: allowParentCaller ? inquiries : [],
+    });
+  }, [
+    schoolId,
+    school,
+    teachers,
+    accountants,
+    staffList,
+    students,
+    classes,
+    allFees,
+    dashboardFeeHistory,
+    feeCallFollowUps,
+    todayAbsentStudentIds,
+    inquiries,
+  ]);
 
   useEffect(() => {
     const handleTeacherOrStaffRemoved = (e: any) => {
@@ -3133,6 +3326,7 @@ export const SchoolAdminPanel: React.FC<Props> = ({
 
   // Elite-exclusive menu items highlighted with Premium Royal Gold styling
   const ELITE_ADMIN_MENU_IDS = new Set<AdminView>([
+    "fee_tagada",
     "class_notes_manager",
     "video_lectures",
     "entrance_test_hub",
@@ -3141,6 +3335,9 @@ export const SchoolAdminPanel: React.FC<Props> = ({
   ]);
 
   const isEliteAdminItemLocked = (itemId: AdminView): boolean => {
+    if (itemId === "fee_tagada") {
+      return !hasEliteFeeTagadaAccess(school);
+    }
     if (itemId === "entrance_test_hub" || itemId === "digital_paper_library") {
       return !hasEntranceExamAccess(school);
     }
@@ -3957,6 +4154,33 @@ export const SchoolAdminPanel: React.FC<Props> = ({
                 <span className="hidden sm:inline">Leave</span>
               </button>
             )}
+
+            {/* School-Hour Live Walkie-Talkie Button (Elite Only) */}
+            <button
+              type="button"
+              onClick={() => setShowWalkieModal(true)}
+              className={`relative shrink-0 inline-flex items-center gap-1 px-2.5 py-1.5 rounded-xl text-xs font-bold transition cursor-pointer active:scale-95 shadow-sm border ${
+                !hasEliteWalkieAccess(school)
+                  ? isWhite
+                    ? "bg-amber-50 hover:bg-amber-100 text-amber-800 border-amber-200"
+                    : "bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 border-amber-500/35"
+                  : isWalkieSchoolHoursNow
+                  ? "bg-emerald-600 hover:bg-emerald-500 text-white border-emerald-500"
+                  : isWhite
+                  ? "bg-slate-100 hover:bg-slate-200 text-slate-700 border-slate-300"
+                  : "bg-[#112447] hover:bg-[#193363] text-slate-200 border-[#294c88]"
+              }`}
+              title={
+                hasEliteWalkieAccess(school)
+                  ? "School-Hour Live Walkie-Talkie"
+                  : "Elite Plan Only: School-Hour Walkie-Talkie"
+              }
+              aria-label="Open School Walkie-Talkie"
+            >
+              <Radio className="w-3.5 h-3.5 shrink-0" />
+              <span className="hidden sm:inline">Walkie</span>
+              {!hasEliteWalkieAccess(school) && <Lock className="w-3 h-3 shrink-0" />}
+            </button>
 
             {/* Notification Icon Button (1-Tap Direct Class Fee Alert & Broadcast Page) */}
             <button
@@ -5104,6 +5328,66 @@ export const SchoolAdminPanel: React.FC<Props> = ({
           </div>
         )}
 
+        {/* ── PRINCIPAL DAILY COMMAND DIGEST + VOICE BRIEFING ── */}
+        {(() => {
+          const todayLocalYmd = getTodayLocalYmd();
+          const todayCallsCount = feeCallFollowUps.reduce((acc, rec) => {
+            const historyToday = Array.isArray(rec.callHistory)
+              ? rec.callHistory.filter((item) => (item.at || "").slice(0, 10) === todayLocalYmd).length
+              : 0;
+            if (historyToday > 0) return acc + historyToday;
+            return (rec.lastCallAt || "").slice(0, 10) === todayLocalYmd ? acc + 1 : acc;
+          }, 0);
+          const todaySolvedCount = feeCallFollowUps.filter(
+            (rec) => rec.resolvedTodayDate === todayLocalYmd
+          ).length;
+          const todayPromisedAmount = feeCallFollowUps.reduce((sum, rec) => {
+            if (
+              rec.lastOutcome === "PROMISED_DATE" &&
+              (rec.lastCallAt || "").slice(0, 10) === todayLocalYmd
+            ) {
+              return sum + Number(rec.promisedAmount || 0);
+            }
+            return sum;
+          }, 0);
+          const openInquiriesCount = inquiries.filter((inq) => {
+            const st = String(inq.status || "").toLowerCase();
+            return st !== "lost" && st !== "admitted" && st !== "resolved";
+          }).length;
+          const todayInquiriesCount = inquiries.filter(
+            (inq) => (inq.createdAt || "").slice(0, 10) === todayLocalYmd
+          ).length;
+          const digestAbsentCount = Math.max(
+            sevenDayAttendanceData[6]?.absentCount ?? 0,
+            todayAbsentStudentIds.length
+          );
+          const digestPresentCount = sevenDayAttendanceData[6]?.presentCount ?? 0;
+
+          return (
+            <TodayCommandDigestCard
+              schoolName={school?.name}
+              todayCollected={todayTotalFeeCollected}
+              todayReceiptsCount={todayReceiptsCount}
+              todayCallsCount={todayCallsCount}
+              todaySolvedCount={todaySolvedCount}
+              todayPromisedAmount={todayPromisedAmount}
+              todayAbsentCount={digestAbsentCount}
+              todayPresentCount={digestPresentCount}
+              openInquiriesCount={openInquiriesCount}
+              todayInquiriesCount={todayInquiriesCount}
+              staffPresentCount={staffPresentCount}
+              totalStaffCount={totalStaffCount}
+              pendingSyncCount={pendingSyncCount}
+              isOnline={isOnline}
+              syncingPending={syncingPending}
+              onSyncPending={handleSyncPendingFromDigest}
+              onOpenTagada={() => setView("fee_tagada")}
+              onOpenAbsentees={() => setView("absentee")}
+              onOpenEnquiries={() => setView("admission_crm")}
+            />
+          );
+        })()}
+
         {/* ── SECTION 1: TODAY'S OPERATIONAL PULSE (4 DAILY NUMBERS / आँकड़े) ── */}
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5">
           {/* Card 1: Student Attendance Today */}
@@ -5238,6 +5522,7 @@ export const SchoolAdminPanel: React.FC<Props> = ({
               >
                 <PhoneCall className="w-3 h-3 shrink-0" />
                 <span>तगादा कॉल</span>
+                {!hasEliteFeeTagadaAccess(school) && <Lock className="w-3 h-3 text-amber-200 shrink-0" />}
               </button>
               <button
                 type="button"
@@ -6182,6 +6467,7 @@ export const SchoolAdminPanel: React.FC<Props> = ({
                 >
                   <PhoneCall className="w-3 h-3 shrink-0" />
                   <span>Fee Tagada</span>
+                  {!hasEliteFeeTagadaAccess(school) && <Lock className="w-2.5 h-2.5 text-amber-200 shrink-0" />}
                 </button>
                 <button
                   type="button"
@@ -8574,7 +8860,7 @@ export const SchoolAdminPanel: React.FC<Props> = ({
           </div>
         )}
         {renderAdminBottomNav()}
-        {school?.id && (
+        {school?.id && hasEliteCallAccess(school) && (
           <NstaCallPortalHost
             identity={{
               schoolId: school.id,
@@ -8586,6 +8872,43 @@ export const SchoolAdminPanel: React.FC<Props> = ({
             }}
           />
         )}
+        {school?.id && hasEliteFeeTagadaAccess(school) && (
+          <IncomingParentCallModal
+            schoolId={school.id}
+            schoolName={school.name}
+            schoolUpiId={school.upiId}
+            callerUserName={school.principalName || "Principal / Admin"}
+            students={students}
+            classes={classes}
+            fees={dashboardFeeHistory.length > 0 ? dashboardFeeHistory : allFees}
+            feeCallFollowUps={feeCallFollowUps}
+            absentStudentIds={todayAbsentStudentIds}
+            inquiries={inquiries}
+            onCollectFee={(_studentId, classId) => {
+              const targetCls = classes.find((c) => c.id === classId);
+              if (targetCls) {
+                setFeeClassSelected(targetCls);
+                setView("fee_class");
+              } else {
+                setView("fees_hub");
+              }
+            }}
+          />
+        )}
+        <WalkieTalkieModal
+          isOpen={showWalkieModal}
+          onClose={() => setShowWalkieModal(false)}
+          school={school}
+          schoolId={schoolId}
+          currentUserId={adminUid || "STAFF_ADMIN"}
+          currentUserName={school?.principalName || "Principal / Admin"}
+          currentUserRole="ADMIN"
+          teachers={teachers}
+          accountants={accountants}
+          messages={walkieMessages}
+          schedule={walkieSchedule}
+          onUpgradeToElite={() => setView("subscription")}
+        />
       </>
     );
   };
@@ -9999,6 +10322,23 @@ export const SchoolAdminPanel: React.FC<Props> = ({
   }
 
   if (view === "fee_tagada") {
+    if (!hasEliteFeeTagadaAccess(school)) {
+      return renderErpShell(
+        <div className="max-w-xl mx-auto my-8 px-4">
+          <EliteFeatureLockCard
+            title="Fee Tagada & Offline SIM Caller"
+            description="Defaulter call queue, parent promise dates, post-call follow-up sync aur SIM Caller ID sirf Elite / Supreme Plan schools ke liye uplabdh hai."
+            highlights={[
+              "Priority Fee Defaulter Call Queue & Promise Dates",
+              "Family / Sibling Combined Tagada Calling",
+              "Truecaller-style Offline SIM Caller ID & UPI QR",
+            ]}
+            onUpgrade={() => setView("subscription")}
+            onBack={() => setView("dashboard")}
+          />
+        </div>
+      );
+    }
     return renderErpShell(
       <FeeManager
         key={view}
@@ -10293,54 +10633,62 @@ export const SchoolAdminPanel: React.FC<Props> = ({
   // ── 9-MODULE ENTERPRISE VIEWS ──
   if (view === "id_cards") {
     return renderErpShell(
-      <IdCardManager
-        school={school!}
-        classes={displayedClasses}
-        students={displayedStudents}
-        staff={displayedStaff}
-        teachers={displayedTeachers}
-        onBack={() => setView("dashboard")}
-      />
+      <LazyPanelBoundary title="ID Card Manager">
+        <IdCardManager
+          school={school!}
+          classes={displayedClasses}
+          students={displayedStudents}
+          staff={displayedStaff}
+          teachers={displayedTeachers}
+          onBack={() => setView("dashboard")}
+        />
+      </LazyPanelBoundary>
     );
   }
 
   if (view === "admit_cards") {
     return renderErpShell(
-      <AdmitCardManager
-        school={school!}
-        classes={displayedClasses}
-        students={displayedStudents}
-        activeSession={activeSession}
-        onSchoolUpdated={(updated) => setSchool((prev) => prev ? { ...prev, ...updated } : prev)}
-        onBack={() => setView("dashboard")}
-      />
+      <LazyPanelBoundary title="Admit Card Manager">
+        <AdmitCardManager
+          school={school!}
+          classes={displayedClasses}
+          students={displayedStudents}
+          activeSession={activeSession}
+          onSchoolUpdated={(updated) => setSchool((prev) => prev ? { ...prev, ...updated } : prev)}
+          onBack={() => setView("dashboard")}
+        />
+      </LazyPanelBoundary>
     );
   }
 
   if (view === "certificates") {
     return renderErpShell(
-      <CertificateManager
-        school={school!}
-        classes={displayedClasses}
-        students={displayedStudents}
-        onBack={() => setView("dashboard")}
-      />
+      <LazyPanelBoundary title="Certificate Manager">
+        <CertificateManager
+          school={school!}
+          classes={displayedClasses}
+          students={displayedStudents}
+          onBack={() => setView("dashboard")}
+        />
+      </LazyPanelBoundary>
     );
   }
 
   if (view === "marksheet_hub") {
     return renderErpShell(
-      <div className="pb-12 w-full max-w-full overflow-x-hidden print:p-0 print:pb-0 print:overflow-visible">
-        <MarksheetGenerator
-          school={school!}
-          classes={displayedClasses}
-          students={displayedStudents}
-          teachers={displayedTeachers}
-          activeSession={activeSession}
-          onSchoolUpdated={(updated) => setSchool((prev) => prev ? { ...prev, ...updated } : prev)}
-          onBack={() => setView("dashboard")}
-        />
-      </div>
+      <LazyPanelBoundary title="Marksheet Generator">
+        <div className="pb-12 w-full max-w-full overflow-x-hidden print:p-0 print:pb-0 print:overflow-visible">
+          <MarksheetGenerator
+            school={school!}
+            classes={displayedClasses}
+            students={displayedStudents}
+            teachers={displayedTeachers}
+            activeSession={activeSession}
+            onSchoolUpdated={(updated) => setSchool((prev) => prev ? { ...prev, ...updated } : prev)}
+            onBack={() => setView("dashboard")}
+          />
+        </div>
+      </LazyPanelBoundary>
     );
   }
 
@@ -10388,10 +10736,12 @@ export const SchoolAdminPanel: React.FC<Props> = ({
 
   if (view === "staff_hrm") {
     return renderErpShell(
-      <StaffHRMManager
-        school={school!}
-        onBack={() => setView("dashboard")}
-      />
+      <LazyPanelBoundary title="Staff HRM Manager">
+        <StaffHRMManager
+          school={school!}
+          onBack={() => setView("dashboard")}
+        />
+      </LazyPanelBoundary>
     );
   }
   if (view === "roles_permissions" && school) {
@@ -10420,64 +10770,72 @@ export const SchoolAdminPanel: React.FC<Props> = ({
 
   if (view === "reports_hub") {
     return renderErpShell(
-      <SchoolReportsHub
-        school={school!}
-        classes={classes}
-        students={students}
-        teachers={teachers}
-        fees={[]}
-        onBack={() => setView("dashboard")}
-      />
+      <LazyPanelBoundary title="Reports Hub">
+        <SchoolReportsHub
+          school={school!}
+          classes={classes}
+          students={students}
+          teachers={teachers}
+          fees={[]}
+          onBack={() => setView("dashboard")}
+        />
+      </LazyPanelBoundary>
     );
   }
 
   if (view === "website_cms") {
     return renderErpShell(
-      <SchoolWebsiteCms
-        school={school!}
-        teachers={displayedTeachers}
-        isSuperAdmin={Boolean(isSuperAdmin)}
-        onSchoolUpdated={(updated) => setSchool(updated)}
-        onTeacherUpdated={(teacherId, patch) => {
-          setTeachers(prev => prev.map(t => (t.id === teacherId ? { ...t, ...patch } : t)));
-        }}
-        onPreviewWebsite={() => setView("public_website")}
-        onUpgradePlan={() => setView("subscription")}
-        onBack={() => setView("dashboard")}
-      />
+      <LazyPanelBoundary title="Website CMS">
+        <SchoolWebsiteCms
+          school={school!}
+          teachers={displayedTeachers}
+          isSuperAdmin={Boolean(isSuperAdmin)}
+          onSchoolUpdated={(updated) => setSchool(updated)}
+          onTeacherUpdated={(teacherId, patch) => {
+            setTeachers(prev => prev.map(t => (t.id === teacherId ? { ...t, ...patch } : t)));
+          }}
+          onPreviewWebsite={() => setView("public_website")}
+          onUpgradePlan={() => setView("subscription")}
+          onBack={() => setView("dashboard")}
+        />
+      </LazyPanelBoundary>
     );
   }
 
   if (view === "public_website") {
     return renderErpShell(
-      <PublicSchoolWebsite
-        school={school!}
-        classes={displayedClasses}
-        sessions={displayedSessions}
-        teachers={displayedTeachers}
-        students={displayedStudents}
-        onBack={() => setView("dashboard")}
-        onOpenAdmission={() => setView("online_admissions")}
-        onOpenVerification={(type) => {
-          if (type === "marksheet") setView("marksheet_hub");
-          else if (type === "certificate") setView("certificates");
-          else if (type === "idcard") setView("id_cards");
-        }}
-      />
+      <LazyPanelBoundary title="Public Website">
+        <PublicSchoolWebsite
+          school={school!}
+          classes={displayedClasses}
+          sessions={displayedSessions}
+          teachers={displayedTeachers}
+          students={displayedStudents}
+          onBack={() => setView("dashboard")}
+          onOpenAdmission={() => setView("online_admissions")}
+          onOpenVerification={(type) => {
+            if (type === "marksheet") setView("marksheet_hub");
+            else if (type === "certificate") setView("certificates");
+            else if (type === "idcard") setView("id_cards");
+          }}
+        />
+      </LazyPanelBoundary>
     );
   }
 
   if (view === "online_admissions") {
     return renderErpShell(
-      <OnlineAdmissionManager
-        school={school!}
-        classes={displayedClasses.length > 0 ? displayedClasses : classes}
-        sessions={sessions}
-        activeSession={activeSession}
-        isAdmin={true}
-        viewMode="admissions_only"
-        onBack={() => setView("dashboard")}
-      />
+      <LazyPanelBoundary title="Online Admissions">
+        <OnlineAdmissionManager
+          school={school!}
+          classes={displayedClasses.length > 0 ? displayedClasses : classes}
+          sessions={sessions}
+          activeSession={activeSession}
+          isAdmin={true}
+          viewMode="admissions_only"
+          onBack={() => setView("dashboard")}
+        />
+      </LazyPanelBoundary>
     );
   }
 
@@ -10648,13 +11006,7 @@ export const SchoolAdminPanel: React.FC<Props> = ({
               : "top-0 inset-x-0 bottom-[calc(57px+env(safe-area-inset-bottom))] md:inset-0"
           } z-30 bg-slate-950 flex flex-col overflow-hidden`}
         >
-          <Suspense
-            fallback={
-              <div className="flex-1 flex items-center justify-center text-slate-400">
-                <Loader2 className="w-7 h-7 animate-spin text-emerald-500" />
-              </div>
-            }
-          >
+          <LazyPanelBoundary title="NSTA Messenger">
             <NstaMessengerSuite
               school={school!}
               classes={displayedClasses}
@@ -10665,7 +11017,7 @@ export const SchoolAdminPanel: React.FC<Props> = ({
               currentUserRole="ADMIN"
               onBack={() => setView("dashboard")}
             />
-          </Suspense>
+          </LazyPanelBoundary>
         </div>
         {renderAdminBottomNav()}
       </>
@@ -10674,13 +11026,15 @@ export const SchoolAdminPanel: React.FC<Props> = ({
 
   if (view === "backup_recovery") {
     return renderErpShell(
-      <SchoolBackupManager
-        school={school}
-        activeSession={activeSession}
-        onRefreshData={() => {
-          try { window.location.reload(); } catch {}
-        }}
-      />
+      <LazyPanelBoundary title="Backup & Recovery">
+        <SchoolBackupManager
+          school={school}
+          activeSession={activeSession}
+          onRefreshData={() => {
+            try { window.location.reload(); } catch {}
+          }}
+        />
+      </LazyPanelBoundary>
     );
   }
 
@@ -10767,58 +11121,62 @@ export const SchoolAdminPanel: React.FC<Props> = ({
           <ChevronLeft className="w-4 h-4" />
           <span>Back to Dashboard</span>
         </button>
-        <QuestionPaperBuilder
-          school={school}
-          activeSession={activeSession}
-        />
+        <LazyPanelBoundary title="Question Paper Builder">
+          <QuestionPaperBuilder
+            school={school}
+            activeSession={activeSession}
+          />
+        </LazyPanelBoundary>
       </div>
     );
   }
 
   if (view === "entrance_test_hub" || view === "digital_paper_library") {
     return renderErpShell(
-      <EntranceTestAdminManager
-        school={school!}
-        isElite={hasEntranceExamAccess(school)}
-        mode={view === "digital_paper_library" ? "library_only" : "hub"}
-        initialTab={view === "digital_paper_library" ? "library" : entranceHubInitialTab}
-        externalBuilderPreset={view === "entrance_test_hub" ? pendingEntranceBuilderPreset : null}
-        onOpenBuilderFromLibrary={(preset) => {
-          setPendingEntranceBuilderPreset(preset || null);
-          setEntranceHubInitialTab("builder");
-          setView("entrance_test_hub");
-        }}
-        onUpgradePlan={() => setView("subscription")}
-        onBack={() => {
-          setEntranceHubInitialTab("leads");
-          setView("dashboard");
-        }}
-        onSchoolUpdated={(updated) => setSchool(updated)}
-        onConvertLeadToAdmission={async (attempt) => {
-          const { evaluateEntranceScore, saveEntranceAdmissionPrefill } = await import("../../utils/entranceTestEngine");
-          const evalSummary = evaluateEntranceScore(
-            attempt.percentage,
-            attempt.classLabel,
-            attempt.classLevel
-          );
-          saveEntranceAdmissionPrefill({
-            schoolId: school?.id || "",
-            studentName: attempt.studentName,
-            phone: attempt.phone,
-            classLevel: attempt.classLevel,
-            classLabel: attempt.classLabel,
-            attemptsUsed: attempt.attemptNumber,
-            bestScorePct: attempt.percentage,
-            lastSetId: attempt.setId,
-            evaluationTier: evalSummary.tier,
-            evaluationTag: evalSummary.adminShortBadge,
-            recommendedClassLevel: evalSummary.recommendedClassLevel,
-            recommendedClassLabel: evalSummary.recommendedClassLabel,
-            createdAt: new Date().toISOString(),
-          });
-          setView("online_admissions");
-        }}
-      />
+      <LazyPanelBoundary title="Entrance Test Hub">
+        <EntranceTestAdminManager
+          school={school!}
+          isElite={hasEntranceExamAccess(school)}
+          mode={view === "digital_paper_library" ? "library_only" : "hub"}
+          initialTab={view === "digital_paper_library" ? "library" : entranceHubInitialTab}
+          externalBuilderPreset={view === "entrance_test_hub" ? pendingEntranceBuilderPreset : null}
+          onOpenBuilderFromLibrary={(preset) => {
+            setPendingEntranceBuilderPreset(preset || null);
+            setEntranceHubInitialTab("builder");
+            setView("entrance_test_hub");
+          }}
+          onUpgradePlan={() => setView("subscription")}
+          onBack={() => {
+            setEntranceHubInitialTab("leads");
+            setView("dashboard");
+          }}
+          onSchoolUpdated={(updated) => setSchool(updated)}
+          onConvertLeadToAdmission={async (attempt) => {
+            const { evaluateEntranceScore, saveEntranceAdmissionPrefill } = await import("../../utils/entranceTestEngine");
+            const evalSummary = evaluateEntranceScore(
+              attempt.percentage,
+              attempt.classLabel,
+              attempt.classLevel
+            );
+            saveEntranceAdmissionPrefill({
+              schoolId: school?.id || "",
+              studentName: attempt.studentName,
+              phone: attempt.phone,
+              classLevel: attempt.classLevel,
+              classLabel: attempt.classLabel,
+              attemptsUsed: attempt.attemptNumber,
+              bestScorePct: attempt.percentage,
+              lastSetId: attempt.setId,
+              evaluationTier: evalSummary.tier,
+              evaluationTag: evalSummary.adminShortBadge,
+              recommendedClassLevel: evalSummary.recommendedClassLevel,
+              recommendedClassLabel: evalSummary.recommendedClassLabel,
+              createdAt: new Date().toISOString(),
+            });
+            setView("online_admissions");
+          }}
+        />
+      </LazyPanelBoundary>
     );
   }
 
@@ -10838,50 +11196,56 @@ export const SchoolAdminPanel: React.FC<Props> = ({
 
   if (view === "multi_branch") {
     return renderErpShell(
-      <MultiBranchManager
-        school={school!}
-        currentSchoolId={schoolId}
-        onSwitchBranch={(branchId, branchSchoolId) => {
-          try {
-            let bName = `${school?.name || "Main"} Branch`;
-            const savedBranchesRaw = localStorage.getItem(`school_branches_${schoolId}`);
-            if (savedBranchesRaw) {
-              const savedBranches = JSON.parse(savedBranchesRaw);
-              const matched = Array.isArray(savedBranches) ? savedBranches.find((b: any) => b.id === branchId || b.schoolId === branchSchoolId) : null;
-              if (matched?.name) bName = matched.name;
+      <LazyPanelBoundary title="Multi-Branch Manager">
+        <MultiBranchManager
+          school={school!}
+          currentSchoolId={schoolId}
+          onSwitchBranch={(branchId, branchSchoolId) => {
+            try {
+              let bName = `${school?.name || "Main"} Branch`;
+              const savedBranchesRaw = localStorage.getItem(`school_branches_${schoolId}`);
+              if (savedBranchesRaw) {
+                const savedBranches = JSON.parse(savedBranchesRaw);
+                const matched = Array.isArray(savedBranches) ? savedBranches.find((b: any) => b.id === branchId || b.schoolId === branchSchoolId) : null;
+                if (matched?.name) bName = matched.name;
+              }
+              setActiveBranchName(bName);
+              localStorage.setItem(`active_branch_name_${schoolId}`, bName);
+              localStorage.setItem("nst_active_school_id", branchSchoolId);
+            } catch (err) {
+              console.warn("[SchoolAdminPanel] Branch switch storage warning:", err);
             }
-            setActiveBranchName(bName);
-            localStorage.setItem(`active_branch_name_${schoolId}`, bName);
-            localStorage.setItem("nst_active_school_id", branchSchoolId);
-          } catch (err) {
-            console.warn("[SchoolAdminPanel] Branch switch storage warning:", err);
-          }
-          setView("dashboard");
-        }}
-        onClose={() => setView("dashboard")}
-      />
+            setView("dashboard");
+          }}
+          onClose={() => setView("dashboard")}
+        />
+      </LazyPanelBoundary>
     );
   }
 
   if (view === "document_templates") {
     return renderErpShell(
-      <DocumentTemplateStudioModal
-        school={school!}
-        asPage={true}
-        onBack={() => setView("dashboard")}
-        onSchoolUpdated={(patch) => setSchool((prev) => (prev ? { ...prev, ...patch } : prev))}
-      />
+      <LazyPanelBoundary title="Template Studio">
+        <DocumentTemplateStudioModal
+          school={school!}
+          asPage={true}
+          onBack={() => setView("dashboard")}
+          onSchoolUpdated={(patch) => setSchool((prev) => (prev ? { ...prev, ...patch } : prev))}
+        />
+      </LazyPanelBoundary>
     );
   }
 
   if (view === "hostel_mess") {
     return renderErpShell(
-      <HostelMessManager
-        school={school!}
-        students={displayedStudents}
-        classes={displayedClasses}
-        onBack={() => setView("dashboard")}
-      />
+      <LazyPanelBoundary title="Hostel & Mess Manager">
+        <HostelMessManager
+          school={school!}
+          students={displayedStudents}
+          classes={displayedClasses}
+          onBack={() => setView("dashboard")}
+        />
+      </LazyPanelBoundary>
     );
   }
 
@@ -10918,10 +11282,12 @@ export const SchoolAdminPanel: React.FC<Props> = ({
 
   if (view === "doc_verify") {
     return renderErpShell(
-      <DocumentVerificationView
-        verifyType="marksheet"
-        onBack={() => setView("dashboard")}
-      />
+      <LazyPanelBoundary title="Document Verification">
+        <DocumentVerificationView
+          verifyType="marksheet"
+          onBack={() => setView("dashboard")}
+        />
+      </LazyPanelBoundary>
     );
   }
 
@@ -10983,7 +11349,7 @@ export const SchoolAdminPanel: React.FC<Props> = ({
     { label: "School Store & Stock", subtitle: "Uniforms, Books & POS Bill", icon: <Package className="w-5 h-5 text-orange-500" />, view: "inventory_store", count: "Stock", locked: false },
     { label: "Students", subtitle: "Admissions & Profiles", icon: <Users className="w-5 h-5 text-orange-500" />, view: "students", count: displayedStudents.length, locked: false },
     { label: "Fee Collection", subtitle: "Monthly Ledger & Receipts", icon: <IndianRupee className="w-5 h-5 text-emerald-500" />, view: "fees", count: "Live Sync", locked: false },
-    { label: "Fee Tagada Caller", subtitle: "Offline SIM Call & Promise Date", icon: <PhoneCall className="w-5 h-5 text-emerald-600" />, view: "fee_tagada", count: "Tagada 📞", locked: false, featured: true },
+    { label: "Fee Tagada Caller", subtitle: "Offline SIM Call & Promise Date", icon: <PhoneCall className="w-5 h-5 text-emerald-600" />, view: "fee_tagada", count: hasEliteFeeTagadaAccess(school) ? "Tagada 📞" : "🔒 Elite Lock", locked: !hasEliteFeeTagadaAccess(school), featured: true },
     { label: "Scan QR to Pay", subtitle: "Instant ID Card Fee Collect", icon: <QrCode className="w-5 h-5 text-cyan-500" />, view: "qr_pay", count: "Fast Pay", locked: false, featured: true },
     { label: "QR ID Cards", subtitle: "Print & Scan Student ID", icon: <CreditCard className="w-5 h-5 text-indigo-500" />, view: "id_cards", count: "Live QR", locked: false },
     { label: "Classes", subtitle: "Sections, Attendance & Marks", icon: <BookOpen className="w-5 h-5 text-purple-500" />, view: "classes", count: displayedClasses.length, locked: false },
@@ -11310,6 +11676,20 @@ export const SchoolAdminPanel: React.FC<Props> = ({
           </div>
         </div>
 
+        {/* Section 2.5: Parent Caller ID (Ulta Directory) & Smart Voice */}
+        <div className="space-y-2.5">
+          <h3 className={`text-sm font-bold tracking-tight px-0.5 ${titleColor}`}>
+            Parent Caller ID <span className={`font-medium ${mutedColor}`}>(Ulta Directory &amp; Offline Voice)</span>
+          </h3>
+          <CallerIdSettingsCard
+            mode="staff"
+            schoolId={school?.id || schoolId}
+            schoolName={school?.name}
+            isEliteLocked={!hasEliteFeeTagadaAccess(school)}
+            onUpgradeToElite={() => setView("subscription")}
+          />
+        </div>
+
         {/* Section 3: Session & Account Actions */}
         <div className="space-y-2.5">
           <h3 className={`text-sm font-bold tracking-tight px-0.5 ${titleColor}`}>
@@ -11400,17 +11780,19 @@ export const SchoolAdminPanel: React.FC<Props> = ({
     if (view === "accounts_directory") {
       return (
         <div className="p-4 sm:p-6 max-w-5xl mx-auto">
-          <AdminAccountsDirectory
-            schoolId={schoolId}
-            schoolName={school?.name}
-            school={school}
-            students={displayedStudents}
-            teachers={displayedTeachers}
-            accountants={accountants}
-            staffList={displayedStaff}
-            isSuperAdminMode={false}
-            theme={appTheme}
-          />
+          <LazyPanelBoundary title="Accounts Directory">
+            <AdminAccountsDirectory
+              schoolId={schoolId}
+              schoolName={school?.name}
+              school={school}
+              students={displayedStudents}
+              teachers={displayedTeachers}
+              accountants={accountants}
+              staffList={displayedStaff}
+              isSuperAdminMode={false}
+              theme={appTheme}
+            />
+          </LazyPanelBoundary>
         </div>
       );
     }
@@ -12900,19 +13282,21 @@ export const SchoolAdminPanel: React.FC<Props> = ({
           {(teachersHubTab === "leaves" ||
             teachersHubTab === "hrm_payslip") &&
             school && (
-              <StaffHRMManager
-                school={school}
-                embedded={true}
-                hideInternalNav={true}
-                hideAdminAttendanceCard={true}
-                controlledTab={
-                  teachersHubTab === "hrm_payslip" ? "salary" : "leaves"
-                }
-                onTabChange={(nextHrmTab) => {
-                  if (nextHrmTab === "salary") setTeachersHubTab("hrm_payslip");
-                  else if (nextHrmTab === "leaves") setTeachersHubTab("leaves");
-                }}
-              />
+              <LazyPanelBoundary title="Staff HRM">
+                <StaffHRMManager
+                  school={school}
+                  embedded={true}
+                  hideInternalNav={true}
+                  hideAdminAttendanceCard={true}
+                  controlledTab={
+                    teachersHubTab === "hrm_payslip" ? "salary" : "leaves"
+                  }
+                  onTabChange={(nextHrmTab) => {
+                    if (nextHrmTab === "salary") setTeachersHubTab("hrm_payslip");
+                    else if (nextHrmTab === "leaves") setTeachersHubTab("leaves");
+                  }}
+                />
+              </LazyPanelBoundary>
             )}
 
           {showTeacherRulesModal && (
@@ -12955,13 +13339,15 @@ export const SchoolAdminPanel: React.FC<Props> = ({
                   </button>
                 </div>
 
-                <StaffHRMManager
-                  school={school}
-                  embedded={true}
-                  hideInternalNav={true}
-                  hideAdminAttendanceCard={true}
-                  controlledTab="referrals"
-                />
+                <LazyPanelBoundary title="Staff Referrals">
+                  <StaffHRMManager
+                    school={school}
+                    embedded={true}
+                    hideInternalNav={true}
+                    hideAdminAttendanceCard={true}
+                    controlledTab="referrals"
+                  />
+                </LazyPanelBoundary>
               </div>
             </div>
           )}
@@ -14831,7 +15217,11 @@ export const SchoolAdminPanel: React.FC<Props> = ({
                 <PhoneCall className="w-4 h-4 shrink-0" />
                 <span className="truncate">Fee Tagada • Offline Caller</span>
               </span>
-              <span className="px-1.5 py-0.5 rounded bg-white/20 text-[9px] font-black shrink-0">NEW</span>
+              {!hasEliteFeeTagadaAccess(school) ? (
+                <Lock className="w-3.5 h-3.5 text-amber-200 shrink-0" />
+              ) : (
+                <span className="px-1.5 py-0.5 rounded bg-white/20 text-[9px] font-black shrink-0">NEW</span>
+              )}
             </button>
             <button
               type="button"

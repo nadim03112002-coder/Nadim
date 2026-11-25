@@ -6,6 +6,7 @@ export interface AndroidDeviceAdminStatus {
   isUninstallBlocked: boolean;
   isAccessibilityGuardEnabled: boolean;
   isAccessibilityGuardLocked: boolean;
+  hasNativeAdminPin: boolean;
   tempUnlockRemainingSec: number;
   enabledAt: number;
   packageName: string;
@@ -28,6 +29,8 @@ interface LifeMakerDeviceAdminBridge {
   openAccessibilityGuardSettings?: () => void;
   setAccessibilityGuardLocked?: (locked: boolean) => boolean;
   unlockUninstallProtectionTemporarily?: (seconds: number) => boolean;
+  syncAdminPinHash?: (pinHash: string) => void;
+  hasNativeAdminPin?: () => boolean;
   triggerHaptic?: (kind: string) => void;
 }
 
@@ -39,6 +42,34 @@ const ADMIN_PIN_HASH_STORAGE_KEY = "lm_device_admin_pin_hash_v1";
 function getBridge(): LifeMakerDeviceAdminBridge | undefined {
   if (typeof window === "undefined") return undefined;
   return (window as unknown as { LifeMakerAndroid?: LifeMakerDeviceAdminBridge }).LifeMakerAndroid;
+}
+
+export function syncStoredAdminPinToNative(): void {
+  const bridge = getBridge();
+  if (!bridge || typeof bridge.syncAdminPinHash !== "function") return;
+  try {
+    const stored = localStorage.getItem(ADMIN_PIN_HASH_STORAGE_KEY);
+    if (stored && stored.trim().length > 0) {
+      bridge.syncAdminPinHash(stored.trim());
+    }
+  } catch {}
+}
+
+export async function syncRawPinFallbackToNativeIfMissing(rawPin?: string): Promise<void> {
+  const bridge = getBridge();
+  if (!bridge || typeof bridge.syncAdminPinHash !== "function") return;
+  try {
+    const hasCustom = Boolean(localStorage.getItem(ADMIN_PIN_HASH_STORAGE_KEY));
+    if (hasCustom) {
+      syncStoredAdminPinToNative();
+      return;
+    }
+    const clean = (rawPin || "").trim();
+    if (!clean) return;
+    if (bridge.hasNativeAdminPin?.()) return;
+    const hash = await sha256Hex(clean);
+    bridge.syncAdminPinHash(hash);
+  } catch {}
 }
 
 export function getAndroidDeviceAdminStatus(): AndroidDeviceAdminStatus {
@@ -53,6 +84,7 @@ export function getAndroidDeviceAdminStatus(): AndroidDeviceAdminStatus {
     isUninstallBlocked: false,
     isAccessibilityGuardEnabled: false,
     isAccessibilityGuardLocked: true,
+    hasNativeAdminPin: false,
     tempUnlockRemainingSec: 0,
     enabledAt: 0,
     packageName: DEFAULT_PACKAGE,
@@ -64,6 +96,8 @@ export function getAndroidDeviceAdminStatus(): AndroidDeviceAdminStatus {
   if (!bridge || typeof bridge.getDeviceAdminStatus !== "function") {
     return fallback;
   }
+
+  syncStoredAdminPinToNative();
 
   try {
     const raw = bridge.getDeviceAdminStatus();
@@ -81,6 +115,7 @@ export function getAndroidDeviceAdminStatus(): AndroidDeviceAdminStatus {
         parsed.isAccessibilityGuardLocked === undefined
           ? true
           : Boolean(parsed.isAccessibilityGuardLocked),
+      hasNativeAdminPin: Boolean(parsed.hasNativeAdminPin),
       tempUnlockRemainingSec: Number(parsed.tempUnlockRemainingSec || 0),
       enabledAt: Number(parsed.enabledAt || 0),
       packageName: String(parsed.packageName || DEFAULT_PACKAGE),
@@ -179,15 +214,22 @@ export function hasCustomDeviceAdminPin(): boolean {
 
 export async function saveCustomDeviceAdminPin(pin: string): Promise<void> {
   const clean = pin.trim();
+  const bridge = getBridge();
   if (!clean) {
     try {
       localStorage.removeItem(ADMIN_PIN_HASH_STORAGE_KEY);
+    } catch {}
+    try {
+      bridge?.syncAdminPinHash?.("");
     } catch {}
     return;
   }
   const hash = await sha256Hex(clean);
   try {
     localStorage.setItem(ADMIN_PIN_HASH_STORAGE_KEY, hash);
+  } catch {}
+  try {
+    bridge?.syncAdminPinHash?.(hash);
   } catch {}
 }
 

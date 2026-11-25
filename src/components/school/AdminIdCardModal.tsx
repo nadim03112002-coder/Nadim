@@ -4,13 +4,15 @@ import {
   X, Printer, Phone, Mail, Award, Shield, User,
   Share2, ExternalLink, Check, Copy, Sparkles,
   Download, QrCode, Building2, Crown, CheckCircle2,
-  Calendar, MapPin
+  Calendar, MapPin, Loader2
 } from "lucide-react";
+import { toast } from "sonner";
 import type { School } from "../../school-types";
 import { getSavedSchoolLogo, cleanLogoUrl, formatAcademicSession } from "./feeReceiptUtils";
 import { printElementInIframe } from "./AdmissionFormPrintModal";
 import { safeOpenExternalUrl, getDynamicAcademicSessionLabel } from "../../utils/safeBrowserActions";
 import { buildStaffIdCardQrUrl } from "../../utils/qrVerifyUrl";
+import { exportElementToPdf } from "../../utils/universalPdfExport";
 
 interface Props {
   isOpen: boolean;
@@ -33,6 +35,7 @@ export const AdminIdCardModal: React.FC<Props> = ({
 }) => {
   const [orientation, setOrientation] = useState<"landscape" | "portrait">("landscape");
   const [copiedField, setCopiedField] = useState<string | null>(null);
+  const [downloadingPdf, setDownloadingPdf] = useState(false);
   const printAreaRef = useRef<HTMLDivElement>(null);
 
   if (!isOpen) return null;
@@ -77,7 +80,28 @@ export const AdminIdCardModal: React.FC<Props> = ({
   };
 
   const handlePrint = () => {
-    printElementInIframe(printAreaRef.current, `${principalName} - Admin ID Card`);
+    printElementInIframe(printAreaRef.current, `${principalName} - Admin ID Card`, "", orientation);
+  };
+
+  const handleDownloadPdf = async () => {
+    const cardEl = (printAreaRef.current?.firstElementChild as HTMLElement) || printAreaRef.current;
+    if (!cardEl || downloadingPdf) return;
+    setDownloadingPdf(true);
+    try {
+      await exportElementToPdf(cardEl, {
+        filename: `Admin_ID_Card_${principalName}`,
+        format: "cr80",
+        orientation,
+        widthPx: orientation === "landscape" ? 420 : 300,
+        scale: 3.5,
+      });
+      toast.success("Admin ID Card PDF download ho gaya!");
+    } catch (err) {
+      console.error("Admin ID Card PDF error:", err);
+      toast.error("PDF generate karne me error aaya.");
+    } finally {
+      setDownloadingPdf(false);
+    }
   };
 
   const handleShareWhatsApp = () => {
@@ -169,7 +193,7 @@ export const AdminIdCardModal: React.FC<Props> = ({
               <Sparkles className="w-4 h-4 text-amber-500" />
               <span>QR Code scans instantly for School Admin Arrival (Punch In) &amp; Departure (Punch Out)</span>
             </span>
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 flex-wrap">
               <button
                 type="button"
                 onClick={handleShareWhatsApp}
@@ -177,6 +201,15 @@ export const AdminIdCardModal: React.FC<Props> = ({
               >
                 <Share2 className="w-3.5 h-3.5" />
                 <span>WhatsApp</span>
+              </button>
+              <button
+                type="button"
+                onClick={handleDownloadPdf}
+                disabled={downloadingPdf}
+                className="px-3.5 py-1.5 rounded-xl bg-amber-500 hover:bg-amber-400 disabled:opacity-60 text-slate-950 font-black text-xs flex items-center gap-1.5 transition active:scale-95 shadow-md cursor-pointer"
+              >
+                {downloadingPdf ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Download className="w-3.5 h-3.5" />}
+                <span>{downloadingPdf ? "Saving..." : "Download PDF"}</span>
               </button>
               <button
                 type="button"

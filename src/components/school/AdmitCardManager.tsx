@@ -1,11 +1,12 @@
 // @ts-nocheck
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import QRCode from "react-qr-code";
 import type { School, SchoolClass, SchoolStudent, SchoolSession } from "../../school-types";
 import {
   FileText, Printer, ChevronLeft, Plus, Trash2, Calendar, Clock,
-  CheckSquare, Square, Award, AlertCircle, Building2, Layers, Edit3, User, Shield, Sparkles, UserPlus, PenTool, Palette
+  CheckSquare, Square, Award, AlertCircle, Building2, Layers, Edit3, User, Shield, Sparkles, UserPlus, PenTool, Palette, Download, Loader2
 } from "lucide-react";
+import { toast } from "sonner";
 import { SchoolHeaderEditorModal, type SchoolHeaderDetails } from "./SchoolHeaderEditorModal";
 import { QuickAddStudentModal } from "./QuickAddStudentModal";
 import { TeacherSignatureModal } from "./TeacherSignatureModal";
@@ -14,6 +15,8 @@ import { cleanLogoUrl, isAppLogo, getSavedSchoolLogo, getVisibleSchoolRegNo, for
 import { buildAdmitCardQrUrl } from "../../utils/qrVerifyUrl";
 import { DocumentTemplateStudioModal } from "./DocumentTemplateStudioModal";
 import { resolveActiveDocumentTemplate, DOCUMENT_TEMPLATE_EVENT, getLayoutArchitecture } from "../../utils/schoolDocumentTemplates";
+import { printElementInIframe } from "./AdmissionFormPrintModal";
+import { exportElementToPdf, exportMultiPageElementsToPdf } from "../../utils/universalPdfExport";
 
 interface Props {
   school: School;
@@ -53,6 +56,8 @@ export const AdmitCardManager: React.FC<Props> = ({
   const [showExamControllerSignModal, setShowExamControllerSignModal] = useState(false);
   const [showTemplateStudio, setShowTemplateStudio] = useState(false);
   const [templateTick, setTemplateTick] = useState(0);
+  const [downloadingPdf, setDownloadingPdf] = useState(false);
+  const printAreaRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     const handler = () => setTemplateTick(t => t + 1);
@@ -269,7 +274,64 @@ export const AdmitCardManager: React.FC<Props> = ({
   };
 
   const handlePrint = () => {
+    if (printAreaRef.current) {
+      const admitCss = `
+        @page { size: A4 portrait; margin: 6mm; }
+        .admitcard-print-page {
+          width: 100% !important;
+          max-width: 196mm !important;
+          margin: 0 auto !important;
+          padding: 0 !important;
+          display: block !important;
+          page-break-after: ${bulkMode ? "always" : "auto"} !important;
+          break-after: ${bulkMode ? "page" : "auto"} !important;
+          page-break-inside: avoid !important;
+          break-inside: avoid !important;
+          background: #ffffff !important;
+        }
+        .admitcard-print-page:last-child { page-break-after: auto !important; break-after: auto !important; }
+      `;
+      const docTitle = bulkMode
+        ? `Admit_Cards_${currentClass?.name || "Class"}`
+        : `Admit_Card_${candidateName || currentStudent?.name || "Student"}`;
+      printElementInIframe(printAreaRef.current, docTitle, admitCss, "portrait");
+      return;
+    }
     window.print();
+  };
+
+  const handleDownloadPdf = async () => {
+    if (!printAreaRef.current || downloadingPdf) return;
+    setDownloadingPdf(true);
+    try {
+      const pages = Array.from(printAreaRef.current.querySelectorAll(".admitcard-print-page")) as HTMLElement[];
+      if (pages.length > 1) {
+        await exportMultiPageElementsToPdf(pages, {
+          filename: `Admit_Cards_${currentClass?.name || "Class"}_Bulk`,
+          orientation: "portrait",
+          widthPx: 794,
+          marginMm: 6,
+          scale: 1.9,
+        });
+      } else {
+        const target = pages[0] || printAreaRef.current;
+        await exportElementToPdf(target, {
+          filename: `Admit_Card_${candidateName || currentStudent?.name || "Student"}`,
+          format: "a4",
+          orientation: "portrait",
+          widthPx: 794,
+          pageMode: "fit_single",
+          marginMm: 6,
+          scale: 2.2,
+        });
+      }
+      toast.success("Admit Card PDF download ho gaya!");
+    } catch (err) {
+      console.error("Admit Card PDF error:", err);
+      toast.error("PDF download fail hua, Print try karein.");
+    } finally {
+      setDownloadingPdf(false);
+    }
   };
 
   // Render single Hall Ticket / Admit Card
@@ -1335,10 +1397,20 @@ export const AdmitCardManager: React.FC<Props> = ({
               <Layers className="w-3.5 h-3.5" /> {bulkMode ? "Single Mode" : "Bulk Class Print"}
             </button>
             <button
-              onClick={handlePrint}
-              className="px-4 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-black flex items-center gap-1.5 shadow active:scale-95 transition-transform cursor-pointer"
+              type="button"
+              onClick={handleDownloadPdf}
+              disabled={downloadingPdf}
+              className="px-4 py-1.5 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 text-white rounded-lg text-xs font-black flex items-center gap-1.5 shadow active:scale-95 transition-transform cursor-pointer"
             >
-              <Printer className="w-3.5 h-3.5" /> Print / Save PDF
+              {downloadingPdf ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Download className="w-3.5 h-3.5" />}
+              <span>{downloadingPdf ? "Saving PDF..." : "Download PDF"}</span>
+            </button>
+            <button
+              type="button"
+              onClick={handlePrint}
+              className="px-3.5 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-xs font-black flex items-center gap-1.5 shadow active:scale-95 transition-transform cursor-pointer"
+            >
+              <Printer className="w-3.5 h-3.5" /> Print
             </button>
           </div>
         </div>
@@ -1782,7 +1854,7 @@ export const AdmitCardManager: React.FC<Props> = ({
               <span className="text-xs font-bold text-emerald-600">Print Ready</span>
             </div>
 
-            <div className="space-y-6 print:space-y-0">
+            <div ref={printAreaRef} className="space-y-6 print:space-y-0">
               {(selectedStudentIds.length > 0
                 ? classStudents.filter(s => selectedStudentIds.includes(s.id))
                 : classStudents
@@ -1790,7 +1862,7 @@ export const AdmitCardManager: React.FC<Props> = ({
             </div>
           </div>
         ) : (
-          <div className="flex justify-center print:block">
+          <div ref={printAreaRef} className="flex justify-center print:block">
             {renderAdmitCard(currentStudent || undefined)}
           </div>
         )}

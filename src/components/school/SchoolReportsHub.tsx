@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import type {
   School,
   SchoolClass,
@@ -11,10 +11,13 @@ import type {
 import {
   FileSpreadsheet,
   Printer,
+  Download,
   ChevronLeft,
   Loader2,
 } from "lucide-react";
 import { getSavedSchoolLogo, isAppLogo } from "./feeReceiptUtils";
+import { printElementInIframe } from "./AdmissionFormPrintModal";
+import { exportElementToPdf } from "../../utils/universalPdfExport";
 import {
   getSchoolFeeHistory,
   getExams,
@@ -267,8 +270,36 @@ export const SchoolReportsHub: React.FC<Props> = ({
     return rows.sort((a, b) => (b.pct ?? -1) - (a.pct ?? -1));
   }, [filteredStudents, classes, examRecords]);
 
+  const reportSheetRef = useRef<HTMLDivElement>(null);
+  const [downloadingPdf, setDownloadingPdf] = useState(false);
+
   const handlePrint = () => {
-    window.print();
+    printElementInIframe(
+      reportSheetRef.current,
+      `${school?.name || "School"}_Report_${reportType}`,
+      "",
+      "portrait"
+    );
+  };
+
+  const handleDownloadPdf = async () => {
+    if (!reportSheetRef.current || downloadingPdf) return;
+    setDownloadingPdf(true);
+    try {
+      await exportElementToPdf(reportSheetRef.current, {
+        filename: `${school?.name || "School"}_Report_${reportType}`,
+        format: "a4",
+        orientation: "portrait",
+        pageMode: "auto_slice",
+        widthPx: 860,
+        scale: 2,
+      });
+    } catch (err) {
+      console.warn("Report PDF export failed, falling back to print:", err);
+      handlePrint();
+    } finally {
+      setDownloadingPdf(false);
+    }
   };
 
   const currentClass = classes.find((c) => c.id === selectedClassId);
@@ -290,19 +321,29 @@ export const SchoolReportsHub: React.FC<Props> = ({
 
       {/* Top Navbar */}
       <div className="bg-gradient-to-r from-blue-50 via-indigo-50 to-sky-50 dark:from-slate-900 dark:via-indigo-950 dark:to-blue-900 px-4 py-4 text-slate-900 dark:text-white shadow-sm sticky top-0 z-30 border-b-2 border-indigo-700 dark:border-indigo-500/50 print:hidden">
-        <div className="max-w-6xl mx-auto flex items-center justify-between">
+        <div className="max-w-6xl mx-auto flex items-center justify-between gap-2 flex-wrap">
           <button
             onClick={onBack}
             className="flex items-center gap-1.5 text-indigo-800 hover:text-indigo-950 dark:text-blue-200 dark:hover:text-white text-sm font-black transition-colors cursor-pointer"
           >
             <ChevronLeft className="w-4 h-4" /> School Dashboard
           </button>
-          <button
-            onClick={handlePrint}
-            className="px-4 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-black flex items-center gap-1.5 shadow cursor-pointer"
-          >
-            <Printer className="w-3.5 h-3.5" /> Print / Export PDF
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={handleDownloadPdf}
+              disabled={downloadingPdf}
+              className="px-4 py-1.5 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-60 text-white rounded-lg text-xs font-black flex items-center gap-1.5 shadow cursor-pointer"
+            >
+              {downloadingPdf ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Download className="w-3.5 h-3.5" />}
+              <span>{downloadingPdf ? "Saving PDF..." : "Download PDF"}</span>
+            </button>
+            <button
+              onClick={handlePrint}
+              className="px-4 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-black flex items-center gap-1.5 shadow cursor-pointer"
+            >
+              <Printer className="w-3.5 h-3.5" /> Print
+            </button>
+          </div>
         </div>
       </div>
 
@@ -382,7 +423,7 @@ export const SchoolReportsHub: React.FC<Props> = ({
         </div>
 
         {/* Printable Official Sheet */}
-        <div className="bg-white rounded-2xl border border-slate-300 p-6 sm:p-8 shadow-xl text-slate-900 print:shadow-none print:border-none print:p-0 print:rounded-none">
+        <div ref={reportSheetRef} className="bg-white rounded-2xl border border-slate-300 p-6 sm:p-8 shadow-xl text-slate-900 print:shadow-none print:border-none print:p-0 print:rounded-none">
           {/* Header */}
           <div className="border-b-2 border-slate-900 pb-4 mb-6 text-center">
             {(() => {

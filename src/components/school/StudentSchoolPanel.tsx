@@ -58,14 +58,23 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import QRCode from "react-qr-code";
-const StudentFaceIdModal = React.lazy(() => import("./StudentFaceIdModal").then(m => ({ default: m.StudentFaceIdModal })));
-const ClassroomVideoArchive = React.lazy(() => import("./ClassroomVideoArchive").then(m => ({ default: m.ClassroomVideoArchive })));
+import { lazyWithRetry, LazyPanelBoundary, scheduleIdlePreload } from "../../utils/lazyWithRetry";
+const loadStudentFaceIdModal = () => import("./StudentFaceIdModal").then(m => ({ default: m.StudentFaceIdModal }));
+const loadClassroomVideoArchive = () => import("./ClassroomVideoArchive").then(m => ({ default: m.ClassroomVideoArchive }));
+const loadSchoolLucentViewer = () => import("./SchoolLucentViewer").then(m => ({ default: m.SchoolLucentViewer }));
+const loadGroupStudyModal = () => import("../GroupStudyModal").then(m => ({ default: m.GroupStudyModal }));
+const loadNstaMessengerSuite = () => import("./NstaMessengerSuite").then(m => ({ default: m.NstaMessengerSuite }));
+const loadStudentSchoolStore = () => import("./StudentSchoolStore").then(m => ({ default: m.StudentSchoolStore }));
+const loadStudentQuestionBankView = () => import("./StudentQuestionBankView").then(m => ({ default: m.StudentQuestionBankView }));
+
+const StudentFaceIdModal = lazyWithRetry(loadStudentFaceIdModal, "Face ID");
+const ClassroomVideoArchive = lazyWithRetry(loadClassroomVideoArchive, "Classroom Videos");
 import { StudentDatewiseNotesView } from "./StudentDatewiseNotesView";
-const SchoolLucentViewer = React.lazy(() => import("./SchoolLucentViewer").then(m => ({ default: m.SchoolLucentViewer })));
+const SchoolLucentViewer = lazyWithRetry(loadSchoolLucentViewer, "Lesson Viewer");
 import type { LucentViewerTab } from "./SchoolLucentViewer";
 import { DEFAULT_SUBJECTS_BY_CLASS } from "./ClassCurriculumNotesManager";
 import { CustomPlayer } from "../CustomPlayer";
-const GroupStudyModal = React.lazy(() => import("../GroupStudyModal").then(m => ({ default: m.GroupStudyModal })));
+const GroupStudyModal = lazyWithRetry(loadGroupStudyModal, "Online Test");
 import {
   subscribeToActiveRooms,
   doesRoomMatchStudentClass,
@@ -117,6 +126,9 @@ import {
   isStudentBirthdayToday,
   dispatchOfficialSchoolBirthdayWish,
   checkAndDispatchTodaysBirthdays,
+  getAccountants,
+  getStaffEmployees,
+  saveFeeCallFollowUp,
 } from "../../school-firebase";
 import { loadSchoolSettingBlob } from "../../utils/schoolCloudSync";
 import { getSessionMonthCodes } from "../../utils/reAdmissionUtils";
@@ -130,12 +142,14 @@ import { AnnualBulkFeeStatementModal } from "./AnnualBulkFeeStatementModal";
 import { QrAttendanceScannerModal } from "./QrAttendanceScannerModal";
 import { SchoolCommunityFeed } from "./SchoolCommunityFeed";
 import { SchoolClassChannelView } from "./SchoolClassChannelView";
-const NstaMessengerSuite = React.lazy(() => import("./NstaMessengerSuite").then(m => ({ default: m.NstaMessengerSuite })));
+const NstaMessengerSuite = lazyWithRetry(loadNstaMessengerSuite, "NSTA Messenger");
 import { SchoolWelcomeModal } from "./SchoolWelcomeModal";
 import { SchoolBirthdayModal } from "./SchoolBirthdayModal";
 import { NstaCallPortalHost } from "./NstaCallModal";
-const StudentSchoolStore = React.lazy(() => import("./StudentSchoolStore").then(m => ({ default: m.StudentSchoolStore })));
-const StudentQuestionBankView = React.lazy(() => import("./StudentQuestionBankView").then(m => ({ default: m.StudentQuestionBankView })));
+import { CallerIdSettingsCard } from "./CallerIdSettingsCard";
+import { syncSchoolDirectoryToAndroid } from "../../utils/schoolCallerId";
+const StudentSchoolStore = lazyWithRetry(loadStudentSchoolStore, "School Store");
+const StudentQuestionBankView = lazyWithRetry(loadStudentQuestionBankView, "Question Bank");
 import { AccountRecoveryCard } from "./AccountRecoveryCard";
 import { downloadFeeDocument, shareFeeReceiptOnWhatsApp } from "./feeDocument";
 import {
@@ -147,7 +161,7 @@ import {
   sendSchoolPushNotification,
 } from "../../utils/schoolPushClient";
 import { subscribeUserToPush } from "../NotificationManager";
-import { type School, type SchoolStudent, type SchoolTeacher, type NstaWelcomeData, type NstaBirthdayData } from "../../school-types";
+import { hasEliteCallAccess, type School, type SchoolStudent, type SchoolTeacher, type NstaWelcomeData, type NstaBirthdayData } from "../../school-types";
 import { ParentLeaveManager } from "./ParentLeaveManager";
 import { PtmSchedulerModal } from "./PtmSchedulerModal";
 import { AdminBusFleetRadar } from "./AdminBusFleetRadar";
@@ -265,6 +279,10 @@ export const StudentSchoolPanel: React.FC<Props> = ({
   onBack,
   onLogout,
 }) => {
+  useEffect(() => {
+    return scheduleIdlePreload([loadNstaMessengerSuite], 1800);
+  }, []);
+
   const normalizeTab = (t?: string): TabType => {
     if (!t) return "overview";
     if (t === "updates" || t === "messenger" || t === "chat" || t === "nsta_messenger") return "channel";
@@ -292,6 +310,18 @@ export const StudentSchoolPanel: React.FC<Props> = ({
   const [communityInitialFilter, setCommunityInitialFilter] = useState<"ALL" | "HOLIDAY" | "NOTICE" | "EVENT_MEDIA" | "HOMEWORK">("ALL");
 
   useEffect(() => {
+    if (typeof window !== "undefined") {
+      try {
+        const sp = new URLSearchParams(window.location.search);
+        if (sp.get("openFeeReminder") === "1") {
+          setActiveTab("fees");
+          sp.delete("openFeeReminder");
+          const q = sp.toString();
+          window.history.replaceState({}, "", `${window.location.pathname}${q ? `?${q}` : ""}${window.location.hash}`);
+          return;
+        }
+      } catch {}
+    }
     if (initialTab) {
       setActiveTab(normalizeTab(initialTab));
     }
@@ -1578,6 +1608,36 @@ export const StudentSchoolPanel: React.FC<Props> = ({
     };
   }, [schoolId]);
 
+  useEffect(() => {
+    if (!schoolId) return;
+    let active = true;
+    Promise.all([
+      getAccountants(schoolId).catch(() => []),
+      getStaffEmployees(schoolId).catch(() => []),
+    ])
+      .then(([accs, stfs]) => {
+        if (!active) return;
+        syncSchoolDirectoryToAndroid({
+          school,
+          schoolName: schoolDisplayName,
+          teachers: schoolTeachers,
+          accountants: accs || [],
+          staffEmployees: stfs || [],
+        });
+      })
+      .catch(() => {
+        if (!active) return;
+        syncSchoolDirectoryToAndroid({
+          school,
+          schoolName: schoolDisplayName,
+          teachers: schoolTeachers,
+        });
+      });
+    return () => {
+      active = false;
+    };
+  }, [schoolId, school, schoolDisplayName, schoolTeachers]);
+
   const routineTeachersSummary = useMemo(() => {
     const normCls = (v?: string) =>
       String(v || "")
@@ -2183,6 +2243,103 @@ export const StudentSchoolPanel: React.FC<Props> = ({
   const pendingDues = feeSummary.totalRemaining;
 
   const [downloadingFeeId, setDownloadingFeeId] = useState<string | null>(null);
+  const [quickPromisePreset, setQuickPromisePreset] = useState<"TOMORROW" | "IN_3_DAYS" | "CUSTOM">("IN_3_DAYS");
+  const [quickPromiseCustomDate, setQuickPromiseCustomDate] = useState<string>(() => {
+    const d = new Date();
+    d.setDate(d.getDate() + 3);
+    return d.toISOString().slice(0, 10);
+  });
+  const [quickPromiseNote, setQuickPromiseNote] = useState<string>("");
+  const [sendingQuickPromise, setSendingQuickPromise] = useState<boolean>(false);
+  const [quickPromiseSentMsg, setQuickPromiseSentMsg] = useState<string | null>(null);
+
+  const handleSendParentQuickPromise = async () => {
+    if (!activeStudent?.id || !schoolId || pendingDues <= 0 || sendingQuickPromise) return;
+    const addDaysStr = (baseYmd: string, days: number) => {
+      const parts = baseYmd.split("-").map(Number);
+      const dt = new Date(parts[0], (parts[1] || 1) - 1, parts[2] || 1);
+      dt.setDate(dt.getDate() + days);
+      const y = dt.getFullYear();
+      const m = String(dt.getMonth() + 1).padStart(2, "0");
+      const day = String(dt.getDate()).padStart(2, "0");
+      return `${y}-${m}-${day}`;
+    };
+    const todayLocal = todayStr();
+    const promiseYmd =
+      quickPromisePreset === "TOMORROW"
+        ? addDaysStr(todayLocal, 1)
+        : quickPromisePreset === "IN_3_DAYS"
+          ? addDaysStr(todayLocal, 3)
+          : quickPromiseCustomDate || addDaysStr(todayLocal, 3);
+    const nextCallYmd = addDaysStr(promiseYmd, 1);
+    const nowIso = new Date().toISOString();
+    const noteBody =
+      quickPromiseNote.trim() ||
+      `[Parent Quick Reply] ${promiseYmd} ko ₹${pendingDues.toLocaleString("en-IN")} jama karenge.`;
+
+    setSendingQuickPromise(true);
+    try {
+      await saveFeeCallFollowUp({
+        id: activeStudent.id,
+        schoolId,
+        studentId: activeStudent.id,
+        studentName: activeStudent.name || "Student",
+        fatherName: activeStudent.fatherName || "",
+        classId: activeStudent.classId || "",
+        className: studentClassLabel || "",
+        rollNo: activeStudent.rollNo || "",
+        phone: activeStudent.phone || activeStudent.fatherPhone || "",
+        lastCallAt: nowIso,
+        lastCallOutcome: "PROMISED_DATE",
+        lastCallDurationSec: 0,
+        lastCallBy: "Parent Quick Reply",
+        lastNote: noteBody,
+        promisedAmount: pendingDues,
+        promiseDate: promiseYmd,
+        nextCallDate: nextCallYmd,
+        totalCallsCount: 1,
+        callHistory: [
+          {
+            id: `pqr_${Date.now()}`,
+            calledAt: nowIso,
+            phone: activeStudent.phone || activeStudent.fatherPhone || "",
+            outcome: "PROMISED_DATE",
+            durationSec: 0,
+            promisedAmount: pendingDues,
+            promiseDate: promiseYmd,
+            nextCallDate: nextCallYmd,
+            dueAtCallTime: pendingDues,
+            note: noteBody,
+            calledBy: "Parent Quick Reply",
+            callMode: "MANUAL_LOG",
+          },
+        ],
+        settled: false,
+        updatedAt: nowIso,
+      });
+
+      void sendSchoolPushNotification({
+        schoolId,
+        targetRoles: ["STAFF_ADMIN"],
+        studentIds: [activeStudent.id],
+        senderName: activeStudent.fatherName || activeStudent.name || "Parent",
+        title: `💬 Parent Fee Promise • ${activeStudent.name}`,
+        body: `${activeStudent.name} (${studentClassLabel || "Class"}) ke parent ne ₹${pendingDues.toLocaleString("en-IN")} fee ${promiseYmd} ko jama karne ka promise bheja hai.`,
+        type: "GENERAL",
+        voiceSpeak: true,
+        url: `/?schoolPortal=1&schoolId=${encodeURIComponent(schoolId)}`,
+      }).catch(() => {});
+
+      const okMsg = `School Fee Desk ko ${promiseYmd} ki Promise Date bhej di gayi!`;
+      setQuickPromiseSentMsg(okMsg);
+      setQuickPromiseNote("");
+      toast.success(okMsg);
+    } catch {
+      toast.error("Promise reply bhejne me samasya aayi, dobara koshish karein.");
+    } finally {
+      setSendingQuickPromise(false);
+    }
+  };
 
   const formatPaymentDateTime = (dateStr?: string) => {
     if (!dateStr) return { date: "—", time: "" };
@@ -3531,13 +3688,7 @@ export const StudentSchoolPanel: React.FC<Props> = ({
         {/* ── TAB: NSTA MESSENGER SUITE (CLASS | SCHOOL | TEACHER) ─────────── */}
         {activeTab === "channel" && (
           <div className="fixed top-0 inset-x-0 bottom-[calc(60px+env(safe-area-inset-bottom))] z-30 bg-slate-950 flex flex-col overflow-hidden">
-            <Suspense
-              fallback={
-                <div className="flex-1 flex items-center justify-center">
-                  <div className="w-7 h-7 rounded-full border-2 border-emerald-500 border-t-transparent animate-spin" />
-                </div>
-              }
-            >
+            <LazyPanelBoundary title="NSTA Messenger">
               <NstaMessengerSuite
                 school={{
                   ...(school || {}),
@@ -3569,7 +3720,7 @@ export const StudentSchoolPanel: React.FC<Props> = ({
                   setShowWhatsAppModal(true);
                 }}
               />
-            </Suspense>
+            </LazyPanelBoundary>
           </div>
         )}
 
@@ -3596,7 +3747,7 @@ export const StudentSchoolPanel: React.FC<Props> = ({
               </div>
             </div>
 
-            <Suspense fallback={<div className="py-12 flex justify-center"><div className="w-7 h-7 rounded-full border-2 border-emerald-500 border-t-transparent animate-spin" /></div>}>
+            <LazyPanelBoundary title="Classroom Videos">
               <ClassroomVideoArchive
                 school={{
                   ...(school || {}),
@@ -3617,7 +3768,7 @@ export const StudentSchoolPanel: React.FC<Props> = ({
                   setActiveTab("advance");
                 }}
               />
-            </Suspense>
+            </LazyPanelBoundary>
           </div>
         )}
 
@@ -3906,6 +4057,74 @@ export const StudentSchoolPanel: React.FC<Props> = ({
                   </div>
                 </div>
               </div>
+
+              {pendingDues > 0 && (
+                <div className="p-3.5 rounded-2xl bg-indigo-950/30 border border-indigo-500/30 space-y-2.5">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="flex items-center gap-2">
+                      <MessageCircle className="w-4 h-4 text-indigo-400 shrink-0" />
+                      <span className="text-xs font-extrabold text-white">
+                        School Fee Desk ko Quick Promise Reply bhejein
+                      </span>
+                    </div>
+                    <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 tabular-nums">
+                      Due: ₹{pendingDues.toLocaleString("en-IN")}
+                    </span>
+                  </div>
+                  <div className="flex flex-wrap gap-1.5">
+                    {[
+                      { id: "TOMORROW", label: "Kal jama kar dunga" },
+                      { id: "IN_3_DAYS", label: "3 din me" },
+                      { id: "CUSTOM", label: "Custom Date" },
+                    ].map((opt) => (
+                      <button
+                        key={opt.id}
+                        type="button"
+                        onClick={() => setQuickPromisePreset(opt.id as any)}
+                        className={`px-2.5 py-1 rounded-lg text-[11px] font-bold border cursor-pointer transition ${
+                          quickPromisePreset === opt.id
+                            ? "bg-indigo-600 border-indigo-500 text-white"
+                            : "bg-slate-900 border-slate-700 text-slate-300 hover:border-indigo-400"
+                        }`}
+                      >
+                        {opt.label}
+                      </button>
+                    ))}
+                  </div>
+                  {quickPromisePreset === "CUSTOM" && (
+                    <input
+                      type="date"
+                      value={quickPromiseCustomDate}
+                      min={todayStr()}
+                      onChange={(e) => setQuickPromiseCustomDate(e.target.value)}
+                      className="w-full sm:w-56 px-3 py-1.5 rounded-xl bg-slate-900 border border-slate-700 text-xs text-white font-mono"
+                    />
+                  )}
+                  <div className="flex flex-col sm:flex-row gap-2">
+                    <input
+                      type="text"
+                      value={quickPromiseNote}
+                      onChange={(e) => setQuickPromiseNote(e.target.value)}
+                      placeholder="Optional note (e.g. Salary aane par shaam ko denge)..."
+                      className="flex-1 px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-xs text-white placeholder-slate-500"
+                    />
+                    <button
+                      type="button"
+                      disabled={sendingQuickPromise}
+                      onClick={() => void handleSendParentQuickPromise()}
+                      className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-extrabold cursor-pointer disabled:opacity-50 shrink-0"
+                    >
+                      {sendingQuickPromise ? "Sending..." : "Send Promise Date"}
+                    </button>
+                  </div>
+                  {quickPromiseSentMsg && (
+                    <p className="text-[11px] font-bold text-emerald-400 flex items-center gap-1.5">
+                      <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
+                      <span>{quickPromiseSentMsg}</span>
+                    </p>
+                  )}
+                </div>
+              )}
 
               {/* School Info Header + View Toggle + Single A4 Passbook Button */}
               <div className="p-3.5 sm:p-4 rounded-2xl bg-slate-900 border border-slate-800 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
@@ -5052,26 +5271,47 @@ export const StudentSchoolPanel: React.FC<Props> = ({
                 </p>
               </div>
 
-              <button
-                onClick={async () => {
-                  const card = document.getElementById("student-id-card-cr80-element");
-                  if (!card) return;
-                  try {
-                    const html2canvas = (await import("html2canvas")).default;
-                    const canvas = await html2canvas(card, { scale: 3, useCORS: true, backgroundColor: "#ffffff" });
-                    const a = document.createElement("a");
-                    a.download = `ID_Card_${(activeStudent.name || "Student").replace(/\s+/g, "_")}.png`;
-                    a.href = canvas.toDataURL("image/png");
-                    a.click();
-                  } catch (e) {
-                    console.warn("Download error:", e);
-                  }
-                }}
-                className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs flex items-center gap-2 shadow-lg shadow-emerald-600/30 transition cursor-pointer"
-              >
-                <Download className="w-4 h-4" />
-                Download ID Card
-              </button>
+              <div className="flex items-center gap-2 flex-wrap">
+                <button
+                  type="button"
+                  onClick={async () => {
+                    const card = document.getElementById("student-id-card-cr80-element");
+                    if (!card) return;
+                    const tId = toast.loading("Student ID Card PDF taiyar ho raha hai...");
+                    try {
+                      const { exportElementToPdf } = await import("../../utils/universalPdfExport");
+                      await exportElementToPdf(card, {
+                        filename: `Student_ID_Card_${activeStudent.name || "Student"}_${activeStudent.admissionNo || ""}`,
+                        format: "cr80",
+                        orientation: "landscape",
+                        widthPx: 360,
+                        scale: 4,
+                      });
+                      toast.success("ID Card PDF download ho gaya!", { id: tId });
+                    } catch (e) {
+                      console.warn("ID Card PDF error:", e);
+                      toast.error("PDF download nahi ho paya, Print option try karein.", { id: tId });
+                    }
+                  }}
+                  className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs flex items-center gap-2 shadow-lg shadow-emerald-600/30 transition cursor-pointer"
+                >
+                  <Download className="w-4 h-4" />
+                  <span>Download PDF</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={async () => {
+                    const card = document.getElementById("student-id-card-cr80-element");
+                    if (!card) return;
+                    const { printElementInIframe } = await import("./AdmissionFormPrintModal");
+                    printElementInIframe(card, `ID Card - ${activeStudent.name || "Student"}`, "", "landscape");
+                  }}
+                  className="px-3.5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs flex items-center gap-2 shadow transition cursor-pointer"
+                >
+                  <Printer className="w-4 h-4" />
+                  <span>Print Card</span>
+                </button>
+              </div>
             </div>
 
             {/* Rendered CR80 Card */}
@@ -5591,7 +5831,7 @@ export const StudentSchoolPanel: React.FC<Props> = ({
 
               {/* Sub-tab 3: Online Test (Embedded Inline — No 2nd Page Redirect) */}
               {advanceTab === "online_test" && (
-                <Suspense fallback={<div className="py-12 flex justify-center"><div className="w-7 h-7 rounded-full border-2 border-emerald-500 border-t-transparent animate-spin" /></div>}>
+                <LazyPanelBoundary title="Online Test">
                   <GroupStudyModal
                     isOpen={true}
                     embedded={true}
@@ -5618,12 +5858,12 @@ export const StudentSchoolPanel: React.FC<Props> = ({
                     studentClassLabel={formatClassLabel(selectedClassLevel)}
                     studentClassId={activeStudent.classId}
                   />
-                </Suspense>
+                </LazyPanelBoundary>
               )}
 
               {/* Sub-tab 4: Question Paper Library (Strictly Locked to Student's Class) */}
               {advanceTab === "question_bank" && (
-                <Suspense fallback={<div className="py-12 flex justify-center"><div className="w-7 h-7 rounded-full border-2 border-emerald-500 border-t-transparent animate-spin" /></div>}>
+                <LazyPanelBoundary title="Question Bank">
                   <StudentQuestionBankView
                     school={{
                       ...(school || {}),
@@ -5635,13 +5875,13 @@ export const StudentSchoolPanel: React.FC<Props> = ({
                     activeSessionLabel={activeSessLabel}
                     onBack={() => setAdvanceTab("classwork")}
                   />
-                </Suspense>
+                </LazyPanelBoundary>
               )}
 
               {/* Sub-tab 5: Daily Class Video Lectures (YouTube Archive moved from Attendance) */}
               {advanceTab === "videos" && activeStudent && (
                 <div className="space-y-3">
-                  <Suspense fallback={<div className="py-12 flex justify-center"><div className="w-7 h-7 rounded-full border-2 border-emerald-500 border-t-transparent animate-spin" /></div>}>
+                  <LazyPanelBoundary title="Classroom Videos">
                     <ClassroomVideoArchive
                       school={{
                         ...(school || {}),
@@ -5659,7 +5899,7 @@ export const StudentSchoolPanel: React.FC<Props> = ({
                       studentClassName={studentClassLabel || activeStudent.className}
                       onBack={() => setAdvanceTab("classwork")}
                     />
-                  </Suspense>
+                  </LazyPanelBoundary>
                 </div>
               )}
             </div>
@@ -5668,7 +5908,7 @@ export const StudentSchoolPanel: React.FC<Props> = ({
 
         {/* TAB: QUESTION BANK (PUBLISHED SESSION-WISE SCHOOL PAPERS — LEGACY DEEP LINK) ─────────── */}
         {activeTab === "question_bank" && (
-          <Suspense fallback={<div className="py-12 flex justify-center"><div className="w-7 h-7 rounded-full border-2 border-emerald-500 border-t-transparent animate-spin" /></div>}>
+          <LazyPanelBoundary title="Question Bank">
             <StudentQuestionBankView
               school={{
                 ...(school || {}),
@@ -5684,13 +5924,13 @@ export const StudentSchoolPanel: React.FC<Props> = ({
               }
               onBack={() => setActiveTab("overview")}
             />
-          </Suspense>
+          </LazyPanelBoundary>
         )}
 
         {/* TAB: SCHOOL STORE & 24-HOUR ITEM BOOKING ──────────────────────────── */}
         {activeTab === "store" && (
           <div className="space-y-4 animate-in fade-in">
-            <Suspense fallback={<div className="py-12 flex justify-center"><div className="w-7 h-7 rounded-full border-2 border-emerald-500 border-t-transparent animate-spin" /></div>}>
+            <LazyPanelBoundary title="School Store">
               <StudentSchoolStore
                 school={{
                   ...(school || {}),
@@ -5701,7 +5941,7 @@ export const StudentSchoolPanel: React.FC<Props> = ({
                 student={activeStudent}
                 onBack={() => setActiveTab("overview")}
               />
-            </Suspense>
+            </LazyPanelBoundary>
           </div>
         )}
         {/* TAB: DEDICATED STUDENT PROFILE, DOCUMENTS, TOOLS & ACCOUNT ────────── */}
@@ -6822,6 +7062,9 @@ export const StudentSchoolPanel: React.FC<Props> = ({
                 </div>
               </div>
 
+              {/* Smart Caller Name Voice & Offline School Caller ID */}
+              <CallerIdSettingsCard schoolName={schoolDisplayName} compact={true} />
+
               {/* Notification History Section */}
               <div>
                 <h4 className="text-xs font-bold text-slate-700 dark:text-slate-300 mb-2.5 flex items-center gap-1.5">
@@ -6845,6 +7088,63 @@ export const StudentSchoolPanel: React.FC<Props> = ({
                       <p className="text-[11px] text-slate-600 dark:text-slate-400 mt-0.5">
                         कृपया समय पर शुल्क भुगतान करें ताकि परीक्षा व रिपोर्ट कार्ड में व्यवधान न हो।
                       </p>
+                      <div className="mt-2.5 pt-2.5 border-t border-amber-200 dark:border-amber-500/30 space-y-2">
+                        <p className="text-[11px] font-bold text-slate-800 dark:text-slate-200 flex items-center gap-1">
+                          <MessageCircle className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400 shrink-0" />
+                          <span>💬 Fee Desk ko Quick Promise Reply bhejein:</span>
+                        </p>
+                        <div className="flex flex-wrap gap-1.5">
+                          {[
+                            { id: "TOMORROW", label: "Kal jama kar dunga" },
+                            { id: "IN_3_DAYS", label: "3 din me" },
+                            { id: "CUSTOM", label: "Custom Date" },
+                          ].map((opt) => (
+                            <button
+                              key={opt.id}
+                              type="button"
+                              onClick={() => setQuickPromisePreset(opt.id as any)}
+                              className={`px-2 py-1 rounded-lg text-[10px] font-bold border cursor-pointer transition ${
+                                quickPromisePreset === opt.id
+                                  ? "bg-indigo-600 border-indigo-600 text-white"
+                                  : "bg-white dark:bg-slate-900 border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-300"
+                              }`}
+                            >
+                              {opt.label}
+                            </button>
+                          ))}
+                        </div>
+                        {quickPromisePreset === "CUSTOM" && (
+                          <input
+                            type="date"
+                            value={quickPromiseCustomDate}
+                            min={todayStr()}
+                            onChange={(e) => setQuickPromiseCustomDate(e.target.value)}
+                            className="w-full px-2.5 py-1.5 rounded-lg bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 text-xs text-slate-900 dark:text-white font-mono"
+                          />
+                        )}
+                        <div className="flex items-center gap-2">
+                          <input
+                            type="text"
+                            value={quickPromiseNote}
+                            onChange={(e) => setQuickPromiseNote(e.target.value)}
+                            placeholder="Optional message..."
+                            className="flex-1 px-2.5 py-1.5 rounded-lg bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 text-[11px] text-slate-900 dark:text-white"
+                          />
+                          <button
+                            type="button"
+                            disabled={sendingQuickPromise}
+                            onClick={() => void handleSendParentQuickPromise()}
+                            className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-[11px] font-bold cursor-pointer disabled:opacity-50 shrink-0"
+                          >
+                            {sendingQuickPromise ? "..." : "Send Promise"}
+                          </button>
+                        </div>
+                        {quickPromiseSentMsg && (
+                          <p className="text-[10px] font-bold text-emerald-700 dark:text-emerald-300">
+                            ✓ {quickPromiseSentMsg}
+                          </p>
+                        )}
+                      </div>
                     </div>
                   ) : (
                     <div className="p-3 rounded-xl bg-emerald-50 dark:bg-emerald-500/10 border border-emerald-200 dark:border-emerald-500/30">
@@ -7535,23 +7835,21 @@ export const StudentSchoolPanel: React.FC<Props> = ({
           />
         </Suspense>
       )}
-      <NstaCallPortalHost
-        identity={
-          schoolId
-            ? {
-                schoolId,
-                schoolName: schoolDisplayName,
-                userId: activeStudent?.id || studentId || "std_current",
-                userName: activeStudent?.name || studentName || "Student",
-                userRole: "STUDENT",
-                userPhoto: activeStudent?.photoUrl || resolvedSchoolLogo,
-                classId: activeStudent?.classId,
-                className: activeStudent?.className,
-                studentId: activeStudent?.id || studentId,
-              }
-            : null
-        }
-      />
+      {schoolId && school && hasEliteCallAccess(school) && (
+        <NstaCallPortalHost
+          identity={{
+            schoolId,
+            schoolName: schoolDisplayName,
+            userId: activeStudent?.id || studentId || "std_current",
+            userName: activeStudent?.name || studentName || "Student",
+            userRole: "STUDENT",
+            userPhoto: activeStudent?.photoUrl || resolvedSchoolLogo,
+            classId: activeStudent?.classId,
+            className: activeStudent?.className,
+            studentId: activeStudent?.id || studentId,
+          }}
+        />
+      )}
     </div>
   );
 };

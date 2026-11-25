@@ -1,5 +1,5 @@
 // @ts-nocheck
-import React, { useState, useEffect, useMemo } from "react";
+import React, { useState, useEffect, useMemo, useRef } from "react";
 import QRCode from "react-qr-code";
 import type { School, SchoolClass, SchoolStudent } from "../../school-types";
 import { schoolPrintFieldEnabled } from "../../school-types";
@@ -16,11 +16,16 @@ import {
   Zap,
   Palette,
   Search,
+  Download,
+  Loader2,
 } from "lucide-react";
+import { toast } from "sonner";
 import { SchoolHeaderEditorModal, type SchoolHeaderDetails } from "./SchoolHeaderEditorModal";
 import { QuickAddStudentModal } from "./QuickAddStudentModal";
 import { cleanLogoUrl, getSavedSchoolLogo, getVisibleSchoolRegNo } from "./feeReceiptUtils";
 import { buildCertificateQrUrl } from "../../utils/qrVerifyUrl";
+import { printElementInIframe } from "./AdmissionFormPrintModal";
+import { exportElementToPdf } from "../../utils/universalPdfExport";
 import { DocumentTemplateStudioModal } from "./DocumentTemplateStudioModal";
 import {
   resolveActiveDocumentTemplate,
@@ -65,6 +70,8 @@ export const CertificateManager: React.FC<Props> = ({
   const [showDesignPicker, setShowDesignPicker] = useState(false);
   const [designSearch, setDesignSearch] = useState("");
   const [templateTick, setTemplateTick] = useState(0);
+  const [downloadingPdf, setDownloadingPdf] = useState(false);
+  const certAreaRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     const handler = () => setTemplateTick((t) => t + 1);
@@ -304,7 +311,49 @@ export const CertificateManager: React.FC<Props> = ({
   };
 
   const handlePrint = () => {
+    if (certAreaRef.current) {
+      const certCss = `
+        @page { size: A4 portrait; margin: 6mm; }
+        .certificate-print-sheet {
+          width: 100% !important;
+          max-width: 196mm !important;
+          min-height: 235mm !important;
+          box-shadow: none !important;
+          margin: 0 auto !important;
+          border-radius: 0 !important;
+        }
+      `;
+      printElementInIframe(
+        certAreaRef.current,
+        `Certificate_${candidateName || "Student"}_${certType}`,
+        certCss,
+        "portrait"
+      );
+      return;
+    }
     window.print();
+  };
+
+  const handleDownloadPdf = async () => {
+    if (!certAreaRef.current || downloadingPdf) return;
+    setDownloadingPdf(true);
+    try {
+      await exportElementToPdf(certAreaRef.current, {
+        filename: `Certificate_${candidateName || "Student"}_${certType}`,
+        format: "a4",
+        orientation: "portrait",
+        widthPx: 860,
+        pageMode: "fit_single",
+        marginMm: 6,
+        scale: 2.2,
+      });
+      toast.success("Certificate PDF download ho gaya!");
+    } catch (err) {
+      console.error("Certificate PDF error:", err);
+      toast.error("PDF download fail hua, Print option try karein.");
+    } finally {
+      setDownloadingPdf(false);
+    }
   };
 
   const qrData = buildCertificateQrUrl({
@@ -807,11 +856,21 @@ export const CertificateManager: React.FC<Props> = ({
             </button>
 
             <button
+              type="button"
+              onClick={handleDownloadPdf}
+              disabled={downloadingPdf}
+              className="px-4 py-1.5 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-60 text-white rounded-xl text-xs font-black flex items-center gap-1.5 shadow-md active:scale-95 transition-transform cursor-pointer"
+            >
+              {downloadingPdf ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Download className="w-3.5 h-3.5" />}
+              <span>{downloadingPdf ? "Saving PDF..." : "Download PDF"}</span>
+            </button>
+            <button
+              type="button"
               onClick={handlePrint}
               className="px-4 py-1.5 bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-600 hover:to-amber-700 text-slate-950 rounded-xl text-xs font-black flex items-center gap-1.5 shadow-md active:scale-95 transition-transform cursor-pointer"
             >
               <Printer className="w-3.5 h-3.5" />
-              <span>Print / Save Certificate</span>
+              <span>Print Certificate</span>
             </button>
           </div>
         </div>
@@ -1194,6 +1253,7 @@ export const CertificateManager: React.FC<Props> = ({
         {/* PRINTABLE CERTIFICATE SHEET */}
         <div className="certificate-print-container flex justify-center">
             <div
+              ref={certAreaRef}
               className={`certificate-print-sheet w-full max-w-[860px] bg-[#fffefc] shadow-2xl relative overflow-hidden print:shadow-none print:m-0 print:w-full print:max-w-none print:rounded-none ${
                 useCustomCertTpl
                   ? isBeveled

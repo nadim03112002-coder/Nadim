@@ -14,15 +14,21 @@ import {
   X,
   AlertCircle,
   Volume2,
+  VolumeX,
 } from "lucide-react";
 import { toast } from "sonner";
 import { useBackHandler } from "../../utils/backNavigation";
+import {
+  isCallerVoiceAnnounceEnabled,
+  setCallerVoiceAnnounceEnabled,
+} from "../../utils/schoolCallerId";
 import {
   acceptIncomingCall,
   checkAndJoinCallFromNotification,
   clearCallErrorNote,
   endCurrentCall,
   flipCallCamera,
+  refreshIncomingRingtoneMode,
   registerCallIdentity,
   registerCallModalHost,
   rejectIncomingCall,
@@ -63,8 +69,19 @@ const StreamAudioSink: React.FC<{ stream: MediaStream | null }> = ({ stream }) =
     const el = audioRef.current;
     if (!el) return;
     if (stream) {
+      el.muted = false;
+      el.volume = 1;
       el.srcObject = stream;
-      void el.play().catch(() => {});
+      const tryPlay = () => {
+        void el.play().catch(() => {});
+      };
+      tryPlay();
+      el.addEventListener("loadedmetadata", tryPlay);
+      el.addEventListener("canplay", tryPlay);
+      return () => {
+        el.removeEventListener("loadedmetadata", tryPlay);
+        el.removeEventListener("canplay", tryPlay);
+      };
     } else {
       el.srcObject = null;
     }
@@ -136,6 +153,7 @@ const GroupPeerTile: React.FC<{ peer: GroupCallPeer }> = ({ peer }) => {
 export const NstaCallModal: React.FC = () => {
   const call = useNstaCallState();
   const [nowMs, setNowMs] = useState(() => Date.now());
+  const [callerVoiceOn, setCallerVoiceOn] = useState<boolean>(() => isCallerVoiceAnnounceEnabled());
   const localVideoRef = useRef<HTMLVideoElement | null>(null);
   const remoteVideoRef = useRef<HTMLVideoElement | null>(null);
   const localGroupVideoRef = useRef<HTMLVideoElement | null>(null);
@@ -279,6 +297,9 @@ export const NstaCallModal: React.FC = () => {
           <p className="text-xs font-bold uppercase tracking-widest text-emerald-400">
             {isVideoCall ? "NSTA Video Call" : "NSTA Voice Call"}
           </p>
+          {call.remoteSchoolName && (
+            <p className="text-xs font-bold text-indigo-300">{call.remoteSchoolName}</p>
+          )}
           <p className="text-xs text-slate-400">{call.remoteSubtitle}</p>
         </div>
 
@@ -303,33 +324,55 @@ export const NstaCallModal: React.FC = () => {
             <p className="text-sm font-medium text-slate-300">
               {isVideoCall ? "Video call par baat karna chahte hain" : "Voice call aa rahi hai"}
             </p>
+            <button
+              type="button"
+              onClick={() => {
+                const next = !callerVoiceOn;
+                setCallerVoiceAnnounceEnabled(next);
+                setCallerVoiceOn(next);
+                refreshIncomingRingtoneMode();
+              }}
+              className="mt-2 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-900/90 border border-slate-700 text-[11px] font-bold text-slate-200 hover:bg-slate-800 cursor-pointer transition"
+            >
+              {callerVoiceOn ? (
+                <>
+                  <Volume2 className="w-3.5 h-3.5 text-emerald-400" />
+                  <span>Caller Name Voice: ON</span>
+                </>
+              ) : (
+                <>
+                  <VolumeX className="w-3.5 h-3.5 text-slate-400" />
+                  <span>Ringtone Only (Voice OFF)</span>
+                </>
+              )}
+            </button>
           </div>
         </div>
 
         <div className="w-full max-w-xs flex items-center justify-around gap-6 mb-4">
-          <div className="flex flex-col items-center gap-2">
-            <button
-              type="button"
-              onClick={() => void rejectIncomingCall()}
-              className="w-16 h-16 rounded-full bg-rose-600 hover:bg-rose-500 active:scale-95 text-white flex items-center justify-center shadow-xl shadow-rose-900/40 cursor-pointer transition"
-              aria-label="Decline Call"
-            >
+          <button
+            type="button"
+            onClick={() => void rejectIncomingCall()}
+            className="group flex flex-col items-center gap-2.5 p-3 rounded-2xl touch-manipulation cursor-pointer select-none focus:outline-none"
+            aria-label="Decline Call"
+          >
+            <span className="w-16 h-16 rounded-full bg-rose-600 group-hover:bg-rose-500 group-active:scale-95 text-white flex items-center justify-center shadow-xl shadow-rose-900/40 transition">
               <PhoneOff className="w-7 h-7" />
-            </button>
+            </span>
             <span className="text-xs font-bold text-rose-300">Decline</span>
-          </div>
+          </button>
 
-          <div className="flex flex-col items-center gap-2">
-            <button
-              type="button"
-              onClick={() => void acceptIncomingCall()}
-              className="w-16 h-16 rounded-full bg-emerald-600 hover:bg-emerald-500 active:scale-95 text-white flex items-center justify-center shadow-xl shadow-emerald-900/40 cursor-pointer transition"
-              aria-label="Accept Call"
-            >
+          <button
+            type="button"
+            onClick={() => void acceptIncomingCall()}
+            className="group flex flex-col items-center gap-2.5 p-3 rounded-2xl touch-manipulation cursor-pointer select-none focus:outline-none"
+            aria-label="Accept Call"
+          >
+            <span className="w-16 h-16 rounded-full bg-emerald-600 group-hover:bg-emerald-500 group-active:scale-95 text-white flex items-center justify-center shadow-xl shadow-emerald-900/40 transition animate-pulse">
               {isVideoCall ? <Video className="w-7 h-7" /> : <Phone className="w-7 h-7" />}
-            </button>
+            </span>
             <span className="text-xs font-bold text-emerald-300">Accept</span>
-          </div>
+          </button>
         </div>
       </div>
     );
@@ -616,11 +659,38 @@ export const NstaCallPortalHost: React.FC<{ identity: CallIdentity | null }> = (
     try {
       const sp = new URLSearchParams(window.location.search);
       const callId = sp.get("callId");
-      if (callId && checkedCallIdRef.current !== callId) {
-        checkedCallIdRef.current = callId;
-        void checkAndJoinCallFromNotification(callId);
+      const callAction = sp.get("callAction");
+      const actionKey = `${callId || ""}:${callAction || ""}`;
+      if (callId && checkedCallIdRef.current !== actionKey) {
+        checkedCallIdRef.current = actionKey;
+        if (callAction) {
+          try {
+            sp.delete("callAction");
+            const cleanedQuery = sp.toString();
+            const nextUrl = `${window.location.pathname}${cleanedQuery ? `?${cleanedQuery}` : ""}${window.location.hash}`;
+            window.history.replaceState({}, "", nextUrl);
+          } catch {}
+        }
+        void checkAndJoinCallFromNotification(callId, {
+          autoAccept: callAction === "accept",
+        });
       }
     } catch {}
+  }, [identity?.schoolId, identity?.userId]);
+
+  useEffect(() => {
+    if (!identity?.schoolId || !identity?.userId || typeof window === "undefined") return;
+    const onNativeCallAction = (ev: Event) => {
+      const detail = (ev as CustomEvent)?.detail || {};
+      const callId = String(detail.callId || "").trim();
+      const callAction = String(detail.callAction || "").trim();
+      if (!callId) return;
+      void checkAndJoinCallFromNotification(callId, {
+        autoAccept: callAction === "accept",
+      });
+    };
+    window.addEventListener("android-incoming-call-action", onNativeCallAction);
+    return () => window.removeEventListener("android-incoming-call-action", onNativeCallAction);
   }, [identity?.schoolId, identity?.userId]);
 
   if (!isPrimary) return null;

@@ -1,5 +1,5 @@
 // @ts-nocheck
-import React, { useState, useEffect, useMemo } from "react";
+import React, { useState, useEffect, useMemo, useRef } from "react";
 import { toast } from "sonner";
 import {
   BookOpen,
@@ -11,6 +11,8 @@ import {
   User,
   Calendar,
   Printer,
+  Download,
+  Loader2,
   X,
   Layers,
   ChevronRight,
@@ -32,6 +34,8 @@ import {
   formatShortDisplayDate,
 } from "../../utils/schoolSyllabusLogEngine";
 import { PeriodTeachingLogModal } from "./PeriodTeachingLogModal";
+import { printElementInIframe } from "./AdmissionFormPrintModal";
+import { exportElementToPdf } from "../../utils/universalPdfExport";
 
 interface Props {
   school: School;
@@ -207,8 +211,40 @@ export const SyllabusPacingTracker: React.FC<Props> = ({
     toast.success(`Chapter #${chapterNo} status updated.`);
   };
 
+  const trackerPrintRef = useRef<HTMLDivElement>(null);
+  const [downloadingPdf, setDownloadingPdf] = useState(false);
+
+  const handlePrintTracker = () => {
+    printElementInIframe(
+      trackerPrintRef.current,
+      `Syllabus_Pacing_${school?.name || "School"}`,
+      "",
+      "portrait"
+    );
+  };
+
+  const handleDownloadTrackerPdf = async () => {
+    if (!trackerPrintRef.current || downloadingPdf) return;
+    setDownloadingPdf(true);
+    try {
+      await exportElementToPdf(trackerPrintRef.current, {
+        filename: `Syllabus_Pacing_${school?.name || "School"}`,
+        format: "a4",
+        orientation: "portrait",
+        pageMode: "auto_slice",
+        widthPx: 900,
+        scale: 1.8,
+      });
+    } catch (err) {
+      console.warn("Syllabus pacing PDF failed, falling back to print:", err);
+      handlePrintTracker();
+    } finally {
+      setDownloadingPdf(false);
+    }
+  };
+
   return (
-    <div className="bg-slate-900 border border-slate-800 rounded-3xl p-4 sm:p-6 text-white shadow-2xl space-y-5 print:bg-white print:text-slate-900 print:border-slate-300 print:shadow-none print:rounded-none print:p-2">
+    <div ref={trackerPrintRef} className="bg-slate-900 border border-slate-800 rounded-3xl p-4 sm:p-6 text-white shadow-2xl space-y-5 print:bg-white print:text-slate-900 print:border-slate-300 print:shadow-none print:rounded-none print:p-2">
       {/* Top Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-slate-800 print:border-slate-300">
         <div className="flex items-center gap-3">
@@ -241,7 +277,16 @@ export const SyllabusPacingTracker: React.FC<Props> = ({
           </button>
           <button
             type="button"
-            onClick={() => window.print()}
+            onClick={handleDownloadTrackerPdf}
+            disabled={downloadingPdf}
+            className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-60 text-white text-xs font-bold transition cursor-pointer shadow"
+          >
+            {downloadingPdf ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
+            <span>{downloadingPdf ? "Saving..." : "Download PDF"}</span>
+          </button>
+          <button
+            type="button"
+            onClick={handlePrintTracker}
             className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold transition cursor-pointer"
           >
             <Printer className="w-4 h-4" />

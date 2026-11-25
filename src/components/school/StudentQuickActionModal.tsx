@@ -7,7 +7,7 @@ import {
   Clock, ArrowRight, ExternalLink, ReceiptText, Eye, Edit3, Save,
   FileText, BookOpen, GraduationCap, CheckCircle2, Copy, Sparkles, MapPin,
   Bus, HeartPulse, UserCheck, AlertTriangle, ArrowUpRight, CheckSquare, Sparkle, Tag,
-  Users, Activity, Star, RefreshCw, FileCheck
+  Users, Activity, Star, RefreshCw, FileCheck, Download, Loader2
 } from "lucide-react";
 import {
   getStudentFees, getMonthlyAttendance, currentMonthStr, saveFee,
@@ -27,6 +27,7 @@ import {
 } from "../../utils/feeDiscountSlabs";
 import { buildStudentIdCardQrUrl } from "../../utils/qrVerifyUrl";
 import { normalizeWhatsappOrPhone, sanitizeIndianPhoneInput } from "../../utils/schoolReferralSiblingEngine";
+import { exportHtmlDocumentToPdf } from "../../utils/universalPdfExport";
 
 export type StudentQuickActionTab =
   | "profile"
@@ -693,7 +694,92 @@ export const StudentQuickActionModal: React.FC<Props> = ({
         </body>
       </html>`;
 
-    printHtmlInIframe(htmlDoc, `IDCard_${cur.name}`);
+    printHtmlInIframe(htmlDoc, `IDCard_${cur.name}`, "portrait");
+  };
+
+  const handleDownloadIdCardPdf = async () => {
+    const tId = toast.loading("Student ID Card PDF ban raha hai...");
+    try {
+      const qrPayload = buildStudentIdCardQrUrl({
+        schoolId: school?.id || cur.schoolId || "",
+        studentId: cur.id || "",
+        rollNo: cur.rollNo || "",
+        classId: cur.classId || "",
+        studentName: cur.name || "",
+        admissionNo: cur.admissionNo || "",
+        phone: cur.phone || "",
+        fatherName: cur.fatherName || "",
+        motherName: cur.motherName || "",
+        bloodGroup: cur.bloodGroup || "",
+        dob: cur.dateOfBirth || "",
+        address: cur.address || "",
+        monthlyFee: cur.monthlyFee || 0,
+        className,
+        schoolName,
+      });
+      const qrImgUrl = `https://api.qrserver.com/v1/create-qr-code/?size=160x160&margin=2&data=${encodeURIComponent(qrPayload)}`;
+      const css = `
+        .card { width: 342px; height: 216px; background: #ffffff; border: 2px solid #1e3a8a; border-radius: 10px; overflow: hidden; display: flex; flex-direction: column; position: relative; font-family: Arial, sans-serif; }
+        .header { background: linear-gradient(135deg, #1e3a8a 0%, #2563eb 100%); color: #ffffff; padding: 7px 10px; display: flex; justify-content: space-between; align-items: center; }
+        .school-title { font-size: 11px; font-weight: 800; text-transform: uppercase; line-height: 1.15; }
+        .school-sub { font-size: 7.5px; opacity: 0.9; margin-top: 1px; }
+        .id-badge { background: #fbbf24; color: #0f172a; font-size: 7.5px; font-weight: 900; padding: 2px 6px; border-radius: 4px; text-transform: uppercase; }
+        .content { flex: 1; padding: 8px 10px; display: flex; gap: 8px; align-items: center; }
+        .photo-box { width: 66px; height: 82px; border: 1.5px solid #cbd5e1; border-radius: 6px; overflow: hidden; display: flex; align-items: center; justify-content: center; background: #f1f5f9; flex-shrink: 0; }
+        .photo-box img { width: 100%; height: 100%; object-fit: cover; }
+        .details { flex: 1; font-size: 8.5px; line-height: 1.35; color: #1e293b; min-width: 0; }
+        .st-name { font-size: 11.5px; font-weight: 800; color: #1e3a8a; text-transform: uppercase; line-height: 1.1; margin-bottom: 3px; }
+        .field-row { display: flex; margin-bottom: 1.5px; }
+        .field-lbl { font-weight: 700; color: #475569; width: 62px; flex-shrink: 0; }
+        .field-val { font-weight: 600; color: #0f172a; word-break: break-word; }
+        .qr-col { width: 68px; display: flex; flex-direction: column; align-items: center; justify-content: center; flex-shrink: 0; }
+        .qr-col img { width: 62px; height: 62px; border: 1px solid #e2e8f0; border-radius: 4px; padding: 2px; }
+        .footer { background: #f8fafc; border-top: 1px solid #e2e8f0; padding: 4px 10px; display: flex; justify-content: space-between; align-items: center; font-size: 7.5px; color: #64748b; font-weight: 600; }
+      `;
+      const body = `
+        <div class="card">
+          <div class="header">
+            <div>
+              <div class="school-title">${escapeHtml(schoolName)}</div>
+              ${school?.address ? `<div class="school-sub">${escapeHtml(school.address)}</div>` : ""}
+            </div>
+            <div class="id-badge">STUDENT</div>
+          </div>
+          <div class="content">
+            <div class="photo-box">
+              ${cur.photoUrl ? `<img src="${cur.photoUrl}" alt="Photo" />` : `<span style="font-size:20px;font-weight:900;color:#94a3b8;">${escapeHtml(cur.name.charAt(0))}</span>`}
+            </div>
+            <div class="details">
+              <div class="st-name">${escapeHtml(cur.name)}</div>
+              <div class="field-row"><span class="field-lbl">Class & Roll:</span><span class="field-val">${escapeHtml(className)} (Roll: ${cur.rollNo || "—"})</span></div>
+              <div class="field-row"><span class="field-lbl">Adm. No:</span><span class="field-val">${cur.admissionNo || "—"}</span></div>
+              <div class="field-row"><span class="field-lbl">Father:</span><span class="field-val">${escapeHtml(cur.fatherName || "—")}</span></div>
+              <div class="field-row"><span class="field-lbl">DOB / Blood:</span><span class="field-val">${cur.dateOfBirth || "—"} • <strong>${cur.bloodGroup || "—"}</strong></span></div>
+              <div class="field-row"><span class="field-lbl">Emergency:</span><span class="field-val">${cur.phone || cur.emergencyPhone || "—"}</span></div>
+            </div>
+            <div class="qr-col">
+              <img src="${qrImgUrl}" alt="QR" />
+              <span style="font-size:6px;color:#94a3b8;margin-top:2px;">SCAN VERIFY</span>
+            </div>
+          </div>
+          <div class="footer">
+            <span>${schoolPhone ? `Helpline: ${escapeHtml(schoolPhone)}` : escapeHtml(schoolName)}</span>
+            <span>Session: ${escapeHtml((cur as any).sessionId || "Active")}</span>
+          </div>
+        </div>
+      `;
+      await exportHtmlDocumentToPdf(body, css, {
+        filename: `IDCard_${cur.name}`,
+        format: "cr80",
+        orientation: "landscape",
+        widthPx: 342,
+        heightPx: 216,
+      });
+      toast.success("Student ID Card PDF download ho gaya!", { id: tId });
+    } catch (err) {
+      console.error("Student ID Card PDF error:", err);
+      toast.error("PDF generate karne me error aaya.", { id: tId });
+    }
   };
 
   // Print Academic Marksheet / Report Card
@@ -833,7 +919,93 @@ export const StudentQuickActionModal: React.FC<Props> = ({
         </body>
       </html>`;
 
-    printHtmlInIframe(htmlDoc, `ReportCard_${cur.name}`);
+    printHtmlInIframe(htmlDoc, `ReportCard_${cur.name}`, "portrait");
+  };
+
+  const handleDownloadReportCardPdf = async () => {
+    const tId = toast.loading("Report Card PDF ban raha hai...");
+    try {
+      const studentId = cur.id;
+      const markedExams = examRecords.filter(e => e.studentMarks?.[studentId]);
+      const totalObtained = markedExams.reduce((sum, e) => sum + (e.studentMarks[studentId]?.absent ? 0 : (e.studentMarks[studentId]?.marks || 0)), 0);
+      const totalMax = markedExams.reduce((sum, e) => sum + (e.maxMarks || 0), 0);
+      const overallPct = totalMax > 0 ? ((totalObtained / totalMax) * 100).toFixed(1) : "0.0";
+      const numPct = parseFloat(overallPct);
+      const grade = numPct >= 90 ? "A+" : numPct >= 80 ? "A" : numPct >= 70 ? "B" : numPct >= 60 ? "C" : numPct >= 40 ? "D" : "E";
+      const rowsHtml = markedExams.length === 0
+        ? `<tr><td colspan="7" style="text-align:center;padding:16px;color:#888;">No exam evaluation records published yet.</td></tr>`
+        : markedExams.map((ex, i) => {
+            const rec = ex.studentMarks[studentId];
+            const m = rec?.marks ?? 0;
+            const isAbs = rec?.absent;
+            const p = ex.maxMarks > 0 && !isAbs ? ((m / ex.maxMarks) * 100).toFixed(1) : "—";
+            const g = isAbs ? "AB" : (parseFloat(p) >= 90 ? "A+" : parseFloat(p) >= 80 ? "A" : parseFloat(p) >= 70 ? "B" : parseFloat(p) >= 60 ? "C" : parseFloat(p) >= 40 ? "D" : "E");
+            return `<tr style="border-bottom:1px solid #e2e8f0;background:${i % 2 === 0 ? "#ffffff" : "#f8fafc"}"><td style="padding:7px 10px;font-weight:bold;">${i + 1}</td><td style="padding:7px 10px;font-weight:bold;">${escapeHtml(ex.subjectName)}</td><td style="padding:7px 10px;color:#475569;">${escapeHtml(ex.examName)}</td><td style="padding:7px 10px;text-align:center;font-weight:bold;">${ex.maxMarks}</td><td style="padding:7px 10px;text-align:center;font-weight:bold;color:${isAbs ? '#dc2626' : '#1e3a8a'};">${isAbs ? 'ABSENT' : m}</td><td style="padding:7px 10px;text-align:center;">${isAbs ? '—' : `${p}%`}</td><td style="padding:7px 10px;text-align:center;font-weight:bold;color:#047857;">${g}</td></tr>`;
+          }).join("");
+
+      const css = `
+        body { font-family: Arial, sans-serif; color: #1e293b; background: #ffffff; }
+        .report-card { border: 2.5px solid #1e3a8a; border-radius: 10px; padding: 18px 22px; background: #ffffff; margin: 12px; }
+        .header { text-align: center; border-bottom: 2px solid #1e3a8a; padding-bottom: 12px; margin-bottom: 14px; }
+        .school-name { font-size: 22px; font-weight: 900; color: #1e3a8a; text-transform: uppercase; margin: 0; }
+        .school-sub { font-size: 11px; color: #475569; margin: 4px 0 0; }
+        .doc-title { display: inline-block; background: #1e3a8a; color: #ffffff; font-size: 11px; font-weight: 900; padding: 4px 16px; border-radius: 20px; margin-top: 8px; text-transform: uppercase; }
+        .student-info { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px 14px; background: #f8fafc; border: 1px solid #cbd5e1; border-radius: 8px; padding: 10px 14px; font-size: 11px; margin-bottom: 16px; }
+        table { width: 100%; border-collapse: collapse; font-size: 11px; margin-bottom: 16px; }
+        th { background: #1e3a8a; color: #ffffff; padding: 8px 10px; font-weight: 800; text-transform: uppercase; font-size: 10px; }
+        .summary-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 16px; }
+        .summary-box { border: 1.5px solid #cbd5e1; border-radius: 8px; padding: 8px 10px; text-align: center; background: #f8fafc; }
+        .summary-box .lbl { font-size: 9px; font-weight: 800; color: #64748b; text-transform: uppercase; }
+        .summary-box .val { font-size: 16px; font-weight: 900; color: #1e3a8a; margin-top: 2px; }
+        .remarks-box { border: 1px dashed #94a3b8; border-radius: 8px; padding: 10px 14px; font-size: 11px; margin-bottom: 24px; background: #fffbeb; }
+        .signatures { display: flex; justify-content: space-between; align-items: flex-end; margin-top: 36px; padding: 0 20px; }
+        .sig-block { text-align: center; font-size: 11px; font-weight: 700; color: #334155; }
+        .sig-line { width: 130px; border-top: 1.5px solid #1e293b; margin-bottom: 6px; }
+      `;
+      const body = `
+        <div class="report-card">
+          <div class="header">
+            <h1 class="school-name">${escapeHtml(schoolName)}</h1>
+            ${school?.address ? `<p class="school-sub">${escapeHtml(school.address)}</p>` : ""}
+            <div class="doc-title">Official Student Progress Report</div>
+          </div>
+          <div class="student-info">
+            <div><strong>Student Name:</strong> ${escapeHtml(cur.name)}</div>
+            <div><strong>Roll No:</strong> ${cur.rollNo || "—"}</div>
+            <div><strong>Class:</strong> ${escapeHtml(className)}</div>
+            <div><strong>Admission No:</strong> ${cur.admissionNo || "—"}</div>
+            <div><strong>Father's Name:</strong> ${escapeHtml(cur.fatherName || "—")}</div>
+            <div><strong>Mother's Name:</strong> ${escapeHtml(cur.motherName || "—")}</div>
+            <div><strong>Date of Birth:</strong> ${cur.dateOfBirth || "—"}</div>
+            <div><strong>Blood Group:</strong> ${cur.bloodGroup || "—"}</div>
+            <div><strong>Contact No:</strong> ${cur.phone || "—"}</div>
+          </div>
+          <table><thead><tr><th>#</th><th style="text-align:left;">Subject</th><th style="text-align:left;">Assessment</th><th>Max</th><th>Obtained</th><th>%</th><th>Grade</th></tr></thead><tbody>${rowsHtml}</tbody></table>
+          <div class="summary-grid">
+            <div class="summary-box"><div class="lbl">Total</div><div class="val">${totalObtained}/${totalMax}</div></div>
+            <div class="summary-box"><div class="lbl">Percentage</div><div class="val">${overallPct}%</div></div>
+            <div class="summary-box"><div class="lbl">Grade</div><div class="val">${grade}</div></div>
+            <div class="summary-box"><div class="lbl">Rank</div><div class="val">${classRankStr}</div></div>
+          </div>
+          <div class="remarks-box"><strong>Remark:</strong> ${escapeHtml(cur.teacherRemark || "Good academic progress.")}</div>
+          <div class="signatures">
+            <div class="sig-block"><div class="sig-line"></div>Class Teacher</div>
+            <div class="sig-block"><div class="sig-line"></div>Examination In-Charge</div>
+            <div class="sig-block"><div class="sig-line"></div>Principal / Director</div>
+          </div>
+        </div>
+      `;
+      await exportHtmlDocumentToPdf(body, css, {
+        filename: `ReportCard_${cur.name}`,
+        format: "a4",
+        orientation: "portrait",
+        widthPx: 794,
+      });
+      toast.success("Report Card PDF download ho gaya!", { id: tId });
+    } catch (err) {
+      console.error("Report Card PDF error:", err);
+      toast.error("PDF generate karne me error aaya.", { id: tId });
+    }
   };
 
   const handleWhatsAppMessage = (text: string) => {
@@ -1549,7 +1721,16 @@ export const StudentQuickActionModal: React.FC<Props> = ({
                   </p>
                 </div>
 
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <button
+                    type="button"
+                    onClick={handleDownloadReportCardPdf}
+                    className="inline-flex items-center gap-1 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold cursor-pointer shadow-xs"
+                    title="Download Official Report Card PDF"
+                  >
+                    <Download className="w-3.5 h-3.5" />
+                    <span>Download PDF</span>
+                  </button>
                   <button
                     type="button"
                     onClick={handlePrintReportCard}
@@ -1911,7 +2092,15 @@ export const StudentQuickActionModal: React.FC<Props> = ({
                 </div>
               </div>
 
-              <div className="flex gap-2">
+              <div className="flex gap-2 flex-wrap justify-center">
+                <button
+                  type="button"
+                  onClick={handleDownloadIdCardPdf}
+                  className="inline-flex items-center gap-1.5 px-5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-bold text-xs cursor-pointer shadow-md"
+                >
+                  <Download className="w-4 h-4" />
+                  <span>Download ID Card PDF</span>
+                </button>
                 <button
                   type="button"
                   onClick={handlePrintIdCard}

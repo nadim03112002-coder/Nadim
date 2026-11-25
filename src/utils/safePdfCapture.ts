@@ -10,14 +10,61 @@ export interface SafeCanvasOptions {
   selector?: string;
 }
 
+function oklchToRgbaSafe(rawOklch: string): string {
+  const inner = rawOklch.replace(/^oklch\(/i, "").replace(/\)$/, "").trim();
+  const [coordsPart, alphaPart] = inner.split("/");
+  const parts = (coordsPart || "").trim().split(/\s+/).filter(Boolean);
+  if (parts.length < 3) return "#1e3a8a";
+
+  let L = parseFloat(parts[0]);
+  if (parts[0].endsWith("%")) L /= 100;
+  let C = parseFloat(parts[1]);
+  if (parts[1].endsWith("%")) C = (C / 100) * 0.4;
+  let hDeg = parseFloat(parts[2]);
+  if (!Number.isFinite(hDeg)) hDeg = 0;
+  if (parts[2].endsWith("rad")) hDeg = (hDeg * 180) / Math.PI;
+  else if (parts[2].endsWith("turn")) hDeg *= 360;
+  else if (parts[2].endsWith("grad")) hDeg *= 0.9;
+  if (!Number.isFinite(L) || !Number.isFinite(C)) return "#1e3a8a";
+
+  const hRad = (hDeg * Math.PI) / 180;
+  const a = C * Math.cos(hRad);
+  const b = C * Math.sin(hRad);
+  const l_ = L + 0.3963377774 * a + 0.2158037573 * b;
+  const m_ = L - 0.1055613458 * a - 0.0638541728 * b;
+  const s_ = L - 0.0894841775 * a - 1.291485548 * b;
+  const l = l_ * l_ * l_;
+  const m = m_ * m_ * m_;
+  const s = s_ * s_ * s_;
+  const toByte = (v: number) => {
+    const c = Math.max(0, Math.min(1, v));
+    const srgb = c <= 0.0031308 ? 12.92 * c : 1.055 * Math.pow(c, 1 / 2.4) - 0.055;
+    return Math.round(srgb * 255);
+  };
+  const r = toByte(+4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s);
+  const g = toByte(-1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s);
+  const bl = toByte(-0.0041960863 * l - 0.7034186147 * m + 1.707614701 * s);
+
+  if (alphaPart !== undefined) {
+    const t = alphaPart.trim();
+    const al = t.endsWith("%") ? parseFloat(t) / 100 : parseFloat(t);
+    return `rgba(${r}, ${g}, ${bl}, ${Number.isFinite(al) ? Math.max(0, Math.min(1, al)) : 1})`;
+  }
+  return `rgb(${r}, ${g}, ${bl})`;
+}
+
 /**
- * Sanitizes any oklch(...) colors in a CSS string or element styles to standard hex colors,
- * preventing html2canvas from crashing with:
- * "Attempting to parse an unsupported color function 'oklch'"
+ * Sanitizes any oklch(...) / oklab(...) / color-mix(...) colors in a CSS string
+ * using deterministic OKLCH -> sRGB conversion so gradients & borders keep exact colors
+ * while preventing html2canvas from crashing.
  */
 function sanitizeOklchInString(str: string): string {
   if (!str) return "";
-  return str.replace(/oklch\([^)]+\)/gi, "#1e3a8a");
+  let out = str.replace(/oklch\([^)]+\)/gi, (match) => oklchToRgbaSafe(match));
+  if (/oklab\(|color-mix\(/i.test(out)) {
+    out = out.replace(/(?:oklab|color-mix)\([^()]*(?:\([^()]*\)[^()]*)*\)/gi, "rgba(30, 58, 138, 0.9)");
+  }
+  return out;
 }
 
 /**
@@ -135,10 +182,10 @@ export async function renderHtmlToCanvasSafe(
       windowWidth: widthPx,
       windowHeight: measuredHeight + 16,
       onclone: (clonedDoc) => {
-        // Strict safety: sanitize any foreign stylesheets in cloned document
+        // Strict safety: sanitize any foreign stylesheets or inline oklch in cloned document
         const styles = Array.from(clonedDoc.querySelectorAll("style, link[rel='stylesheet']"));
         for (const s of styles) {
-          if (s.textContent && s.textContent.includes("oklch")) {
+          if (s.textContent && /oklch|oklab|color-mix/i.test(s.textContent)) {
             s.textContent = sanitizeOklchInString(s.textContent);
           }
         }
@@ -164,15 +211,13 @@ export async function captureDomElementSafe(
   const widthPx = options.widthPx || element.offsetWidth || 794;
   const htmlContent = element.outerHTML;
 
-  // Collect style tags from document to keep formatting, but sanitize oklch
+  // Collect style tags from document to keep formatting, converting oklch cleanly
   let collectedCss = "";
   try {
     for (const sheet of Array.from(document.styleSheets)) {
       try {
         for (const rule of Array.from(sheet.cssRules || [])) {
-          if (!rule.cssText.includes("oklch")) {
-            collectedCss += rule.cssText + "\n";
-          }
+          collectedCss += sanitizeOklchInString(rule.cssText) + "\n";
         }
       } catch {
         // Cross-origin stylesheet, skip

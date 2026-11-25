@@ -27,6 +27,8 @@ import {
   saveCustomDeviceAdminPin,
   setAndroidAccessibilityGuardLocked,
   setAndroidUninstallBlocked,
+  syncRawPinFallbackToNativeIfMissing,
+  syncStoredAdminPinToNative,
   unlockAndroidProtectionTemporarily,
   verifyCustomDeviceAdminPin,
   type AndroidDeviceAdminStatus,
@@ -61,6 +63,12 @@ export const DeviceAdminProtectionModal: React.FC<DeviceAdminProtectionModalProp
 
   useEffect(() => {
     if (!isOpen) return;
+    syncStoredAdminPinToNative();
+    if (schoolLockCode) {
+      void syncRawPinFallbackToNativeIfMissing(schoolLockCode).then(() => {
+        setStatus(getAndroidDeviceAdminStatus());
+      });
+    }
     refreshStatus();
 
     const handleNativeChange = () => {
@@ -92,7 +100,7 @@ export const DeviceAdminProtectionModal: React.FC<DeviceAdminProtectionModalProp
       document.removeEventListener("visibilitychange", handleVisibility);
       window.clearInterval(timer);
     };
-  }, [isOpen]);
+  }, [isOpen, schoolLockCode]);
 
   if (!isOpen) return null;
 

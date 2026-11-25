@@ -314,13 +314,16 @@ export async function sendSchoolPushNotification(payload: {
   allowSelf?: boolean;
   title: string;
   body: string;
-  type?: "MONTHLY_FEE" | "FEE_RECEIPT" | "SCHOOL_NOTICE" | "SCHOOL_HOLIDAY" | "HOMEWORK" | "DEFAULT" | "NSTA_MESSAGE" | "CALL_INCOMING";
+  type?: "MONTHLY_FEE" | "FEE_RECEIPT" | "SCHOOL_NOTICE" | "SCHOOL_HOLIDAY" | "HOMEWORK" | "DEFAULT" | "NSTA_MESSAGE" | "CALL_INCOMING" | "WALKIE_VOICE" | "WALKIE_TTS";
   threadType?: "CLASS_GROUP" | "SCHOOL_DESK" | "TEACHER_CHAT" | "STUDENT_CHAT";
   voiceSpeak?: boolean;
   url?: string;
   urgent?: boolean;
   icon?: string;
   senderPhoto?: string;
+  walkieAudioBase64?: string;
+  walkieMimeType?: string;
+  walkieSpeechText?: string;
 }): Promise<{ delivered: number; matchedDevices: number; rtdbDispatched?: boolean }> {
   const timestamp = Date.now();
   const notifId = `school_notif_${timestamp}_${Math.random().toString(36).slice(2, 7)}`;
@@ -413,6 +416,9 @@ export async function sendSchoolPushNotification(payload: {
         className: payload.className || "",
         ...(payload.classBroadcast ? { classBroadcast: true } : {}),
         ...(payload.schoolBroadcast ? { schoolBroadcast: true } : {}),
+        ...(payload.walkieAudioBase64 ? { walkieAudioBase64: payload.walkieAudioBase64 } : {}),
+        ...(payload.walkieMimeType ? { walkieMimeType: payload.walkieMimeType } : {}),
+        ...(payload.walkieSpeechText ? { walkieSpeechText: payload.walkieSpeechText } : {}),
         ...(targetStudentIds.length > 0 ? { studentIds: targetStudentIds } : {}),
       };
 

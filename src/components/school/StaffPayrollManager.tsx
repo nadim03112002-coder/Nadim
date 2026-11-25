@@ -1,8 +1,9 @@
 // @ts-nocheck
-import React, { useState, useEffect, useMemo } from "react";
+import React, { useState, useEffect, useMemo, useRef } from "react";
 import { jsPDF } from "jspdf";
 import { renderHtmlToCanvasSafe } from "../../utils/safePdfCapture";
-import { printHtmlInIframe } from "./AdmissionFormPrintModal";
+import { exportElementToPdf, saveJsPdfDocument } from "../../utils/universalPdfExport";
+import { printElementInIframe, printHtmlInIframe } from "./AdmissionFormPrintModal";
 import {
   Briefcase,
   FileText,
@@ -868,12 +869,44 @@ export const StaffPayrollManager: React.FC<Props> = ({
       const renderH = Math.min(pdfH - margin * 2, (canvas.height * renderW) / canvas.width);
       pdf.addImage(canvas.toDataURL("image/jpeg", 0.95), "JPEG", margin, margin, renderW, renderH);
       const safeStaff = (staff.name || "Staff").replace(/[^a-z0-9-_]+/gi, "_");
-      pdf.save(`Salary_Slip_${safeStaff}_${selectedMonth}.pdf`);
+      saveJsPdfDocument(pdf, `Salary_Slip_${safeStaff}_${selectedMonth}`);
     } catch (err) {
       console.warn("Salary slip PDF generation error, falling back to print:", err);
       handlePrintSalarySlip(staff);
     } finally {
       setDownloadingSlipPdf(false);
+    }
+  };
+
+  const paySheetRef = useRef<HTMLDivElement>(null);
+  const [downloadingSheetPdf, setDownloadingSheetPdf] = useState(false);
+
+  const handlePrintPaySheet = () => {
+    printElementInIframe(
+      paySheetRef.current,
+      `Staff_Payroll_Sheet_${selectedMonth}`,
+      "",
+      "landscape"
+    );
+  };
+
+  const handleDownloadPaySheetPdf = async () => {
+    if (!paySheetRef.current || downloadingSheetPdf) return;
+    setDownloadingSheetPdf(true);
+    try {
+      await exportElementToPdf(paySheetRef.current, {
+        filename: `Staff_Payroll_Sheet_${selectedMonth}`,
+        format: "a4",
+        orientation: "landscape",
+        pageMode: "auto_slice",
+        widthPx: 1122,
+        scale: 1.8,
+      });
+    } catch (err) {
+      console.warn("Pay sheet PDF export failed, falling back to print:", err);
+      handlePrintPaySheet();
+    } finally {
+      setDownloadingSheetPdf(false);
     }
   };
 
@@ -920,7 +953,15 @@ export const StaffPayrollManager: React.FC<Props> = ({
             Bank NEFT CSV
           </button>
           <button
-            onClick={() => window.print()}
+            onClick={handleDownloadPaySheetPdf}
+            disabled={staffPayrollList.length === 0 || downloadingSheetPdf}
+            className="px-3.5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 disabled:opacity-40 text-white font-bold text-xs flex items-center gap-1.5 shadow-xs cursor-pointer"
+          >
+            {downloadingSheetPdf ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Download className="w-3.5 h-3.5" />}
+            Pay-Sheet PDF
+          </button>
+          <button
+            onClick={handlePrintPaySheet}
             disabled={staffPayrollList.length === 0}
             className="px-3.5 py-2 rounded-xl bg-teal-600 hover:bg-teal-700 disabled:opacity-40 text-white font-bold text-xs flex items-center gap-1.5 shadow-xs cursor-pointer"
           >
@@ -930,6 +971,8 @@ export const StaffPayrollManager: React.FC<Props> = ({
         </div>
       </div>
 
+      {/* Printable Pay-Sheet Container (KPI Summary + Table) */}
+      <div ref={paySheetRef} className="space-y-4">
       {/* Summary KPI Cards */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
         <div className="p-4 sm:p-5 rounded-2xl bg-gradient-to-br from-emerald-50 to-teal-50 dark:from-emerald-950/50 dark:to-teal-950/40 border border-emerald-200 dark:border-emerald-700/60 shadow-xs">
@@ -1236,6 +1279,7 @@ export const StaffPayrollManager: React.FC<Props> = ({
             </table>
           </div>
         )}
+      </div>
       </div>
 
       {/* PRINT & DOWNLOAD OFFICIAL SALARY SLIP MODAL */}

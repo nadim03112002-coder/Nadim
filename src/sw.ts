@@ -21,18 +21,26 @@ precacheAndRoute(self.__WB_MANIFEST, {
 self.skipWaiting();
 clientsClaim();
 
-// On-demand runtime caching for lazy-loaded JS/CSS chunks (prevents 16MB boot blast)
+// On-demand runtime caching for lazy-loaded JS/CSS chunks (prevents corrupted HTML cache & 16MB boot blast)
 registerRoute(
   ({ request, url }) =>
     url.origin === self.location.origin &&
     (request.destination === 'script' || request.destination === 'style') &&
     url.pathname.startsWith('/assets/'),
-  new CacheFirst({
-    cacheName: 'nsta-lazy-assets-v1',
+  new StaleWhileRevalidate({
+    cacheName: 'nsta-lazy-assets-v2',
     plugins: [
+      {
+        cacheWillUpdate: async ({ response }) => {
+          if (!response || response.status !== 200) return null;
+          const ct = (response.headers.get('content-type') || '').toLowerCase();
+          if (ct.includes('text/html')) return null;
+          return response;
+        },
+      },
       new ExpirationPlugin({
-        maxEntries: 80,
-        maxAgeSeconds: 30 * 24 * 60 * 60,
+        maxEntries: 100,
+        maxAgeSeconds: 14 * 24 * 60 * 60,
       }),
     ],
   })

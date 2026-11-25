@@ -7,6 +7,7 @@ import {
   Users,
   Search,
   Printer,
+  Download,
   Calendar,
   AlertCircle,
   CheckCircle2,
@@ -51,7 +52,8 @@ import {
   MessageSquare,
   Send,
   Loader2,
-  CalendarClock
+  CalendarClock,
+  Radio
 } from "lucide-react";
 import { rotateToLandscape, rotateToPortrait, setDesktopMode, useDeviceOrientation } from "../../utils/displayPrefs";
 import type {
@@ -64,7 +66,8 @@ import type {
   AccountantPermissions,
   SchoolExpenseVoucher,
   AdmissionApplication,
-  StoreSaleRecord
+  StoreSaleRecord,
+  FeeCallFollowUpRecord
 } from "../../school-types";
 import {
   getSchool,
@@ -96,7 +99,12 @@ import {
   getLocalTeachers,
   isDemoSessionId,
   isDemoRecord,
-  autoSendFeeSlipToSchoolDesk
+  autoSendFeeSlipToSchoolDesk,
+  subscribeToFeeCallFollowUps,
+  getSchoolPublicInquiries,
+  getLocalAttendance,
+  syncPendingFeeCallFollowUps,
+  getPendingFeeFollowUpSyncCount
 } from "../../school-firebase";
 import { sendSchoolPushNotification } from "../../utils/schoolPushClient";
 import { DEMO_SESSION_ID, setDemoDataEnabled } from "./demoDataStore";
@@ -105,14 +113,18 @@ import { computePaymentBreakdown } from "../../utils/paymentBreakdown";
 import { toast } from "sonner";
 import { FeeManager } from "./FeeManager";
 import { getPendingActiveTagadaCall } from "./FeeTagadaCallerPage";
-const OnlineAdmissionManager = React.lazy(() => import("./OnlineAdmissionManager").then(m => ({ default: m.OnlineAdmissionManager })));
+import { lazyWithRetry, LazyPanelBoundary, scheduleIdlePreload } from "../../utils/lazyWithRetry";
+const loadOnlineAdmissionManager = () => import("./OnlineAdmissionManager").then(m => ({ default: m.OnlineAdmissionManager }));
+const loadNstaMessengerSuite = () => import("./NstaMessengerSuite").then(m => ({ default: m.NstaMessengerSuite }));
+const OnlineAdmissionManager = lazyWithRetry(loadOnlineAdmissionManager, "Online Admission Manager");
 import { AbsenteeActionPage } from "./AbsenteeActionPage";
 import { SiblingProfileManager } from "./SiblingProfileManager";
-const NstaMessengerSuite = React.lazy(() => import("./NstaMessengerSuite").then(m => ({ default: m.NstaMessengerSuite })));
+const NstaMessengerSuite = lazyWithRetry(loadNstaMessengerSuite, "NSTA Messenger");
 import { ReceiptCancellationModal } from "./ReceiptCancellationModal";
 import { RazorpaySettingsModal } from "./RazorpaySettingsModal";
 import { StudentReAdmissionManager } from "./StudentReAdmissionManager";
-import { printHtmlInIframe } from "./AdmissionFormPrintModal";
+import { printElementInIframe, printHtmlInIframe } from "./AdmissionFormPrintModal";
+import { exportElementToPdf } from "../../utils/universalPdfExport";
 import { TeacherRulesRegulationsView } from "./TeacherRulesRegulationsView";
 import { resolveAccountantPermissions } from "../../utils/schoolRolePermissions";
 import {
@@ -124,6 +136,18 @@ import {
 } from "./feeReceiptUtils";
 import { useBackHandler } from "../../utils/backNavigation";
 import { NstaCallPortalHost } from "./NstaCallModal";
+import { CallerIdSettingsCard } from "./CallerIdSettingsCard";
+import { IncomingParentCallModal } from "./IncomingParentCallModal";
+import { syncSchoolDirectoryToAndroid, extractTodayAbsentStudentIds } from "../../utils/schoolCallerId";
+import {
+  hasEliteCallAccess,
+  hasEliteWalkieAccess,
+  hasEliteFeeTagadaAccess,
+  type SchoolPublicInquiry,
+} from "../../school-types";
+import { useSchoolWalkieChannel } from "../../utils/schoolWalkieService";
+import { WalkieTalkieModal } from "./WalkieTalkieModal";
+import { EliteFeatureLockCard } from "./EliteFeatureLockCard";
 
 interface Props {
   schoolId: string;
@@ -178,6 +202,10 @@ export const AccountantPanel: React.FC<Props> = ({
   onLogout,
   onOpenPlatformContent
 }) => {
+  useEffect(() => {
+    return scheduleIdlePreload([loadNstaMessengerSuite], 1800);
+  }, []);
+
   const handleExploreFullApp = () => {
     if (!onOpenPlatformContent && !onBack) return;
     if (onOpenPlatformContent) {
@@ -242,6 +270,9 @@ export const AccountantPanel: React.FC<Props> = ({
   const [allStudents, setAllStudents] = useState<SchoolStudent[]>(() => cachedBootstrap?.stdAll || []);
   const [fees, setFees] = useState<MonthlyFee[]>(() => cachedBootstrap?.feeCur || []);
   const [allHistoryFees, setAllHistoryFees] = useState<MonthlyFee[]>([]);
+  const [feeCallFollowUps, setFeeCallFollowUps] = useState<FeeCallFollowUpRecord[]>([]);
+  const [inquiries, setInquiries] = useState<SchoolPublicInquiry[]>([]);
+  const [attendanceTick, setAttendanceTick] = useState(0);
   const [storeSales, setStoreSales] = useState<StoreSaleRecord[]>([]);
   const [expenses, setExpenses] = useState<SchoolExpenseVoucher[]>(() => cachedBootstrap?.expAll || []);
   const [accountants, setAccountants] = useState<SchoolAccountant[]>(() => cachedBootstrap?.accAll || []);
@@ -335,7 +366,9 @@ export const AccountantPanel: React.FC<Props> = ({
     mode: "Cash" | "UPI" | "Bank";
     saving: boolean;
   } | null>(null);
+  const [showWalkieModal, setShowWalkieModal] = useState(false);
 
+  useBackHandler(showWalkieModal, () => setShowWalkieModal(false), 26);
   useBackHandler(Boolean(duesSettlementModal), () => setDuesSettlementModal(null), 22);
   useBackHandler(Boolean(selectedStudentForDues), () => setSelectedStudentForDues(null), 20);
   useBackHandler(showExpenseModal, () => setShowExpenseModal(false), 20);
@@ -443,11 +476,13 @@ export const AccountantPanel: React.FC<Props> = ({
 
         Promise.all([
           getSchoolFeeHistory(schoolId, targetSessionId).catch(() => []),
-          loadMergedStoreSales<StoreSaleRecord>(schoolId).catch(() => [])
-        ]).then(([histFeeData, storeSalesData]) => {
+          loadMergedStoreSales<StoreSaleRecord>(schoolId).catch(() => []),
+          getSchoolPublicInquiries(schoolId).catch(() => []),
+        ]).then(([histFeeData, storeSalesData, inqList]) => {
           if (!mounted) return;
           setAllHistoryFees(Array.isArray(histFeeData) ? (isDemoSessionId(targetSessionId) ? histFeeData : histFeeData.filter(f => !isDemoRecord(f))) : []);
           setStoreSales(Array.isArray(storeSalesData) ? storeSalesData : []);
+          setInquiries(Array.isArray(inqList) ? inqList : []);
         }).catch(() => {});
 
         const todayDateStr = getTodayDateStr();
@@ -476,6 +511,7 @@ export const AccountantPanel: React.FC<Props> = ({
               totalMarked: tMarked,
               attendancePct: pct,
             });
+            setAttendanceTick((t) => t + 1);
           }).catch(() => {});
         }
       } catch (err) {
@@ -485,12 +521,81 @@ export const AccountantPanel: React.FC<Props> = ({
         if (mounted) setLoading(false);
       }
     };
-
     loadAll();
+    const unsubFollowUps = subscribeToFeeCallFollowUps(schoolId, setFeeCallFollowUps);
+    const handleAttendanceUpdated = () => setAttendanceTick((t) => t + 1);
+    const handleOnline = () => {
+      if (getPendingFeeFollowUpSyncCount(schoolId) > 0) {
+        syncPendingFeeCallFollowUps(schoolId).catch(() => {});
+      }
+    };
+    window.addEventListener("attendance-updated", handleAttendanceUpdated);
+    window.addEventListener("online", handleOnline);
     return () => {
       mounted = false;
+      unsubFollowUps();
+      window.removeEventListener("attendance-updated", handleAttendanceUpdated);
+      window.removeEventListener("online", handleOnline);
     };
   }, [schoolId, accountantId, refreshTrigger]);
+
+  const todayAbsentStudentIds = useMemo(() => {
+    if (!schoolId) return [];
+    try {
+      return extractTodayAbsentStudentIds(getLocalAttendance(schoolId));
+    } catch {
+      return [];
+    }
+  }, [schoolId, attendanceTick, allStudents.length, students.length]);
+
+  const {
+    messages: walkieMessages,
+    schedule: walkieSchedule,
+    isWithinHours: isWalkieSchoolHoursNow,
+  } = useSchoolWalkieChannel({
+    enabled: Boolean(schoolId && hasEliteWalkieAccess(school)),
+    schoolId,
+    userId: accountantId || "accountant_admin",
+    userRole: "ACCOUNTANT",
+    onOpenWalkie: () => setShowWalkieModal(true),
+  });
+
+  useEffect(() => {
+    const onOpenWalkie = () => setShowWalkieModal(true);
+    window.addEventListener("android-open-walkie", onOpenWalkie);
+    return () => window.removeEventListener("android-open-walkie", onOpenWalkie);
+  }, []);
+
+  useEffect(() => {
+    if (!schoolId) return;
+    const allowParentCaller = hasEliteFeeTagadaAccess(school);
+    syncSchoolDirectoryToAndroid({
+      school,
+      schoolName: school?.name,
+      teachers,
+      accountants,
+      students: allowParentCaller ? (allStudents.length > 0 ? allStudents : students) : [],
+      classes: allowParentCaller ? (allClasses.length > 0 ? allClasses : classes) : [],
+      fees: allowParentCaller ? (allHistoryFees.length > 0 ? allHistoryFees : fees) : [],
+      feeCallFollowUps: allowParentCaller ? feeCallFollowUps : [],
+      absentStudentIds: allowParentCaller ? todayAbsentStudentIds : [],
+      inquiries: allowParentCaller ? inquiries : [],
+    });
+  }, [
+    schoolId,
+    school,
+    teachers,
+    accountants,
+    allStudents,
+    students,
+    allClasses,
+    classes,
+    allHistoryFees,
+    fees,
+    feeCallFollowUps,
+    todayAbsentStudentIds,
+    inquiries,
+  ]);
 
   const permissions: AccountantPermissions = resolveAccountantPermissions(activeAccountant);
 
@@ -791,6 +896,31 @@ export const AccountantPanel: React.FC<Props> = ({
 
         {/* Action Controls */}
         <div className="flex items-center gap-2 shrink-0">
+          <button
+            type="button"
+            onClick={() => setShowWalkieModal(true)}
+            className={`px-2.5 py-2 rounded-xl border transition text-xs font-semibold flex items-center gap-1.5 cursor-pointer whitespace-nowrap ${
+              !hasEliteWalkieAccess(school)
+                ? isWhite
+                  ? "bg-amber-50 hover:bg-amber-100 border-amber-200 text-amber-800"
+                  : "bg-amber-500/15 hover:bg-amber-500/25 border-amber-500/30 text-amber-300"
+                : isWalkieSchoolHoursNow
+                ? "bg-emerald-600 hover:bg-emerald-500 border-emerald-500 text-white"
+                : isWhite
+                ? "bg-slate-100 hover:bg-slate-200 border-slate-200 text-slate-700"
+                : "bg-slate-800/80 hover:bg-slate-800 border-slate-700 text-slate-300"
+            }`}
+            title={
+              hasEliteWalkieAccess(school)
+                ? "School-Hour Live Walkie-Talkie"
+                : "Elite Plan Only: School-Hour Walkie-Talkie"
+            }
+          >
+            <Radio className="w-3.5 h-3.5 shrink-0" />
+            <span className="hidden sm:inline">Walkie</span>
+            {!hasEliteWalkieAccess(school) && <Lock className="w-3 h-3 shrink-0" />}
+          </button>
+
           <button
             type="button"
             onClick={() => setRefreshTrigger(prev => prev + 1)}
@@ -1129,6 +1259,9 @@ export const AccountantPanel: React.FC<Props> = ({
             >
               <PhoneCall className={`w-4 h-4 shrink-0 ${activeTab === "fee_tagada" ? "text-white" : "text-emerald-400"}`} />
               <span className="flex-1 truncate">Fee Tagada • Offline Caller</span>
+              {!hasEliteFeeTagadaAccess(school) && (
+                <Lock className="w-3 h-3 text-amber-400 shrink-0" />
+              )}
             </button>
 
             <button
@@ -1530,7 +1663,10 @@ export const AccountantPanel: React.FC<Props> = ({
                   }`}
                 >
                   <PhoneCall className={`w-4 h-4 shrink-0 ${activeTab === "fee_tagada" ? "text-white" : "text-emerald-400"}`} />
-                  <span>Fee Tagada • Offline Caller</span>
+                  <span className="flex-1 truncate">Fee Tagada • Offline Caller</span>
+                  {!hasEliteFeeTagadaAccess(school) && (
+                    <Lock className="w-3 h-3 text-amber-400 shrink-0" />
+                  )}
                 </button>
 
                 <button
@@ -2270,6 +2406,14 @@ export const AccountantPanel: React.FC<Props> = ({
                 </div>
               )}
 
+              {/* ── PARENT CALLER ID (ULTA DIRECTORY) SETTINGS ─────────────── */}
+              <CallerIdSettingsCard
+                mode="staff"
+                schoolId={school?.id || schoolId}
+                schoolName={school?.name}
+                isEliteLocked={!hasEliteFeeTagadaAccess(school)}
+              />
+
               {/* ── 6 QUICK ACTION CARDS ─────────────────────────────────────── */}
               <div className="space-y-3">
                 <h3 className="text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
@@ -2759,6 +2903,19 @@ export const AccountantPanel: React.FC<Props> = ({
                   Home पर लौटें
                 </button>
               </div>
+            ) : activeTab === "fee_tagada" && !hasEliteFeeTagadaAccess(school) ? (
+              <div className="max-w-xl mx-auto my-8">
+                <EliteFeatureLockCard
+                  title="Fee Tagada & Offline SIM Caller"
+                  description="Defaulter call queue, parent promise dates, post-call follow-up sync aur SIM Caller ID sirf Elite / Supreme Plan schools ke liye uplabdh hai."
+                  highlights={[
+                    "Priority Fee Defaulter Call Queue & Promise Dates",
+                    "Family / Sibling Combined Tagada Calling",
+                    "Truecaller-style Offline SIM Caller ID & UPI QR",
+                  ]}
+                  onBack={() => setActiveTab("home")}
+                />
+              </div>
             ) : (
               <div className="h-full">
                 <FeeManager
@@ -2834,7 +2991,7 @@ export const AccountantPanel: React.FC<Props> = ({
             permissions.canAdmitStudents ? (
               <div className="h-full">
                 {school && (
-                  <Suspense fallback={<div className="py-12 flex justify-center"><Loader2 className="w-7 h-7 animate-spin text-emerald-500" /></div>}>
+                  <LazyPanelBoundary title="Online Admission">
                     <OnlineAdmissionManager
                       school={school}
                       classes={classes}
@@ -2844,7 +3001,7 @@ export const AccountantPanel: React.FC<Props> = ({
                       viewMode="admissions_only"
                       onBack={() => setActiveTab("counter")}
                     />
-                  </Suspense>
+                  </LazyPanelBoundary>
                 )}
               </div>
             ) : (
@@ -3029,7 +3186,7 @@ export const AccountantPanel: React.FC<Props> = ({
 
           {/* TAB 5: DAILY CASHBOOK & SETTLEMENT */}
           {activeTab === "daybook" && (
-            <div className="max-w-6xl mx-auto space-y-6">
+            <div id="accountant-daybook-sheet" className="max-w-6xl mx-auto space-y-6">
               <div className="bg-white dark:bg-slate-900 p-5 sm:p-6 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-xs flex items-center justify-between flex-wrap gap-4">
                 <div>
                   <div className="flex items-center gap-2 text-amber-600 dark:text-amber-400 text-xs font-bold uppercase tracking-wider">
@@ -3043,9 +3200,37 @@ export const AccountantPanel: React.FC<Props> = ({
                   </p>
                 </div>
 
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 print:hidden">
                   <button
-                    onClick={() => window.print()}
+                    onClick={async () => {
+                      const el = document.getElementById("accountant-daybook-sheet") as HTMLElement | null;
+                      if (!el) return;
+                      const tid = toast.loading("Daybook PDF तैयार हो रहा है...");
+                      try {
+                        await exportElementToPdf(el, {
+                          filename: `Daily_Cashbook_${getTodayDateStr()}`,
+                          format: "a4",
+                          orientation: "portrait",
+                          pageMode: "fit_single",
+                          widthPx: 920,
+                          scale: 2,
+                        });
+                        toast.success("Daybook PDF डाउनलोड हो गया!", { id: tid });
+                      } catch {
+                        toast.dismiss(tid);
+                        printElementInIframe(el, `Daily_Cashbook_${getTodayDateStr()}`, "", "portrait");
+                      }
+                    }}
+                    className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-semibold text-xs flex items-center gap-2 transition cursor-pointer whitespace-nowrap shadow-xs"
+                  >
+                    <Download className="w-4 h-4" />
+                    <span>PDF</span>
+                  </button>
+                  <button
+                    onClick={() => {
+                      const el = document.getElementById("accountant-daybook-sheet") as HTMLElement | null;
+                      printElementInIframe(el, `Daily_Cashbook_${getTodayDateStr()}`, "", "portrait");
+                    }}
                     className="px-4 py-2 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-800 dark:text-white font-semibold text-xs flex items-center gap-2 transition cursor-pointer whitespace-nowrap"
                   >
                     <Printer className="w-4 h-4" />
@@ -3275,7 +3460,7 @@ export const AccountantPanel: React.FC<Props> = ({
           {/* TAB 8: NSTA MESSENGER SUITE */}
           {activeTab === "messenger" && school && (
             <div className="fixed inset-0 z-50 bg-slate-950 flex flex-col h-screen w-screen overflow-hidden">
-              <Suspense fallback={<div className="flex-1 flex items-center justify-center"><Loader2 className="w-7 h-7 animate-spin text-emerald-500" /></div>}>
+              <LazyPanelBoundary title="NSTA Messenger">
                 <NstaMessengerSuite
                   school={school}
                   classes={classes}
@@ -3286,7 +3471,7 @@ export const AccountantPanel: React.FC<Props> = ({
                   currentUserRole="ADMIN"
                   onBack={() => setActiveTab("home")}
                 />
-              </Suspense>
+              </LazyPanelBoundary>
             </div>
           )}
 
@@ -3482,7 +3667,7 @@ export const AccountantPanel: React.FC<Props> = ({
           </div>
         </div>
       )}
-      {school?.id && (
+      {school?.id && hasEliteCallAccess(school) && (
         <NstaCallPortalHost
           identity={{
             schoolId: school.id,
@@ -3494,6 +3679,36 @@ export const AccountantPanel: React.FC<Props> = ({
           }}
         />
       )}
+      {school?.id && hasEliteFeeTagadaAccess(school) && (
+        <IncomingParentCallModal
+          schoolId={school.id}
+          schoolName={school.name}
+          schoolUpiId={school.upiId}
+          callerUserName={activeAccountant?.name || "School Accountant"}
+          students={allStudents.length > 0 ? allStudents : students}
+          classes={allClasses.length > 0 ? allClasses : classes}
+          fees={allHistoryFees.length > 0 ? allHistoryFees : fees}
+          feeCallFollowUps={feeCallFollowUps}
+          absentStudentIds={todayAbsentStudentIds}
+          inquiries={inquiries}
+          onCollectFee={() => {
+            setActiveTab(permissions.canCollectFee ? "fee_collection" : "home");
+          }}
+        />
+      )}
+      <WalkieTalkieModal
+        isOpen={showWalkieModal}
+        onClose={() => setShowWalkieModal(false)}
+        school={school}
+        schoolId={schoolId}
+        currentUserId={accountantId || "accountant_admin"}
+        currentUserName={activeAccountant?.name || "School Accountant"}
+        currentUserRole="ACCOUNTANT"
+        teachers={teachers}
+        accountants={accountants}
+        messages={walkieMessages}
+        schedule={walkieSchedule}
+      />
     </div>
   );
 };

@@ -7,8 +7,10 @@ import {
   FileSpreadsheet, Printer, ChevronLeft, Plus, Trash2, Award, Calendar,
   CheckCircle2, Sparkles, RefreshCw, User, BookOpen, Layers, Edit3, Shield,
   Building2, UserPlus, Zap, TrendingUp, ArrowRight, CheckSquare, Square, AlertCircle,
-  Wand2, Image as ImageIcon, Quote, PenTool, Palette
+  Wand2, Image as ImageIcon, Quote, PenTool, Palette, Download, Loader2
 } from "lucide-react";
+import { toast } from "sonner";
+import { exportMultiPageElementsToPdf } from "../../utils/universalPdfExport";
 import { DocumentTemplateStudioModal } from "./DocumentTemplateStudioModal";
 import {
   DOCUMENT_TEMPLATE_EVENT,
@@ -1147,6 +1149,7 @@ export const MarksheetGenerator: React.FC<Props> = ({
       .catch(() => {});
   }, [school?.id]);
 
+  const [downloadingPdf, setDownloadingPdf] = useState(false);
   const printContainerRef = useRef<HTMLDivElement>(null);
 
   // Automatically update wing, subject preset, and exam title when selected class changes
@@ -2020,10 +2023,59 @@ export const MarksheetGenerator: React.FC<Props> = ({
 </body>
 </html>`;
 
-    printHtmlInIframe(htmlDoc, safeTitle);
+    printHtmlInIframe(htmlDoc, safeTitle, isPrintLandscape ? "landscape" : "portrait");
   };
 
   const baseClassSubjects = subjects;
+
+  const runPdfCaptureNow = async (partSuffix?: string) => {
+    const container = printContainerRef.current;
+    if (!container) return;
+    const scopeLabel = bulkMode && bulkScope === "all_school" ? "All-School" : (currentClass?.name || "Class");
+    const defaultSuffix =
+      printPartMode === "back"
+        ? "Part-2-Backside"
+        : printPartMode === "both"
+        ? "Complete-Front-And-Back"
+        : "Part-1-Front-Marks";
+    const fileTitle = `${examTitle || "Marksheet"}_${scopeLabel}_${partSuffix || defaultSuffix}`;
+    const pageEls = Array.from(container.querySelectorAll(".marksheet-print-page")) as HTMLElement[];
+    const targets = pageEls.length > 0 ? pageEls : [container];
+    await exportMultiPageElementsToPdf(targets, {
+      filename: fileTitle,
+      orientation: isPrintLandscape ? "landscape" : "portrait",
+      widthPx: isPrintLandscape ? 1122 : 794,
+      marginMm: 5,
+      scale: targets.length > 10 ? 1.5 : 1.9,
+    });
+  };
+
+  const handleDownloadPdf = async (mode?: "front" | "back" | "both") => {
+    if (downloadingPdf) return;
+    setDownloadingPdf(true);
+    const tId = toast.loading("Marksheet PDF taiyar ho raha hai...");
+    try {
+      if (mode) {
+        setPrintPartMode(mode);
+        await new Promise<void>((r) => requestAnimationFrame(() => setTimeout(r, 140)));
+      }
+      const suffix =
+        mode === "back"
+          ? "Part-2-Backside"
+          : mode === "both"
+          ? "Complete-Front-And-Back"
+          : mode === "front"
+          ? "Part-1-Front-Marks"
+          : undefined;
+      await runPdfCaptureNow(suffix);
+      toast.success("Marksheet PDF download ho gaya!", { id: tId });
+    } catch (err) {
+      console.error("Marksheet PDF error:", err);
+      toast.error("PDF generate karne me error aaya, Print button try karein.", { id: tId });
+    } finally {
+      setDownloadingPdf(false);
+    }
+  };
 
   // Helper: print specific part cleanly after state commits
   const handlePrintPart = (mode: "front" | "back" | "both") => {
@@ -4184,8 +4236,18 @@ export const MarksheetGenerator: React.FC<Props> = ({
               <span>{bulkMode ? "Single" : "Bulk Print"}</span>
             </button>
             <button
+              type="button"
+              onClick={() => handleDownloadPdf()}
+              disabled={downloadingPdf}
+              className="px-2.5 py-1 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 disabled:opacity-60 text-white rounded-lg text-[11px] font-extrabold flex items-center gap-1 shadow-sm shadow-emerald-500/20 active:scale-95 transition-transform cursor-pointer shrink-0"
+            >
+              {downloadingPdf ? <Loader2 className="w-3 h-3 animate-spin" /> : <Download className="w-3 h-3" />}
+              <span>{downloadingPdf ? "PDF..." : "Download PDF"}</span>
+            </button>
+            <button
+              type="button"
               onClick={() => handlePrint()}
-              className="px-2.5 py-1 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white rounded-lg text-[11px] font-extrabold flex items-center gap-1 shadow-sm shadow-emerald-500/20 active:scale-95 transition-transform cursor-pointer shrink-0"
+              className="px-2.5 py-1 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-[11px] font-extrabold flex items-center gap-1 shadow-sm active:scale-95 transition-transform cursor-pointer shrink-0"
             >
               <Printer className="w-3 h-3" />
               <span>Print</span>
@@ -4518,19 +4580,29 @@ export const MarksheetGenerator: React.FC<Props> = ({
                 <div className="flex flex-wrap items-center gap-1.5">
                   <button
                     type="button"
-                    onClick={() => handlePrintPart("front")}
-                    className="px-3 py-1.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-xs font-black flex items-center gap-1.5 shadow-sm cursor-pointer transition active:scale-95"
+                    disabled={downloadingPdf}
+                    onClick={() => handleDownloadPdf("front")}
+                    className="px-3 py-1.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 disabled:opacity-60 text-slate-950 text-xs font-black flex items-center gap-1.5 shadow-sm cursor-pointer transition active:scale-95"
                   >
-                    <Printer className="w-3.5 h-3.5" />
+                    <Download className="w-3.5 h-3.5" />
                     <span>Part 1 PDF (Front Marks)</span>
                   </button>
                   <button
                     type="button"
-                    onClick={() => handlePrintPart("back")}
-                    className="px-3 py-1.5 rounded-xl bg-amber-400 hover:bg-amber-300 text-slate-950 text-xs font-black flex items-center gap-1.5 shadow-sm cursor-pointer transition active:scale-95"
+                    disabled={downloadingPdf}
+                    onClick={() => handleDownloadPdf("back")}
+                    className="px-3 py-1.5 rounded-xl bg-amber-400 hover:bg-amber-300 disabled:opacity-60 text-slate-950 text-xs font-black flex items-center gap-1.5 shadow-sm cursor-pointer transition active:scale-95"
                   >
-                    <Printer className="w-3.5 h-3.5" />
+                    <Download className="w-3.5 h-3.5" />
                     <span>Part 2 PDF (Same-Serial Back)</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handlePrintPart("front")}
+                    className="px-2.5 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-white text-[11px] font-bold flex items-center gap-1 border border-white/15 cursor-pointer transition"
+                  >
+                    <Printer className="w-3 h-3" />
+                    <span>Print Part 1</span>
                   </button>
                 </div>
               </div>

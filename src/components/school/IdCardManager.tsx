@@ -7,8 +7,9 @@ import {
   CreditCard, Printer, Download, Eye, ChevronLeft, User, Phone, MapPin,
   Calendar, Award, Sparkles, Filter, CheckSquare, Square, Layers, RefreshCw,
   Building2, UserPlus, Sliders, CheckCircle2, QrCode, FileText, Image as ImageIcon,
-  Edit2, AlertTriangle, ArrowRightLeft, ShieldCheck, HelpCircle, ChevronDown, ChevronUp, Save, Search, Palette
+  Edit2, AlertTriangle, ArrowRightLeft, ShieldCheck, HelpCircle, ChevronDown, ChevronUp, Save, Search, Palette, Loader2
 } from "lucide-react";
+import { toast } from "sonner";
 import { SchoolHeaderEditorModal, type SchoolHeaderDetails } from "./SchoolHeaderEditorModal";
 import { QuickAddStudentModal } from "./QuickAddStudentModal";
 import { DirectUploadButton } from "../DirectUploadButton";
@@ -17,6 +18,8 @@ import { cleanLogoUrl, isAppLogo, getSavedSchoolLogo, getVisibleSchoolRegNo, for
 import { buildStudentIdCardQrUrl, buildStaffIdCardQrUrl } from "../../utils/qrVerifyUrl";
 import { DocumentTemplateStudioModal } from "./DocumentTemplateStudioModal";
 import { resolveActiveDocumentTemplate, DOCUMENT_TEMPLATE_EVENT, getLayoutArchitecture } from "../../utils/schoolDocumentTemplates";
+import { printElementInIframe } from "./AdmissionFormPrintModal";
+import { exportElementToPdf, exportMultiPageElementsToPdf } from "../../utils/universalPdfExport";
 
 interface Props {
   school: School;
@@ -109,7 +112,9 @@ export const IdCardManager: React.FC<Props> = ({
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [cardOrientation, setCardOrientation] = useState<"landscape" | "portrait">("landscape");
   const [cardsPerPage, setCardsPerPage] = useState<4 | 8>(8);
+  const [downloadingPdf, setDownloadingPdf] = useState(false);
   const printAreaRef = useRef<HTMLDivElement>(null);
+  const singleCardRef = useRef<HTMLDivElement>(null);
 
   // School Details & Customization State
   const [showSchoolHeaderModal, setShowSchoolHeaderModal] = useState(false);
@@ -236,7 +241,84 @@ export const IdCardManager: React.FC<Props> = ({
   };
 
   const handlePrint = () => {
+    const activeSingleItem = activeTab === "students" ? selectedStudent : selectedStaff;
+    if (bulkMode && printAreaRef.current) {
+      const bulkCss = `
+        @page { size: A4 portrait; margin: 4mm; }
+        .idcard-page {
+          width: 100% !important;
+          max-width: 198mm !important;
+          padding: 2mm !important;
+          margin: 0 auto !important;
+          display: grid !important;
+          grid-template-columns: repeat(2, 1fr) !important;
+          grid-template-rows: repeat(${cardsPerPage === 4 ? 2 : 4}, auto) !important;
+          gap: 3mm !important;
+          align-items: center !important;
+          justify-items: center !important;
+          page-break-after: always !important;
+          break-after: page !important;
+        }
+        .idcard-page:last-child { page-break-after: auto !important; break-after: auto !important; }
+        .idcard-print-cell { width: 100% !important; display: flex !important; align-items: center !important; justify-content: center !important; }
+        .print-card-box { box-shadow: none !important; margin: 0 !important; transform: scale(${cardsPerPage === 8 && cardOrientation === "portrait" ? 0.78 : 1}) !important; }
+      `;
+      printElementInIframe(printAreaRef.current, `${schoolDetails.schoolName || "School"} - Bulk ID Cards`, bulkCss, "portrait");
+      return;
+    }
+
+    const singleCardEl = (singleCardRef.current?.firstElementChild as HTMLElement) || singleCardRef.current;
+    if (singleCardEl) {
+      printElementInIframe(
+        singleCardEl,
+        `${activeSingleItem?.name || "Student"} - ID Card`,
+        "",
+        cardOrientation
+      );
+      return;
+    }
     window.print();
+  };
+
+  const handleDownloadPdf = async () => {
+    if (downloadingPdf) return;
+    setDownloadingPdf(true);
+    try {
+      if (bulkMode && printAreaRef.current) {
+        const pageEls = Array.from(printAreaRef.current.querySelectorAll(".idcard-page")) as HTMLElement[];
+        const targetPages = pageEls.length > 0 ? pageEls : [printAreaRef.current];
+        await exportMultiPageElementsToPdf(targetPages, {
+          filename: `${schoolDetails.schoolName || "School"}_${activeTab === "students" ? "Students" : "Staff"}_ID_Cards_Bulk`,
+          orientation: "portrait",
+          widthPx: 794,
+          marginMm: 5,
+          scale: 2,
+        });
+        toast.success("Bulk ID Cards PDF download ho gaya!");
+        return;
+      }
+
+      const activeSingleItem = activeTab === "students" ? selectedStudent : selectedStaff;
+      const singleCardEl = (singleCardRef.current?.firstElementChild as HTMLElement) || singleCardRef.current;
+      if (!singleCardEl || !activeSingleItem) {
+        toast.error("Pehle koi student ya staff ID card select karein.");
+        return;
+      }
+      await exportElementToPdf(singleCardEl, {
+        filename: `ID_Card_${activeSingleItem.name || "Member"}`,
+        format: "cr80",
+        orientation: cardOrientation,
+        widthPx: cardOrientation === "landscape" ? 360 : 240,
+        heightPx: cardOrientation === "landscape" ? 224 : 380,
+        scale: 4,
+      });
+      toast.success("ID Card PDF download ho gaya!");
+    } catch (err) {
+      console.error("ID Card PDF export error:", err);
+      toast.error("PDF download fail hua, Print / Save PDF try karein.");
+    } finally {
+      setDownloadingPdf(false);
+    }
   };
 
   const handleSaveSchoolDefaults = async () => {
@@ -1423,11 +1505,20 @@ export const IdCardManager: React.FC<Props> = ({
               </button>
               <button
                 type="button"
+                onClick={handleDownloadPdf}
+                disabled={downloadingPdf}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 disabled:opacity-60 text-white rounded-xl text-xs font-black shadow-sm active:scale-95 transition cursor-pointer shrink-0"
+              >
+                {downloadingPdf ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Download className="w-3.5 h-3.5" />}
+                <span>{downloadingPdf ? "PDF..." : "Download PDF"}</span>
+              </button>
+              <button
+                type="button"
                 onClick={handlePrint}
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white rounded-xl text-xs font-black shadow-sm active:scale-95 transition cursor-pointer shrink-0"
+                className="inline-flex items-center gap-1.5 px-2.5 py-1.5 bg-slate-800 hover:bg-slate-900 text-white rounded-xl text-xs font-black shadow-sm active:scale-95 transition cursor-pointer shrink-0"
               >
                 <Printer className="w-3.5 h-3.5" />
-                <span>Print / PDF</span>
+                <span className="hidden sm:inline">Print</span>
               </button>
             </div>
           </div>
@@ -1872,8 +1963,17 @@ export const IdCardManager: React.FC<Props> = ({
                 </select>
                 <button
                   type="button"
+                  onClick={handleDownloadPdf}
+                  disabled={downloadingPdf || currentList.length === 0}
+                  className="px-3.5 py-1.5 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white rounded-xl text-xs font-black shadow flex items-center gap-1.5 cursor-pointer"
+                >
+                  {downloadingPdf ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Download className="w-3.5 h-3.5" />}
+                  <span>{downloadingPdf ? "Saving PDF..." : `Download PDF (${selectedIds.length || currentList.length})`}</span>
+                </button>
+                <button
+                  type="button"
                   onClick={handlePrint}
-                  disabled={selectedIds.length === 0}
+                  disabled={currentList.length === 0}
                   className="px-3.5 py-1.5 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white rounded-xl text-xs font-black shadow flex items-center gap-1.5 cursor-pointer"
                 >
                   <Printer className="w-3.5 h-3.5" /> Print ({selectedIds.length || currentList.length})
@@ -1973,20 +2073,31 @@ export const IdCardManager: React.FC<Props> = ({
 
               {(activeTab === "students" ? selectedStudent : selectedStaff) ? (
                 <>
-                  <div className="p-3 bg-white/70 dark:bg-slate-900/50 rounded-2xl border border-dashed border-slate-300 dark:border-slate-700 print:border-0 print:bg-white print:p-0 print:rounded-none">
+                  <div ref={singleCardRef} className="p-3 bg-white/70 dark:bg-slate-900/50 rounded-2xl border border-dashed border-slate-300 dark:border-slate-700 print:border-0 print:bg-white print:p-0 print:rounded-none">
                     {renderCard(activeTab === "students" ? selectedStudent : selectedStaff, activeTab === "staff")}
                   </div>
 
                   <div className="mt-5 flex gap-3 print:hidden flex-wrap justify-center">
                     <button
+                      type="button"
+                      onClick={handleDownloadPdf}
+                      disabled={downloadingPdf}
+                      className="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 text-white rounded-xl text-xs font-black flex items-center gap-2 shadow-md active:scale-95 transition-transform cursor-pointer"
+                    >
+                      {downloadingPdf ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
+                      <span>{downloadingPdf ? "Generating PDF..." : "Download PDF"}</span>
+                    </button>
+                    <button
+                      type="button"
                       onClick={handlePrint}
-                      className="px-6 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-black flex items-center gap-2 shadow-md active:scale-95 transition-transform"
+                      className="px-5 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-black flex items-center gap-2 shadow-md active:scale-95 transition-transform cursor-pointer"
                     >
                       <Printer className="w-4 h-4" /> Is Card ko Print Karein
                     </button>
                     <button
+                      type="button"
                       onClick={() => setShowQuickSchoolEditor(true)}
-                      className="px-4 py-2.5 bg-slate-200 dark:bg-slate-700 hover:bg-slate-300 text-slate-800 dark:text-white rounded-xl text-xs font-bold flex items-center gap-2"
+                      className="px-4 py-2.5 bg-slate-200 dark:bg-slate-700 hover:bg-slate-300 text-slate-800 dark:text-white rounded-xl text-xs font-bold flex items-center gap-2 cursor-pointer"
                     >
                       <Building2 className="w-4 h-4 text-indigo-500" /> School Details Edit
                     </button>

@@ -38,6 +38,8 @@ import { ModernAudioPlayer } from '../ModernAudioPlayer';
 import { formatSamsungNotesToHtml } from './ClassCurriculumNotesManager';
 import { renderMathInHtml, formatExplanationHtml } from '../../utils/mathUtils';
 import { downloadAsMHTML } from '../../utils/downloadUtils';
+import { printElementInIframe } from './AdmissionFormPrintModal';
+import { exportElementToPdf } from '../../utils/universalPdfExport';
 import { saveOfflineItem, getOfflineItems } from '../../utils/offlineStorage';
 import { speakText, stopSpeech } from '../../utils/textToSpeech';
 import { ThemeProvider } from '../../utils/themeContext';
@@ -532,7 +534,8 @@ export const SchoolLucentViewer: React.FC<SchoolLucentViewerProps> = ({
       });
       toast.success('Notes file download ho gayi!');
     } catch {
-      window.print();
+      const el = document.getElementById('school-notes-maker-printable') as HTMLElement | null;
+      printElementInIframe(el, `${noteTitle}_Page_${activePage.pageNo}`, '', 'portrait');
     }
   };
 
@@ -1040,7 +1043,37 @@ export const SchoolLucentViewer: React.FC<SchoolLucentViewerProps> = ({
                 </button>
                 <button
                   type="button"
-                  onClick={() => window.print()}
+                  onClick={async () => {
+                    const el = document.getElementById('school-notes-maker-printable') as HTMLElement | null;
+                    if (!el) return;
+                    const tid = toast.loading('Notes PDF ban raha hai...');
+                    try {
+                      await exportElementToPdf(el, {
+                        filename: `${noteTitle}_Page_${activePage.pageNo}`,
+                        format: 'a4',
+                        orientation: 'portrait',
+                        pageMode: 'auto_slice',
+                        widthPx: 820,
+                        scale: 2,
+                      });
+                      toast.success('Notes PDF download ho gaya!', { id: tid });
+                    } catch {
+                      toast.dismiss(tid);
+                      printElementInIframe(el, `${noteTitle}_Page_${activePage.pageNo}`, '', 'portrait');
+                    }
+                  }}
+                  className="px-2.5 py-1.5 rounded-lg bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 text-xs font-black flex items-center gap-1 cursor-pointer"
+                  title="Download Notes PDF"
+                >
+                  <FileText className="w-3.5 h-3.5" />
+                  <span className="hidden sm:inline">PDF</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const el = document.getElementById('school-notes-maker-printable') as HTMLElement | null;
+                    printElementInIframe(el, `${noteTitle}_Page_${activePage.pageNo}`, '', 'portrait');
+                  }}
                   className="p-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 cursor-pointer"
                   title="Print Notes"
                 >

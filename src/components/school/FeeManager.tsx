@@ -5,9 +5,10 @@ import {
 } from "../../school-firebase";
 import { toast } from "sonner";
 import type { SchoolStudent, SchoolClass, MonthlyFee, School, SchoolDocumentPrintFields, SchoolAccountant, FeeTermCampaign, AppliedTermFeeItem, FeeCallFollowUpRecord } from "../../school-types";
-import { schoolPrintFieldEnabled } from "../../school-types";
-import { CheckCircle, Clock, Download, ChevronLeft, ChevronRight, ChevronDown, IndianRupee, Users, TrendingUp, AlertCircle, Printer, MessageCircle, MessageSquare, ReceiptText, Building2, Sparkles, X, Check, RotateCcw, CheckCircle2, ShieldCheck, ToggleLeft, ToggleRight, Bus, QrCode, Search, Filter, Loader2, Bell, FileSpreadsheet, FileText, Plus, Trash2, CreditCard, Palette, CalendarClock, PhoneCall } from "lucide-react";
+import { schoolPrintFieldEnabled, hasEliteFeeTagadaAccess } from "../../school-types";
+import { CheckCircle, Clock, Download, ChevronLeft, ChevronRight, ChevronDown, IndianRupee, Users, TrendingUp, AlertCircle, Printer, MessageCircle, MessageSquare, ReceiptText, Building2, Sparkles, X, Check, RotateCcw, CheckCircle2, ShieldCheck, ToggleLeft, ToggleRight, Bus, QrCode, Search, Filter, Loader2, Bell, FileSpreadsheet, FileText, Plus, Trash2, CreditCard, Palette, CalendarClock, PhoneCall, Lock } from "lucide-react";
 import { FeeTagadaCallerPage, buildFamilyTagadaGroups, getLocalTodayYmd, getPendingActiveTagadaCall, type TagadaStudentFeeRow } from "./FeeTagadaCallerPage";
+import { EliteFeatureLockCard } from "./EliteFeatureLockCard";
 import { FeeTermSchedulerModal } from "./FeeTermSchedulerModal";
 import { resolveScheduledFeesForStudentMonth, mergeSettlementAfterPayment } from "../../utils/feeTermScheduler";
 import { DocumentTemplateStudioModal } from "./DocumentTemplateStudioModal";
@@ -162,6 +163,7 @@ export const FeeManager: React.FC<Props> = ({ schoolId, classId, className, scho
   const [showFeeTagadaModal, setShowFeeTagadaModal] = useState<boolean>(false);
   const [feeCallFollowUps, setFeeCallFollowUps] = useState<FeeCallFollowUpRecord[]>([]);
   const [liveSchool, setLiveSchool] = useState<School | undefined>(school);
+  const canUseFeeTagada = hasEliteFeeTagadaAccess(liveSchool || school);
   const [termCampaigns, setTermCampaigns] = useState<FeeTermCampaign[]>(() => school?.feeTermCampaigns || []);
   const [templateTick, setTemplateTick] = useState<number>(0);
 
@@ -3219,12 +3221,34 @@ td{padding:8px 10px;border-bottom:1px solid #e2e8f0}</style></head>
   }
 
   if (showFeeTagadaModal) {
+    if (!canUseFeeTagada) {
+      return (
+        <div className="min-h-screen bg-slate-50 dark:bg-slate-950 p-4 sm:p-8 flex items-center justify-center">
+          <div className="w-full max-w-xl">
+            <EliteFeatureLockCard
+              title="Fee Tagada & Offline SIM Caller"
+              description="Defaulter call queue, parent promise dates, post-call follow-up sync aur SIM Caller ID sirf Elite / Supreme Plan schools ke liye uplabdh hai."
+              highlights={[
+                "Priority Fee Defaulter Call Queue & Promise Dates",
+                "Family / Sibling Combined Tagada Calling",
+                "Truecaller-style Offline SIM Caller ID & UPI QR",
+              ]}
+              onBack={() => {
+                setShowFeeTagadaModal(false);
+                if (exitOnToolClose && initialTool === "fee_tagada" && onBack) onBack();
+              }}
+            />
+          </div>
+        </div>
+      );
+    }
     return (
       <>
         <FeeTagadaCallerPage
           asPage={true}
           schoolId={schoolId}
           schoolName={schoolDetails.schoolName || schoolName || school?.name || "School"}
+          schoolUpiId={schoolDetails.upiId || school?.upiId || ""}
           actorName={actorName}
           classes={rawClasses}
           rows={tagadaRows}
@@ -3318,20 +3342,30 @@ td{padding:8px 10px;border-bottom:1px solid #e2e8f0}</style></head>
             />
           </div>
 
-          {/* Quick Fee Tagada Offline Caller */}
+          {/* Quick Fee Tagada Offline Caller (Elite Only) */}
           <button
             type="button"
             onClick={() => setShowFeeTagadaModal(true)}
-            className="inline-flex items-center gap-1.5 px-2.5 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold transition-colors active:scale-95 cursor-pointer whitespace-nowrap shadow-xs"
-            title="Offline Fee Tagada Caller & Promise Date Scheduler"
+            className={`inline-flex items-center gap-1.5 px-2.5 py-2 rounded-lg text-white text-xs font-bold transition-colors active:scale-95 cursor-pointer whitespace-nowrap shadow-xs ${
+              canUseFeeTagada
+                ? "bg-emerald-600 hover:bg-emerald-700"
+                : "bg-slate-700 hover:bg-slate-800 border border-amber-500/40"
+            }`}
+            title={
+              canUseFeeTagada
+                ? "Offline Fee Tagada Caller & Promise Date Scheduler"
+                : "Elite Plan Required: Fee Tagada Caller"
+            }
           >
             <PhoneCall className="w-3.5 h-3.5 shrink-0" />
             <span className="whitespace-nowrap">Fee Tagada</span>
-            {tagadaCallTodayCount > 0 && (
+            {!canUseFeeTagada ? (
+              <Lock className="w-3 h-3 text-amber-300 shrink-0" />
+            ) : tagadaCallTodayCount > 0 ? (
               <span className="font-mono text-[10px] bg-rose-600 text-white px-1.5 py-0.2 rounded-full">
                 {tagadaCallTodayCount}
               </span>
-            )}
+            ) : null}
           </button>
 
           {/* Quick Fee Types & Term Planner Launcher */}

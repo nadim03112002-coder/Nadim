@@ -203,28 +203,82 @@ class VoiceGuardService : Service() {
 
         val voiceSpeakRaw = item.opt("voiceSpeak")?.toString()?.trim()?.lowercase().orEmpty()
         val threadType = item.optString("threadType").trim().uppercase()
-        val suppressVoice =
-            voiceSpeakRaw == "false" ||
-            voiceSpeakRaw == "0" ||
-            threadType == "TEACHER_CHAT" ||
-            targetUrl.contains("subTab=teacher")
+        val notifType = item.optString("type").trim().uppercase()
+        val isIncomingCall = notifType == "CALL_INCOMING"
+        val isWalkieMsg = notifType == "WALKIE_VOICE" || notifType == "WALKIE_TTS"
+        val voiceExplicitlyOff = voiceSpeakRaw == "false" || voiceSpeakRaw == "0"
 
-        if (!suppressVoice) {
-            VoiceAnnouncer.speak(
+        if (isWalkieMsg) {
+            if (AppPrefs.isWithinWalkieSchoolHoursNow(applicationContext)) {
+                val audioB64 = item.optString("walkieAudioBase64", "")
+                val mimeType = item.optString("walkieMimeType", "audio/webm")
+                val spokenText = item.optString("walkieSpeechText", "").ifBlank { "$title. $body" }
+                if (AppPrefs.isWalkieAutoPlayEnabled(applicationContext)) {
+                    VoiceAnnouncer.playWalkieMessage(
+                        context = applicationContext,
+                        audioBase64 = audioB64,
+                        mimeType = mimeType,
+                        fallbackText = spokenText,
+                        dedupeKey = notifId
+                    )
+                }
+                NotificationHelper.showVoiceNotification(
+                    context = applicationContext,
+                    notifKey = notifId,
+                    title = title,
+                    body = body,
+                    deepLinkUrl = targetUrl.ifBlank { "/?openWalkie=1" }
+                )
+            }
+        } else if (isIncomingCall) {
+            if (!voiceExplicitlyOff && AppPrefs.isCallerVoiceAnnounceEnabled(applicationContext)) {
+                VoiceAnnouncer.speakIncomingCall(
+                    context = applicationContext,
+                    rawText = "$title. $body",
+                    dedupeKey = notifId
+                )
+            }
+            if (targetUrl.contains("callId=")) {
+                NotificationHelper.showIncomingNstaCallNotification(
+                    context = applicationContext,
+                    notifKey = notifId,
+                    title = title,
+                    body = body,
+                    deepLinkUrl = targetUrl
+                )
+            } else {
+                NotificationHelper.showIncomingCallerBanner(
+                    context = applicationContext,
+                    notifKey = notifId,
+                    title = title,
+                    body = body
+                )
+            }
+        } else {
+            val suppressVoice =
+                voiceExplicitlyOff ||
+                threadType == "TEACHER_CHAT" ||
+                threadType == "STUDENT_CHAT" ||
+                targetUrl.contains("subTab=teacher") ||
+                targetUrl.contains("subTab=friend")
+
+            if (!suppressVoice) {
+                VoiceAnnouncer.speak(
+                    context = applicationContext,
+                    title = title,
+                    body = body,
+                    dedupeKey = notifId
+                )
+            }
+
+            NotificationHelper.showVoiceNotification(
                 context = applicationContext,
+                notifKey = notifId,
                 title = title,
                 body = body,
-                dedupeKey = notifId
+                deepLinkUrl = targetUrl
             )
         }
-
-        NotificationHelper.showVoiceNotification(
-            context = applicationContext,
-            notifKey = notifId,
-            title = title,
-            body = body,
-            deepLinkUrl = targetUrl
-        )
 
         deleteProcessedNotification(inboxKey, notifKey)
     }

@@ -1,10 +1,12 @@
 // @ts-nocheck
-import React, { useState, useEffect, useMemo } from "react";
+import React, { useState, useEffect, useMemo, useRef } from "react";
 import QRCode from "react-qr-code";
 import {
   ShieldCheck,
   CheckCircle2,
   Printer,
+  Download,
+  Loader2,
   ArrowLeft,
   User,
   Phone,
@@ -17,6 +19,8 @@ import {
   FileCheck2,
   Sparkles,
 } from "lucide-react";
+import { printElementInIframe } from "./AdmissionFormPrintModal";
+import { exportElementToPdf } from "../../utils/universalPdfExport";
 import {
   getAllSchools,
   getSchool,
@@ -733,6 +737,38 @@ export const DocumentVerificationView: React.FC<Props> = ({
         : "Official Campus Visitor Gate Pass",
   };
 
+  const docContainerRef = useRef<HTMLDivElement>(null);
+  const [downloadingPdf, setDownloadingPdf] = useState(false);
+
+  const handlePrintVerified = () => {
+    printElementInIframe(
+      docContainerRef.current,
+      `Verified_${type || "Document"}_${docData?.student || "Record"}`,
+      "",
+      "portrait"
+    );
+  };
+
+  const handleDownloadVerifiedPdf = async () => {
+    if (!docContainerRef.current || downloadingPdf) return;
+    setDownloadingPdf(true);
+    try {
+      await exportElementToPdf(docContainerRef.current, {
+        filename: `Verified_${type || "Document"}_${docData?.student || "Record"}`,
+        format: "a4",
+        orientation: "portrait",
+        pageMode: "fit_single",
+        widthPx: 820,
+        scale: 2.2,
+      });
+    } catch (err) {
+      console.warn("Verified document PDF export failed, falling back to print:", err);
+      handlePrintVerified();
+    } finally {
+      setDownloadingPdf(false);
+    }
+  };
+
   if (loading) {
     return (
       <div className="min-h-screen bg-slate-950 text-slate-100 flex items-center justify-center p-6">
@@ -768,13 +804,24 @@ export const DocumentVerificationView: React.FC<Props> = ({
         )}
 
         {docData?.officialVerified && (
-          <button
-            type="button"
-            onClick={() => window.print()}
-            className="flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs sm:text-sm px-4 py-2 rounded-xl shadow-lg transition active:scale-95 cursor-pointer"
-          >
-            <Printer className="w-4 h-4" /> Print / Save PDF
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={handleDownloadVerifiedPdf}
+              disabled={downloadingPdf}
+              className="flex items-center gap-1.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-60 text-white font-bold text-xs sm:text-sm px-4 py-2 rounded-xl shadow-lg transition active:scale-95 cursor-pointer"
+            >
+              {downloadingPdf ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
+              <span>{downloadingPdf ? "Saving..." : "Download PDF"}</span>
+            </button>
+            <button
+              type="button"
+              onClick={handlePrintVerified}
+              className="flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs sm:text-sm px-4 py-2 rounded-xl shadow-lg transition active:scale-95 cursor-pointer"
+            >
+              <Printer className="w-4 h-4" /> Print
+            </button>
+          </div>
         )}
       </div>
 
@@ -827,6 +874,7 @@ export const DocumentVerificationView: React.FC<Props> = ({
             </div>
           </div>
 
+          <div ref={docContainerRef} className="w-full flex flex-col items-center">
           {/* ════════════════════════════════════════════════════════════════
               1. REAL FEE RECEIPT / DEMAND SLIP (Exact DPS Layout + Watermark)
              ════════════════════════════════════════════════════════════════ */}
@@ -1832,6 +1880,7 @@ export const DocumentVerificationView: React.FC<Props> = ({
               <VerifiedWatermarkOverlay label="VERIFIED" docNo={docData.passNumber} />
             </div>
           )}
+          </div>
         </>
       )}
     </div>

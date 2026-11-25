@@ -4,6 +4,11 @@ import { supabase } from "./supabaseClient";
 import { sbDeleteDocument, sbGetDocument, sbSetDocument } from "./supabaseDbAdapter";
 import { saveNstaMessage, generateId, isStudentInClass } from "../school-firebase";
 import { sendSchoolPushNotification } from "../utils/schoolPushClient";
+import {
+  announceIncomingVoiceCaller,
+  isCallerVoiceAnnounceEnabled,
+  stopIncomingVoiceCallerSpeech,
+} from "../utils/schoolCallerId";
 import type { NstaMessage, NstaThreadType } from "../school-types";
 
 export type CallType = "voice" | "video";
@@ -79,6 +84,8 @@ export interface NstaCallState {
   isMinimized: boolean;
   remoteName: string;
   remoteSubtitle: string;
+  remoteSchoolName?: string;
+  remoteRoleLabel?: string;
   remoteAvatar?: string;
   localStream: MediaStream | null;
   remoteStream: MediaStream | null;
@@ -103,13 +110,13 @@ const DEFAULT_ICE_SERVERS: RTCIceServer[] = [
 
 let cachedIceServers: { servers: RTCIceServer[]; fetchedAt: number } | null = null;
 
-async function fetchIceServers(): Promise<RTCIceServer[]> {
+async function fetchIceServers(timeoutMs = 2500): Promise<RTCIceServer[]> {
   if (cachedIceServers && Date.now() - cachedIceServers.fetchedAt < 4 * 60 * 1000) {
     return cachedIceServers.servers;
   }
   try {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 3000);
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
     const res = await fetch("/api/webrtc/ice-servers", { signal: controller.signal });
     clearTimeout(timer);
     if (res.ok) {
@@ -120,7 +127,20 @@ async function fetchIceServers(): Promise<RTCIceServer[]> {
       }
     }
   } catch {}
-  return DEFAULT_ICE_SERVERS;
+  return cachedIceServers?.servers || DEFAULT_ICE_SERVERS;
+}
+
+export function primeCallAudioOnGesture() {
+  try {
+    const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+    if (!AudioCtx) return;
+    if (!toneCtx || toneCtx.state === "closed") {
+      toneCtx = new AudioCtx();
+    }
+    if (toneCtx.state === "suspended") {
+      void toneCtx.resume().catch(() => {});
+    }
+  } catch {}
 }
 
 // ── Web Audio API Synthesized Ringtone & Dialtone (No external MP3 needed) ───
@@ -162,19 +182,65 @@ function playTonePulse(freq1: number, freq2: number, durationMs: number, volume:
   } catch {}
 }
 
-function startRingtoneLoop() {
+let activeRingAnnouncement: {
+  callId: string;
+  callerName: string;
+  callerRole?: string;
+  schoolName?: string;
+  callType: CallType;
+} | null = null;
+
+function formatCallerRoleLabel(role?: string): string {
+  const up = String(role || "").trim().toUpperCase();
+  if (up === "ADMIN") return "Principal / Admin";
+  if (up === "TEACHER") return "Teacher";
+  if (up === "STUDENT") return "Student";
+  return "";
+}
+
+function startRingtoneLoop(announcement?: {
+  callId: string;
+  callerName: string;
+  callerRole?: string;
+  schoolName?: string;
+  callType: CallType;
+}) {
   stopCallTones();
-  const chime = () => {
-    playTonePulse(523.25, 659.25, 320, 0.11);
-    setTimeout(() => playTonePulse(659.25, 783.99, 420, 0.11), 360);
+  activeRingAnnouncement = announcement || activeRingAnnouncement;
+  let tick = 0;
+
+  const ringCycle = () => {
+    tick += 1;
+    const useCallerVoice = Boolean(activeRingAnnouncement && isCallerVoiceAnnounceEnabled());
+    if (useCallerVoice && activeRingAnnouncement) {
+      playTonePulse(523.25, 659.25, 220, 0.08);
+      announceIncomingVoiceCaller({
+        callerName: activeRingAnnouncement.callerName,
+        callerRole: formatCallerRoleLabel(activeRingAnnouncement.callerRole),
+        schoolName: activeRingAnnouncement.schoolName,
+        callType: activeRingAnnouncement.callType,
+        dedupeKey: `nsta_ring_${activeRingAnnouncement.callId}_${tick}`,
+      });
+    } else {
+      playTonePulse(523.25, 659.25, 320, 0.11);
+      setTimeout(() => playTonePulse(659.25, 783.99, 420, 0.11), 360);
+    }
     try {
       if (typeof navigator !== "undefined" && navigator.vibrate) {
         navigator.vibrate([260, 120, 260]);
       }
     } catch {}
   };
-  chime();
-  toneInterval = setInterval(chime, 2400);
+
+  ringCycle();
+  const intervalMs = activeRingAnnouncement && isCallerVoiceAnnounceEnabled() ? 4500 : 2400;
+  toneInterval = setInterval(ringCycle, intervalMs);
+}
+
+export function refreshIncomingRingtoneMode() {
+  if (state.phase === "ringing_incoming" && activeRingAnnouncement) {
+    startRingtoneLoop(activeRingAnnouncement);
+  }
 }
 
 function startDialtoneLoop() {
@@ -191,6 +257,8 @@ export function stopCallTones() {
     clearInterval(toneInterval);
     toneInterval = null;
   }
+  activeRingAnnouncement = null;
+  stopIncomingVoiceCallerSpeech();
   try {
     if (typeof navigator !== "undefined" && navigator.vibrate) {
       navigator.vibrate(0);
@@ -210,6 +278,8 @@ const INITIAL_STATE: NstaCallState = {
   isMinimized: false,
   remoteName: "",
   remoteSubtitle: "",
+  remoteSchoolName: "",
+  remoteRoleLabel: "",
   remoteAvatar: "",
   localStream: null,
   remoteStream: null,
@@ -296,7 +366,9 @@ let directChannel: RealtimeChannel | null = null;
 let directPendingIce: RTCIceCandidateInit[] = [];
 let directInviteLoop: ReturnType<typeof setInterval> | null = null;
 let directCalleeReadyLoop: ReturnType<typeof setInterval> | null = null;
+let directAnswerRetryLoop: ReturnType<typeof setInterval> | null = null;
 let directRingTimeout: ReturnType<typeof setTimeout> | null = null;
+let acceptInFlightCallId: string | null = null;
 let incomingOfferSnapshot: { sdp: RTCSessionDescriptionInit; callerPeerId?: string } | null = null;
 let currentDirectMeta: {
   targetIds: string[];
@@ -642,23 +714,41 @@ export function registerCallIdentity(identity: CallIdentity | null) {
     };
     incomingOfferSnapshot = payload.offer ? { sdp: payload.offer } : null;
 
+    const resolvedSchoolName = String(
+      payload.schoolName || currentIdentity?.schoolName || "School"
+    ).trim();
+    const resolvedCallType: CallType = payload.callType === "video" ? "video" : "voice";
+    const resolvedRoleLabel = formatCallerRoleLabel(payload.callerRole);
+
     emitState({
       phase: "ringing_incoming",
       mode: "direct",
-      callType: payload.callType === "video" ? "video" : "voice",
+      callType: resolvedCallType,
       callId: payload.callId,
       roomKey: "",
       isCaller: false,
       isHost: false,
       isMinimized: false,
       remoteName: payload.callerName || "Incoming Call",
-      remoteSubtitle: payload.subtitle || (payload.callType === "video" ? "Incoming Video Call" : "Incoming Voice Call"),
+      remoteSubtitle:
+        payload.subtitle ||
+        (resolvedCallType === "video" ? "Incoming Video Call" : "Incoming Voice Call"),
+      remoteSchoolName: resolvedSchoolName,
+      remoteRoleLabel: resolvedRoleLabel,
       remoteAvatar: payload.callerAvatar || "",
-      statusNote: payload.callType === "video" ? "Incoming Video Call..." : "Incoming Voice Call...",
+      statusNote: resolvedCallType === "video" ? "Incoming Video Call..." : "Incoming Voice Call...",
       errorNote: null,
       threadContext: payload.threadContext || null,
     });
-    startRingtoneLoop();
+    startRingtoneLoop({
+      callId: payload.callId,
+      callerName: payload.callerName || "School Staff",
+      callerRole: payload.callerRole,
+      schoolName: resolvedSchoolName,
+      callType: resolvedCallType,
+    });
+    // Pre-warm TURN/STUN config while ringing so 1-tap Accept has zero ICE delay
+    void fetchIceServers(1500).catch(() => {});
   });
 
   ch.on("broadcast", { event: "direct_cancel" }, ({ payload }) => {
@@ -691,9 +781,18 @@ export function registerCallIdentity(identity: CallIdentity | null) {
   inboxChannel = ch;
 }
 
-// Check URL deep link or session doc if opened via Push Notification (?callId=...)
-export async function checkAndJoinCallFromNotification(callId: string) {
+// Check URL deep link or session doc if opened via Push Notification (?callId=...&callAction=accept)
+export async function checkAndJoinCallFromNotification(
+  callId: string,
+  options?: { autoAccept?: boolean }
+) {
   if (!callId || !currentIdentity) return;
+  if (state.phase === "ringing_incoming" && state.callId === callId) {
+    if (options?.autoAccept) {
+      void acceptIncomingCall();
+    }
+    return;
+  }
   if (state.phase !== "idle" && state.callId === callId) return;
 
   const doc = await sbGetDocument<any>(`call_sessions/${callId}`);
@@ -722,10 +821,15 @@ export async function checkAndJoinCallFromNotification(callId: string) {
       callerAvatar: doc.callerAvatar || "",
     };
 
+    const resolvedSchoolName = String(
+      doc.schoolName || currentIdentity?.schoolName || "School"
+    ).trim();
+    const resolvedCallType: CallType = doc.callType === "video" ? "video" : "voice";
+
     emitState({
       phase: "ringing_incoming",
       mode: "direct",
-      callType: doc.callType === "video" ? "video" : "voice",
+      callType: resolvedCallType,
       callId,
       roomKey: "",
       isCaller: false,
@@ -733,12 +837,24 @@ export async function checkAndJoinCallFromNotification(callId: string) {
       isMinimized: false,
       remoteName: doc.callerName || "Incoming Call",
       remoteSubtitle: doc.subtitle || "NSTA Messenger Call",
+      remoteSchoolName: resolvedSchoolName,
+      remoteRoleLabel: formatCallerRoleLabel(doc.callerRole),
       remoteAvatar: doc.callerAvatar || "",
-      statusNote: doc.callType === "video" ? "Incoming Video Call..." : "Incoming Voice Call...",
+      statusNote: resolvedCallType === "video" ? "Incoming Video Call..." : "Incoming Voice Call...",
       errorNote: null,
       threadContext: doc.threadContext || null,
     });
-    startRingtoneLoop();
+    startRingtoneLoop({
+      callId,
+      callerName: doc.callerName || "School Staff",
+      callerRole: doc.callerRole,
+      schoolName: resolvedSchoolName,
+      callType: resolvedCallType,
+    });
+
+    if (options?.autoAccept) {
+      void acceptIncomingCall();
+    }
   }
 }
 
@@ -753,15 +869,21 @@ function cleanupDirectCallResources() {
     clearInterval(directCalleeReadyLoop);
     directCalleeReadyLoop = null;
   }
+  if (directAnswerRetryLoop) {
+    clearInterval(directAnswerRetryLoop);
+    directAnswerRetryLoop = null;
+  }
   if (directRingTimeout) {
     clearTimeout(directRingTimeout);
     directRingTimeout = null;
   }
+  acceptInFlightCallId = null;
   if (directPc) {
     try {
       directPc.ontrack = null;
       directPc.onicecandidate = null;
       directPc.onconnectionstatechange = null;
+      directPc.oniceconnectionstatechange = null;
       directPc.close();
     } catch {}
     directPc = null;
@@ -795,13 +917,15 @@ function attachDirectSignalingHandlers(
       directRingTimeout = null;
     }
     stopCallTones();
-    if (directPc.signalingState !== "stable" && directPc.localDescription) {
-      // Resend offer if callee re-announced ready
+    if (directPc.signalingState === "have-local-offer" && directPc.localDescription) {
       void ch.send({
         type: "broadcast",
         event: "offer",
         payload: { callId, sdp: directPc.localDescription },
       });
+      return;
+    }
+    if (directPc.remoteDescription) {
       return;
     }
     try {
@@ -825,7 +949,16 @@ function attachDirectSignalingHandlers(
       directCalleeReadyLoop = null;
     }
     try {
-      if (directPc.signalingState !== "stable" && directPc.remoteDescription) {
+      // If we already created an answer for this call, re-broadcast the answer
+      if (directPc.remoteDescription && directPc.localDescription?.type === "answer") {
+        void ch.send({
+          type: "broadcast",
+          event: "answer",
+          payload: { callId, sdp: directPc.localDescription },
+        });
+        return;
+      }
+      if (directPc.signalingState !== "stable") {
         return;
       }
       await directPc.setRemoteDescription(new RTCSessionDescription(payload.sdp));
@@ -835,11 +968,28 @@ function attachDirectSignalingHandlers(
       directPendingIce = [];
       const answer = await directPc.createAnswer();
       await directPc.setLocalDescription(answer);
-      void ch.send({
-        type: "broadcast",
-        event: "answer",
-        payload: { callId, sdp: answer },
-      });
+      const sendAnswer = () => {
+        if (state.callId !== callId || !directChannel) return;
+        void ch.send({
+          type: "broadcast",
+          event: "answer",
+          payload: { callId, sdp: answer },
+        });
+      };
+      sendAnswer();
+      if (directAnswerRetryLoop) clearInterval(directAnswerRetryLoop);
+      let retries = 0;
+      directAnswerRetryLoop = setInterval(() => {
+        retries++;
+        if (retries > 4 || state.phase === "connected" || state.callId !== callId) {
+          if (directAnswerRetryLoop) {
+            clearInterval(directAnswerRetryLoop);
+            directAnswerRetryLoop = null;
+          }
+          return;
+        }
+        sendAnswer();
+      }, 1100);
       emitState({ phase: "connecting", statusNote: "Connecting..." });
     } catch (err: any) {
       emitState({ errorNote: err?.message || "Offer accept karne me samasya aayi." });
@@ -996,6 +1146,14 @@ function attachDirectSignalingHandlers(
   pc.onconnectionstatechange = () => {
     const cs = pc.connectionState;
     if (cs === "connected") {
+      if (directAnswerRetryLoop) {
+        clearInterval(directAnswerRetryLoop);
+        directAnswerRetryLoop = null;
+      }
+      if (directCalleeReadyLoop) {
+        clearInterval(directCalleeReadyLoop);
+        directCalleeReadyLoop = null;
+      }
       emitState({
         phase: "connected",
         connectedAtMs: state.connectedAtMs || Date.now(),
@@ -1008,6 +1166,18 @@ function attachDirectSignalingHandlers(
       });
     } else if (cs === "disconnected") {
       emitState({ statusNote: "Reconnecting..." });
+    }
+  };
+
+  pc.oniceconnectionstatechange = () => {
+    const ics = pc.iceConnectionState;
+    if ((ics === "connected" || ics === "completed") && state.phase !== "connected") {
+      emitState({
+        phase: "connected",
+        connectedAtMs: state.connectedAtMs || Date.now(),
+        statusNote: "Connected",
+        errorNote: null,
+      });
     }
   };
 }
@@ -1096,6 +1266,7 @@ export async function startDirectCall(params: {
       callType: effectiveCallType,
       status: "ringing",
       schoolId: currentIdentity.schoolId,
+      schoolName: currentIdentity.schoolName || "",
       callerId: currentIdentity.userId,
       callerName: currentIdentity.userName,
       callerRole: currentIdentity.userRole,
@@ -1118,6 +1289,7 @@ export async function startDirectCall(params: {
       payload: {
         callId,
         callType: effectiveCallType,
+        schoolName: currentIdentity?.schoolName || "",
         callerId: currentIdentity?.userId,
         callerName: currentIdentity?.userName,
         callerRole: currentIdentity?.userRole,
@@ -1150,16 +1322,17 @@ export async function startDirectCall(params: {
         params.threadContext.threadType === "SCHOOL_DESK") &&
         currentIdentity.userRole !== "STUDENT"));
 
+  const callerSchoolLabel = String(currentIdentity.schoolName || "School").trim();
   void sendSchoolPushNotification({
     schoolId: currentIdentity.schoolId,
     ...(isStudentTarget ? { studentIds: pushTargets } : { userId: pushTargets[0] }),
     senderId: currentIdentity.userId,
     senderName: currentIdentity.userName,
-    title: `${effectiveCallType === "video" ? "📹 Video Call" : "📞 Voice Call"} • ${currentIdentity.userName}`,
-    body: `NSTA Messenger par ${effectiveCallType === "video" ? "Video" : "Voice"} Call aa rahi hai — uthane ke liye tap karein.`,
+    title: `${effectiveCallType === "video" ? "📹 Video Call" : "📞 Voice Call"} • ${callerSchoolLabel}`,
+    body: `${callerSchoolLabel} se ${currentIdentity.userName} aapko ${effectiveCallType === "video" ? "Video" : "Voice"} Call kar rahe hain — uthane ke liye tap karein.`,
     type: "CALL_INCOMING",
     threadType: params.threadContext.threadType,
-    voiceSpeak: false,
+    voiceSpeak: true,
     icon: currentIdentity.userPhoto || undefined,
     senderPhoto: currentIdentity.userPhoto || undefined,
     url: `/?schoolPortal=1&schoolId=${encodeURIComponent(currentIdentity.schoolId)}&schoolTab=messenger&subTab=${subTab}&callId=${encodeURIComponent(callId)}`,
@@ -1202,22 +1375,67 @@ export async function startDirectCall(params: {
 
 // ── Accept Incoming 1-on-1 Call ──────────────────────────────────────────────
 export async function acceptIncomingCall() {
-  if (state.phase !== "ringing_incoming" || !state.callId || !supabase) return;
+  if (!state.callId || !supabase) return;
+  if (state.phase !== "ringing_incoming" || acceptInFlightCallId === state.callId) return;
+
   const callId = state.callId;
+  const requestedCallType = state.callType;
+  acceptInFlightCallId = callId;
+  primeCallAudioOnGesture();
   stopCallTones();
 
-  try {
-    const { stream, videoFallback } = await acquireUserMedia(state.callType, "user");
-    const effectiveCallType: CallType = videoFallback ? "voice" : state.callType;
-    const iceServers = await fetchIceServers();
-    const pc = new RTCPeerConnection({ iceServers, iceCandidatePoolSize: 4 });
-    stream.getTracks().forEach((t) => pc.addTrack(t, stream));
-    directPc = pc;
+  // Transition immediately on 1st tap so UI responds right away and double-taps can't collide
+  emitState({
+    phase: "connecting",
+    statusNote: "Accepting call...",
+    errorNote: null,
+  });
 
+  try {
+    // Subscribe signaling channel immediately in parallel with media & ICE fetch
     const ch = supabase.channel(`nsta_webrtc_call_${callId}`, {
       config: { broadcast: { self: false } },
     });
     directChannel = ch;
+
+    const subscribedPromise = new Promise<boolean>((resolve) => {
+      let settled = false;
+      const timer = setTimeout(() => {
+        if (!settled) {
+          settled = true;
+          resolve(false);
+        }
+      }, 3200);
+      ch.subscribe((st) => {
+        if (st === "SUBSCRIBED" && !settled) {
+          settled = true;
+          clearTimeout(timer);
+          resolve(true);
+        } else if ((st === "CHANNEL_ERROR" || st === "TIMED_OUT") && !settled) {
+          settled = true;
+          clearTimeout(timer);
+          resolve(false);
+        }
+      });
+    });
+
+    const [{ stream, videoFallback }, iceServers] = await Promise.all([
+      acquireUserMedia(requestedCallType, "user"),
+      fetchIceServers(900),
+    ]);
+
+    if (state.callId !== callId) {
+      stopMediaStream(stream);
+      try {
+        void supabase.removeChannel(ch);
+      } catch {}
+      return;
+    }
+
+    const effectiveCallType: CallType = videoFallback ? "voice" : requestedCallType;
+    const pc = new RTCPeerConnection({ iceServers, iceCandidatePoolSize: 4 });
+    stream.getTracks().forEach((t) => pc.addTrack(t, stream));
+    directPc = pc;
     attachDirectSignalingHandlers(ch, pc, callId, false);
 
     emitState({
@@ -1230,32 +1448,53 @@ export async function acceptIncomingCall() {
       errorNote: videoFallback ? "Camera access nahi mila, audio se connect ho rahe hain." : null,
     });
 
-    await sbSetDocument(`call_sessions/${callId}`, { status: "accepted", acceptedAt: new Date().toISOString() }, true);
+    void sbSetDocument(
+      `call_sessions/${callId}`,
+      { status: "accepted", acceptedAt: new Date().toISOString() },
+      true
+    ).catch(() => {});
 
-    ch.subscribe((st) => {
-      if (st === "SUBSCRIBED") {
-        const announceReady = () => {
-          if (state.callId !== callId || !directChannel) return;
-          void ch.send({
-            type: "broadcast",
-            event: "callee_ready",
-            payload: { callId, userId: currentIdentity?.userId },
-          });
-        };
-        announceReady();
-        directCalleeReadyLoop = setInterval(announceReady, 1600);
-      }
-    });
+    await subscribedPromise;
+    if (state.callId !== callId || !directChannel) return;
 
-    if (incomingOfferSnapshot?.sdp) {
+    const announceReady = () => {
+      if (state.callId !== callId || !directChannel || directPc?.remoteDescription) return;
+      void ch.send({
+        type: "broadcast",
+        event: "callee_ready",
+        payload: { callId, userId: currentIdentity?.userId },
+      });
+    };
+    announceReady();
+    if (directCalleeReadyLoop) clearInterval(directCalleeReadyLoop);
+    directCalleeReadyLoop = setInterval(announceReady, 1200);
+
+    if (incomingOfferSnapshot?.sdp && !pc.remoteDescription) {
       await pc.setRemoteDescription(new RTCSessionDescription(incomingOfferSnapshot.sdp));
       const answer = await pc.createAnswer();
       await pc.setLocalDescription(answer);
-      void ch.send({
-        type: "broadcast",
-        event: "answer",
-        payload: { callId, sdp: answer },
-      });
+      const sendAns = () => {
+        if (state.callId !== callId || !directChannel) return;
+        void ch.send({
+          type: "broadcast",
+          event: "answer",
+          payload: { callId, sdp: answer },
+        });
+      };
+      sendAns();
+      if (directAnswerRetryLoop) clearInterval(directAnswerRetryLoop);
+      let retries = 0;
+      directAnswerRetryLoop = setInterval(() => {
+        retries++;
+        if (retries > 4 || state.phase === "connected" || state.callId !== callId) {
+          if (directAnswerRetryLoop) {
+            clearInterval(directAnswerRetryLoop);
+            directAnswerRetryLoop = null;
+          }
+          return;
+        }
+        sendAns();
+      }, 1100);
     }
   } catch (err: any) {
     cleanupDirectCallResources();
@@ -1264,6 +1503,10 @@ export async function acceptIncomingCall() {
       activeGroupCalls: state.activeGroupCalls,
       errorNote: err?.message || "Mic/Camera permission allow karein.",
     });
+  } finally {
+    if (acceptInFlightCallId === callId) {
+      acceptInFlightCallId = null;
+    }
   }
 }
 

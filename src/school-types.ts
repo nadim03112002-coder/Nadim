@@ -200,6 +200,22 @@ export const hasEntranceExamAccess = (school?: School | null): boolean => {
   return isSchoolEliteCurriculum(school);
 };
 
+// Audio/Video Calls (1-on-1 & Class Group), School-Hour Walkie-Talkie Intercom, and Fee Tagada + Offline SIM Parent Caller ID are exclusive to Elite & White-Label schools
+export const hasEliteCallAccess = (school?: School | null): boolean => {
+  if (!school) return false;
+  return isSchoolEliteCurriculum(school);
+};
+
+export const hasEliteWalkieAccess = (school?: School | null): boolean => {
+  if (!school) return false;
+  return isSchoolEliteCurriculum(school);
+};
+
+export const hasEliteFeeTagadaAccess = (school?: School | null): boolean => {
+  if (!school) return false;
+  return isSchoolEliteCurriculum(school);
+};
+
 // Admin ON/OFF switch for Entrance Exam feature on the public school website (default ON unless explicitly turned OFF)
 export const isEntranceExamFeatureEnabled = (school?: School | null): boolean => {
   return school?.websiteConfig?.entranceExamEnabled !== false;
@@ -2950,5 +2966,7 @@ export interface FeeCallFollowUpRecord {
   settledReceiptNo?: string;
   settledAmount?: number;
   settledBy?: string;
+  resolvedTodayDate?: string; // YYYY-MM-DD (Marked "Aaj Sab Solve Ho Gaya" on this date)
+  resolvedNote?: string;
   updatedAt: string;
 }

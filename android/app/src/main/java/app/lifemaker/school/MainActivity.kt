@@ -7,6 +7,7 @@ import android.annotation.SuppressLint
 import android.app.Activity
 import android.app.DownloadManager
 import android.app.admin.DevicePolicyManager
+import android.app.role.RoleManager
 import android.content.BroadcastReceiver
 import android.content.ComponentName
 import android.content.Context
@@ -92,6 +93,7 @@ class MainActivity : AppCompatActivity() {
     private var pendingCallPermissionPhone: String? = null
     private var pendingCallPermissionTrackingId: String? = null
     private var pendingDeviceAdminSyncOnResume: Boolean = false
+    private var pendingCallerIdStatusSyncOnResume: Boolean = false
 
     private val trustedInternalHosts = setOf(
         "lmps27.vercel.app",
@@ -117,6 +119,16 @@ class MainActivity : AppCompatActivity() {
         override fun onReceive(context: Context?, intent: Intent?) {
             if (intent?.action != Intent.ACTION_BATTERY_CHANGED) return
             handleBatteryIntent(intent, forcePush = false)
+        }
+    }
+
+    private val incomingParentCallReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            if (intent?.action != ParentCallerAlertHelper.ACTION_INCOMING_PARENT_CALL) return
+            val payload = intent.getStringExtra(ParentCallerAlertHelper.EXTRA_PARENT_PAYLOAD).orEmpty()
+            if (payload.isNotBlank()) {
+                pushIncomingParentCallToWebView(payload)
+            }
         }
     }
 
@@ -208,6 +220,13 @@ class MainActivity : AppCompatActivity() {
                 )
             }
         }
+        pushCallerIdStatusToWebView()
+    }
+
+    private val callScreeningRoleLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) {
+        pushCallerIdStatusToWebView()
     }
 
     private val deviceAdminLauncher = registerForActivityResult(
@@ -346,10 +365,13 @@ class MainActivity : AppCompatActivity() {
     override fun onStart() {
         super.onStart()
         val filter = IntentFilter(LifeMakerMessagingService.ACTION_NEW_FCM_TOKEN)
+        val parentCallFilter = IntentFilter(ParentCallerAlertHelper.ACTION_INCOMING_PARENT_CALL)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             registerReceiver(fcmTokenReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
+            registerReceiver(incomingParentCallReceiver, parentCallFilter, Context.RECEIVER_NOT_EXPORTED)
         } else {
             registerReceiver(fcmTokenReceiver, filter)
+            registerReceiver(incomingParentCallReceiver, parentCallFilter)
         }
         registerBatteryReceiver()
         registerNetworkObserver()
@@ -358,6 +380,9 @@ class MainActivity : AppCompatActivity() {
     override fun onStop() {
         try {
             unregisterReceiver(fcmTokenReceiver)
+        } catch (_: Exception) {}
+        try {
+            unregisterReceiver(incomingParentCallReceiver)
         } catch (_: Exception) {}
         unregisterBatteryReceiver()
         unregisterNetworkObserver()
@@ -369,6 +394,10 @@ class MainActivity : AppCompatActivity() {
         if (pendingDeviceAdminSyncOnResume) {
             pendingDeviceAdminSyncOnResume = false
             pushDeviceAdminStatusToWebView()
+        }
+        if (pendingCallerIdStatusSyncOnResume) {
+            pendingCallerIdStatusSyncOnResume = false
+            pushCallerIdStatusToWebView()
         }
         val trackingId = activeOfflineCallTrackingId
         val phone = activeOfflineCallPhone
@@ -485,7 +514,57 @@ class MainActivity : AppCompatActivity() {
         setIntent(intent)
         val url = resolveLaunchUrl(intent)
         if (url != BuildConfig.APP_BASE_URL) {
-            webView.loadUrl(url)
+            val parsed = try { Uri.parse(url) } catch (_: Exception) { null }
+            val callId = parsed?.getQueryParameter("callId")?.trim().orEmpty()
+            val callAction = parsed?.getQueryParameter("callAction")?.trim().orEmpty()
+            val incomingParentPhone = parsed?.getQueryParameter("incomingParentPhone")?.trim().orEmpty()
+            val incomingParentCall = parsed?.getQueryParameter("incomingParentCall")?.trim().orEmpty()
+            val isPostCall = parsed?.getQueryParameter("postCall")?.trim() == "1"
+            val openWalkie = parsed?.getQueryParameter("openWalkie")?.trim() == "1"
+            val basePrefix = BuildConfig.APP_BASE_URL.trimEnd('/')
+            val isWebLoaded =
+                ::webView.isInitialized &&
+                webAppBridge.isTrustedHostActive &&
+                webView.progress == 100 &&
+                webView.url?.startsWith(basePrefix) == true
+
+            if (openWalkie && isWebLoaded) {
+                webView.post {
+                    webView.evaluateJavascript(
+                        "window.dispatchEvent(new CustomEvent('android-open-walkie'));",
+                        null
+                    )
+                }
+            } else if (incomingParentPhone.isNotEmpty() && incomingParentCall == "1" && isWebLoaded) {
+                val matchJson = AppPrefs.findCallerEntry(applicationContext, incomingParentPhone)
+                    ?.toJson(postCall = isPostCall)
+                    ?.toString()
+                    ?: JSONObject().apply {
+                        put("phone", incomingParentPhone)
+                        put("postCall", isPostCall)
+                    }.toString()
+                pushIncomingParentCallToWebView(matchJson)
+            } else if (callId.isNotEmpty() && isWebLoaded) {
+                val payloadJson = JSONObject().apply {
+                    put("callId", callId)
+                    put("callAction", callAction)
+                    put("url", url)
+                }.toString()
+                webView.post {
+                    webView.evaluateJavascript(
+                        """
+                        (function() {
+                          try {
+                            window.dispatchEvent(new CustomEvent('android-incoming-call-action', { detail: $payloadJson }));
+                          } catch (e) {}
+                        })();
+                        """.trimIndent(),
+                        null
+                    )
+                }
+            } else {
+                webView.loadUrl(url)
+            }
         }
     }
 
@@ -800,6 +879,16 @@ class MainActivity : AppCompatActivity() {
             }
             startActivity(Intent.createChooser(shareIntent, "Share via"))
         } catch (_: Exception) {}
+    }
+
+    fun isIgnoringBatteryOptimizations(): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return true
+        return try {
+            val pm = getSystemService(Context.POWER_SERVICE) as? PowerManager
+            pm?.isIgnoringBatteryOptimizations(packageName) == true
+        } catch (_: Exception) {
+            false
+        }
     }
 
     @SuppressLint("BatteryLife")
@@ -1157,6 +1246,7 @@ class MainActivity : AppCompatActivity() {
             put("isUninstallBlocked", isUninstallBlocked())
             put("isAccessibilityGuardEnabled", isAccessibilityGuardEnabled())
             put("isAccessibilityGuardLocked", AppPrefs.isAccessibilityGuardLocked(applicationContext))
+            put("hasNativeAdminPin", AppPrefs.hasAdminPinHash(applicationContext))
             put("tempUnlockRemainingSec", tempUnlockRemainingSec)
             put("enabledAt", AppPrefs.getDeviceAdminEnabledAt(applicationContext))
             put("packageName", packageName)
@@ -1301,6 +1391,130 @@ class MainActivity : AppCompatActivity() {
         AppPrefs.setGuardUnlockUntilMs(applicationContext, untilMs)
         pushDeviceAdminStatusToWebView()
         return true
+    }
+
+    fun isCallScreeningRoleHeld(): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return false
+        return try {
+            val rm = getSystemService(RoleManager::class.java)
+            rm != null && rm.isRoleAvailable(RoleManager.ROLE_CALL_SCREENING) && rm.isRoleHeld(RoleManager.ROLE_CALL_SCREENING)
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    fun hasCallerIdPhonePerms(): Boolean {
+        val hasPhone = hasPermission(Manifest.permission.READ_PHONE_STATE)
+        val hasLog = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            hasPermission(Manifest.permission.READ_CALL_LOG)
+        } else {
+            true
+        }
+        return hasPhone && hasLog
+    }
+
+    fun getCallerIdStatusJson(): JSONObject {
+        val roleHeld = isCallScreeningRoleHeld()
+        val phonePerms = hasCallerIdPhonePerms()
+        return JSONObject().apply {
+            put("supported", true)
+            put("isRoleHeld", roleHeld)
+            put("hasPhonePerms", phonePerms)
+            put("isReady", roleHeld || phonePerms)
+            put("cachedCount", AppPrefs.getCallerDirectoryCount(applicationContext))
+            put("schoolName", AppPrefs.getCallerDirectorySchoolName(applicationContext))
+            put("voiceEnabled", AppPrefs.isCallerVoiceAnnounceEnabled(applicationContext))
+            put("batteryUnrestricted", isIgnoringBatteryOptimizations())
+            put("parentCallerEnabled", AppPrefs.isParentCallerIdEnabled(applicationContext))
+            put("parentDueVoiceEnabled", AppPrefs.isParentDueVoiceEnabled(applicationContext))
+            put("parentScheduleVoiceEnabled", AppPrefs.isParentScheduleVoiceEnabled(applicationContext))
+            put("parentCardPopupEnabled", AppPrefs.isParentCardPopupEnabled(applicationContext))
+            put("parentOverlayEnabled", AppPrefs.isParentOverlayEnabled(applicationContext))
+            put("canDrawOverlays", ParentCallOverlayService.canDrawOverlays(applicationContext))
+        }
+    }
+
+    fun requestOverlayPermission() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M || ParentCallOverlayService.canDrawOverlays(applicationContext)) {
+            pushCallerIdStatusToWebView()
+            return
+        }
+        pendingCallerIdStatusSyncOnResume = true
+        try {
+            val intent = Intent(
+                Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                Uri.parse("package:$packageName")
+            ).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            startActivity(intent)
+        } catch (_: Exception) {
+            try {
+                startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION).apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                })
+            } catch (_: Exception) {
+                pendingCallerIdStatusSyncOnResume = false
+            }
+        }
+    }
+
+    fun pushIncomingParentCallToWebView(payloadJson: String) {
+        if (!::webView.isInitialized || !webAppBridge.isTrustedHostActive) return
+        webView.post {
+            webView.evaluateJavascript(
+                """
+                (function() {
+                  try {
+                    window.dispatchEvent(new CustomEvent('android-incoming-parent-call', { detail: $payloadJson }));
+                  } catch (e) {}
+                })();
+                """.trimIndent(),
+                null
+            )
+        }
+    }
+
+    fun pushCallerIdStatusToWebView() {
+        if (!::webView.isInitialized || !webAppBridge.isTrustedHostActive) return
+        val statusJson = getCallerIdStatusJson().toString()
+        webView.post {
+            webView.evaluateJavascript(
+                """
+                (function() {
+                  try {
+                    window.dispatchEvent(new CustomEvent('android-caller-id-status', { detail: $statusJson }));
+                  } catch (e) {}
+                })();
+                """.trimIndent(),
+                null
+            )
+        }
+    }
+
+    fun requestOfflineCallerIdPermission() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            try {
+                val rm = getSystemService(RoleManager::class.java)
+                if (rm != null && rm.isRoleAvailable(RoleManager.ROLE_CALL_SCREENING) && !rm.isRoleHeld(RoleManager.ROLE_CALL_SCREENING)) {
+                    val intent = rm.createRequestRoleIntent(RoleManager.ROLE_CALL_SCREENING)
+                    callScreeningRoleLauncher.launch(intent)
+                    return
+                }
+            } catch (_: Exception) {}
+        }
+        if (!hasCallerIdPhonePerms()) {
+            try {
+                callLogPermissionLauncher.launch(
+                    arrayOf(
+                        Manifest.permission.READ_PHONE_STATE,
+                        Manifest.permission.READ_CALL_LOG
+                    )
+                )
+                return
+            } catch (_: Exception) {}
+        }
+        pushCallerIdStatusToWebView()
     }
 
     private fun hasPermission(permission: String): Boolean =

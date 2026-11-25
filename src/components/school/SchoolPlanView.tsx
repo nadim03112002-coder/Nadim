@@ -41,6 +41,8 @@ const FEATURES = [
   { id: "entrance",       icon: <BookOpen size={14} />,    label: "Entrance Exam (17,500+ Qs) & 1–12 Notes",   lite: false,                           elite: "👑 Included",                     supreme: "👑 Full Suite Included" },
   { id: "customwebsite",  icon: <Globe size={14} />,       label: "Custom Website CMS, Photos & Gallery",      lite: "Default Website Only",          elite: "👑 Full Custom CMS",              supreme: "🌐 Custom .com/.in + CMS" },
   { id: "fees",           icon: <IndianRupee size={14} />, label: "Fee Collection, POS & WhatsApp Slips",      lite: "Core Register + Slips",         elite: "Full Ledger + Bulk WhatsApp",     supreme: "Multi-Branch Ledger" },
+  { id: "walkie",         icon: <Smartphone size={14} />,  label: "School-Hour Walkie-Talkie & Audio/Video Calls", lite: false,                        elite: "👑 Live Intercom + HD Calls",     supreme: "👑 Full Staff & Class Suite" },
+  { id: "tagada",         icon: <Smartphone size={14} />,  label: "Fee Tagada Caller & Parent Caller ID",      lite: false,                           elite: "👑 Ulta Directory + 1-Tap UPI",   supreme: "👑 Full Campus Tagada Suite" },
   { id: "playstoreapp",   icon: <Smartphone size={14} />,  label: "Play Store App (Own School Name & Logo)", lite: false,                           elite: false,                             supreme: "💎 White-Label APK/AAB" },
   { id: "onsite",         icon: <Layers size={14} />,      label: "On-Site Staff Training & Data Migration",   lite: false,                           elite: false,                             supreme: "💎 100% Campus Setup" },
 ];

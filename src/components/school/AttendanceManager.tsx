@@ -1,5 +1,5 @@
 // @ts-nocheck
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
 import {
   saveAttendance, subscribeToAttendance, getAttendance, getMonthlyAttendance, getAllSchoolAttendance, getStudents, getClasses, todayStr, currentMonthStr,
   isStudentBirthdayToday, dispatchOfficialSchoolBirthdayWish, getTeachers, getLocalTeachers,
@@ -14,6 +14,7 @@ import {
   Crown, Lock, Printer, CalendarRange, Layers
 } from "lucide-react";
 import { generateAttendanceMatrixPdf, type MatrixPdfSection } from "../../utils/attendanceMatrixPdf";
+import { printElementInIframe } from "./AdmissionFormPrintModal";
 import { toast } from "sonner";
 import { safeOpenExternalUrl } from "../../utils/safeBrowserActions";
 import { speakNotification } from "../../utils/voiceNotifyEngine";
@@ -49,6 +50,7 @@ interface Props {
 export const AttendanceManager: React.FC<Props> = ({ schoolId, classId, className, teacherId, school, onOpenPlanStore, onBack }) => {
   const [students, setStudents] = useState<SchoolStudent[]>([]);
   const [fetchedSchool, setFetchedSchool] = useState<School | null>(null);
+  const matrixWrapRef = useRef<HTMLDivElement>(null);
   const activeSchool = school || fetchedSchool;
   const hasFaceAccess = activeSchool
     ? hasFaceAttendanceAccess(activeSchool)
@@ -2043,7 +2045,14 @@ export const AttendanceManager: React.FC<Props> = ({ schoolId, classId, classNam
 
                   <button
                     type="button"
-                    onClick={() => window.print()}
+                    onClick={() =>
+                      printElementInIframe(
+                        matrixWrapRef.current,
+                        `Attendance_Matrix_${className}_${selectedMonth}`,
+                        "table { font-size: 9px !important; width: 100% !important; }",
+                        "landscape"
+                      )
+                    }
                     className="min-h-[38px] px-3 py-2 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 border border-slate-200 dark:border-slate-700 rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5 transition cursor-pointer whitespace-nowrap sm:ml-auto"
                   >
                     <Printer className="w-3.5 h-3.5" />
@@ -2067,7 +2076,7 @@ export const AttendanceManager: React.FC<Props> = ({ schoolId, classId, classNam
               </div>
 
               {/* 31-Day Matrix Table */}
-              <div className="attendance-matrix-print-wrap bg-white dark:bg-slate-900 rounded-2xl shadow-xs border border-slate-200 dark:border-slate-800 overflow-x-auto">
+              <div ref={matrixWrapRef} className="attendance-matrix-print-wrap bg-white dark:bg-slate-900 rounded-2xl shadow-xs border border-slate-200 dark:border-slate-800 overflow-x-auto">
                 <table className="attendance-matrix-table w-full text-xs border-collapse">
                   <thead>
                     <tr className="bg-slate-900 text-white text-[11px]">

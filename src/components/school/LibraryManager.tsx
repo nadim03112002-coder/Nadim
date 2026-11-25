@@ -6,13 +6,15 @@ import {
   RotateCcw, ArrowRight, Printer, Trash2, Edit3, Filter, Users,
   Bookmark, ChevronLeft, Calendar, Sparkles, Tag, IndianRupee,
   ShoppingBag, Shirt, PenTool, Image as ImageIcon, Upload, Check,
-  Package, X, Eye, Phone, User, CheckCheck, RefreshCw, AlertCircle
+  Package, X, Eye, Phone, User, CheckCheck, RefreshCw, AlertCircle, Download
 } from "lucide-react";
 import type {
   School, SchoolStudent, SchoolTeacher, SchoolClass
 } from "../../school-types";
 import { loadSchoolSubcollection, syncSchoolSubcollection } from "../../utils/schoolCloudSync";
 import { shouldUseDemoForSchool } from "../../school-firebase";
+import { printElementInIframe } from "./AdmissionFormPrintModal";
+import { exportElementToPdf } from "../../utils/universalPdfExport";
 
 interface Props {
   school: School;
@@ -809,14 +811,45 @@ export const LibraryManager: React.FC<Props> = ({
           {/* Top Actions */}
           <div className="flex items-center gap-2 flex-wrap">
             {isAdmin && (
-              <button
-                type="button"
-                onClick={() => window.print()}
-                className="px-3 py-2 rounded-xl bg-white/10 hover:bg-white/20 text-white text-xs font-bold flex items-center gap-1.5 transition border border-white/20 cursor-pointer"
-              >
-                <Printer className="w-4 h-4 text-emerald-300" />
-                <span>प्रिंट रजिस्टर</span>
-              </button>
+              <>
+                <button
+                  type="button"
+                  onClick={async () => {
+                    const el = document.getElementById("library-register-print-area") as HTMLElement | null;
+                    if (!el) return;
+                    const tid = toast.loading("रजिस्टर PDF बन रहा है...");
+                    try {
+                      await exportElementToPdf(el, {
+                        filename: `Library_Store_Register_${school?.name || "School"}`,
+                        format: "a4",
+                        orientation: "portrait",
+                        pageMode: "auto_slice",
+                        widthPx: 920,
+                        scale: 1.8,
+                      });
+                      toast.success("रजिस्टर PDF डाउनलोड हो गया!", { id: tid });
+                    } catch {
+                      toast.dismiss(tid);
+                      printElementInIframe(el, `Library_Store_Register_${school?.name || "School"}`, "", "portrait");
+                    }
+                  }}
+                  className="px-3 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold flex items-center gap-1.5 transition shadow cursor-pointer"
+                >
+                  <Download className="w-4 h-4" />
+                  <span>PDF</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const el = document.getElementById("library-register-print-area") as HTMLElement | null;
+                    printElementInIframe(el, `Library_Store_Register_${school?.name || "School"}`, "", "portrait");
+                  }}
+                  className="px-3 py-2 rounded-xl bg-white/10 hover:bg-white/20 text-white text-xs font-bold flex items-center gap-1.5 transition border border-white/20 cursor-pointer"
+                >
+                  <Printer className="w-4 h-4 text-emerald-300" />
+                  <span>प्रिंट रजिस्टर</span>
+                </button>
+              </>
             )}
 
             {isAdmin && (
@@ -854,7 +887,7 @@ export const LibraryManager: React.FC<Props> = ({
         </div>
       </div>
 
-      <div className="max-w-6xl mx-auto p-4 sm:p-6 space-y-5">
+      <div id="library-register-print-area" className="max-w-6xl mx-auto p-4 sm:p-6 space-y-5">
         {/* ── KPI TILES ───────────────────────────────────────────────────────── */}
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 print:hidden">
           <div className="bg-white dark:bg-slate-800 rounded-2xl p-4 border border-slate-200 dark:border-slate-700 shadow-xs">
