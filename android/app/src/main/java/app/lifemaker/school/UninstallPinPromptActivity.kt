@@ -34,6 +34,11 @@ class UninstallPinPromptActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
+        if (!AppPrefs.isUninstallPinRequired(applicationContext)) {
+            finish()
+            return
+        }
+
         window.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_STATE_VISIBLE)
 
         val reason = intent?.getStringExtra(EXTRA_REASON)?.takeIf { it.isNotBlank() }

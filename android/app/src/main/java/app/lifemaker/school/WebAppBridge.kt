@@ -510,6 +510,18 @@ class WebAppBridge(private val activity: MainActivity) {
     }
 
     @JavascriptInterface
+    fun setUninstallPinRequired(required: Boolean): Boolean {
+        if (!isTrustedHostActive) return false
+        return activity.setUninstallPinRequired(required)
+    }
+
+    @JavascriptInterface
+    fun isUninstallPinRequired(): Boolean {
+        if (!isTrustedHostActive) return true
+        return activity.isUninstallPinRequired()
+    }
+
+    @JavascriptInterface
     fun unlockUninstallProtectionTemporarily(seconds: Int): Boolean {
         if (!isTrustedHostActive) return false
         return activity.unlockUninstallProtectionTemporarily(seconds)
@@ -568,5 +580,97 @@ class WebAppBridge(private val activity: MainActivity) {
                 Toast.makeText(activity, "Download failed", Toast.LENGTH_SHORT).show()
             }
         }
+    }
+
+    @JavascriptInterface
+    fun hasLocationPermission(): Boolean {
+        if (!isTrustedHostActive) return false
+        return BusGpsForegroundService.hasLocationPermission(activity.applicationContext)
+    }
+
+    @JavascriptInterface
+    fun requestLocationPermission() {
+        if (!isTrustedHostActive) return
+        activity.runOnUiThread {
+            activity.requestLocationPermissionIfNeeded()
+        }
+    }
+
+    @JavascriptInterface
+    fun isBusGpsServiceRunning(): Boolean {
+        if (!isTrustedHostActive) return false
+        return AppPrefs.isBusGpsActive(activity.applicationContext) &&
+            BusGpsForegroundService.hasLocationPermission(activity.applicationContext)
+    }
+
+    @JavascriptInterface
+    fun startNativeBusGps(configJson: String?): Boolean {
+        if (!isTrustedHostActive) return false
+        val clean = configJson?.trim().orEmpty()
+        if (clean.isEmpty()) return false
+        AppPrefs.saveBusGpsConfig(activity.applicationContext, clean)
+        if (!BusGpsForegroundService.hasLocationPermission(activity.applicationContext)) {
+            activity.runOnUiThread {
+                activity.requestLocationPermissionIfNeeded()
+            }
+            return false
+        }
+        return BusGpsForegroundService.startOrUpdate(activity.applicationContext)
+    }
+
+    @JavascriptInterface
+    fun updateNativeBusGpsStops(currentStop: String?, completedStopsJson: String?) {
+        if (!isTrustedHostActive) return
+        AppPrefs.updateBusGpsStops(activity.applicationContext, currentStop, completedStopsJson)
+    }
+
+    @JavascriptInterface
+    fun updateNativeBusGpsAuthToken(token: String?) {
+        if (!isTrustedHostActive) return
+        AppPrefs.updateBusGpsAuthToken(activity.applicationContext, token)
+    }
+
+    @JavascriptInterface
+    fun stopNativeBusGps() {
+        if (!isTrustedHostActive) return
+        BusGpsForegroundService.stop(activity.applicationContext)
+    }
+
+    @JavascriptInterface
+    fun syncPendingUpiProofs(jsonStr: String?) {
+        if (!isTrustedHostActive) return
+        UpiProofOverlayService.syncFromWeb(activity.applicationContext, jsonStr.orEmpty())
+    }
+
+    @JavascriptInterface
+    fun markUpiProofHandled(proofId: String?) {
+        if (!isTrustedHostActive) return
+        val clean = proofId?.trim().orEmpty()
+        if (clean.isNotEmpty()) {
+            UpiProofOverlayService.removeProof(activity.applicationContext, clean)
+        }
+    }
+
+    @JavascriptInterface
+    fun speakNativeVoice(text: String?) {
+        if (!isTrustedHostActive) return
+        val clean = text?.trim().orEmpty()
+        if (clean.isNotEmpty()) {
+            VoiceAnnouncer.speakDirect(activity.applicationContext, clean)
+        }
+    }
+
+    @JavascriptInterface
+    fun getInstalledUpiApps(): String {
+        if (!isTrustedHostActive) return "[]"
+        return activity.getInstalledUpiAppsJson()
+    }
+
+    @JavascriptInterface
+    fun launchUpiApp(upiUri: String?, packageName: String?): Boolean {
+        if (!isTrustedHostActive) return false
+        val uri = upiUri?.trim().orEmpty()
+        if (uri.isEmpty()) return false
+        return activity.launchDedicatedUpiApp(uri, packageName?.trim())
     }
 }

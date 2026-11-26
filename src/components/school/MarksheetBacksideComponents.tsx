@@ -112,6 +112,7 @@ function getBackFrameProps(
   const isBeveled = f === "beveled";
   const paperBg = arch.creamPaper ? "#fffdf4" : isBlueprint ? "#f8fbff" : isFolio ? "#fafdf7" : "#ffffff";
 
+  const baseOuterBw = isHeavyBars ? "0px" : isOrnate || template?.borderStyle === "double" ? "4px" : "2px";
   const outerStyle: React.CSSProperties = useTpl
     ? {
         fontFamily: arch.serifFont
@@ -120,11 +121,9 @@ function getBackFrameProps(
           ? "'JetBrains Mono', monospace"
           : "'Inter', sans-serif",
         backgroundColor: paperBg,
-        borderColor: c.borderColor,
         borderStyle: isPostage ? "dashed" : isOrnate ? "double" : template!.borderStyle,
-        borderWidth: isHeavyBars ? "0px" : isOrnate || template!.borderStyle === "double" ? "4px" : "2px",
-        borderTopWidth: isHeavyBars ? "8px" : f === "tricolor" ? "5px" : undefined,
-        borderBottomWidth: isHeavyBars ? "8px" : f === "tricolor" ? "5px" : undefined,
+        borderTopWidth: isHeavyBars ? "8px" : f === "tricolor" ? "5px" : baseOuterBw,
+        borderBottomWidth: isHeavyBars ? "8px" : f === "tricolor" ? "5px" : baseOuterBw,
         borderLeftWidth:
           f === "left_spine"
             ? "10px"
@@ -136,7 +135,7 @@ function getBackFrameProps(
             ? "7px"
             : f === "swiss_cross"
             ? "12px"
-            : undefined,
+            : baseOuterBw,
         borderRightWidth:
           f === "right_spine"
             ? "10px"
@@ -144,7 +143,7 @@ function getBackFrameProps(
             ? "16px"
             : f === "dual_rails"
             ? "8px"
-            : undefined,
+            : baseOuterBw,
         borderTopColor: f === "tricolor" ? "#f97316" : c.borderColor,
         borderBottomColor: f === "tricolor" ? "#16a34a" : c.borderColor,
         borderLeftColor: f === "swiss_cross" ? c.accentColor : c.primaryColor,

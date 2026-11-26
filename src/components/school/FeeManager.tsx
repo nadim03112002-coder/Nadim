@@ -5,7 +5,12 @@ import {
 } from "../../school-firebase";
 import { toast } from "sonner";
 import type { SchoolStudent, SchoolClass, MonthlyFee, School, SchoolDocumentPrintFields, SchoolAccountant, FeeTermCampaign, AppliedTermFeeItem, FeeCallFollowUpRecord, UpiPaymentProofRecord } from "../../school-types";
-import { schoolPrintFieldEnabled, hasEliteFeeTagadaAccess } from "../../school-types";
+import {
+  schoolPrintFieldEnabled,
+  hasEliteFeeTagadaAccess,
+  mapFeeSlipRoutingToSignatoryMode,
+  mapFeeReceiptRoutingToSignatoryMode,
+} from "../../school-types";
 import { CheckCircle, Clock, Download, ChevronLeft, ChevronRight, ChevronDown, IndianRupee, Users, TrendingUp, AlertCircle, Printer, MessageCircle, MessageSquare, ReceiptText, Building2, Sparkles, X, Check, RotateCcw, CheckCircle2, ShieldCheck, ToggleLeft, ToggleRight, Bus, QrCode, Search, Filter, Loader2, Bell, FileSpreadsheet, FileText, Plus, Trash2, CreditCard, Palette, CalendarClock, PhoneCall, Lock } from "lucide-react";
 import { FeeTagadaCallerPage, buildFamilyTagadaGroups, getLocalTodayYmd, getPendingActiveTagadaCall, type TagadaStudentFeeRow } from "./FeeTagadaCallerPage";
 import { PremiumLoadingState } from "./PremiumLoadingState";
@@ -290,6 +295,7 @@ export const FeeManager: React.FC<Props> = ({ schoolId, classId, className, scho
     accountantSignatureUrl: school?.accountantSignatureUrl || "",
     customFields: school?.customFields || [],
     documentPrintFields: school?.documentPrintFields || {},
+    signatureRouting: school?.signatureRouting,
   }));
 
   const resolveActiveCollector = () => {
@@ -437,6 +443,7 @@ export const FeeManager: React.FC<Props> = ({ schoolId, classId, className, scho
       accountantSignatureUrl: school.accountantSignatureUrl || previous.accountantSignatureUrl || "",
       customFields: school.customFields || previous.customFields || [],
       documentPrintFields: school.documentPrintFields || previous.documentPrintFields || {},
+      signatureRouting: school.signatureRouting ?? previous.signatureRouting,
     }));
   }, [school]);
 
@@ -2208,9 +2215,9 @@ export const FeeManager: React.FC<Props> = ({ schoolId, classId, className, scho
     if (searchQuery.trim()) {
       const q = searchQuery.trim().toLowerCase();
       const s = studentByIdMap.get(f.studentId);
-      const nameMatch = (f.studentName || "").toLowerCase().includes(q);
-      const rollMatch = (f.rollNo || "").toLowerCase().includes(q);
-      const admMatch = (s?.admissionNo || "").toLowerCase().includes(q);
+      const nameMatch = String(f.studentName || "").toLowerCase().includes(q);
+      const rollMatch = String(f.rollNo || "").toLowerCase().includes(q);
+      const admMatch = String(s?.admissionNo || "").toLowerCase().includes(q);
       if (!nameMatch && !rollMatch && !admMatch) return false;
     }
 
@@ -2374,7 +2381,7 @@ export const FeeManager: React.FC<Props> = ({ schoolId, classId, className, scho
         });
       }
       const hasAdmDueItem = nextItems.some(
-        (it) => it.id === "adm-due" || it.description.toLowerCase().includes("admission balance due") || it.description.includes("प्रवेश बकाया")
+        (it) => it.id === "adm-due" || String(it.description || "").toLowerCase().includes("admission balance due") || String(it.description || "").includes("प्रवेश बकाया")
       );
       if (admDue > 0 && !hasAdmDueItem) {
         nextItems.push({
@@ -2387,7 +2394,7 @@ export const FeeManager: React.FC<Props> = ({ schoolId, classId, className, scho
         });
       }
       const hasArrearsItem = nextItems.some(
-        (it) => it.id === "arrears" || it.description.toLowerCase().includes("arrears") || it.description.toLowerCase().includes("back due")
+        (it) => it.id === "arrears" || String(it.description || "").toLowerCase().includes("arrears") || String(it.description || "").toLowerCase().includes("back due")
       );
       if (nonAdmArrears > 0 && !hasArrearsItem) {
         nextItems.push({
@@ -2592,8 +2599,11 @@ export const FeeManager: React.FC<Props> = ({ schoolId, classId, className, scho
       collectedByRole: fee.collectedByRole || "accountant",
       collectedByName: fee.collectedByName,
       collectorSignatureUrl: fee.collectorSignatureUrl,
-      signatoryMode: fee.paid || Number(fee.paidAmount || 0) > 0 ? "both" : "principal_only",
-      signatoryTitle: schoolDetails.signatoryTitle || "Principal",
+      signatoryMode:
+        fee.paid || Number(fee.paidAmount || 0) > 0
+          ? mapFeeReceiptRoutingToSignatoryMode(schoolDetails.signatureRouting || liveSchool?.signatureRouting || school?.signatureRouting)
+          : mapFeeSlipRoutingToSignatoryMode(schoolDetails.signatureRouting || liveSchool?.signatureRouting || school?.signatureRouting),
+      signatoryTitle: schoolDetails.managerName || school?.managerName || "Manager",
     };
   };
 
@@ -2674,7 +2684,7 @@ export const FeeManager: React.FC<Props> = ({ schoolId, classId, className, scho
         pdf.addImage(imgData, "JPEG", 0, 0, 210, 297);
         addedPage = true;
       }
-      const clsSafe = (className || "All").replace(/[^a-z0-9-_]+/gi, "_");
+      const clsSafe = String(className || "All").replace(/[^a-z0-9-_]+/gi, "_");
       pdf.save(`${fileTag}_${clsSafe}_${month}_${bulkFamilyMerge ? "FamilyMerged" : "Individual"}.pdf`);
       toast.success(
         bulkFamilyMerge
@@ -3199,7 +3209,9 @@ td{padding:8px 10px;border-bottom:1px solid #e2e8f0}</style></head>
       .filter((st) => {
         if (!st?.id) return false;
         if (classId && classId !== "All Classes") {
-          return isStudentInClass(st, classId, classNames);
+          const targetClassLabel =
+            (className && className !== "All Classes" ? className : classNames[classId]) || "";
+          return isStudentInClass(st, classId, targetClassLabel);
         }
         return true;
       })
@@ -3281,6 +3293,7 @@ td{padding:8px 10px;border-bottom:1px solid #e2e8f0}</style></head>
               managerSignatureUrl: schoolDetails.managerSignatureUrl || school?.managerSignatureUrl,
               accountantName: schoolDetails.accountantName || school?.accountantName,
               accountantSignatureUrl: schoolDetails.accountantSignatureUrl || school?.accountantSignatureUrl,
+              signatureRouting: schoolDetails.signatureRouting ?? liveSchool?.signatureRouting ?? school?.signatureRouting,
             } as any}
             fee={dpsReceiptFee}
             student={students.find((s) => s.id === dpsReceiptFee.studentId)}
@@ -3590,6 +3603,10 @@ td{padding:8px 10px;border-bottom:1px solid #e2e8f0}</style></head>
             proofs={upiProofs}
             approverName={resolveActiveCollector().collectedByName}
             approverRole={resolveActiveCollector().collectedByRole}
+            approverId={adminId}
+            isAdmin={userRole === "SCHOOL_ADMIN" || resolveActiveCollector().collectedByRole === "manager"}
+            school={liveSchool || school || null}
+            onSchoolUpdated={(updated) => setLiveSchool(updated)}
             onClose={() => setShowUpiApprovals(false)}
             onApprovedReceipt={(approvedFee) => {
               setFees((prev) => {
@@ -3848,11 +3865,11 @@ td{padding:8px 10px;border-bottom:1px solid #e2e8f0}</style></head>
                       <tbody className="divide-y divide-slate-200 dark:divide-slate-800 text-[11px] tabular-nums">
                         {unpaidFees.map((fee, idx) => {
                           const items = getFeeItemsForStudent(fee);
-                          const admItem = items.find(i => i.description.toLowerCase().includes("admission"))?.due || 0;
-                          const tuiItem = items.find(i => i.description.toLowerCase().includes("tuition"))?.due || 0;
-                          const cauItem = items.find(i => i.description.toLowerCase().includes("caution"))?.due || 0;
-                          const annItem = items.find(i => i.description.toLowerCase().includes("annual"))?.due || 0;
-                          const busItem = items.find(i => i.description.toLowerCase().includes("bus"))?.due || 0;
+                          const admItem = items.find(i => String(i.description || "").toLowerCase().includes("admission"))?.due || 0;
+                          const tuiItem = items.find(i => String(i.description || "").toLowerCase().includes("tuition"))?.due || 0;
+                          const cauItem = items.find(i => String(i.description || "").toLowerCase().includes("caution"))?.due || 0;
+                          const annItem = items.find(i => String(i.description || "").toLowerCase().includes("annual"))?.due || 0;
+                          const busItem = items.find(i => String(i.description || "").toLowerCase().includes("bus"))?.due || 0;
                           const arrItem = Number(fee.arrearsAmount || 0);
 
                           return (
@@ -4632,6 +4649,7 @@ td{padding:8px 10px;border-bottom:1px solid #e2e8f0}</style></head>
             managerSignatureUrl: schoolDetails.managerSignatureUrl || school?.managerSignatureUrl,
             accountantName: schoolDetails.accountantName || school?.accountantName,
             accountantSignatureUrl: schoolDetails.accountantSignatureUrl || school?.accountantSignatureUrl,
+            signatureRouting: schoolDetails.signatureRouting ?? liveSchool?.signatureRouting ?? school?.signatureRouting,
           } as any}
           fee={dpsReceiptFee}
           student={students.find(s => s.id === dpsReceiptFee.studentId)}

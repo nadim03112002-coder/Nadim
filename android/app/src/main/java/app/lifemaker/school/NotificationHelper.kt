@@ -18,6 +18,7 @@ object NotificationHelper {
     const val CHANNEL_ALERTS = "high_importance_channel"
     const val CHANNEL_INCOMING_CALLS = "incoming_call_channel"
     const val CHANNEL_VOICE_GUARD = "voice_guard_channel"
+    const val CHANNEL_BUS_GPS = "bus_gps_channel"
     const val EXTRA_TARGET_URL = "extra_target_url"
 
     fun ensureChannels(context: Context) {
@@ -60,6 +61,17 @@ object NotificationHelper {
             lockscreenVisibility = Notification.VISIBILITY_SECRET
         }
         nm.createNotificationChannel(guardChannel)
+
+        val busGpsChannel = NotificationChannel(
+            CHANNEL_BUS_GPS,
+            context.getString(R.string.bus_gps_channel_name),
+            NotificationManager.IMPORTANCE_LOW
+        ).apply {
+            description = context.getString(R.string.bus_gps_channel_desc)
+            setShowBadge(false)
+            lockscreenVisibility = Notification.VISIBILITY_PUBLIC
+        }
+        nm.createNotificationChannel(busGpsChannel)
     }
 
     fun sanitizeAppUrl(rawUrl: String?): String {
@@ -97,6 +109,38 @@ object NotificationHelper {
             .setOngoing(true)
             .setSilent(true)
             .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setContentIntent(pi)
+            .build()
+    }
+
+    fun buildBusGpsForegroundNotification(
+        context: Context,
+        busNumber: String,
+        statusText: String
+    ): Notification {
+        ensureChannels(context)
+        val openIntent = Intent(context, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
+        }
+        val pi = PendingIntent.getActivity(
+            context,
+            2002,
+            openIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        val cleanBus = busNumber.ifBlank { "School Bus" }
+        val cleanStatus = statusText.ifBlank { "Live GPS chalu hai — screen lock hone par bhi location share hogi." }
+        return NotificationCompat.Builder(context, CHANNEL_BUS_GPS)
+            .setSmallIcon(R.drawable.ic_stat_notification)
+            .setColor(ContextCompat.getColor(context, R.color.brand_accent))
+            .setContentTitle("🚌 $cleanBus • Live GPS ON")
+            .setContentText(cleanStatus)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(cleanStatus))
+            .setOngoing(true)
+            .setSilent(true)
+            .setOnlyAlertOnce(true)
+            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .setContentIntent(pi)
             .build()
     }
@@ -457,5 +501,77 @@ object NotificationHelper {
             .build()
 
         NotificationManagerCompat.from(context).notify(reqCode, notification)
+    }
+
+    fun showUpiProofOngoingNotification(
+        context: Context,
+        proof: org.json.JSONObject,
+        pendingCount: Int
+    ) {
+        ensureChannels(context)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            val granted = ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.POST_NOTIFICATIONS
+            ) == PackageManager.PERMISSION_GRANTED
+            if (!granted) return
+        }
+
+        val proofId = proof.optString("proofId", "").trim()
+        if (proofId.isEmpty()) return
+        val studentName = proof.optString("studentName", "Student").ifBlank { "Student" }
+        val amtLong = proof.optString("amount", "0").toLongOrNull() ?: 0L
+        val formattedAmt = AppPrefs.formatIndianRupees(amtLong)
+        val utr = proof.optString("utrNumber", "").trim()
+        val paidTime = proof.optString("paidTime", "").trim()
+        val monthLabel = proof.optString("monthLabel", "").trim()
+
+        val safeUrl = sanitizeAppUrl("/?schoolPortal=1&openUpiProof=${Uri.encode(proofId)}")
+        val launchIntent = Intent(context, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
+            putExtra(EXTRA_TARGET_URL, safeUrl)
+        }
+        val reqCode = (("upi_proof_$proofId").hashCode() and 0x7FFFFFFF)
+        val pendingIntent = PendingIntent.getActivity(
+            context,
+            reqCode,
+            launchIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val title = "₹$formattedAmt UPI Check · $studentName ($pendingCount pending)"
+        val body = buildString {
+            if (monthLabel.isNotBlank()) append("$monthLabel · ")
+            if (utr.isNotBlank()) append("UTR: $utr") else append("Payment Screenshot")
+            if (paidTime.isNotBlank()) append(" · 🕒 $paidTime")
+            append("\nBharatPe me match karke Confirm karein.")
+        }
+
+        val notification = NotificationCompat.Builder(context, CHANNEL_ALERTS)
+            .setSmallIcon(R.drawable.ic_stat_notification)
+            .setColor(ContextCompat.getColor(context, R.color.brand_accent))
+            .setContentTitle(title)
+            .setContentText(body)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(body))
+            .setPriority(NotificationCompat.PRIORITY_MAX)
+            .setCategory(NotificationCompat.CATEGORY_MESSAGE)
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+            .setOngoing(true)
+            .setAutoCancel(false)
+            .setVibrate(longArrayOf(0, 350, 150, 350))
+            .setContentIntent(pendingIntent)
+            .addAction(android.R.drawable.ic_menu_view, "Verify & Confirm", pendingIntent)
+            .build()
+
+        NotificationManagerCompat.from(context).notify(reqCode, notification)
+    }
+
+    fun cancelUpiProofNotification(context: Context, proofId: String) {
+        val cleanId = proofId.trim()
+        if (cleanId.isEmpty()) return
+        val reqCode = (("upi_proof_$cleanId").hashCode() and 0x7FFFFFFF)
+        try {
+            NotificationManagerCompat.from(context).cancel(reqCode)
+        } catch (_: Exception) {}
     }
 }

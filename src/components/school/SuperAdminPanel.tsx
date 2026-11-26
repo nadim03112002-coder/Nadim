@@ -25,9 +25,11 @@ import {
   School as SchoolIcon, Plus, Pause, Play,
   Users, IndianRupee, Settings, X, Zap, Tag, Lock, Eye, EyeOff, Shield, Trash2, Unlock, ArrowLeft,
   CreditCard, CheckCircle, AlertCircle, Clock, ChevronRight, FileText, StickyNote, Calendar, Crown,
-  Bell, Sliders, Smartphone, Check, Sparkles, Camera, Upload, Code2, Globe, Loader2, LogOut, ClipboardCheck
+  Bell, Sliders, Smartphone, Check, Sparkles, Camera, Upload, Code2, Globe, Loader2, LogOut, ClipboardCheck, Bug
 } from "lucide-react";
 import { toast } from "sonner";
+import { ErrorNoticeBoard } from "../admin/ErrorNoticeBoard";
+import { setErrorLoggerModule } from "../../utils/errorLogger";
 import { compressImageFileToDataUrl } from "../../utils/imageCompression";
 import {
   DEFAULT_GLOBAL_DEVELOPER,
@@ -1158,7 +1160,11 @@ export const SuperAdminPanel: React.FC<Props> = ({ adminUid, onBack, onLogout })
   const [selectedSchool, setSelectedSchool] = useState<School | null>(null);
   const [directManageSchool, setDirectManageSchool] = useState<School | null>(null);
   const [saving, setSaving]             = useState(false);
-  const [dashTab, setDashTab]           = useState<"schools" | "subscriptions" | "accounts" | "policies" | "developer">("schools");
+  const [dashTab, setDashTab]           = useState<"schools" | "subscriptions" | "accounts" | "policies" | "developer" | "crashes">("schools");
+
+  useEffect(() => {
+    setErrorLoggerModule(`Super Admin → ${dashTab}`);
+  }, [dashTab]);
   const [showQaChecklist, setShowQaChecklist] = useState(false);
   const [qaCompletedCount, setQaCompletedCount] = useState<number>(() => getQaChecklistCompletedCount("global"));
 
@@ -1923,7 +1929,20 @@ export const SuperAdminPanel: React.FC<Props> = ({ adminUid, onBack, onLogout })
           >
             <Code2 className="w-4 h-4" /> Developer
           </button>
+          <button
+            onClick={() => setDashTab("crashes")}
+            className={`flex-1 flex items-center justify-center gap-1.5 py-2 rounded-lg text-xs sm:text-sm font-bold transition-all cursor-pointer ${
+              dashTab === "crashes" ? "bg-rose-600 text-white shadow" : "text-slate-500 dark:text-slate-400 hover:text-rose-600"
+            }`}
+          >
+            <Bug className="w-4 h-4" /> Crash Logs
+          </button>
         </div>
+
+        {/* Crash Logs Tab */}
+        {dashTab === "crashes" && (
+          <ErrorNoticeBoard onBack={() => setDashTab("schools")} />
+        )}
 
         {/* All Accounts Directory Tab */}
         {dashTab === "accounts" && (

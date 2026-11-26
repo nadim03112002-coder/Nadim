@@ -880,6 +880,8 @@ export const LessonView: React.FC<Props> = ({
 
   // TTS STATE
   const contentRef = useRef<HTMLDivElement>(null);
+  const [fabOpen, setFabOpen] = useState(false);
+  const [savedOffline, setSavedOffline] = useState(false);
   const plainTextContent = content ? decodeHtml(content.aiHtmlContent || content.content || "") : "";
 
   if (loading) {
@@ -937,9 +939,6 @@ export const LessonView: React.FC<Props> = ({
 
   // SCHOOL MODE FREE NOTES FIX
   const isFree = content.type === 'PDF_FREE' || content.type === 'NOTES_HTML_FREE' || (content.type === 'VIDEO_LECTURE' && content.videoPlaylist?.some(v => v.access === 'FREE'));
-  
-  const [fabOpen, setFabOpen] = useState(false);
-  const [savedOffline, setSavedOffline] = useState(false);
 
   const handleSaveNotesOffline = () => {
     if (!user) return;
@@ -1411,7 +1410,7 @@ export const LessonView: React.FC<Props> = ({
                                   📖 {readingLivePts}
                               </span>
                               {writingScoreTooltip && (
-                                  <div style={{ position: 'absolute', top: '100%', right: 0, marginTop: 6, background: 'linear-gradient(135deg,#eef2ff,#f5f3ff)', borderTop: '2px solid #10b981', border: '1.5px solid rgba(99,102,241,0.2)', borderTopWidth: 2, borderTopColor: '#10b981', borderRadius: 12, padding: '7px 12px', whiteSpace: 'nowrap', zIndex: 100, boxShadow: '0 4px 20px rgba(16,185,129,0.15), inset 0 -1px 0 #c7d2fe', animation: 'rshud-slide 0.18s ease', display: 'flex', alignItems: 'center', gap: 8, minWidth: 260 }}>
+                                  <div style={{ position: 'absolute', top: '100%', right: 0, marginTop: 6, background: 'linear-gradient(135deg,#eef2ff,#f5f3ff)', borderStyle: 'solid', borderTopWidth: 2, borderRightWidth: 1.5, borderBottomWidth: 1.5, borderLeftWidth: 1.5, borderTopColor: '#10b981', borderRightColor: 'rgba(99,102,241,0.2)', borderBottomColor: 'rgba(99,102,241,0.2)', borderLeftColor: 'rgba(99,102,241,0.2)', borderRadius: 12, padding: '7px 12px', whiteSpace: 'nowrap', zIndex: 100, boxShadow: '0 4px 20px rgba(16,185,129,0.15), inset 0 -1px 0 #c7d2fe', animation: 'rshud-slide 0.18s ease', display: 'flex', alignItems: 'center', gap: 8, minWidth: 260 }}>
                                       <span style={{ fontSize: 14, flexShrink: 0 }}>✍️</span>
                                       <span style={{ fontSize: 10, fontWeight: 900, color: '#059669', textTransform: 'uppercase', letterSpacing: '0.06em', flexShrink: 0 }}>Writing Score</span>
                                       <div style={{ width: 1, height: 14, background: '#e2e8f0', flexShrink: 0 }} />
@@ -2829,7 +2828,7 @@ export const LessonView: React.FC<Props> = ({
                                📖 {mcqLivePts}
                            </span>
                            {mcqScoreTooltip && (
-                               <div style={{ position: 'absolute', top: '100%', right: 0, marginTop: 6, background: 'linear-gradient(135deg,#eef2ff,#f5f3ff)', border: '1.5px solid rgba(99,102,241,0.2)', borderTop: '2px solid #8b5cf6', borderRadius: 12, padding: '7px 12px', whiteSpace: 'nowrap', zIndex: 100, boxShadow: '0 4px 20px rgba(139,92,246,0.15), inset 0 -1px 0 #c7d2fe', animation: 'rshud-slide 0.18s ease', display: 'flex', alignItems: 'center', gap: 8, minWidth: 260 }}>
+                               <div style={{ position: 'absolute', top: '100%', right: 0, marginTop: 6, background: 'linear-gradient(135deg,#eef2ff,#f5f3ff)', borderStyle: 'solid', borderTopWidth: 2, borderRightWidth: 1.5, borderBottomWidth: 1.5, borderLeftWidth: 1.5, borderTopColor: '#8b5cf6', borderRightColor: 'rgba(99,102,241,0.2)', borderBottomColor: 'rgba(99,102,241,0.2)', borderLeftColor: 'rgba(99,102,241,0.2)', borderRadius: 12, padding: '7px 12px', whiteSpace: 'nowrap', zIndex: 100, boxShadow: '0 4px 20px rgba(139,92,246,0.15), inset 0 -1px 0 #c7d2fe', animation: 'rshud-slide 0.18s ease', display: 'flex', alignItems: 'center', gap: 8, minWidth: 260 }}>
                                    <span style={{ fontSize: 14, flexShrink: 0 }}>📝</span>
                                    <span style={{ fontSize: 10, fontWeight: 900, color: '#7c3aed', textTransform: 'uppercase', letterSpacing: '0.06em', flexShrink: 0 }}>MCQ Score</span>
                                    <div style={{ width: 1, height: 14, background: '#e2e8f0', flexShrink: 0 }} />

@@ -2,7 +2,7 @@
 import React, { useState, useEffect, useMemo, useRef } from "react";
 import QRCode from "react-qr-code";
 import type { School, SchoolClass, SchoolStudent } from "../../school-types";
-import { schoolPrintFieldEnabled } from "../../school-types";
+import { schoolPrintFieldEnabled, resolveSchoolSignatory } from "../../school-types";
 import { getExams } from "../../school-firebase";
 import {
   Award,
@@ -123,8 +123,11 @@ export const CertificateManager: React.FC<Props> = ({
     directorPhone: school?.directorPhone || "",
     principalSignatureUrl: school?.principalSignatureUrl || "",
     directorSignatureUrl: school?.directorSignatureUrl || "",
+    managerName: school?.managerName || "",
+    managerSignatureUrl: school?.managerSignatureUrl || "",
     customFields: school?.customFields || [],
     documentPrintFields: school?.documentPrintFields || {},
+    signatureRouting: school?.signatureRouting,
   });
 
   useEffect(() => {
@@ -144,8 +147,11 @@ export const CertificateManager: React.FC<Props> = ({
       directorPhone: school.directorPhone || "",
       principalSignatureUrl: school.principalSignatureUrl || "",
       directorSignatureUrl: school.directorSignatureUrl || "",
+      managerName: school.managerName || "",
+      managerSignatureUrl: school.managerSignatureUrl || "",
       customFields: school.customFields || [],
       documentPrintFields: school.documentPrintFields || {},
+      signatureRouting: school.signatureRouting ?? previous.signatureRouting,
     }));
   }, [school]);
 
@@ -445,6 +451,7 @@ export const CertificateManager: React.FC<Props> = ({
     ].includes(certArch.headerStyle) &&
     certVariant !== "classic_ribbon";
 
+  const certBaseBw = isHeavyBars ? "0px" : isGuilloche || isArtDeco || activeCertTemplate.borderStyle === "double" ? "8px" : "4px";
   const sheetInlineStyle: React.CSSProperties = useCustomCertTpl
     ? {
         fontFamily: certArch?.serifFont ? "'Georgia', serif" : certArch?.monoAccent ? "'JetBrains Mono', monospace" : "'Plus Jakarta Sans', 'Georgia', serif",
@@ -457,10 +464,10 @@ export const CertificateManager: React.FC<Props> = ({
         backgroundSize: isBlueprint ? "18px 18px" : undefined,
         borderColor: certColors.borderColor,
         borderStyle: isGuilloche || isArtDeco ? "double" : certArch?.frameStyle === "postage_stamp" ? "dashed" : activeCertTemplate.borderStyle,
-        borderWidth: isHeavyBars ? "0px" : isGuilloche || isArtDeco || activeCertTemplate.borderStyle === "double" ? "8px" : "4px",
-        borderTopWidth: isHeavyBars ? "14px" : undefined,
-        borderBottomWidth: isHeavyBars ? "14px" : undefined,
-        borderLeftWidth: isMonoStripe ? "10px" : undefined,
+        borderTopWidth: isHeavyBars ? "14px" : certBaseBw,
+        borderRightWidth: certBaseBw,
+        borderBottomWidth: isHeavyBars ? "14px" : certBaseBw,
+        borderLeftWidth: isMonoStripe ? "10px" : certBaseBw,
         borderRadius: isBeveled ? "36px 4px 36px 4px" : undefined,
         boxShadow: isOrnate || isArtDeco || isGuilloche
           ? `inset 0 0 0 4px #fffdf4, inset 0 0 0 7px ${certColors.accentColor}`
@@ -735,12 +742,19 @@ export const CertificateManager: React.FC<Props> = ({
           </div>
         </div>
 
+        {(() => {
+          const certSig = resolveSchoolSignatory(
+            { ...school, ...schoolDetails } as Partial<School>,
+            schoolDetails.signatureRouting?.certificate || school?.signatureRouting?.certificate || "principal",
+            schoolDetails.principalTitle
+          );
+          return (
         <div className="text-center font-sans">
           <div className="h-10 border-b border-slate-400 mb-1 flex items-end justify-center">
-            {schoolDetails.principalSignatureUrl ? (
+            {certSig.signatureUrl ? (
               <img
-                src={schoolDetails.principalSignatureUrl}
-                alt="Principal Signature"
+                src={certSig.signatureUrl}
+                alt={`${certSig.roleLabel} Signature`}
                 className="max-h-9 max-w-[120px] object-contain mb-0.5"
               />
             ) : (
@@ -748,17 +762,19 @@ export const CertificateManager: React.FC<Props> = ({
                 className="italic font-serif font-black text-sm"
                 style={{ color: useCustomCertTpl ? certColors.primaryColor : "#451a03" }}
               >
-                {showSchoolDetail("principalName") ? schoolDetails.principalName : ""}
+                {certSig.role !== "principal" || showSchoolDetail("principalName") ? certSig.name : ""}
               </span>
             )}
           </div>
           <p className="font-black text-xs text-slate-900 uppercase tracking-wider">
             {useCustomCertTpl && activeCertTemplate.rightSignatoryLabel
               ? activeCertTemplate.rightSignatoryLabel
-              : schoolDetails.principalTitle}
+              : certSig.roleLabel}
           </p>
           {showSchoolDetail("schoolName") && <p className="text-[9px] text-slate-500">{schoolDetails.schoolName}</p>}
         </div>
+          );
+        })()}
       </div>
       {useCustomCertTpl && activeCertTemplate.footerNote && (
         <p className="text-[9.5px] font-sans font-semibold text-center text-slate-500 mt-3 pt-1.5 border-t border-slate-200">

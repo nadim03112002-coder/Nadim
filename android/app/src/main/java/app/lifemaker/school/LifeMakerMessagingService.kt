@@ -64,7 +64,48 @@ class LifeMakerMessagingService : FirebaseMessagingService() {
         val notifType = data["type"]?.trim()?.uppercase().orEmpty()
         val isIncomingCall = notifType == "CALL_INCOMING"
         val isWalkieMsg = notifType == "WALKIE_VOICE" || notifType == "WALKIE_TTS"
+        val isUpiProofAlert = notifType == "UPI_PAYMENT_PROOF"
+        val isUpiProofResolved = notifType == "UPI_PROOF_RESOLVED"
         val voiceExplicitlyOff = voiceSpeakRaw == "false" || voiceSpeakRaw == "0"
+
+        if (isUpiProofResolved) {
+            val resolvedId = data["proofId"].orEmpty().trim()
+            if (resolvedId.isNotEmpty()) {
+                UpiProofOverlayService.removeProof(applicationContext, resolvedId)
+            }
+            return
+        }
+
+        if (isUpiProofAlert) {
+            val proofObj = JSONObject().apply {
+                put("proofId", data["proofId"].orEmpty().ifBlank { msgId })
+                put("schoolId", data["schoolId"].orEmpty())
+                put("studentName", data["studentName"].orEmpty().ifBlank { "Student" })
+                put("monthLabel", data["monthLabel"].orEmpty())
+                put("amount", data["amount"].orEmpty().ifBlank { "0" })
+                put("billedAmount", data["billedAmount"].orEmpty().ifBlank { data["amount"].orEmpty().ifBlank { "0" } })
+                put("utrNumber", data["utrNumber"].orEmpty())
+                put("paidTime", data["paidTime"].orEmpty())
+                put("familySummary", data["familySummary"].orEmpty())
+                put("screenshotUrl", data["screenshotUrl"].orEmpty())
+            }
+            UpiProofOverlayService.enqueueAndShow(applicationContext, proofObj)
+            val totalPending = AppPrefs.getPendingUpiProofsList(applicationContext).size.coerceAtLeast(1)
+            if (!voiceExplicitlyOff) {
+                VoiceAnnouncer.speak(
+                    context = applicationContext,
+                    title = title,
+                    body = body,
+                    dedupeKey = msgId
+                )
+            }
+            NotificationHelper.showUpiProofOngoingNotification(
+                context = applicationContext,
+                proof = proofObj,
+                pendingCount = totalPending
+            )
+            return
+        }
 
         if (isWalkieMsg) {
             if (AppPrefs.isWithinWalkieSchoolHoursNow(applicationContext)) {

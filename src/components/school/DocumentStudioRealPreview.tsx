@@ -219,15 +219,16 @@ export const DocumentStudioRealPreview: React.FC<DocumentStudioRealPreviewProps>
       ? "16px"
       : "10px";
 
+    const baseFrameBw = isDefault ? "2px" : isHeavyBars ? "0px" : isGuilloche || isArtDeco || isOrnate || borderStyle === "double" ? "4px" : "2px";
     const frameStyleObj: React.CSSProperties = {
       ...fontStyle,
       borderRadius: outerRadius,
       borderColor: isDefault ? "#0f172a" : c.borderColor,
       borderStyle: isPostage || fStyle === "ink_dashed" ? "dashed" : isGuilloche || isArtDeco || isOrnate ? "double" : borderStyle,
-      borderWidth: isDefault ? "2px" : isHeavyBars ? "0px" : isGuilloche || isArtDeco || isOrnate || borderStyle === "double" ? "4px" : "2px",
-      borderTopWidth: isHeavyBars ? "9px" : undefined,
-      borderBottomWidth: isHeavyBars ? "9px" : undefined,
-      borderLeftWidth: isMonoStripe ? "8px" : undefined,
+      borderTopWidth: isHeavyBars ? "9px" : baseFrameBw,
+      borderRightWidth: baseFrameBw,
+      borderBottomWidth: isHeavyBars ? "9px" : baseFrameBw,
+      borderLeftWidth: isMonoStripe ? "8px" : baseFrameBw,
       backgroundColor: isDefault ? "#ffffff" : paperBg,
       backgroundImage: isBlueprint
         ? `linear-gradient(${c.primaryColor}14 1px, transparent 1px), linear-gradient(90deg, ${c.primaryColor}14 1px, transparent 1px)`
@@ -467,16 +468,18 @@ export const DocumentStudioRealPreview: React.FC<DocumentStudioRealPreviewProps>
   // ═══════════════════════════════════════════════════════════════════════
   const renderFeeSlipDocument = (wideZoom = false) => {
     if (feeMode === "pos_80mm") {
+      const posBaseBw = isDefault ? "1px" : isOrnate || isGuilloche ? "3px" : "2px";
       return (
         <div className="flex justify-center py-1">
           <div
             className="w-[270px] bg-white text-slate-950 p-3 shadow-lg text-[9px] font-mono relative"
             style={{
-              borderWidth: isDefault ? "1px" : isOrnate || isGuilloche ? "3px" : "2px",
+              borderTopWidth: posBaseBw,
+              borderBottomWidth: posBaseBw,
+              borderLeftWidth: isLeftSpine || isDualRails || isMonoStripe ? "6px" : posBaseBw,
+              borderRightWidth: isRightSpine || isDualRails ? "6px" : posBaseBw,
               borderStyle: isInkSaver || isTicket || isPostage ? "dashed" : isOrnate || isGuilloche ? "double" : borderStyle,
               borderColor: isDefault ? "#0f172a" : c.borderColor,
-              borderLeftWidth: isLeftSpine || isDualRails || isMonoStripe ? "6px" : undefined,
-              borderRightWidth: isRightSpine || isDualRails ? "6px" : undefined,
               backgroundColor: arch.creamPaper ? "#fffdf4" : "#ffffff",
             }}
           >

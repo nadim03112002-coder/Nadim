@@ -62,6 +62,7 @@ import { LoginGuide } from './LoginGuide';
 import { CustomAlert } from './CustomDialogs';
 import { FaceLoginModal } from './school/FaceLoginModal';
 import { parseLoginQrToken } from '../services/sessionManager';
+import { isQrVerificationExpired } from '../utils/qrVerifyUrl';
 import { getDemoSchoolDataset } from './school/demoDataStore';
 import { INITIAL_STUDENTS } from './school/feeReceiptUtils';
 import {
@@ -77,9 +78,18 @@ import {
   setLocalStudents,
   getStudentOrAdmissionRecord,
   dispatchOfficialSchoolWelcomeMessage,
+  registerStudentIdCardLinkSlot,
 } from '../school-firebase';
 import { isActiveRosterPerson, deleteFaceDescriptor } from '../utils/faceRecognitionEngine';
 import { useBackHandler } from '../utils/backNavigation';
+import {
+  isDriverUser,
+  isCorruptedDriverStudentRecord,
+  looksLikeDriverIdString,
+  promoteCorruptedUserToDriverIfApplicable,
+  purgeCorruptedDriverEntriesFromLocalCache,
+  resolveDriverFromLocalAndCloudStores,
+} from '../utils/driverIdentity';
 import {
   getPasskeyCapabilities,
   listSavedPasskeyAccounts,
@@ -171,6 +181,22 @@ export const Auth: React.FC<Props> = ({ onLogin, logActivity, appSettings, onBac
   const [cameraActive, setCameraActive] = useState(false);
   const [showQrModal, setShowQrModal] = useState(false);
   const [showFaceLoginModal, setShowFaceLoginModal] = useState(false);
+  const [pendingQrFactorChallenge, setPendingQrFactorChallenge] = useState<{
+    kind: 'STUDENT' | 'TEACHER' | 'DRIVER';
+    user: User;
+    schoolId: string;
+    schoolName?: string;
+    maskedPhone?: string;
+    expectedPhones: string[];
+    expectedDob?: string;
+    expectedFallbackId?: string;
+    verificationToken?: string;
+    qrExpiresAt?: string;
+    admissionNo?: string;
+  } | null>(null);
+  const [qrFactorInput, setQrFactorInput] = useState('');
+  const [qrFactorError, setQrFactorError] = useState<string | null>(null);
+  const [qrFactorVerifying, setQrFactorVerifying] = useState(false);
   const [facingMode, setFacingMode] = useState<'environment' | 'user'>('environment');
   const scannerInstanceRef = useRef<Html5Qrcode | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -473,6 +499,14 @@ export const Auth: React.FC<Props> = ({ onLogin, logActivity, appSettings, onBac
       let matchedTeacherUser: User | null = null;
       let matchedDriverUser: any = null;
       let targetSchoolId = DEFAULT_SCHOOL_ID;
+      let resolvedStudentRecord: any = null;
+      let resolvedSchoolNameForQr = '';
+      let resolvedMaskedPhoneHint = '';
+      let resolvedExpectedPhones: string[] = [];
+      let resolvedExpectedDob = '';
+      let resolvedVerificationToken = '';
+      let resolvedQrExpiresAt = '';
+      let resolvedFallbackCode = '';
 
       // ── BRANCH 0: Official School Bus Driver ID Card QR ──
       // Format: NSTA-SCHOOL-DRIVER:schoolId:busId:busNumber:route:driverName:driverPhone:schoolCode:schoolName
@@ -563,6 +597,25 @@ export const Auth: React.FC<Props> = ({ onLogin, logActivity, appSettings, onBac
         const embeddedSchoolName = parts[14] || '';
         targetSchoolId = cleanSchoolId;
 
+        // Extract URL verification params if QR came from chrome verify URL
+        let urlVt = '';
+        let urlExp = '';
+        if (raw.startsWith('http://') || raw.startsWith('https://')) {
+          try {
+            const parsedUrl = new URL(raw);
+            urlVt = parsedUrl.searchParams.get('vt') || '';
+            urlExp = parsedUrl.searchParams.get('exp') || '';
+          } catch {}
+        }
+        const embeddedVt = (parts[15] || urlVt || '').trim();
+        const embeddedExp = (parts[16] || urlExp || '').trim();
+
+        if (embeddedExp && isQrVerificationExpired(embeddedExp)) {
+          setError('यह ID Card QR कोड समाप्त (Expired) हो चुका है। कृपया स्कूल कार्यालय से नया डिजिटल ID जारी कराएं।');
+          setLoading(false);
+          return;
+        }
+
         // Staff / Teacher detection
         const staffKeywords = /teacher|prt|tgt|pgt|staff|faculty|instructor|coordinator|clerk|principal|educator|headmistress|director|librarian/i;
         const isStaffCard =
@@ -575,20 +628,21 @@ export const Auth: React.FC<Props> = ({ onLogin, logActivity, appSettings, onBac
           cleanRollOrEmp.startsWith('DEMO_') ||
           cleanRollOrEmp.startsWith('STAFF') ||
           cleanRollOrEmp.startsWith('TEA') ||
-          embeddedName.toLowerCase().includes('anjali') ||
-          embeddedPhone === '9871234005' ||
           Boolean(resolveTeacherOrStaff(cleanEntityId || cleanRollOrEmp || embeddedName || embeddedPhone, cleanSchoolId));
 
         if (isStaffCard) {
           const foundStaff = resolveTeacherOrStaff(cleanEntityId || cleanRollOrEmp || embeddedName || embeddedPhone, cleanSchoolId);
           const realTeacherId = cleanEntityId || foundStaff?.id || `staff_${(cleanRollOrEmp || embeddedName || Date.now()).toString().replace(/[^a-zA-Z0-9]/g, '_')}`;
           const realTeacherName = embeddedName || foundStaff?.name || 'Teacher';
-          const realEmpId = cleanRollOrEmp || foundStaff?.employeeId || (realTeacherName.toLowerCase().includes('anjali') ? 'DEMO_' : 'EMP-01');
-          const realPhone = embeddedPhone || foundStaff?.phone || (realTeacherName.toLowerCase().includes('anjali') ? '9871234005' : '9811023460');
-          const realDesignation = embeddedTitle || foundStaff?.designation || (realTeacherName.toLowerCase().includes('anjali') ? 'PRT PRIMARY TEACHER' : 'Teacher');
-          const realDept = cleanClassOrDept || foundStaff?.department || (realTeacherName.toLowerCase().includes('anjali') ? 'Primary' : 'Academic');
-          const realSchoolName = embeddedSchoolName || foundStaff?.schoolName || 'Life Maker Public School';
-          const realEmail = foundStaff?.email || `${realTeacherName.toLowerCase().replace(/[^a-z0-9]/g, '')}@teacher.lifemaker.edu.in`;
+          const realEmpId = cleanRollOrEmp || foundStaff?.employeeId || 'EMP-01';
+          const realPhone = embeddedPhone || foundStaff?.phone || '';
+          const realDesignation = embeddedTitle || foundStaff?.designation || 'Teacher';
+          const realDept = cleanClassOrDept || foundStaff?.department || 'Academic';
+          const realSchoolName = embeddedSchoolName || foundStaff?.schoolName || 'Registered School Campus';
+          const realEmail = foundStaff?.email || `${realTeacherName.toLowerCase().replace(/[^a-z0-9]/g, '') || 'staff'}@school.edu.in`;
+          resolvedSchoolNameForQr = realSchoolName;
+          if (realPhone) resolvedExpectedPhones.push(realPhone);
+          resolvedFallbackCode = realEmpId;
 
           matchedTeacherUser = {
             id: realTeacherId,
@@ -639,13 +693,50 @@ export const Auth: React.FC<Props> = ({ onLogin, logActivity, appSettings, onBac
             } catch {}
           }
 
+          // Check active/revoked status locally before proceeding
+          if (found && (found.active === false || found.isDeleted || found.tcIssued || String(found.qrStatus || '').toUpperCase() === 'REVOKED')) {
+            setError('यह Student Digital ID स्कूल द्वारा निष्क्रिय या रद्द (Revoked) किया जा चुका है।');
+            setLoading(false);
+            return;
+          }
+
+          // Server-side verification check (non-blocking if offline, strict rejection if EXPIRED/REVOKED/MISMATCH)
+          let serverVerifyResp: any = null;
+          try {
+            const verifyRes = await fetch('/api/qr/verify-id', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                schoolId: cleanSchoolId,
+                studentId: cleanEntityId || found?.id || '',
+                admissionNo: embeddedAdmNo || found?.admissionNo || '',
+                vt: embeddedVt,
+                exp: embeddedExp || found?.qrExpiresAt || '',
+              }),
+            });
+            if (verifyRes.ok) {
+              serverVerifyResp = await verifyRes.json();
+              if (
+                serverVerifyResp &&
+                serverVerifyResp.verified === false &&
+                (serverVerifyResp.status === 'EXPIRED' ||
+                  serverVerifyResp.status === 'REVOKED' ||
+                  serverVerifyResp.status === 'TOKEN_MISMATCH')
+              ) {
+                setError(serverVerifyResp.reason || 'ID Card QR सत्यापन विफल रहा (Expired/Revoked)।');
+                setLoading(false);
+                return;
+              }
+            }
+          } catch {}
+
           // Scan parts for human-readable class name (e.g. "Class 9", "Nursery", "KG 1")
           // Never check parts[0..2] (schoolId, studentId, rollNo) or phone/fee fields!
           let discoveredClassName = embeddedTitle?.trim() || '';
           if (!discoveredClassName || discoveredClassName.length >= 18 || /^[0-9a-zA-Z]{15,}$/.test(discoveredClassName)) {
             discoveredClassName = '';
             for (let i = 3; i < parts.length; i++) {
-              if (i === 4 || i === 5 || i === 6 || i === 7 || i === 8 || i === 9 || i === 10 || i === 11 || i === 12 || i === 14) continue;
+              if (i === 4 || i === 5 || i === 6 || i === 7 || i === 8 || i === 9 || i === 10 || i === 11 || i === 12 || i === 14 || i >= 15) continue;
               const p = parts[i]?.trim();
               if (p && (/^Class\s*\d+/i.test(p) || /^(Nursery|LKG|UKG|KG|Play|Prep)/i.test(p) || /^\d+(st|nd|rd|th)(\s*[A-Z])?$/i.test(p))) {
                 discoveredClassName = p;
@@ -658,6 +749,7 @@ export const Auth: React.FC<Props> = ({ onLogin, logActivity, appSettings, onBac
           let resolvedFee = embeddedMonthlyFee;
           if (resolvedFee === undefined) {
             for (let i = 0; i < parts.length; i++) {
+              if (i >= 15) continue;
               const p = parts[i]?.trim();
               if (p && !isNaN(Number(p)) && Number(p) >= 200 && Number(p) <= 50000 && i !== 2 && i !== 6) {
                 resolvedFee = Number(p);
@@ -667,31 +759,41 @@ export const Auth: React.FC<Props> = ({ onLogin, logActivity, appSettings, onBac
           }
 
           const isCrypticClassId = cleanClassOrDept && cleanClassOrDept.length >= 14 && /[A-Z]/.test(cleanClassOrDept) && /[0-9]/.test(cleanClassOrDept);
-          // ALWAYS prioritize the EMBEDDED student data inside the QR code
           const realStudentId = cleanEntityId || found?.id || `stu_${(embeddedAdmNo || embeddedName || Date.now()).toString().replace(/[^a-zA-Z0-9]/g, '_')}`;
-          const realName = embeddedName || found?.name || (cleanRollOrEmp ? `Student (Roll ${cleanRollOrEmp})` : `Student (${realStudentId.slice(-4)})`);
-          const realRollNo = cleanRollOrEmp || found?.rollNo || '01';
+          const realName = embeddedName || found?.name || serverVerifyResp?.studentName || (cleanRollOrEmp ? `Student (Roll ${cleanRollOrEmp})` : `Student (${realStudentId.slice(-4)})`);
+          const realRollNo = cleanRollOrEmp || found?.rollNo || serverVerifyResp?.rollNo || '01';
           const realAdmissionNo = (embeddedAdmNo && !embeddedAdmNo.startsWith('NSTA-') && !embeddedAdmNo.includes(':'))
             ? embeddedAdmNo
-            : (found?.admissionNo || `ADM-${(cleanEntityId || realStudentId).slice(-6).toUpperCase()}`);
+            : (found?.admissionNo || serverVerifyResp?.admissionNo || `ADM-${(cleanEntityId || realStudentId).slice(-6).toUpperCase()}`);
           const realClassName =
             discoveredClassName ||
             found?.className ||
+            serverVerifyResp?.className ||
             (!isCrypticClassId && cleanClassOrDept ? cleanClassOrDept.replace(/^cls_/i, '') : '') ||
-            'Class 9';
-          const realClass = cleanClassOrDept || found?.classGrade || found?.classId || 'cls_10';
-          const realPhone = embeddedPhone || found?.phone || '9876543210';
-          const realFather = embeddedFatherName || found?.fatherName || (realName.toLowerCase().includes('nadim') ? 'Mustak' : '');
-          const realMother = embeddedMotherName || found?.motherName || (realName.toLowerCase().includes('nadim') ? 'Sayda khatoon' : '');
-          const realBlood = embeddedBloodGroup || found?.bloodGroup || (realName.toLowerCase().includes('nadim') ? 'O+' : '');
-          const realDob = embeddedDob || found?.dateOfBirth || (realName.toLowerCase().includes('nadim') ? '2002-11-01' : '');
-          const realAddress = embeddedAddress || found?.address || (realName.toLowerCase().includes('nadim') ? 'Chapra' : '');
-          // Prioritize authentic live database monthly fee over static printed QR fee
+            'Class 1';
+          const realClass = cleanClassOrDept || found?.classGrade || found?.classId || 'cls_1';
+          const realPhone = embeddedPhone || found?.phone || found?.whatsappNo || '';
+          const realFather = embeddedFatherName || found?.fatherName || '';
+          const realMother = embeddedMotherName || found?.motherName || '';
+          const realBlood = embeddedBloodGroup || found?.bloodGroup || '';
+          const realDob = embeddedDob || found?.dateOfBirth || '';
+          const realAddress = embeddedAddress || found?.address || '';
           const realFee = (found?.monthlyFee !== undefined && found.monthlyFee > 0)
             ? found.monthlyFee
-            : ((resolvedFee !== undefined && resolvedFee > 0) ? resolvedFee : 1800);
-          const realSchoolName = embeddedSchoolName || found?.schoolName || 'Life Maker Public School';
-          const realEmail = found?.email || (realAdmissionNo ? `${realAdmissionNo.toLowerCase().replace(/[^a-z0-9]/g, '')}@student.lifemaker.edu.in` : `student_${realStudentId.slice(-6)}@lifemaker.edu.in`);
+            : ((resolvedFee !== undefined && resolvedFee > 0) ? resolvedFee : 0);
+          const realSchoolName = embeddedSchoolName || found?.schoolName || serverVerifyResp?.schoolName || 'Registered School Campus';
+          const realEmail = found?.email || (realAdmissionNo ? `${realAdmissionNo.toLowerCase().replace(/[^a-z0-9]/g, '')}@student.school.edu.in` : `student_${realStudentId.slice(-6)}@school.edu.in`);
+
+          resolvedStudentRecord = found;
+          resolvedSchoolNameForQr = realSchoolName;
+          resolvedMaskedPhoneHint = serverVerifyResp?.maskedPhone || '';
+          resolvedVerificationToken = embeddedVt || serverVerifyResp?.verificationToken || found?.verificationToken || '';
+          resolvedQrExpiresAt = embeddedExp || serverVerifyResp?.qrExpiresAt || found?.qrExpiresAt || '';
+          resolvedFallbackCode = realAdmissionNo;
+          if (realDob) resolvedExpectedDob = realDob;
+          [embeddedPhone, found?.phone, found?.whatsappNo, found?.fatherPhone, found?.motherPhone, found?.emergencyPhone]
+            .filter(Boolean)
+            .forEach((p) => resolvedExpectedPhones.push(String(p)));
 
           // Check if an existing account already exists with this student's ID, admission no, or phone
           let existingLinkedUser: any = null;
@@ -736,6 +838,7 @@ export const Auth: React.FC<Props> = ({ onLogin, logActivity, appSettings, onBac
           if (existingLinkedUser) {
             matchedStudentUser = {
               ...existingLinkedUser,
+              studentId: realStudentId,
               schoolId: cleanSchoolId,
               schoolName: realSchoolName || existingLinkedUser.schoolName,
               classLevel: realClassName || existingLinkedUser.classLevel || realClass,
@@ -852,8 +955,11 @@ export const Auth: React.FC<Props> = ({ onLogin, logActivity, appSettings, onBac
         const realAdm = admNo || found?.admissionNo || '';
         const realRoll = found?.rollNo || (realAdm ? realAdm.replace(/\D/g, '').slice(-2) : '01') || '01';
         const realClass = found?.classGrade || found?.classId || receiptClass || '10';
-        const realPhone = found?.phone || '9876543210';
-        const realEmail = found?.email || (realAdm ? `${realAdm.toLowerCase().replace(/[^a-z0-9]/g, '')}@student.lmps.edu.in` : `student_${realId.slice(-6)}@lmps.edu.in`);
+        const realPhone = found?.phone || '';
+        const realEmail = found?.email || (realAdm ? `${realAdm.toLowerCase().replace(/[^a-z0-9]/g, '')}@student.school.edu.in` : `student_${realId.slice(-6)}@school.edu.in`);
+        if (found?.phone) resolvedExpectedPhones.push(found.phone);
+        if (found?.dateOfBirth) resolvedExpectedDob = found.dateOfBirth;
+        resolvedFallbackCode = realAdm || receiptNo;
 
         matchedStudentUser = {
           id: realId,
@@ -911,8 +1017,11 @@ export const Auth: React.FC<Props> = ({ onLogin, logActivity, appSettings, onBac
         const realRoll = found?.rollNo || rollNo;
         const realClass = found?.classGrade || found?.classId || className;
         const realAdm = found?.admissionNo || admNo || '';
-        const realPhone = found?.phone || '9876543210';
-        const realEmail = found?.email || (realAdm ? `${realAdm.toLowerCase().replace(/[^a-z0-9]/g, '')}@student.lmps.edu.in` : `student_${realId.slice(-6)}@lmps.edu.in`);
+        const realPhone = found?.phone || '';
+        const realEmail = found?.email || (realAdm ? `${realAdm.toLowerCase().replace(/[^a-z0-9]/g, '')}@student.school.edu.in` : `student_${realId.slice(-6)}@school.edu.in`);
+        if (found?.phone) resolvedExpectedPhones.push(found.phone);
+        if (found?.dateOfBirth) resolvedExpectedDob = found.dateOfBirth;
+        resolvedFallbackCode = realAdm || realRoll;
 
         matchedStudentUser = {
           id: realId,
@@ -957,17 +1066,19 @@ export const Auth: React.FC<Props> = ({ onLogin, logActivity, appSettings, onBac
         const foundStaff = resolveTeacherOrStaff(teacherId || teacherName || raw, schoolId);
         const realId = foundStaff?.id || teacherId;
         const realName = foundStaff?.name || teacherName;
+        if (foundStaff?.phone) resolvedExpectedPhones.push(foundStaff.phone);
+        resolvedFallbackCode = foundStaff?.employeeId || realId;
         matchedTeacherUser = {
           id: realId,
           uid: realId,
           displayId: foundStaff?.employeeId ? `EMP-${foundStaff.employeeId}` : `TEA-${realId.slice(0, 5).toUpperCase()}`,
           name: realName,
-          email: foundStaff?.email || 'teacher@lifemaker.edu.in',
-          mobile: foundStaff?.phone || '9811023460',
+          email: foundStaff?.email || 'teacher@school.edu.in',
+          mobile: foundStaff?.phone || '',
           role: 'TEACHER',
           schoolId: schoolId,
-          schoolName: foundStaff?.schoolName || 'LIFE MAKER PUBLIC SCHOOL',
-          department: foundStaff?.department || 'Primary',
+          schoolName: foundStaff?.schoolName || 'Registered School Campus',
+          department: foundStaff?.department || 'Academic',
           designation: foundStaff?.designation || 'Teacher',
           credits: 500,
           streak: 12,
@@ -982,53 +1093,140 @@ export const Auth: React.FC<Props> = ({ onLogin, logActivity, appSettings, onBac
       else if (raw.startsWith('http://') || raw.startsWith('https://')) {
         try {
           const urlObj = new URL(raw);
-          const isDriverLink = urlObj.searchParams.get('driverConsole') === '1' || urlObj.searchParams.get('driver') === '1';
-          const qSchoolRaw = urlObj.searchParams.get('school') || urlObj.searchParams.get('schoolId') || '';
+          const urlDocType = (urlObj.searchParams.get('type') || '').toLowerCase();
+          const isDriverLink =
+            urlObj.searchParams.get('driverConsole') === '1' ||
+            urlObj.searchParams.get('driver') === '1' ||
+            urlDocType === 'driver_id';
+          const qSchoolRaw = urlObj.searchParams.get('school') || urlObj.searchParams.get('schoolId') || urlObj.searchParams.get('s') || '';
           const qSchool = !qSchoolRaw || qSchoolRaw === 'dps_gurgaon_sector45' ? DEFAULT_SCHOOL_ID : qSchoolRaw;
 
           if (isDriverLink) {
-            const qBusId = urlObj.searchParams.get('busId') || `bus_${Date.now()}`;
+            const qBusId = urlObj.searchParams.get('busId') || urlObj.searchParams.get('driverId') || `bus_${Date.now()}`;
             const qBusNo = urlObj.searchParams.get('busNumber') || 'School Bus';
             const qRoute = urlObj.searchParams.get('route') || 'School Bus Route';
             const qDriverName = urlObj.searchParams.get('driverName') || 'Bus Driver';
             const qDriverPhone = urlObj.searchParams.get('driverPhone') || '';
             const qSchoolCode = urlObj.searchParams.get('schoolCode') || '';
             const qSchoolName = urlObj.searchParams.get('schoolName') || 'School Bus Fleet';
-            matchedDriverUser = {
-              id: `driver_${qBusId}`,
-              uid: `driver_${qBusId}`,
-              displayId: `DRV-${qBusId.slice(-5).toUpperCase()}`,
-              name: qDriverName,
-              email: `driver.${qBusId}@school.internal`,
-              mobile: qDriverPhone,
-              role: 'DRIVER',
-              schoolId: qSchool,
-              schoolCode: qSchoolCode,
-              schoolName: qSchoolName,
-              busId: qBusId,
-              busNumber: qBusNo,
-              busRoute: qRoute,
-              profileCompleted: true,
-              provider: 'qr_driver_id',
-              isQrLogin: true,
-            };
+            const resolvedFromStore = await resolveDriverFromLocalAndCloudStores(
+              qDriverPhone || qBusId,
+              qSchool
+            ).catch(() => null);
+            matchedDriverUser = resolvedFromStore
+              ? { ...resolvedFromStore, provider: 'qr_driver_id', isQrLogin: true }
+              : {
+                  id: `driver_${qBusId}`,
+                  uid: `driver_${qBusId}`,
+                  displayId: `DRV-${qBusId.slice(-5).toUpperCase()}`,
+                  name: qDriverName,
+                  email: `driver.${qBusId}@school.internal`,
+                  mobile: qDriverPhone,
+                  role: 'DRIVER',
+                  schoolRole: 'DRIVER',
+                  schoolId: qSchool,
+                  schoolCode: qSchoolCode,
+                  schoolName: qSchoolName,
+                  busId: qBusId,
+                  busNumber: qBusNo,
+                  busRoute: qRoute,
+                  profileCompleted: true,
+                  provider: 'qr_driver_id',
+                  isQrLogin: true,
+                };
           } else {
             const qStudent = urlObj.searchParams.get('student') || urlObj.searchParams.get('studentId') || urlObj.searchParams.get('u') || urlObj.searchParams.get('uid') || urlObj.searchParams.get('id');
             const qRoll = urlObj.searchParams.get('roll') || urlObj.searchParams.get('rollNo') || urlObj.searchParams.get('r');
             const qName = urlObj.searchParams.get('name') || urlObj.searchParams.get('n');
             const qAdm = urlObj.searchParams.get('adm') || urlObj.searchParams.get('admissionNo');
+            const qVt = (urlObj.searchParams.get('t') || urlObj.searchParams.get('vt') || '').trim();
+            const qExp = (urlObj.searchParams.get('exp') || '').trim();
 
-            if (qStudent || qRoll || qName || qAdm) {
+            if (qExp && isQrVerificationExpired(qExp)) {
+              setError('यह Verification QR लिंक समाप्त (Expired) हो चुका है। नया QR कोड स्कैन करें।');
+              setLoading(false);
+              return;
+            }
+
+            if (qStudent || qRoll || qName || qAdm || qVt) {
               targetSchoolId = qSchool;
-              const found = resolveStudent(qStudent || qRoll || qAdm || qName || '', qSchool);
-              const realId = found?.id || qStudent || `stu_${Date.now()}`;
+              let found: any = resolveStudent(qStudent || qRoll || qAdm || qName || '', qSchool);
+              if (!found && qVt) {
+                const schoolList = getLocalStudents(qSchool) || [];
+                const revokedPrev = schoolList.find(
+                  (s: any) => Array.isArray(s.previousVerificationTokens) && s.previousVerificationTokens.includes(qVt)
+                );
+                if (revokedPrev) {
+                  setError('पुराने सत्र का QR कार्ड समाप्त/रद्द (Revoked) हो चुका है। कृपया नया डिजिटल ID कार्ड स्कैन करें।');
+                  setLoading(false);
+                  return;
+                }
+                found = schoolList.find((s: any) => s.verificationToken === qVt) || null;
+              }
+
+              let serverVerifyResp: any = null;
+              if (qVt || qStudent) {
+                try {
+                  const vRes = await fetch('/api/qr/verify-id', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                      schoolId: qSchool,
+                      studentId: qStudent || found?.id || '',
+                      admissionNo: qAdm || found?.admissionNo || '',
+                      t: qVt,
+                      vt: qVt,
+                      exp: qExp || found?.qrExpiresAt || '',
+                    }),
+                  });
+                  if (vRes.ok) {
+                    serverVerifyResp = await vRes.json();
+                    if (
+                      serverVerifyResp &&
+                      serverVerifyResp.verified === false &&
+                      (serverVerifyResp.status === 'EXPIRED' ||
+                        serverVerifyResp.status === 'REVOKED' ||
+                        serverVerifyResp.status === 'TOKEN_MISMATCH')
+                    ) {
+                      setError(serverVerifyResp.reason || 'ID Card QR सत्यापन विफल रहा (Expired/Revoked)।');
+                      setLoading(false);
+                      return;
+                    }
+                  }
+                } catch {}
+              }
+
+              if (!found && serverVerifyResp?.studentId) {
+                found = resolveStudent(serverVerifyResp.studentId, qSchool);
+                if (!found) {
+                  try {
+                    found = await getStudent(qSchool, serverVerifyResp.studentId);
+                  } catch {}
+                }
+              }
+
+              if (found && (found.active === false || found.isDeleted || found.tcIssued || String(found.qrStatus || '').toUpperCase() === 'REVOKED')) {
+                setError('यह Student Account निष्क्रिय (Inactive/Revoked) है।');
+                setLoading(false);
+                return;
+              }
+              const realId = found?.id || serverVerifyResp?.studentId || qStudent || `stu_${Date.now()}`;
+              if (found?.phone) resolvedExpectedPhones.push(found.phone);
+              if (found?.whatsappNo) resolvedExpectedPhones.push(found.whatsappNo);
+              if (found?.dateOfBirth) resolvedExpectedDob = found.dateOfBirth;
+              resolvedStudentRecord = found;
+              resolvedSchoolNameForQr = serverVerifyResp?.schoolName || found?.schoolName || '';
+              resolvedMaskedPhoneHint = serverVerifyResp?.maskedPhone || '';
+              resolvedVerificationToken = qVt || found?.verificationToken || serverVerifyResp?.verificationToken || '';
+              resolvedQrExpiresAt = qExp || found?.qrExpiresAt || serverVerifyResp?.qrExpiresAt || '';
+              resolvedFallbackCode = found?.admissionNo || qAdm || '';
               matchedStudentUser = {
                 id: realId,
                 uid: realId,
-                displayId: (found?.rollNo || qRoll) ? `ROLL-${found?.rollNo || qRoll}` : `STU-${realId.slice(0, 6).toUpperCase()}`,
-                name: found?.name || qName || 'Student',
-                email: found?.email || `${realId}@student.lmps.edu.in`,
-                mobile: found?.phone || '9876543210',
+                displayId: (found?.rollNo || serverVerifyResp?.rollNo || qRoll) ? `ROLL-${found?.rollNo || serverVerifyResp?.rollNo || qRoll}` : `STU-${realId.slice(0, 6).toUpperCase()}`,
+                name: found?.name || serverVerifyResp?.studentName || qName || 'Student',
+                email: found?.email || `${realId}@student.school.edu.in`,
+                mobile: found?.phone || '',
                 role: 'STUDENT',
                 userType: 'SCHOOL_STUDENT',
                 schoolRole: 'STUDENT',
@@ -1054,7 +1252,12 @@ export const Auth: React.FC<Props> = ({ onLogin, logActivity, appSettings, onBac
       else if (raw.startsWith('{') && raw.endsWith('}')) {
         try {
           const parsed = JSON.parse(raw);
-          if (parsed.type === 'DRIVER_ID' || parsed.role === 'DRIVER' || parsed.busId) {
+          if (
+            parsed.type === 'DRIVER_ID' ||
+            parsed.role === 'DRIVER' ||
+            parsed.busId ||
+            /^(drv|driver)[-_]/i.test(String(parsed.id || parsed.driverId || ''))
+          ) {
             const cleanBusId = parsed.busId || `bus_${Date.now()}`;
             matchedDriverUser = {
               id: `driver_${cleanBusId}`,
@@ -1076,13 +1279,21 @@ export const Auth: React.FC<Props> = ({ onLogin, logActivity, appSettings, onBac
             };
           } else if (parsed.type === 'STUDENT_ID' || parsed.studentId || parsed.studentName || parsed.name) {
             const cleanId = parsed.studentId || parsed.id || `stu_${Date.now()}`;
+            if (parsed.exp && isQrVerificationExpired(String(parsed.exp))) {
+              setError('यह Student QR कोड समाप्त (Expired) हो चुका है।');
+              setLoading(false);
+              return;
+            }
+            if (parsed.mobile || parsed.phone) resolvedExpectedPhones.push(String(parsed.mobile || parsed.phone));
+            if (parsed.dob || parsed.dateOfBirth) resolvedExpectedDob = String(parsed.dob || parsed.dateOfBirth);
+            resolvedFallbackCode = parsed.admissionNo || '';
             matchedStudentUser = {
               id: cleanId,
               uid: cleanId,
               displayId: parsed.rollNo ? `ROLL-${parsed.rollNo}` : 'NSTA-STUDENT',
               name: parsed.name || parsed.studentName || 'Student',
-              email: parsed.email || `${cleanId}@student.lifemaker.edu.in`,
-              mobile: parsed.mobile || parsed.phone || '9876543210',
+              email: parsed.email || `${cleanId}@student.school.edu.in`,
+              mobile: parsed.mobile || parsed.phone || '',
               role: 'STUDENT',
               userType: 'SCHOOL_STUDENT',
               schoolRole: 'STUDENT',
@@ -1097,13 +1308,15 @@ export const Auth: React.FC<Props> = ({ onLogin, logActivity, appSettings, onBac
             };
           } else if (parsed.type === 'TEACHER_ID' || parsed.teacherId || parsed.role === 'TEACHER') {
             const cleanId = parsed.teacherId || `tea_${Date.now()}`;
+            if (parsed.phone || parsed.mobile) resolvedExpectedPhones.push(String(parsed.phone || parsed.mobile));
+            resolvedFallbackCode = cleanId;
             matchedTeacherUser = {
               id: cleanId,
               uid: cleanId,
               displayId: 'NSTA-TEACHER',
               name: parsed.name || 'Teacher',
-              email: parsed.email || 'teacher@lifemaker.edu.in',
-              mobile: parsed.phone || '9525400122',
+              email: parsed.email || 'teacher@school.edu.in',
+              mobile: parsed.phone || parsed.mobile || '',
               role: 'TEACHER',
               schoolId: parsed.schoolId && parsed.schoolId !== 'dps_gurgaon_sector45' ? parsed.schoolId : DEFAULT_SCHOOL_ID,
               credits: 200,
@@ -1115,10 +1328,38 @@ export const Auth: React.FC<Props> = ({ onLogin, logActivity, appSettings, onBac
         } catch {}
       }
 
-      // ── BRANCH 6: Standard NSTA Session QR (Cross-device login) ──
+      // ── BRANCH 6: Standard NSTA Session QR (Cross-device dynamic login with strict expiry + server replay check) ──
       if (!matchedDriverUser && !matchedStudentUser && !matchedTeacherUser) {
         const loginPayload = parseLoginQrToken(raw);
         if (loginPayload && loginPayload.uid) {
+          if (loginPayload.isExpired) {
+            setError('यह Login QR समाप्त (Expired) हो चुका है या असुरक्षित है। कृपया नया डायनामिक QR कोड जनरेट करें।');
+            setLoading(false);
+            return;
+          }
+
+          // Server-side validation (checks TTL, expiry window, and single-use nonce anti-replay)
+          try {
+            const valRes = await fetch('/api/qr/login-validate', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                uid: loginPayload.uid,
+                ts: loginPayload.ts,
+                exp: loginPayload.exp,
+                nonce: loginPayload.nonce || '',
+              }),
+            });
+            if (valRes.ok) {
+              const valData = await valRes.json();
+              if (valData && valData.valid === false) {
+                setError(valData.reason || 'Login QR अमान्य या पहले ही उपयोग किया जा चुका है। नया QR कोड जनरेट करें।');
+                setLoading(false);
+                return;
+              }
+            }
+          } catch {}
+
           let fresh = await getFreshUserData(loginPayload.uid);
           if (!fresh) fresh = await getUserData(loginPayload.uid);
 
@@ -1170,148 +1411,72 @@ export const Auth: React.FC<Props> = ({ onLogin, logActivity, appSettings, onBac
         }
       }
 
-      // ── EXECUTE DRIVER LOGIN (INSTANT & DIRECT TO DRIVER DASHBOARD) ──
+      // ── REQUIRE SECOND-FACTOR / DEVICE VERIFICATION FOR STATIC ID CARD QR LOGINS ──
+      const maskPhoneForHint = (p?: string) => {
+        const digits = String(p || '').replace(/\D/g, '');
+        if (digits.length < 4) return '';
+        return `${'*'.repeat(Math.max(4, digits.length - 4))}${digits.slice(-4)}`;
+      };
+
       if (matchedDriverUser) {
-        try {
-          const sid = matchedDriverUser.schoolId && matchedDriverUser.schoolId !== 'dps_gurgaon_sector45' ? matchedDriverUser.schoolId : DEFAULT_SCHOOL_ID;
-          const fitKey = `bus_fitness_${sid}`;
-          const existingFit = JSON.parse(localStorage.getItem(fitKey) || '[]');
-          if (Array.isArray(existingFit) && !existingFit.some((b: any) => b.id === matchedDriverUser.busId)) {
-            localStorage.setItem(
-              fitKey,
-              JSON.stringify([
-                {
-                  id: matchedDriverUser.busId,
-                  schoolId: sid,
-                  vehicleNumber: matchedDriverUser.busNumber,
-                  route: matchedDriverUser.busRoute,
-                  driverName: matchedDriverUser.name,
-                  driverPhone: matchedDriverUser.mobile,
-                },
-                ...existingFit,
-              ])
-            );
-          }
-          localStorage.setItem('nst_current_user', JSON.stringify(matchedDriverUser));
-          localStorage.setItem('nsta_cached_user', JSON.stringify(matchedDriverUser));
-          localStorage.setItem('nst_app_view_mode', 'DRIVER');
-          if (sid) localStorage.setItem('nst_active_school_id', sid);
-        } catch {}
-
-        setShowQrModal(false);
-        triggerLoginSuccess(matchedDriverUser);
+        if (matchedDriverUser.mobile) resolvedExpectedPhones.push(matchedDriverUser.mobile);
+        const uniquePhones = Array.from(new Set(resolvedExpectedPhones.map((p) => String(p).replace(/\D/g, '')).filter((p) => p.length >= 4)));
+        setPendingQrFactorChallenge({
+          kind: 'DRIVER',
+          user: matchedDriverUser,
+          schoolId: matchedDriverUser.schoolId || targetSchoolId,
+          schoolName: matchedDriverUser.schoolName || resolvedSchoolNameForQr,
+          maskedPhone: resolvedMaskedPhoneHint || maskPhoneForHint(uniquePhones[0]),
+          expectedPhones: uniquePhones,
+          expectedFallbackId: matchedDriverUser.busNumber || matchedDriverUser.busId || '',
+        });
+        setQrFactorInput('');
+        setQrFactorError(null);
+        setShowQrModal(true);
+        setLoading(false);
         return;
       }
 
-      // ── EXECUTE STUDENT LOGIN (INSTANT & NON-BLOCKING) ──
       if (matchedStudentUser) {
-        // Ensure student has valid monthlyFee default
-        if (!matchedStudentUser.monthlyFee || matchedStudentUser.monthlyFee <= 0) {
-          matchedStudentUser.monthlyFee = 1800;
-        }
-
-        // 1. Immediately cache locally to localStorage so login never fails and has 0ms latency
-        localStorage.setItem('nst_current_user', JSON.stringify(matchedStudentUser));
-        localStorage.setItem('nsta_cached_user', JSON.stringify(matchedStudentUser));
-        localStorage.setItem(`nst_user_profile_${matchedStudentUser.id}`, JSON.stringify(matchedStudentUser));
-        localStorage.setItem(`nst_school_user_${matchedStudentUser.id}`, JSON.stringify({
-          uid: matchedStudentUser.id,
+        if (matchedStudentUser.mobile) resolvedExpectedPhones.push(matchedStudentUser.mobile);
+        if (matchedStudentUser.dateOfBirth && !resolvedExpectedDob) resolvedExpectedDob = String(matchedStudentUser.dateOfBirth);
+        const uniquePhones = Array.from(new Set(resolvedExpectedPhones.map((p) => String(p).replace(/\D/g, '')).filter((p) => p.length >= 4)));
+        setPendingQrFactorChallenge({
+          kind: 'STUDENT',
+          user: matchedStudentUser,
           schoolId: matchedStudentUser.schoolId || targetSchoolId,
-          role: 'SCHOOL_STUDENT',
-          name: matchedStudentUser.name,
-          email: matchedStudentUser.email,
-          studentRef: matchedStudentUser.id,
-          classId: matchedStudentUser.classLevel,
-          sessionId: '2026-27'
-        }));
-
-        // 2. Also ensure local school students pool & permanent user-linked student bundle include this student
-        try {
-          const sid = matchedStudentUser.schoolId || targetSchoolId;
-          const studentEntry = {
-            type: 'STUDENT',
-            id: matchedStudentUser.id,
-            schoolId: sid,
-            schoolName: realSchoolName || matchedStudentUser.schoolName || '',
-            name: matchedStudentUser.name,
-            rollNo: (matchedStudentUser.displayId || '').replace('ROLL-', '') || '01',
-            admissionNo: matchedStudentUser.admissionNo || '',
-            phone: matchedStudentUser.mobile || '',
-            classId: matchedStudentUser.classLevel || 'cls_10',
-            monthlyFee: matchedStudentUser.monthlyFee || 1800,
-            active: true,
-            createdAt: new Date().toISOString()
-          };
-          const curPool = getLocalStudents(sid);
-          setLocalStudents(sid, [studentEntry, ...curPool.filter(s => s.id !== matchedStudentUser!.id && (!matchedStudentUser!.admissionNo || s.admissionNo !== matchedStudentUser!.admissionNo))]);
-          if (sid !== DEFAULT_SCHOOL_ID) {
-            const defPool = getLocalStudents(DEFAULT_SCHOOL_ID);
-            setLocalStudents(DEFAULT_SCHOOL_ID, [studentEntry, ...defPool.filter(s => s.id !== matchedStudentUser!.id && (!matchedStudentUser!.admissionNo || s.admissionNo !== matchedStudentUser!.admissionNo))]);
-          }
-          const activeKey = getStudentLinkKey(studentEntry, sid);
-          const mergedStudents = [studentEntry];
-          localStorage.setItem('nst_linked_students', JSON.stringify(mergedStudents));
-          localStorage.setItem(
-            `nst_user_linked_students_${matchedStudentUser.id}`,
-            JSON.stringify({ students: mergedStudents, activeStudentKey: activeKey, activeStudentId: studentEntry.id })
-          );
-          void saveUserLinkedStudents(matchedStudentUser.id, mergedStudents, activeKey);
-        } catch {}
-
-        // 3. Complete login INSTANTLY in UI
-        triggerLoginSuccess(matchedStudentUser);
-
-        // 4. Dispatch or ensure official welcome message in NSTA Messenger School Desk & set celebratory popup
-        try {
-          void dispatchOfficialSchoolWelcomeMessage(matchedStudentUser, {
-            force: false,
-            triggerPopup: true,
-            schoolName: realSchoolName || undefined,
-          });
-          localStorage.setItem(`nst_show_welcome_popup_${matchedStudentUser.id}`, 'true');
-        } catch {}
-
-        // 5. Non-blocking background sync (any permission warning is silently ignored)
-        saveUserToLive(matchedStudentUser).catch(() => {});
-        saveSchoolUserProfile({
-          uid: matchedStudentUser.id,
-          schoolId: matchedStudentUser.schoolId || targetSchoolId,
-          role: 'SCHOOL_STUDENT',
-          name: matchedStudentUser.name,
-          email: matchedStudentUser.email,
-          studentRef: matchedStudentUser.id,
-          classId: matchedStudentUser.classLevel,
-          sessionId: '2026-27'
-        }).catch(() => {});
-
+          schoolName: resolvedSchoolNameForQr || matchedStudentUser.schoolName || '',
+          maskedPhone: resolvedMaskedPhoneHint || maskPhoneForHint(uniquePhones[0]),
+          expectedPhones: uniquePhones,
+          expectedDob: resolvedExpectedDob,
+          expectedFallbackId: resolvedFallbackCode || matchedStudentUser.admissionNo || '',
+          verificationToken: resolvedVerificationToken,
+          qrExpiresAt: resolvedQrExpiresAt,
+          admissionNo: matchedStudentUser.admissionNo || '',
+        });
+        setQrFactorInput('');
+        setQrFactorError(null);
+        setShowQrModal(true);
+        setLoading(false);
         return;
       }
 
-      // ── EXECUTE TEACHER LOGIN (INSTANT & NON-BLOCKING) ──
       if (matchedTeacherUser) {
-        localStorage.setItem('nst_current_user', JSON.stringify(matchedTeacherUser));
-        localStorage.setItem('nsta_cached_user', JSON.stringify(matchedTeacherUser));
-        localStorage.setItem(`nst_school_user_${matchedTeacherUser.id}`, JSON.stringify({
-          uid: matchedTeacherUser.id,
-          schoolId: matchedTeacherUser.schoolId,
-          role: 'TEACHER',
-          name: matchedTeacherUser.name,
-          email: matchedTeacherUser.email,
-          teacherRef: matchedTeacherUser.id
-        }));
-
-        triggerLoginSuccess(matchedTeacherUser);
-
-        saveUserToLive(matchedTeacherUser).catch(() => {});
-        saveSchoolUserProfile({
-          uid: matchedTeacherUser.id,
-          schoolId: matchedTeacherUser.schoolId,
-          role: 'TEACHER',
-          name: matchedTeacherUser.name,
-          email: matchedTeacherUser.email,
-          teacherRef: matchedTeacherUser.id
-        }).catch(() => {});
-
+        if (matchedTeacherUser.mobile) resolvedExpectedPhones.push(matchedTeacherUser.mobile);
+        const uniquePhones = Array.from(new Set(resolvedExpectedPhones.map((p) => String(p).replace(/\D/g, '')).filter((p) => p.length >= 4)));
+        setPendingQrFactorChallenge({
+          kind: 'TEACHER',
+          user: matchedTeacherUser,
+          schoolId: matchedTeacherUser.schoolId || targetSchoolId,
+          schoolName: matchedTeacherUser.schoolName || resolvedSchoolNameForQr,
+          maskedPhone: resolvedMaskedPhoneHint || maskPhoneForHint(uniquePhones[0]),
+          expectedPhones: uniquePhones,
+          expectedFallbackId: resolvedFallbackCode || matchedTeacherUser.displayId || '',
+        });
+        setQrFactorInput('');
+        setQrFactorError(null);
+        setShowQrModal(true);
+        setLoading(false);
         return;
       }
 
@@ -1324,6 +1489,260 @@ export const Auth: React.FC<Props> = ({ onLogin, logActivity, appSettings, onBac
       setError('QR Scan decode notice: ' + (e?.message || 'Check card and scan again'));
       setLoading(false);
       startScanner();
+    }
+  };
+
+  // ── COMPLETE STATIC ID QR LOGIN AFTER 2ND-FACTOR / DEVICE VERIFICATION ──
+  const handleVerifyQrSecondFactor = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!pendingQrFactorChallenge) return;
+    const rawVal = qrFactorInput.trim();
+    if (!rawVal) {
+      setQrFactorError('कृपया पंजीकृत मोबाइल नंबर (या अंतिम 4 अंक) / जन्मतिथि दर्ज करें।');
+      return;
+    }
+    setQrFactorVerifying(true);
+    setQrFactorError(null);
+
+    try {
+      const ch = pendingQrFactorChallenge;
+      const enteredDigits = rawVal.replace(/\D/g, '');
+      const normalizeDob = (v?: string) => {
+        const s = String(v || '').trim();
+        if (!s) return '';
+        const parts = s.split(/[-/]/).map((p) => p.trim());
+        if (parts.length === 3) {
+          if (parts[0].length === 4) return `${parts[0]}-${parts[1].padStart(2, '0')}-${parts[2].padStart(2, '0')}`;
+          if (parts[2].length === 4) return `${parts[2]}-${parts[1].padStart(2, '0')}-${parts[0].padStart(2, '0')}`;
+        }
+        return s.replace(/\D/g, '');
+      };
+
+      let verifiedOk = false;
+
+      if (ch.kind === 'STUDENT') {
+        let serverRequiresLocal = true;
+        try {
+          const res = await fetch('/api/qr/verify-second-factor', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              schoolId: ch.schoolId,
+              studentId: ch.user.id,
+              factorValue: rawVal,
+              deviceId: localStorage.getItem('nst_device_id') || navigator.userAgent.slice(0, 48),
+            }),
+          });
+          if (res.ok) {
+            const data = await res.json();
+            if (data.status === 'REVOKED') {
+              setQrFactorError(data.reason || 'यह Student Digital ID रद्द/निष्क्रिय है।');
+              setQrFactorVerifying(false);
+              return;
+            }
+            if (data.verified === true) {
+              verifiedOk = true;
+              serverRequiresLocal = false;
+            } else if (!data.requireClientMatch) {
+              setQrFactorError(data.reason || 'मोबाइल नंबर या जन्मतिथि रिकॉर्ड से मेल नहीं खाती।');
+              setQrFactorVerifying(false);
+              return;
+            }
+          }
+        } catch {}
+
+        if (serverRequiresLocal) {
+          const phoneHit =
+            enteredDigits.length >= 4 &&
+            ch.expectedPhones.some((p) =>
+              enteredDigits.length >= 10 ? p.slice(-10) === enteredDigits.slice(-10) : p.slice(-4) === enteredDigits.slice(-4)
+            );
+          const dobHit = Boolean(ch.expectedDob && normalizeDob(rawVal) && normalizeDob(rawVal) === normalizeDob(ch.expectedDob));
+          const noContactsOnCard = ch.expectedPhones.length === 0 && !ch.expectedDob;
+          const admHit = Boolean(noContactsOnCard && ch.expectedFallbackId && rawVal.toUpperCase() === ch.expectedFallbackId.toUpperCase());
+          verifiedOk = phoneHit || dobHit || admHit;
+        }
+      } else {
+        const phoneHit =
+          enteredDigits.length >= 4 &&
+          ch.expectedPhones.some((p) =>
+            enteredDigits.length >= 10 ? p.slice(-10) === enteredDigits.slice(-10) : p.slice(-4) === enteredDigits.slice(-4)
+          );
+        const idHit = Boolean(
+          ch.expectedPhones.length === 0 &&
+            ch.expectedFallbackId &&
+            rawVal.toUpperCase() === ch.expectedFallbackId.toUpperCase()
+        );
+        verifiedOk = phoneHit || idHit;
+      }
+
+      if (!verifiedOk) {
+        setQrFactorError('सत्यापन विफल: दर्ज किया गया मोबाइल नंबर (या अंतिम 4 अंक) / जन्मतिथि मिलान नहीं हुई।');
+        setQrFactorVerifying(false);
+        return;
+      }
+
+      const verifiedUser = ch.user;
+      setPendingQrFactorChallenge(null);
+      setShowQrModal(false);
+
+      if (ch.kind === 'DRIVER') {
+        try {
+          const sid = ch.schoolId;
+          const fitKey = `bus_fitness_${sid}`;
+          const existingFit = JSON.parse(localStorage.getItem(fitKey) || '[]');
+          if (Array.isArray(existingFit) && !existingFit.some((b: any) => b.id === (verifiedUser as any).busId)) {
+            localStorage.setItem(
+              fitKey,
+              JSON.stringify([
+                {
+                  id: (verifiedUser as any).busId,
+                  schoolId: sid,
+                  vehicleNumber: (verifiedUser as any).busNumber,
+                  route: (verifiedUser as any).busRoute,
+                  driverName: verifiedUser.name,
+                  driverPhone: verifiedUser.mobile,
+                },
+                ...existingFit,
+              ])
+            );
+          }
+          localStorage.setItem('nst_current_user', JSON.stringify(verifiedUser));
+          localStorage.setItem('nsta_cached_user', JSON.stringify(verifiedUser));
+          localStorage.setItem('nst_app_view_mode', 'DRIVER');
+          if (sid) localStorage.setItem('nst_active_school_id', sid);
+        } catch {}
+        triggerLoginSuccess(verifiedUser);
+        return;
+      }
+
+      if (ch.kind === 'TEACHER') {
+        localStorage.setItem('nst_current_user', JSON.stringify(verifiedUser));
+        localStorage.setItem('nsta_cached_user', JSON.stringify(verifiedUser));
+        localStorage.setItem(
+          `nst_school_user_${verifiedUser.id}`,
+          JSON.stringify({
+            uid: verifiedUser.id,
+            schoolId: ch.schoolId,
+            role: 'TEACHER',
+            name: verifiedUser.name,
+            email: verifiedUser.email,
+            teacherRef: verifiedUser.id,
+          })
+        );
+        triggerLoginSuccess(verifiedUser);
+        saveUserToLive(verifiedUser).catch(() => {});
+        saveSchoolUserProfile({
+          uid: verifiedUser.id,
+          schoolId: ch.schoolId,
+          role: 'TEACHER',
+          name: verifiedUser.name,
+          email: verifiedUser.email,
+          teacherRef: verifiedUser.id,
+        }).catch(() => {});
+        return;
+      }
+
+      // Execute Student Login after 2nd factor passes
+      localStorage.setItem('nst_current_user', JSON.stringify(verifiedUser));
+      localStorage.setItem('nsta_cached_user', JSON.stringify(verifiedUser));
+      localStorage.setItem(`nst_user_profile_${verifiedUser.id}`, JSON.stringify(verifiedUser));
+      localStorage.setItem(
+        `nst_school_user_${verifiedUser.id}`,
+        JSON.stringify({
+          uid: verifiedUser.id,
+          schoolId: ch.schoolId,
+          role: 'SCHOOL_STUDENT',
+          name: verifiedUser.name,
+          email: verifiedUser.email,
+          studentRef: verifiedUser.id,
+          classId: verifiedUser.classLevel,
+          sessionId: '2026-27',
+        })
+      );
+
+      try {
+        const sid = ch.schoolId;
+        const targetStudentId = (verifiedUser as any).studentId || verifiedUser.id;
+        const studentEntry = {
+          type: 'STUDENT',
+          id: targetStudentId,
+          schoolId: sid,
+          schoolName: ch.schoolName || (verifiedUser as any).schoolName || '',
+          name: verifiedUser.name,
+          rollNo: (verifiedUser.displayId || '').replace('ROLL-', '') || '01',
+          admissionNo: verifiedUser.admissionNo || '',
+          phone: verifiedUser.mobile || '',
+          classId: verifiedUser.classLevel || 'cls_1',
+          monthlyFee: (verifiedUser as any).monthlyFee || 0,
+          verificationToken: ch.verificationToken,
+          qrExpiresAt: ch.qrExpiresAt,
+          active: true,
+          createdAt: new Date().toISOString(),
+          linkedAt: new Date().toISOString(),
+        };
+        const curPool = getLocalStudents(sid);
+        setLocalStudents(sid, [
+          studentEntry,
+          ...curPool.filter((s) => s.id !== targetStudentId && (!verifiedUser.admissionNo || s.admissionNo !== verifiedUser.admissionNo)),
+        ]);
+
+        // Enforce permanent ID card linking + Lite(1) / Elite(2) / Ultra(4) slot limits & auto-unlink oldest holder
+        await registerStudentIdCardLinkSlot({
+          schoolId: sid,
+          studentId: targetStudentId,
+          studentName: verifiedUser.name,
+          uid: verifiedUser.id,
+          holderLabel: verifiedUser.email || verifiedUser.name,
+        }).catch(() => {});
+
+        const existingLinks =
+          verifiedUser.id !== targetStudentId
+            ? await getUserLinkedStudents(verifiedUser.id).catch(() => null)
+            : null;
+        const mergedStudents = Array.isArray(existingLinks?.students)
+          ? [
+              studentEntry,
+              ...existingLinks!.students.filter(
+                (s: any) => !(s?.id === targetStudentId && (s?.schoolId || sid) === sid)
+              ),
+            ]
+          : [studentEntry];
+
+        const activeKey = getStudentLinkKey(studentEntry, sid);
+        localStorage.setItem('nst_linked_students', JSON.stringify(mergedStudents));
+        localStorage.setItem(
+          `nst_user_linked_students_${verifiedUser.id}`,
+          JSON.stringify({ students: mergedStudents, activeStudentKey: activeKey, activeStudentId: studentEntry.id })
+        );
+        void saveUserLinkedStudents(verifiedUser.id, mergedStudents, activeKey);
+      } catch {}
+
+      triggerLoginSuccess(verifiedUser);
+      try {
+        void dispatchOfficialSchoolWelcomeMessage(verifiedUser, {
+          force: false,
+          triggerPopup: true,
+          schoolName: ch.schoolName || undefined,
+        });
+        localStorage.setItem(`nst_show_welcome_popup_${verifiedUser.id}`, 'true');
+      } catch {}
+
+      saveUserToLive(verifiedUser).catch(() => {});
+      saveSchoolUserProfile({
+        uid: verifiedUser.id,
+        schoolId: ch.schoolId,
+        role: 'SCHOOL_STUDENT',
+        name: verifiedUser.name,
+        email: verifiedUser.email,
+        studentRef: verifiedUser.id,
+        classId: verifiedUser.classLevel,
+        sessionId: '2026-27',
+      }).catch(() => {});
+    } catch (err: any) {
+      setQrFactorError(err?.message || 'Verification failed. Please retry.');
+    } finally {
+      setQrFactorVerifying(false);
     }
   };
 
@@ -1412,10 +1831,25 @@ export const Auth: React.FC<Props> = ({ onLogin, logActivity, appSettings, onBac
     localStorage.setItem('nst_current_user', JSON.stringify(targetUser));
     localStorage.setItem('nst_last_user_id', targetUser.id || targetUser.uid);
     localStorage.removeItem('nst_logged_out');
+    if ((targetUser as any)?.studentId && targetUser?.schoolId) {
+      void registerStudentIdCardLinkSlot({
+        schoolId: targetUser.schoolId,
+        studentId: (targetUser as any).studentId,
+        studentName: targetUser.name,
+        uid: targetUser.id || targetUser.uid,
+        holderLabel: targetUser.email || targetUser.name,
+      }).catch(() => {});
+    }
     triggerLoginSuccess(targetUser);
   };
 
-  const triggerLoginSuccess = (userToLogin: User) => {
+  const triggerLoginSuccess = (rawUserToLogin: User) => {
+    const promotedDriver = promoteCorruptedUserToDriverIfApplicable(rawUserToLogin);
+    const userToLogin: any = promotedDriver || rawUserToLogin;
+    if (promotedDriver) {
+      purgeCorruptedDriverEntriesFromLocalCache(userToLogin.id || userToLogin.uid);
+    }
+
     setLoading(false);
     localStorage.setItem('nst_current_user', JSON.stringify(userToLogin));
     localStorage.removeItem('nst_logged_out');
@@ -1425,8 +1859,8 @@ export const Auth: React.FC<Props> = ({ onLogin, logActivity, appSettings, onBac
     } catch {}
     ensureFirebaseAuthSession().catch(() => {});
     
-    // Direct School Routing: Ensure school accounts open directly in SCHOOL_ERP
-    const isSchoolAdmin = Boolean(
+    // Direct School Routing: Ensure school accounts open directly in SCHOOL_ERP (and Drivers in DRIVER)
+    const isSchoolAdmin = !isDriverUser(userToLogin) && Boolean(
       userToLogin?.role === 'SCHOOL_ADMIN' ||
       userToLogin?.role === 'PRINCIPAL' ||
       userToLogin?.role === 'SCHOOLADMIN' ||
@@ -1438,7 +1872,7 @@ export const Auth: React.FC<Props> = ({ onLogin, logActivity, appSettings, onBac
     );
 
     const rawRoleUpper = (userToLogin?.role || '').toString().trim().toUpperCase();
-    const isSchoolAccount = Boolean(
+    const isSchoolAccount = !isDriverUser(userToLogin) && Boolean(
       isSchoolAdmin ||
       userToLogin?.userType === 'SCHOOL_STUDENT' ||
       rawRoleUpper === 'SCHOOL_STUDENT' ||
@@ -1452,7 +1886,8 @@ export const Auth: React.FC<Props> = ({ onLogin, logActivity, appSettings, onBac
       (Boolean(userToLogin?.schoolId) && String(userToLogin.schoolId).trim() !== '' && rawRoleUpper !== 'SUPERADMIN' && rawRoleUpper !== 'ADMIN')
     );
 
-    if (userToLogin?.role === 'DRIVER') {
+    if (userToLogin?.role === 'DRIVER' || isDriverUser(userToLogin)) {
+      userToLogin.role = 'DRIVER';
       try {
         localStorage.setItem('nst_app_view_mode', 'DRIVER');
         if (userToLogin.schoolId) {
@@ -1623,7 +2058,7 @@ export const Auth: React.FC<Props> = ({ onLogin, logActivity, appSettings, onBac
         linkedAt: new Date().toISOString(),
       };
 
-      // 2. Sync active student cache & linked student binding cleanly
+      // 2. Sync active student cache, permanent slot registration (Lite=1/Elite=2/Ultra=4), & linked student binding cleanly
       try {
         localStorage.setItem('nst_active_school_id', cleanSchoolId);
         const curPool = getLocalStudents(cleanSchoolId);
@@ -1631,6 +2066,14 @@ export const Auth: React.FC<Props> = ({ onLogin, logActivity, appSettings, onBac
           studentEntry,
           ...curPool.filter((s: any) => s.id !== studentId && (!admNo || s.admissionNo !== admNo)),
         ]);
+        await registerStudentIdCardLinkSlot({
+          schoolId: cleanSchoolId,
+          studentId,
+          studentName,
+          uid: finalUserId,
+          school: schoolRecord,
+          holderLabel: studentUser.email || studentName,
+        }).catch(() => {});
         const compositeKey = getStudentLinkKey(studentEntry, cleanSchoolId);
         const existingLinks = existingAccount
           ? await getUserLinkedStudents(finalUserId).catch(() => null)
@@ -1679,15 +2122,16 @@ export const Auth: React.FC<Props> = ({ onLogin, logActivity, appSettings, onBac
     }
   };
 
-  // ── FAST 1-TAP DEMO CHIPS ──────────────────────────────────────────────────
+  // ── FAST 1-TAP DEMO CHIPS (Strictly Fictional Dummy Data) ───────────────────
   const handleQuickStudentLogin = () => {
     const studentUser: User = {
       id: 'std_demo_aarav_01',
       uid: 'std_demo_aarav_01',
       displayId: 'ROLL-01',
-      name: 'Aarav Sharma',
-      email: 'aarav.sharma@dps.edu.in',
-      mobile: '9876543210',
+      name: 'Aarav Verma',
+      email: 'aarav.verma@demo-school.example',
+      mobile: '9000000101',
+      admissionNo: 'DEMO-2026-0101',
       role: 'STUDENT',
       userType: 'SCHOOL_STUDENT',
       schoolRole: 'STUDENT',
@@ -1710,10 +2154,10 @@ export const Auth: React.FC<Props> = ({ onLogin, logActivity, appSettings, onBac
     const teacherUser: User = {
       id: 'emp_tea_1',
       uid: 'emp_tea_1',
-      displayId: 'TEA-RKVERMA',
-      name: 'Mr. R. K. Verma',
-      email: 'rkverma.math@lifemaker.edu.in',
-      mobile: '9811023460',
+      displayId: 'TEA-DEMO-01',
+      name: 'R. K. Verma (Demo Faculty)',
+      email: 'faculty.demo@demo-school.example',
+      mobile: '9000000202',
       role: 'TEACHER',
       schoolId: DEFAULT_SCHOOL_ID,
       credits: 500,
@@ -1728,10 +2172,10 @@ export const Auth: React.FC<Props> = ({ onLogin, logActivity, appSettings, onBac
     const schoolAdminUser: User = {
       id: 'admin_uid',
       uid: 'admin_uid',
-      displayId: 'ADM-LMPS-001',
-      name: 'SHAHID KHAN SIR (Principal & School Admin)',
-      email: 'n@gmail.com',
-      mobile: '9525400122',
+      displayId: 'ADM-DEMO-001',
+      name: 'Demo Principal (School Admin)',
+      email: 'principal@demo-school.example',
+      mobile: '9000000303',
       role: 'SCHOOL_ADMIN',
       schoolId: DEFAULT_SCHOOL_ID,
       credits: 10000,
@@ -1745,89 +2189,8 @@ export const Auth: React.FC<Props> = ({ onLogin, logActivity, appSettings, onBac
   };
 
   // ── BUS DRIVER RECORD LOOKUP (FOR UNIFIED LOGIN + QR) ──────────────────────
-  const normalizePhone10 = (p: string) => (p || '').replace(/\D/g, '').slice(-10);
-
   const resolveDriverByMobileOrId = async (rawQuery: string): Promise<any | null> => {
-    const q = (rawQuery || '').trim();
-    if (!q) return null;
-    const qLower = q.toLowerCase();
-    const cleanPhone = normalizePhone10(q);
-
-    const matchBusEntry = (bus: any, schoolId: string, schoolCode = '', schoolName = '') => {
-      if (!bus) return null;
-      const bPhone = normalizePhone10(bus.driverPhone || '');
-      const bId = String(bus.id || bus.busId || '').trim();
-      const drvCode = `DRV-${(bPhone || bId).slice(-5).toUpperCase()}`.toLowerCase();
-      const drvCode4 = `DRV-${(bPhone || bId).slice(-4).toUpperCase()}`.toLowerCase();
-
-      const phoneMatch = cleanPhone.length >= 10 && bPhone === cleanPhone;
-      const idMatch = (bId && bId.toLowerCase() === qLower) || qLower === drvCode || qLower === drvCode4;
-      if (!phoneMatch && !idMatch) return null;
-
-      const resolvedBusId = bId || `bus_${cleanPhone || Date.now()}`;
-      return {
-        id: `driver_${resolvedBusId}`,
-        uid: `driver_${resolvedBusId}`,
-        displayId: `DRV-${(bPhone || resolvedBusId).slice(-5).toUpperCase()}`,
-        name: bus.driverName || 'Bus Driver',
-        email: `driver.${bPhone || resolvedBusId}@school.internal`,
-        mobile: bPhone || bus.driverPhone || '',
-        role: 'DRIVER',
-        schoolId,
-        schoolCode,
-        schoolName: schoolName || 'School Bus Fleet',
-        busId: resolvedBusId,
-        busNumber: bus.vehicleNumber || bus.busNumber || 'School Bus',
-        busRoute: bus.route || 'School Bus Route',
-        busStops: Array.isArray(bus.stops) ? bus.stops : undefined,
-        profileCompleted: true,
-        provider: 'driver_record',
-      };
-    };
-
-    // 1. Check localStorage bus_fitness_* pools first
-    try {
-      for (let i = 0; i < localStorage.length; i++) {
-        const k = localStorage.key(i);
-        if (k && k.startsWith('bus_fitness_')) {
-          const sid = k.replace('bus_fitness_', '');
-          const raw = localStorage.getItem(k);
-          if (raw) {
-            const arr = JSON.parse(raw);
-            if (Array.isArray(arr)) {
-              for (const b of arr) {
-                const found = matchBusEntry(b, sid);
-                if (found) return found;
-              }
-            }
-          }
-        }
-      }
-    } catch {}
-
-    // 2. Check Supabase & RTDB per-school bus_fleet (never download full root `schools` tree)
-    try {
-      const schoolsList = await getAllSchools().catch(() => []);
-      for (const sObj of schoolsList) {
-        const sid = sObj?.id;
-        if (!sid) continue;
-        let fleet: any = await sbRtdbGet(`schools/${sid}/bus_fleet`).catch(() => null);
-        if (!fleet && rtdb) {
-          try {
-            const fSnap = await rtdbGet(dbRef(rtdb, `schools/${sid}/bus_fleet`));
-            if (fSnap.exists()) fleet = fSnap.val();
-          } catch {}
-        }
-        if (fleet && typeof fleet === 'object') {
-          for (const b of Object.values(fleet)) {
-            const found = matchBusEntry(b, sid, sObj.code || '', sObj.name || '');
-            if (found) return found;
-          }
-        }
-      }
-    } catch {}
-
-    return null;
+    return resolveDriverFromLocalAndCloudStores(rawQuery);
   };
 
   // ── FORM FIELD HANDLERS ───────────────────────────────────────────────────
@@ -2001,7 +2364,16 @@ export const Auth: React.FC<Props> = ({ onLogin, logActivity, appSettings, onBac
         }
       }
     } else {
-      matchedUser = await getUserByMobileOrId(cleanId);
+      const foundDriverFirst = await resolveDriverByMobileOrId(cleanId);
+      if (foundDriverFirst) {
+        matchedUser = foundDriverFirst;
+      } else {
+        matchedUser = await getUserByMobileOrId(cleanId);
+        if (matchedUser && isCorruptedDriverStudentRecord(matchedUser)) {
+          const promoted = promoteCorruptedUserToDriverIfApplicable(matchedUser);
+          matchedUser = promoted || null;
+        }
+      }
     }
 
     if (!matchedUser) {
@@ -2036,7 +2408,7 @@ export const Auth: React.FC<Props> = ({ onLogin, logActivity, appSettings, onBac
         const cleanDigits = cleanId.replace(/\D/g, '');
 
         for (const u of userPool) {
-          if (!u) continue;
+          if (!u || isCorruptedDriverStudentRecord(u)) continue;
           const uid = String(u.id || u.uid || '').toLowerCase();
           const udisp = String(u.displayId || '').toLowerCase();
           const uemail = String(u.email || '').toLowerCase();
@@ -2155,6 +2527,12 @@ export const Auth: React.FC<Props> = ({ onLogin, logActivity, appSettings, onBac
     }
 
     if (!matchedUser) {
+      if (looksLikeDriverIdString(cleanId)) {
+        return {
+          ok: false,
+          error: 'Yeh Bus Driver ID school transport records me nahi mila. Kripya school admin se apna Driver ID / Mobile check karwayein.'
+        };
+      }
       const rawDigits = cleanId.replace(/\D/g, '');
       const isPhone = rawDigits.length === 10;
       const isNstaId = /^NSTA[-_\s]?\d+$/i.test(cleanId) || (/^\d{4,8}$/.test(rawDigits) && !cleanId.includes('@'));
@@ -2529,6 +2907,13 @@ export const Auth: React.FC<Props> = ({ onLogin, logActivity, appSettings, onBac
       }
 
       if (!matched) {
+        const foundDriver = await resolveDriverByMobileOrId(cleanId);
+        if (foundDriver) {
+          matched = foundDriver;
+        }
+      }
+
+      if (!matched) {
         const foundTeacher = resolveTeacherOrStaff(cleanId);
         if (foundTeacher) {
           const resolvedRole = foundTeacher._resolvedRole === 'ACCOUNTANT' ? 'ACCOUNTANT' : 'TEACHER';
@@ -2544,7 +2929,7 @@ export const Auth: React.FC<Props> = ({ onLogin, logActivity, appSettings, onBac
         }
       }
 
-      if (!matched) {
+      if (!matched && !looksLikeDriverIdString(cleanId)) {
         const foundStudent = resolveStudent(cleanId);
         if (foundStudent) {
           matched = {
@@ -3042,7 +3427,7 @@ export const Auth: React.FC<Props> = ({ onLogin, logActivity, appSettings, onBac
                   <form onSubmit={handleLoginSubmit} className="w-full space-y-3.5">
                     <div className="space-y-1.5 lm-enter-delay-1">
                       <label className="text-xs font-bold text-slate-700 dark:text-slate-300 block">
-                        Mobile / Email / Student ID
+                        Mobile / Email / ID (Student, Staff, Driver)
                       </label>
                       <div className="relative flex items-center">
                         <UserIcon size={17} className="absolute left-3.5 text-slate-400 dark:text-slate-500" />
@@ -3050,7 +3435,7 @@ export const Auth: React.FC<Props> = ({ onLogin, logActivity, appSettings, onBac
                           name="id"
                           type="text"
                           required
-                          placeholder="Mobile, Email ya Student ID"
+                          placeholder="Mobile, Email, Student / Teacher / Driver ID"
                           value={formData.id}
                           onChange={handleChange}
                           className="w-full bg-slate-50/70 dark:bg-slate-950/60 border border-slate-200 dark:border-slate-800 focus:bg-white dark:focus:bg-slate-950 focus:border-slate-900 dark:focus:border-indigo-400 focus:ring-4 focus:ring-slate-900/10 dark:focus:ring-indigo-500/20 rounded-xl pl-10 pr-3.5 py-3 text-sm text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 font-medium outline-none transition-all duration-200"
@@ -3373,19 +3758,27 @@ export const Auth: React.FC<Props> = ({ onLogin, logActivity, appSettings, onBac
         <p>SCHOOL+ · Smart School ERP &amp; Learning Portal</p>
       </footer>
 
-      {/* ── ID CARD QR SCANNER MODAL ── */}
+      {/* ── ID CARD QR SCANNER MODAL (+ 2-FACTOR DEVICE VERIFICATION) ── */}
       {showQrModal && (
         <div className="fixed inset-0 z-[99999] bg-black/80 backdrop-blur-md flex items-center justify-center p-4 animate-in fade-in duration-200">
           <div className="w-full max-w-sm rounded-3xl bg-slate-900 border border-slate-800 p-5 shadow-2xl text-white space-y-4">
             <div className="flex items-center justify-between pb-1 border-b border-slate-800">
               <div className="flex items-center gap-2">
-                <QrCode size={20} className="text-amber-400" />
-                <h3 className="text-sm font-black tracking-wide">ID Card QR Scanner</h3>
+                {pendingQrFactorChallenge ? (
+                  <ShieldCheck size={20} className="text-emerald-400" />
+                ) : (
+                  <QrCode size={20} className="text-amber-400" />
+                )}
+                <h3 className="text-sm font-black tracking-wide">
+                  {pendingQrFactorChallenge ? 'Device & Identity Verification' : 'ID Card QR Scanner'}
+                </h3>
               </div>
               <button
                 type="button"
                 onClick={() => {
                   stopScanner();
+                  setPendingQrFactorChallenge(null);
+                  setQrFactorError(null);
                   setShowQrModal(false);
                 }}
                 className="p-1 rounded-lg hover:bg-slate-800 text-slate-400 hover:text-white transition cursor-pointer"
@@ -3394,51 +3787,136 @@ export const Auth: React.FC<Props> = ({ onLogin, logActivity, appSettings, onBac
               </button>
             </div>
 
-            <p className="text-xs text-slate-400 text-center">
-              Student, Teacher ya Driver ID Card ka QR code camera ke saamne laayein
-            </p>
+            {pendingQrFactorChallenge ? (
+              <form onSubmit={handleVerifyQrSecondFactor} className="space-y-4">
+                <div className="p-3.5 rounded-2xl bg-emerald-500/10 border border-emerald-500/30 space-y-1.5">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-[11px] font-black uppercase tracking-wider text-emerald-300">
+                      ✓ QR ID Verified
+                    </span>
+                    <span className="px-2 py-0.5 rounded-md bg-slate-800 text-slate-200 text-[10px] font-mono">
+                      {pendingQrFactorChallenge.user.displayId}
+                    </span>
+                  </div>
+                  <p className="text-sm font-black text-white">
+                    {pendingQrFactorChallenge.user.name}
+                  </p>
+                  {pendingQrFactorChallenge.schoolName && (
+                    <p className="text-[11px] text-slate-300">
+                      {pendingQrFactorChallenge.schoolName}
+                    </p>
+                  )}
+                </div>
 
-            {/* Camera Scanner Viewport */}
-            <div className="relative w-full aspect-square bg-black rounded-2xl overflow-hidden border border-slate-700/80 shadow-inner flex items-center justify-center">
-              <div id="auth-qr-reader" className="w-full h-full" />
-              <div className="pointer-events-none absolute inset-6 border-2 border-dashed border-amber-400/70 rounded-2xl flex items-center justify-center animate-pulse" />
-            </div>
+                <div className="space-y-1.5">
+                  <label className="text-xs font-bold text-slate-200 block">
+                    {pendingQrFactorChallenge.kind === 'STUDENT'
+                      ? 'सुरक्षा सत्यापन: अभिभावक मोबाइल (पूरा या अंतिम 4 अंक) या जन्मतिथि दर्ज करें'
+                      : 'सुरक्षा सत्यापन: पंजीकृत मोबाइल नंबर (या अंतिम 4 अंक / Staff ID) दर्ज करें'}
+                  </label>
+                  {pendingQrFactorChallenge.maskedPhone && (
+                    <p className="text-[11px] text-amber-300 font-medium">
+                      Registered Mobile Hint: {pendingQrFactorChallenge.maskedPhone}
+                    </p>
+                  )}
+                  <input
+                    type="text"
+                    autoFocus
+                    required
+                    value={qrFactorInput}
+                    onChange={(e) => {
+                      setQrFactorInput(e.target.value);
+                      setQrFactorError(null);
+                    }}
+                    placeholder={
+                      pendingQrFactorChallenge.kind === 'STUDENT'
+                        ? 'Mobile Last 4 Digits / Full Mobile / YYYY-MM-DD'
+                        : 'Registered Mobile / Last 4 Digits / ID'
+                    }
+                    className="w-full rounded-xl bg-slate-950 border border-slate-700 focus:border-emerald-400 px-3.5 py-2.5 text-sm text-white placeholder-slate-500 outline-none"
+                  />
+                  <p className="text-[10.5px] text-slate-400 leading-relaxed">
+                    सुरक्षा कारणों से केवल प्रिंटेड QR से सीधा लॉगिन नहीं होता; डिवाइस सत्यापन आवश्यक है।
+                  </p>
+                </div>
 
-            {/* Action Buttons */}
-            <div className="grid grid-cols-2 gap-2 pt-1">
-              <button
-                type="button"
-                onClick={switchCamera}
-                className="py-2.5 px-3 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs font-bold flex items-center justify-center gap-1.5 transition cursor-pointer"
-              >
-                <RefreshCw size={14} />
-                Flip Camera
-              </button>
+                {qrFactorError && (
+                  <div className="p-2.5 rounded-xl bg-rose-500/15 border border-rose-500/40 text-xs text-rose-200 font-semibold">
+                    {qrFactorError}
+                  </div>
+                )}
 
-              <label className="py-2.5 px-3 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs font-bold flex items-center justify-center gap-1.5 transition cursor-pointer text-center">
-                <Upload size={14} />
-                Upload Photo
-                <input
-                  type="file"
-                  accept="image/*"
-                  onChange={(e) => {
-                    handleFileUpload(e);
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setPendingQrFactorChallenge(null);
+                      setQrFactorError(null);
+                      startScanner();
+                    }}
+                    className="min-h-[44px] py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs font-bold text-slate-200 transition cursor-pointer"
+                  >
+                    Scan Another QR
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={qrFactorVerifying}
+                    className="min-h-[44px] py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-xs font-black text-white flex items-center justify-center gap-1.5 transition cursor-pointer"
+                  >
+                    {qrFactorVerifying ? <Loader2 size={14} className="animate-spin" /> : <CheckCircle2 size={14} />}
+                    <span>Verify &amp; Login</span>
+                  </button>
+                </div>
+              </form>
+            ) : (
+              <>
+                <p className="text-xs text-slate-400 text-center">
+                  Student, Teacher ya Driver ID Card ka QR code camera ke saamne laayein
+                </p>
+
+                {/* Camera Scanner Viewport */}
+                <div className="relative w-full aspect-square bg-black rounded-2xl overflow-hidden border border-slate-700/80 shadow-inner flex items-center justify-center">
+                  <div id="auth-qr-reader" className="w-full h-full" />
+                  <div className="pointer-events-none absolute inset-6 border-2 border-dashed border-amber-400/70 rounded-2xl flex items-center justify-center" />
+                </div>
+
+                {/* Action Buttons */}
+                <div className="grid grid-cols-2 gap-2 pt-1">
+                  <button
+                    type="button"
+                    onClick={switchCamera}
+                    className="min-h-[44px] py-2.5 px-3 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs font-bold flex items-center justify-center gap-1.5 transition cursor-pointer"
+                  >
+                    <RefreshCw size={14} />
+                    Flip Camera
+                  </button>
+
+                  <label className="min-h-[44px] py-2.5 px-3 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs font-bold flex items-center justify-center gap-1.5 transition cursor-pointer text-center">
+                    <Upload size={14} />
+                    Upload Photo
+                    <input
+                      type="file"
+                      accept="image/*"
+                      onChange={(e) => {
+                        handleFileUpload(e);
+                      }}
+                      className="hidden"
+                    />
+                  </label>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    stopScanner();
+                    setShowQrModal(false);
                   }}
-                  className="hidden"
-                />
-              </label>
-            </div>
-
-            <button
-              type="button"
-              onClick={() => {
-                stopScanner();
-                setShowQrModal(false);
-              }}
-              className="w-full py-2.5 rounded-xl bg-slate-800/80 hover:bg-slate-800 text-xs font-bold text-slate-300 transition cursor-pointer"
-            >
-              Cancel
-            </button>
+                  className="w-full min-h-[44px] py-2.5 rounded-xl bg-slate-800/80 hover:bg-slate-800 text-xs font-bold text-slate-300 transition cursor-pointer"
+                >
+                  Cancel
+                </button>
+              </>
+            )}
           </div>
         </div>
       )}

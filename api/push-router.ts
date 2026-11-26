@@ -61,6 +61,12 @@ import {
   parsePrintPayloadBody,
   storePrintDocument,
 } from "./_printDocument.js";
+import {
+  verifyStudentIdServer,
+  validateLoginQrServer,
+  verifyStudentSecondFactorServer,
+  fetchSafeRemoteImage,
+} from "./_qrSecurity.js";
 
 let cachedBuiltHtmlTemplate: string | null = null;
 
@@ -446,7 +452,7 @@ async function getFcmAccessToken(): Promise<string | null> {
 async function dispatchFcmToUsers(
   recipientIds: string[],
   broadcast: boolean,
-  payload: { id?: string; title: string; body: string; type?: string; threadType?: string; voiceSpeak?: boolean | string; url?: string; icon?: string; senderId?: string; senderDeviceId?: string; walkieSpeechText?: string; walkieMimeType?: string },
+  payload: { id?: string; title: string; body: string; type?: string; threadType?: string; voiceSpeak?: boolean | string; url?: string; icon?: string; senderId?: string; senderDeviceId?: string; walkieSpeechText?: string; walkieMimeType?: string; extraData?: Record<string, string> },
   filter?: { schoolId?: string; classId?: string; className?: string },
   exclude?: { senderIds?: string[]; senderFcmToken?: string; senderDeviceId?: string }
 ): Promise<number> {
@@ -537,7 +543,16 @@ async function dispatchFcmToUsers(
         String(payload.voiceSpeak ?? "").toLowerCase() === "false" ||
         String(payload.threadType || "").toUpperCase() === "TEACHER_CHAT" ||
         String(payload.url || "").includes("subTab=teacher");
-      const dataPayload = {
+      const sanitizedExtra: Record<string, string> = {};
+      if (payload.extraData && typeof payload.extraData === "object") {
+        for (const [ek, ev] of Object.entries(payload.extraData)) {
+          if (ek && ev !== undefined && ev !== null) {
+            sanitizedExtra[String(ek).slice(0, 64)] = String(ev).slice(0, 600);
+          }
+        }
+      }
+      const dataPayload: Record<string, string> = {
+        ...sanitizedExtra,
         id: String(payload.id || ""),
         title: payload.title,
         body: payload.body,
@@ -884,6 +899,7 @@ export default async function handler(req: any, res: any) {
         classId,
         className,
         studentIds,
+        targetUserIds,
         userId,
         classBroadcast,
         schoolBroadcast,
@@ -904,6 +920,7 @@ export default async function handler(req: any, res: any) {
         senderPhoto,
         walkieSpeechText,
         walkieMimeType,
+        extraData,
       } = req.body || {};
 
       if (!title || !body) {
@@ -925,6 +942,10 @@ export default async function handler(req: any, res: any) {
       const cleanSenderFcmToken = !isSelfAllowed && senderFcmToken ? String(senderFcmToken).trim() : "";
 
       const subsObj = (await rtdbGet<Record<string, StoredPushSubscription>>("school_webpush_subs")) || {};
+      const targetUserSet =
+        Array.isArray(targetUserIds) && targetUserIds.length > 0
+          ? new Set(targetUserIds.map(String).filter((id) => isSelfAllowed || !excludedIdSet.has(id)))
+          : null;
       const targetStudentSet =
         Array.isArray(studentIds) && studentIds.length > 0
           ? new Set(studentIds.map(String).filter((id) => isSelfAllowed || !excludedIdSet.has(id)))
@@ -946,22 +967,29 @@ export default async function handler(req: any, res: any) {
 
         let matchedStudent: LinkedStudentPushMeta | undefined;
 
-        if (userId && (record.userId === String(userId) || (record.students || []).some((s) => String(s.id) === String(userId)))) {
+        if (targetUserSet && targetUserSet.size > 0) {
+          if (schoolId && record.schoolId && record.schoolId !== schoolId) continue;
+          const matchedEntry = (record.students || []).find((s) => targetUserSet.has(String(s.id)));
+          if (matchedEntry || (record.userId && targetUserSet.has(String(record.userId)))) {
+            matchedStudent = matchedEntry || ({ id: String(record.userId || "staff"), schoolId: schoolId || "" } as any);
+          }
+        }
+        if (!matchedStudent && userId && (record.userId === String(userId) || (record.students || []).some((s) => String(s.id) === String(userId)))) {
           matchedStudent = record.students?.[0] || ({ id: String(userId), schoolId: schoolId || "" } as any);
         }
-        if (!matchedStudent && targetStudentSet) {
+        if (!matchedStudent && !targetUserSet && targetStudentSet) {
           matchedStudent = (record.students || []).find((s) => targetStudentSet.has(String(s.id)));
           if (!matchedStudent && targetStudentSet.has(String(record.userId))) {
             matchedStudent = record.students?.[0] || ({ id: String(record.userId), schoolId: schoolId || "" } as any);
           }
         }
-        if (!matchedStudent && (classId || className) && (classBroadcast || !targetStudentSet)) {
+        if (!matchedStudent && !targetUserSet && (classId || className) && (classBroadcast || !targetStudentSet)) {
           matchedStudent = (record.students || []).find((s) => {
             if (schoolId && s.schoolId && s.schoolId !== schoolId) return false;
             return doesClassMatch(s.classId, s.className, classId, className);
           });
         }
-        if (!matchedStudent && (schoolBroadcast || (!targetStudentSet && !userId && !classId && !className))) {
+        if (!matchedStudent && !targetUserSet && (schoolBroadcast || (!targetStudentSet && !userId && !classId && !className))) {
           if (schoolId) {
             const schoolMatched = (record.students || []).find((s) => !s.schoolId || s.schoolId === schoolId);
             if (schoolMatched) {
@@ -1000,13 +1028,15 @@ export default async function handler(req: any, res: any) {
       }
 
       // Also dispatch FCM push to all matching devices
-      const fcmRecipients: string[] = [
-        ...(userId ? [String(userId)] : []),
-        ...(Array.isArray(studentIds) ? studentIds.map(String) : []),
-      ];
+      const fcmRecipients: string[] = targetUserSet && targetUserSet.size > 0
+        ? Array.from(targetUserSet)
+        : [
+            ...(userId ? [String(userId)] : []),
+            ...(Array.isArray(studentIds) ? studentIds.map(String) : []),
+          ];
 
       // Add linked parent userIds for targeted students
-      if (Array.isArray(studentIds) && studentIds.length > 0) {
+      if ((!targetUserSet || targetUserSet.size === 0) && Array.isArray(studentIds) && studentIds.length > 0) {
         const studentIdSet = new Set(studentIds.map(String));
         for (const sub of Object.values(subsObj)) {
           const hasStudent = (sub.students || []).some((s) => studentIdSet.has(String(s.id)));
@@ -1017,9 +1047,10 @@ export default async function handler(req: any, res: any) {
       }
 
       const isFcmBroadcast =
-        Boolean(schoolBroadcast) ||
-        Boolean(classBroadcast) ||
-        (!userId && (!studentIds || studentIds.length === 0 || studentIds.includes("all")));
+        (!targetUserSet || targetUserSet.size === 0) &&
+        (Boolean(schoolBroadcast) ||
+          Boolean(classBroadcast) ||
+          (!userId && (!studentIds || studentIds.length === 0 || studentIds.includes("all"))));
       const fcmDelivered = await dispatchFcmToUsers(
         fcmRecipients,
         isFcmBroadcast,
@@ -1036,6 +1067,7 @@ export default async function handler(req: any, res: any) {
           senderDeviceId: cleanSenderDeviceId,
           walkieSpeechText: walkieSpeechText ? String(walkieSpeechText).slice(0, 300) : undefined,
           walkieMimeType: walkieMimeType ? String(walkieMimeType).slice(0, 80) : undefined,
+          extraData: extraData && typeof extraData === "object" ? extraData : undefined,
         },
         { schoolId, classId, className },
         isSelfAllowed
@@ -1646,6 +1678,35 @@ export default async function handler(req: any, res: any) {
 
       res.setHeader("Cache-Control", "private, max-age=300");
       return res.status(200).json({ ok: true, iceServers, hasTurn });
+    }
+
+    if (method === "POST" && rawPath === "qr/verify-id") {
+      res.setHeader("Cache-Control", "no-store");
+      const result = await verifyStudentIdServer(req.body || {});
+      return res.status(result.status).json(result.body);
+    }
+
+    if (method === "POST" && rawPath === "qr/login-validate") {
+      res.setHeader("Cache-Control", "no-store");
+      const result = await validateLoginQrServer(req.body || {});
+      return res.status(result.status).json(result.body);
+    }
+
+    if (method === "POST" && rawPath === "qr/verify-second-factor") {
+      res.setHeader("Cache-Control", "no-store");
+      const result = await verifyStudentSecondFactorServer(req.body || {});
+      return res.status(result.status).json(result.body);
+    }
+
+    if (method === "GET" && rawPath === "image-proxy") {
+      const rawUrl = String(req.query?.url || "");
+      const img = await fetchSafeRemoteImage(rawUrl);
+      if (!img.buffer || img.status !== 200) {
+        return res.status(img.status || 400).json({ error: img.error || "Image proxy error" });
+      }
+      res.setHeader("Content-Type", img.contentType || "image/png");
+      res.setHeader("Cache-Control", "public, max-age=3600");
+      return res.status(200).send(img.buffer);
     }
 
     return res.status(404).json({ error: `Unknown push endpoint: ${rawPath}` });

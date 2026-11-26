@@ -28,7 +28,12 @@ import type {
   MonthlyFee,
   NstaMessage,
 } from "../../school-types";
-import { ADMISSION_DOCUMENT_OPTIONS, ADMISSION_CATEGORIES, BLOOD_GROUPS } from "../../school-types";
+import {
+  ADMISSION_DOCUMENT_OPTIONS,
+  ADMISSION_CATEGORIES,
+  BLOOD_GROUPS,
+  resolveSchoolSignatory,
+} from "../../school-types";
 import { getLocalFees, getLocalStudents, updateStudent, saveAdmissionApplication, saveNstaMessage } from "../../school-firebase";
 import { uploadToCloudinary } from "../../services/cloudinaryService";
 import { sendSchoolPushNotification } from "../../utils/schoolPushClient";
@@ -800,8 +805,6 @@ export const AdmissionFormPrintModal: React.FC<Props> = ({
     setIsEditingForm(false);
   }, [initialMode, isOpen, student, application, isStudentView]);
 
-  if (!isOpen) return null;
-
   const activeData = isEditingForm ? editDraft : (appliedOverrides || editDraft);
 
   const handleSaveFormEdits = async () => {
@@ -894,8 +897,8 @@ export const AdmissionFormPrintModal: React.FC<Props> = ({
   const admNo = activeData.admissionNo || student?.admissionNo || application?.applicationNo || "—";
   const rollNo = activeData.rollNo || student?.rollNo || application?.assignedRollNo || "Not Assigned";
   const sessLabel = formatAcademicSession(sessionName || student?.sessionId || "2026-27");
-  const rawCls = className || student?.className || application?.className || student?.classId || "—";
-  const stream = student?.stream || application?.stream || "";
+  const rawCls = String(className || student?.className || application?.className || student?.classId || "—");
+  const stream = String(student?.stream || application?.stream || "");
   const clsLabel = stream && !rawCls.toLowerCase().includes(stream.toLowerCase())
     ? `${rawCls} (${stream})`
     : rawCls;
@@ -1109,6 +1112,25 @@ export const AdmissionFormPrintModal: React.FC<Props> = ({
           <div class="sig-line" style="font-size:6.8pt;">${escapeHtml(principalTitle || `${school?.principalName || "Principal"} (Sign & Seal)`)}</div>
         </div>
       `;
+
+      const admRoute = school?.signatureRouting?.admissionReceipt;
+      if (admRoute === "collector") {
+        return cashierBlock;
+      }
+      if (admRoute === "manager" || admRoute === "principal" || admRoute === "director") {
+        const sig = resolveSchoolSignatory(school, admRoute, principalTitle);
+        const sigImg = showDigitalSig && sig.signatureUrl;
+        const label =
+          admRoute === "principal"
+            ? (principalTitle || `${sig.name || "Principal"} (Sign & Seal)`)
+            : `${sig.name} (${sig.roleLabel})`;
+        return `
+          <div class="sig-block" style="min-width:34mm;">
+            ${sigImg ? `<img src="${escapeHtml(sigImg)}" alt="${escapeHtml(sig.roleLabel)} Sign" crossorigin="anonymous" style="height:8.5mm;max-width:30mm;object-fit:contain;display:block;margin:0 auto 0.5mm;" />` : `<div style="height:7mm;"></div>`}
+            <div class="sig-line" style="font-size:6.8pt;">${escapeHtml(label)}</div>
+          </div>
+        `;
+      }
 
       if (signatoryMode === "cashier_only") {
         return cashierBlock;
@@ -2514,6 +2536,7 @@ export const AdmissionFormPrintModal: React.FC<Props> = ({
         accountantSignatureUrl: school?.accountantSignatureUrl,
         accountantName: school?.accountantName,
         principalName: school?.principalName,
+        signatureRouting: school?.signatureRouting,
       },
       isDueDemand: false,
     };
@@ -2651,6 +2674,8 @@ export const AdmissionFormPrintModal: React.FC<Props> = ({
     }
   };
 
+
+  if (!isOpen) return null;
 
   return (
     <div className="fixed inset-0 z-[9998] flex items-center justify-center p-2 sm:p-4 bg-slate-950/75 backdrop-blur-sm animate-in fade-in duration-150">

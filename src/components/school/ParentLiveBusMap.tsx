@@ -229,15 +229,12 @@ export const ParentLiveBusMap: React.FC<ParentLiveBusMapProps> = ({
       }
     };
 
-    const unsubSbLoc = sid
-      ? sbRtdbSubscribe(`school_bus_locations/${sid}`, (val) => {
-          if (val && typeof val === "object") {
-            mergeIncoming(Object.values(val) as BusLiveLocation[]);
-          }
-        })
-      : () => {};
+    const isSafeRtdbKey = (val: unknown): boolean => {
+      const s = String(val ?? "").trim();
+      return Boolean(s) && s !== "http" && s !== "https" && !/[.#$[\]/:\r\n]/.test(s);
+    };
 
-    const unsubSbFleet = sid
+    const unsubSbFleet = isSafeRtdbKey(sid)
       ? sbRtdbSubscribe(`schools/${sid}/bus_fleet`, (val) => {
           if (val && typeof val === "object") {
             mergeFleetMeta(val);
@@ -245,7 +242,7 @@ export const ParentLiveBusMap: React.FC<ParentLiveBusMapProps> = ({
         })
       : () => {};
 
-    if (rtdb && sid) {
+    if (rtdb && isSafeRtdbKey(sid)) {
       try {
         unsubLoc1 = onValue(dbRef(rtdb, `school_bus_locations/${sid}`), (snap) => {
           if (snap.exists()) mergeIncoming(Object.values(snap.val()) as BusLiveLocation[]);
@@ -262,7 +259,6 @@ export const ParentLiveBusMap: React.FC<ParentLiveBusMapProps> = ({
     return () => {
       window.removeEventListener("school-transport-updated", loadLocal);
       window.removeEventListener("nst_bus_location_update", handleBusUpdate);
-      if (typeof unsubSbLoc === "function") unsubSbLoc();
       if (typeof unsubSbFleet === "function") unsubSbFleet();
       if (typeof unsubLoc1 === "function") unsubLoc1();
       if (typeof unsubLoc2 === "function") unsubLoc2();
@@ -274,7 +270,11 @@ export const ParentLiveBusMap: React.FC<ParentLiveBusMapProps> = ({
   useEffect(() => {
     const sid = school?.id || "";
     const stId = student?.id || "";
-    if (!sid || !stId) return;
+    const safeKey = (val: unknown): boolean => {
+      const s = String(val ?? "").trim();
+      return Boolean(s) && s !== "http" && s !== "https" && !/[.#$[\]/:\r\n]/.test(s);
+    };
+    if (!safeKey(sid) || !safeKey(stId)) return;
 
     // Seed from student profile fields if present
     if (
@@ -460,7 +460,11 @@ export const ParentLiveBusMap: React.FC<ParentLiveBusMapProps> = ({
   const saveHomePin = async (lat: number, lng: number) => {
     const sid = school?.id;
     const stId = student?.id;
-    if (!sid || !stId) return;
+    const isSafeKey = (val: unknown): boolean => {
+      const s = String(val ?? "").trim();
+      return Boolean(s) && s !== "http" && s !== "https" && !/[.#$[\]/:\r\n]/.test(s);
+    };
+    if (!isSafeKey(sid) || !isSafeKey(stId)) return;
     setSavingPin(true);
     try {
       const pinRecord: StudentHomePin = {

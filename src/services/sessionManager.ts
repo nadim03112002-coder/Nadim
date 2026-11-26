@@ -381,9 +381,11 @@ export const parseLoginQrToken = (raw: string): LoginQrPayload | null => {
       const parsed = JSON.parse(clean);
       if (parsed && (parsed.type === 'NSTA_LOGIN_QR' || parsed.uid)) {
         const uid = parsed.uid || parsed.id;
-        const ts = parsed.ts || Date.now();
-        const exp = parsed.exp || (ts + 900000); // 15 min default if not specified
-        const isExpired = Date.now() > (exp + 30000); // 30s clock skew tolerance
+        const ts = typeof parsed.ts === 'number' && Number.isFinite(parsed.ts) ? parsed.ts : 0;
+        const hasValidExp = typeof parsed.exp === 'number' && Number.isFinite(parsed.exp) && parsed.exp > 0;
+        const exp = hasValidExp ? parsed.exp : 0;
+        const exceedsMaxWindow = ts > 0 && exp > 0 ? exp - ts > 24 * 60 * 60 * 1000 : false;
+        const isExpired = !hasValidExp || exceedsMaxWindow || Date.now() > exp + 30000;
 
         return {
           type: 'NSTA_LOGIN_QR',
@@ -392,7 +394,7 @@ export const parseLoginQrToken = (raw: string): LoginQrPayload | null => {
           mobile: parsed.mobile || '',
           displayId: parsed.displayId || '',
           name: parsed.name || 'Student',
-          ts,
+          ts: ts || Date.now(),
           exp,
           nonce: parsed.nonce || '',
           isExpired,
@@ -401,6 +403,7 @@ export const parseLoginQrToken = (raw: string): LoginQrPayload | null => {
     } catch {}
   }
 
+  // Legacy static NSTA_LOGIN: strings lack expiry/nonce -> mark expired to prevent static-QR passwordless hijack
   if (clean.startsWith('NSTA_LOGIN:') || clean.startsWith('NSTA:')) {
     const parts = clean.split(':');
     const uid = parts[1]?.trim();
@@ -412,8 +415,9 @@ export const parseLoginQrToken = (raw: string): LoginQrPayload | null => {
         mobile: '',
         displayId: '',
         name: 'Student',
-        ts: Date.now(),
-        isExpired: false,
+        ts: 0,
+        exp: 0,
+        isExpired: true,
       };
     }
   }

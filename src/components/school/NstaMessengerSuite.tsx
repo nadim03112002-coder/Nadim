@@ -98,6 +98,7 @@ import {
   subscribeToNstaStatuses,
   getStudentDailyTeacherQueryCount,
   autoSendFeeSlipToSchoolDesk,
+  acknowledgeSchoolWelcomeLetter,
   generateId,
   isStudentInClass,
   getCanonicalStudentPairKey
@@ -110,9 +111,13 @@ import { formatMonthLabel } from "../../utils/feeFifoAllocation";
 import { getSchoolFeeDiscountSlabs, computeSlabDiscountAmount } from "../../utils/feeDiscountSlabs";
 import { sendSchoolPushNotification } from "../../utils/schoolPushClient";
 import { speakNotification, stopVoiceNotification } from "../../utils/voiceNotifyEngine";
+import { buildStudentIdCardQrUrl, buildStudentVerificationToken } from "../../utils/qrVerifyUrl";
+import { exportElementToPdf } from "../../utils/universalPdfExport";
 import { OfficialFeeReceiptModal } from "./OfficialFeeReceiptModal";
-import { SchoolWelcomeModal } from "./SchoolWelcomeModal";
+import { SchoolWelcomeModal, WelcomeLetterA4Sheet, buildNormalizedActivationHistory } from "./SchoolWelcomeModal";
+import { getSavedSchoolLogo } from "./feeReceiptUtils";
 import { SchoolBirthdayModal } from "./SchoolBirthdayModal";
+import { StudentIdCardModal } from "./StudentIdCardModal";
 import { NstaStatusStudio } from "./NstaStatusStudio";
 import { NstaCallPortalHost } from "./NstaCallModal";
 import { triggerTelegramDeleteAnimation } from "./TelegramDeleteEffect";
@@ -527,6 +532,112 @@ export const NstaMessengerSuite: React.FC<Props> = ({
 
   const [selectedWelcomeData, setSelectedWelcomeData] = useState<NstaWelcomeData | null>(null);
   const [selectedBirthdayData, setSelectedBirthdayData] = useState<NstaBirthdayData | null>(null);
+  const [welcomeIdCardStudent, setWelcomeIdCardStudent] = useState<SchoolStudent | null>(null);
+  const [welcomePdfExportData, setWelcomePdfExportData] = useState<NstaWelcomeData | null>(null);
+  const [acknowledgingWelcomeMsgId, setAcknowledgingWelcomeMsgId] = useState<string | null>(null);
+  const welcomePdfSheetRef = useRef<HTMLDivElement>(null);
+
+  const buildEnrichedWelcomeData = (msg: NstaMessage): NstaWelcomeData => {
+    const raw = msg.welcomeData || ({} as Partial<NstaWelcomeData>);
+    const matchedStu = safeStudents.find(
+      (s) => s.id === (raw.studentId || msg.studentId) || (raw.admissionNo && s.admissionNo === raw.admissionNo)
+    );
+    const sid = raw.schoolId || school?.id || msg.schoolId;
+    const ver = raw.verificationToken && raw.qrExpiresAt
+      ? { token: raw.verificationToken, issuedAt: raw.qrIssuedAt || msg.createdAt, expiresAt: raw.qrExpiresAt }
+      : buildStudentVerificationToken({
+          schoolId: sid,
+          studentId: raw.studentId || msg.studentId || "std",
+          admissionNo: raw.admissionNo || matchedStu?.admissionNo || "ADM-001",
+          issuedAt: raw.qrIssuedAt || matchedStu?.qrIssuedAt || msg.createdAt,
+          expiresAt: raw.qrExpiresAt || matchedStu?.qrExpiresAt,
+        });
+
+    return {
+      studentId: raw.studentId || msg.studentId || matchedStu?.id || "std",
+      studentName: raw.studentName || msg.studentName || matchedStu?.name || "Student",
+      admissionNo: raw.admissionNo || matchedStu?.admissionNo || "ADM-001",
+      rollNo: raw.rollNo || matchedStu?.rollNo || "01",
+      classId: raw.classId || matchedStu?.classId,
+      className: raw.className || matchedStu?.className || "Class",
+      schoolId: sid,
+      schoolName: raw.schoolName || school?.name || "Official School Desk",
+      schoolLogo: getSavedSchoolLogo(raw.schoolLogo || school?.logoUrl, sid) || raw.schoolLogo || school?.logoUrl,
+      schoolAddress: raw.schoolAddress || school?.address,
+      schoolPhone: raw.schoolPhone || school?.phone || school?.mobile,
+      fatherName: raw.fatherName || matchedStu?.fatherName,
+      mobile: raw.mobile || matchedStu?.phone,
+      session: raw.session || matchedStu?.sessionId || "2026-27",
+      verificationBadge: raw.verificationBadge || "VERIFIED_STUDENT_ID",
+      verificationToken: ver.token,
+      qrIssuedAt: ver.issuedAt,
+      qrExpiresAt: ver.expiresAt,
+      qrStatus: raw.qrStatus || (matchedStu?.active === false ? "REVOKED" : "ACTIVE"),
+      principalName: raw.principalName || school?.principalName || "Principal",
+      principalSignatureUrl: raw.principalSignatureUrl || school?.principalSignatureUrl,
+      managerName: raw.managerName || school?.managerName,
+      managerSignatureUrl: raw.managerSignatureUrl || school?.managerSignatureUrl,
+      messageId: raw.messageId || msg.id,
+      acknowledgedAt: raw.acknowledgedAt || matchedStu?.welcomeAcknowledgedAt,
+      acknowledgedBy: raw.acknowledgedBy || matchedStu?.welcomeAcknowledgedBy,
+      acknowledgedRole: raw.acknowledgedRole,
+      activationHistory: raw.activationHistory || matchedStu?.activationHistory,
+      issuedAt: raw.issuedAt || msg.createdAt,
+    };
+  };
+
+  const openWelcomeStudentIdCard = (wd: NstaWelcomeData) => {
+    const matchedStu = safeStudents.find(
+      (s) => s.id === wd.studentId || (wd.admissionNo && s.admissionNo === wd.admissionNo)
+    );
+    const fallbackStu: SchoolStudent = matchedStu || {
+      id: wd.studentId,
+      schoolId: wd.schoolId || school?.id || "",
+      sessionId: wd.session || "2026-27",
+      classId: wd.classId || "",
+      className: wd.className || "",
+      name: wd.studentName,
+      rollNo: wd.rollNo || "01",
+      admissionNo: wd.admissionNo,
+      fatherName: wd.fatherName || "",
+      phone: wd.mobile || "",
+      monthlyFee: 0,
+      joinDate: (wd.issuedAt || new Date().toISOString()).slice(0, 10),
+      active: wd.qrStatus !== "REVOKED",
+      verificationToken: wd.verificationToken,
+      qrIssuedAt: wd.qrIssuedAt,
+      qrExpiresAt: wd.qrExpiresAt,
+      activationHistory: wd.activationHistory,
+      createdAt: wd.issuedAt,
+    };
+    setWelcomeIdCardStudent(fallbackStu);
+  };
+
+  const triggerWelcomePdfDownload = async (wd: NstaWelcomeData) => {
+    setWelcomePdfExportData(wd);
+    const tId = toast.loading("Official Welcome Letter PDF तैयार हो रहा है...");
+    setTimeout(async () => {
+      try {
+        if (welcomePdfSheetRef.current) {
+          await exportElementToPdf(welcomePdfSheetRef.current, {
+            filename: `Welcome_Letter_${wd.studentName}_${wd.admissionNo}`,
+            format: "a4",
+            orientation: "portrait",
+            widthPx: 794,
+            pageMode: "fit_single",
+            scale: 2,
+          });
+          toast.success("Official Welcome Letter PDF डाउनलोड हो गया!", { id: tId });
+        } else {
+          toast.dismiss(tId);
+        }
+      } catch {
+        toast.error("PDF बनाने में त्रुटि, कृपया स्वागत पत्र खोलकर Print करें।", { id: tId });
+      } finally {
+        setWelcomePdfExportData(null);
+      }
+    }, 180);
+  };
 
   // Sender's DP / ID Card Photo resolution (so recipient sees sender photo in right-side of push notification)
   const currentSenderPhoto = useMemo(() => {
@@ -653,9 +764,11 @@ export const NstaMessengerSuite: React.FC<Props> = ({
     return Array.from(visitorMap.values()).sort((a, b) => b.lastAt.localeCompare(a.lastAt));
   }, [allSchoolMsgs, currentUserRole]);
 
-  // Message Tracking Refs for Auto-Voice Readout
+  // Message Tracking Refs for Auto-Voice Readout (prevent speaking historical cache/snapshot on open)
   const knownMsgIdsRef = useRef<Set<string>>(new Set());
   const isInitialLoadRef = useRef<boolean>(true);
+  const mountedAtMsRef = useRef<number>(Date.now());
+  const hasHydratedVoiceBaselineRef = useRef<boolean>(false);
 
   // Refs for Long Press (1.5s) & Touch Gestures
   const longPressTimerRef = useRef<any>(null);
@@ -1875,6 +1988,70 @@ export const NstaMessengerSuite: React.FC<Props> = ({
     }
   };
 
+  const getSchoolDeskTargetStudentId = (m?: NstaMessage | null): string => {
+    if (!m) return "";
+    return String(m.studentId || m.welcomeData?.studentId || "").trim();
+  };
+
+  const isGeneralSchoolDeskMessage = (m?: NstaMessage | null): boolean => {
+    const sid = getSchoolDeskTargetStudentId(m);
+    return !sid || sid === "all" || sid === "general";
+  };
+
+  const isAdminOfficeSender = (m?: NstaMessage | null): boolean => {
+    if (!m) return false;
+    const sid = String(m.senderId || "").trim();
+    if (m.senderRole === "ADMIN") return true;
+    return (
+      sid === "school_admin" ||
+      sid === "STAFF_ADMIN" ||
+      sid === "accountant_admin" ||
+      sid === `admin_${school?.id || ""}`
+    );
+  };
+
+  const isMessageForCurrentUser = (m?: NstaMessage | null): boolean => {
+    if (!m || !m.threadType) return false;
+    if (Array.isArray(m.deletedFor) && m.deletedFor.includes(currentUserId)) return false;
+
+    if (currentUserRole === "ADMIN") return true;
+
+    if (currentUserRole === "STUDENT") {
+      const ownStudentId = String(student?.id || currentUserId || "").trim();
+      if (m.threadType === "SCHOOL_DESK") {
+        if (isGeneralSchoolDeskMessage(m)) return true;
+        return Boolean(ownStudentId && getSchoolDeskTargetStudentId(m) === ownStudentId);
+      }
+      if (m.threadType === "CLASS_GROUP") {
+        if (!m.classId || m.classId === "all" || m.classId === "general") return true;
+        return isStudentInClass(
+          { classId: activeClass?.id, className: activeClass?.name } as any,
+          m.classId,
+          m.className
+        );
+      }
+      if (m.threadType === "TEACHER_CHAT") {
+        return Boolean(ownStudentId && m.studentId === ownStudentId);
+      }
+      if (m.threadType === "STUDENT_CHAT") {
+        if (!ownStudentId || !m.studentId) return false;
+        return String(m.studentId).split("__").includes(ownStudentId);
+      }
+      return false;
+    }
+
+    // TEACHER role: only general School Desk notices (never other students' fee slips/welcome cards), class groups, and own teacher chats
+    const myTeacherId = String(teacher?.id || currentUserId || "").trim();
+    if (m.threadType === "SCHOOL_DESK") {
+      return isGeneralSchoolDeskMessage(m);
+    }
+    if (m.threadType === "CLASS_GROUP") return true;
+    if (m.threadType === "TEACHER_CHAT") {
+      return !m.teacherId || m.teacherId === myTeacherId;
+    }
+    return false;
+  };
+
   // Instant 0ms thread messages derived directly from shared school subscription (no duplicate listeners)
   const messages = useMemo(() => {
     const targetThreadType: NstaThreadType =
@@ -1887,11 +2064,15 @@ export const NstaMessengerSuite: React.FC<Props> = ({
         : "TEACHER_CHAT";
     const filterClassId = activeTab === "class" ? (activeClass?.id || "general") : undefined;
     const filterClassName = activeTab === "class" ? activeClass?.name : undefined;
+    const isAdminSchoolDeskAll =
+      activeTab === "school" &&
+      currentUserRole === "ADMIN" &&
+      (!selectedStudentId || selectedStudentId === "all");
     const filterStudentId =
       activeTab === "school"
-        ? currentUserRole === "ADMIN" && (!selectedStudentId || selectedStudentId === "all")
+        ? isAdminSchoolDeskAll
           ? undefined
-          : activeStudent?.id || "general"
+          : activeStudent?.id || (currentUserRole === "STUDENT" ? student?.id || currentUserId : "general")
         : activeTab === "friend"
         ? activeFriendPairKey || "__none__"
         : activeTab === "teacher"
@@ -1908,6 +2089,8 @@ export const NstaMessengerSuite: React.FC<Props> = ({
 
     return (allSchoolMsgs || []).filter((m) => {
       if (!m || m.threadType !== targetThreadType) return false;
+      if (!isMessageForCurrentUser(m)) return false;
+
       if (targetThreadType === "CLASS_GROUP") {
         if (filterClassId && m.classId && m.classId !== filterClassId && m.classId !== "all" && m.classId !== "general") {
           return isStudentInClass(
@@ -1917,7 +2100,11 @@ export const NstaMessengerSuite: React.FC<Props> = ({
           );
         }
       } else if (targetThreadType === "SCHOOL_DESK") {
-        if (filterStudentId && m.studentId && m.studentId !== filterStudentId && m.studentId !== "all" && m.studentId !== "general") {
+        if (isAdminSchoolDeskAll) {
+          return isGeneralSchoolDeskMessage(m);
+        }
+        const msgTargetStudent = getSchoolDeskTargetStudentId(m);
+        if (filterStudentId && msgTargetStudent && msgTargetStudent !== filterStudentId && msgTargetStudent !== "all" && msgTargetStudent !== "general") {
           return false;
         }
       } else if (targetThreadType === "TEACHER_CHAT") {
@@ -1939,6 +2126,10 @@ export const NstaMessengerSuite: React.FC<Props> = ({
     selectedStudentId,
     isTeacherDirectoryView,
     currentUserRole,
+    currentUserId,
+    student?.id,
+    teacher?.id,
+    school?.id,
   ]);
 
   // Track read receipts processed in this session to prevent infinite event re-dispatch loops
@@ -2022,27 +2213,66 @@ export const NstaMessengerSuite: React.FC<Props> = ({
     }
   }, [mobileView]);
 
-  // Auto-voice announcement ONLY for newly incoming messages
+  // Seed hydration baseline timer so an empty initial school never causes delayed history readout
   useEffect(() => {
-    if (!messages || messages.length === 0) {
+    mountedAtMsRef.current = Date.now();
+    hasHydratedVoiceBaselineRef.current = false;
+    knownMsgIdsRef.current.clear();
+    const t = window.setTimeout(() => {
+      hasHydratedVoiceBaselineRef.current = true;
       isInitialLoadRef.current = false;
-      return;
-    }
-    if (isInitialLoadRef.current) {
-      for (const m of messages) knownMsgIdsRef.current.add(m.id);
-      isInitialLoadRef.current = false;
-      return;
-    }
-    const incomingNew: NstaMessage[] = [];
-    for (const m of messages) {
-      if (!knownMsgIdsRef.current.has(m.id)) {
-        knownMsgIdsRef.current.add(m.id);
-        if (m.senderId !== currentUserId) incomingNew.push(m);
+    }, 2500);
+    return () => window.clearTimeout(t);
+  }, [school?.id, currentUserId, currentUserRole]);
+
+  // Auto-voice announcement STRICTLY for live incoming messages belonging to the logged-in recipient
+  useEffect(() => {
+    const allList = allSchoolMsgs || [];
+    if (allList.length === 0) return;
+
+    // First populated emission (IndexedDB/Firestore cache) -> record all IDs silently without speaking!
+    if (!hasHydratedVoiceBaselineRef.current || isInitialLoadRef.current) {
+      for (const m of allList) {
+        if (m?.id) knownMsgIdsRef.current.add(m.id);
       }
+      hasHydratedVoiceBaselineRef.current = true;
+      isInitialLoadRef.current = false;
+      return;
     }
-    const voiceEligibleNew = incomingNew.filter((m) => m.threadType !== "TEACHER_CHAT");
-    if (voiceEligibleNew.length > 0 && isVoiceAnnounceEnabled) {
-      const latest = voiceEligibleNew[voiceEligibleNew.length - 1];
+
+    const nowMs = Date.now();
+    const ownSelfIds = new Set(
+      [currentUserId, student?.id, teacher?.id].filter((v): v is string => Boolean(v && String(v).trim()))
+    );
+    const incomingNew: NstaMessage[] = [];
+
+    for (const m of allList) {
+      if (!m?.id || knownMsgIdsRef.current.has(m.id)) continue;
+      knownMsgIdsRef.current.add(m.id);
+
+      // 1. Ignore deleted or self-sent messages
+      if (m.deletedForEveryone) continue;
+      if (Array.isArray(m.deletedFor) && m.deletedFor.includes(currentUserId)) continue;
+      if (m.senderId && ownSelfIds.has(String(m.senderId).trim())) continue;
+      if (currentUserRole === "ADMIN" && isAdminOfficeSender(m)) continue;
+
+      // 2. Ignore historical messages loaded from slower Firestore sync after mount
+      const msgMs = m.createdAt ? Date.parse(m.createdAt) : 0;
+      if (!msgMs || Number.isNaN(msgMs)) continue;
+      if (msgMs < mountedAtMsRef.current - 5000) continue;
+      if (nowMs - msgMs > 60_000) continue;
+
+      // 3. Only School Desk & Class Group live announcements belong on voice readout
+      if (m.threadType === "TEACHER_CHAT" || m.threadType === "STUDENT_CHAT") continue;
+
+      // 4. Strict recipient/role privacy check — only speak if this notification belongs to THIS user!
+      if (!isMessageForCurrentUser(m)) continue;
+
+      incomingNew.push(m);
+    }
+
+    if (incomingNew.length > 0 && isVoiceAnnounceEnabled) {
+      const latest = incomingNew[incomingNew.length - 1];
       const speakerName =
         latest.senderName ||
         (latest.senderRole === "ADMIN"
@@ -2050,9 +2280,26 @@ export const NstaMessengerSuite: React.FC<Props> = ({
           : latest.senderRole === "TEACHER"
           ? "शिक्षक"
           : "छात्र");
-      speakNotification(`${speakerName} का संदेश`, latest.text || "नया संदेश आया है");
+      const spokenBody = latest.feeSlip
+        ? `${latest.feeSlip.type === "FEE_RECEIPT" ? "फीस रसीद" : "फीस स्लिप"} ${latest.feeSlip.monthLabel || ""} प्राप्त हुई है।`
+        : latest.attachmentType === "WELCOME"
+        ? "स्कूल का आधिकारिक स्वागत संदेश प्राप्त हुआ है।"
+        : latest.text || "नया संदेश आया है";
+      speakNotification(`${speakerName} का संदेश`, spokenBody, {
+        dedupeKey: `nsta_msg_${latest.id}`,
+      });
     }
-  }, [messages, isVoiceAnnounceEnabled, currentUserId]);
+  }, [
+    allSchoolMsgs,
+    isVoiceAnnounceEnabled,
+    currentUserId,
+    currentUserRole,
+    student?.id,
+    teacher?.id,
+    activeClass?.id,
+    activeClass?.name,
+    school?.id,
+  ]);
 
   // Subscribe to ALL school NSTA messages & 24h Statuses for Unified WhatsApp Home List
   useEffect(() => {
@@ -2092,7 +2339,7 @@ export const NstaMessengerSuite: React.FC<Props> = ({
 
   const unifiedConversations = useMemo<UnifiedChatItem[]>(() => {
     // Single-pass O(N) bucketing of visible school messages
-    const schoolDeskBucket: NstaMessage[] = [];
+    const schoolDeskBroadcastBucket: NstaMessage[] = [];
     const schoolDeskByStudent = new Map<string, NstaMessage[]>();
     const classGroupBucket: NstaMessage[] = [];
     const teacherByTeacher = new Map<string, NstaMessage[]>();
@@ -2107,10 +2354,14 @@ export const NstaMessengerSuite: React.FC<Props> = ({
     };
 
     for (const m of allSchoolMsgs || []) {
-      if (!m || (Array.isArray(m.deletedFor) && m.deletedFor.includes(currentUserId))) continue;
+      if (!m || !isMessageForCurrentUser(m)) continue;
       if (m.threadType === "SCHOOL_DESK") {
-        schoolDeskBucket.push(m);
-        if (m.studentId) pushMap(schoolDeskByStudent, m.studentId, m);
+        const targetStuId = getSchoolDeskTargetStudentId(m);
+        if (!targetStuId || targetStuId === "all" || targetStuId === "general") {
+          schoolDeskBroadcastBucket.push(m);
+        } else {
+          pushMap(schoolDeskByStudent, targetStuId, m);
+        }
       } else if (m.threadType === "CLASS_GROUP") {
         classGroupBucket.push(m);
       } else if (m.threadType === "TEACHER_CHAT") {
@@ -2157,11 +2408,12 @@ export const NstaMessengerSuite: React.FC<Props> = ({
 
     if (currentUserRole === "STUDENT") {
       const ownStudentId = student?.id || currentUserId;
-      // 1. School Official Desk (Pinned)
-      const deskMsgs = schoolDeskBucket.filter(
-        (m) => !m.studentId || m.studentId === ownStudentId || m.studentId === "all" || m.studentId === "general"
-      );
-      const deskSummary = summarize(deskMsgs, "Attendance, Fee Slips & School Notices");
+      // 1. School Official Desk (Pinned — Strictly General School Broadcasts + THIS Student's own slips/welcome cards)
+      const ownDeskMsgs = [
+        ...schoolDeskBroadcastBucket,
+        ...(ownStudentId ? schoolDeskByStudent.get(ownStudentId) || [] : []),
+      ].sort((a, b) => (a.createdAt || "").localeCompare(b.createdAt || ""));
+      const deskSummary = summarize(ownDeskMsgs, "Attendance, Fee Slips & School Notices");
       items.push({
         key: "school_desk_student",
         tab: "school",
@@ -2200,10 +2452,10 @@ export const NstaMessengerSuite: React.FC<Props> = ({
         ...clsSummary,
       });
 
-      // 3. Routine & Class Teachers (1-on-1 Direct Chat — No Class-Teacher-Only Limit)
+      // 3. Routine & Class Teachers (1-on-1 Direct Chat — Strictly scoped to ownStudentId)
       studentVisibleTeachers.forEach((t) => {
         const candidate = teacherByTeacher.get(t.id) || [];
-        const tMsgs = candidate.filter((m) => !m.studentId || m.studentId === ownStudentId);
+        const tMsgs = candidate.filter((m) => Boolean(ownStudentId && m.studentId === ownStudentId));
         const routineSubj = t._routineSubjects && t._routineSubjects.length > 0 ? t._routineSubjects.join(", ") : "";
         const profileSubj =
           t.subjects && t.subjects.length > 0
@@ -2251,19 +2503,37 @@ export const NstaMessengerSuite: React.FC<Props> = ({
         });
       });
     } else if (currentUserRole === "ADMIN") {
-      // 1. School Official Desk (All Students)
-      const deskSummary = summarize(schoolDeskBucket, "Broadcast circulars, attendance & slips");
+      // 1. School Official Desk (All Students — Broadcast Circulars Only, never individual private student fee slips)
+      const deskSummary = summarize(schoolDeskBroadcastBucket, "Broadcast circulars & general notices");
       items.push({
         key: "school_desk_all",
         tab: "school",
         title: "School Official Desk (All)",
-        subtitle: "Broadcast Notices & Inbox",
+        subtitle: "Broadcast Circulars & General Notices",
         avatarText: "🏫",
         avatarUrl: school?.logoUrl,
         avatarBg: "bg-blue-600",
         pinned: true,
         studentId: "all",
         ...deskSummary,
+      });
+
+      // 1b. Individual Enrolled Students who have private Official Desk activity (Fee Slips / Welcome / Direct Reply)
+      safeStudents.forEach((st) => {
+        const stDeskMsgs = schoolDeskByStudent.get(st.id) || [];
+        if (stDeskMsgs.length === 0) return;
+        const stDeskSummary = summarize(stDeskMsgs, "Private Fee Slips & Desk");
+        items.push({
+          key: `school_desk_st_${st.id}`,
+          tab: "school",
+          title: `${st.name} · Desk`,
+          subtitle: `${st.className || "Student"}${st.rollNo ? ` · Roll #${st.rollNo}` : ""} · Private Desk`,
+          avatarText: st.name?.slice(0, 2).toUpperCase() || "ST",
+          avatarUrl: st.photoUrl,
+          avatarBg: "bg-sky-700",
+          studentId: st.id,
+          ...stDeskSummary,
+        });
       });
 
       // 2. All Classes
@@ -4521,8 +4791,7 @@ export const NstaMessengerSuite: React.FC<Props> = ({
 
     const threadFiltered = messages.filter(m => {
       if (!m || !m.threadType) return false;
-      // 0. Filter out messages deleted for current user (Delete for me)
-      if (Array.isArray(m.deletedFor) && m.deletedFor.includes(currentUserId)) return false;
+      if (!isMessageForCurrentUser(m)) return false;
 
       // 1. Strict threadType match: ensures class, school, teacher and friend never bleed
       if (m.threadType !== targetThreadType) return false;
@@ -4542,12 +4811,16 @@ export const NstaMessengerSuite: React.FC<Props> = ({
 
       // 3. School Desk matching
       if (targetThreadType === "SCHOOL_DESK") {
-        const sId =
-          currentUserRole === "ADMIN" && (!selectedStudentId || selectedStudentId === "all")
-            ? undefined
-            : activeStudent?.id;
-        if (sId && m.studentId && m.studentId !== sId && m.studentId !== "all" && m.studentId !== "general") {
-          return false;
+        const isAdminAll =
+          currentUserRole === "ADMIN" && (!selectedStudentId || selectedStudentId === "all");
+        if (isAdminAll) {
+          if (!isGeneralSchoolDeskMessage(m)) return false;
+        } else {
+          const sId = activeStudent?.id || (currentUserRole === "STUDENT" ? student?.id || currentUserId : undefined);
+          const msgTargetStudent = getSchoolDeskTargetStudentId(m);
+          if (sId && msgTargetStudent && msgTargetStudent !== sId && msgTargetStudent !== "all" && msgTargetStudent !== "general") {
+            return false;
+          }
         }
       }
 
@@ -4576,7 +4849,7 @@ export const NstaMessengerSuite: React.FC<Props> = ({
       (m.senderName || "").toLowerCase().includes(q) ||
       (m.feeSlip?.monthLabel || "").toLowerCase().includes(q)
     );
-  }, [messages, searchQuery, activeTab, activeClass?.id, activeStudent?.id, activeTeacher?.id, activeFriendPairKey, currentUserRole, selectedStudentId]);
+  }, [messages, searchQuery, activeTab, activeClass?.id, activeClass?.name, activeStudent?.id, activeTeacher?.id, activeFriendPairKey, currentUserRole, currentUserId, student?.id, teacher?.id, school?.id, selectedStudentId]);
 
   const filteredTeachersList = useMemo(() => {
     const sourceList = currentUserRole === "STUDENT" ? studentVisibleTeachers : safeTeachers;
@@ -5596,7 +5869,7 @@ export const NstaMessengerSuite: React.FC<Props> = ({
                 onChange={(e) => setSelectedStudentId(e.target.value)}
                 className="flex-1 min-w-0 px-2.5 py-1.5 rounded-xl bg-slate-950 text-white border border-slate-700 text-xs font-bold cursor-pointer"
               >
-                <option value="all">📢 Sabhi Chhatra &amp; Inbox (All)</option>
+                <option value="all">📢 Sabhi Chhatra (Broadcast Only)</option>
                 {websiteDeskVisitors.length > 0 && (
                   <optgroup label="Website Admissions Desk">
                     {websiteDeskVisitors.map((v) => (
@@ -6127,83 +6400,151 @@ export const NstaMessengerSuite: React.FC<Props> = ({
                   ) : (
                     <>
                       {/* ── SPECIAL RENDER: OFFICIAL SCHOOL WELCOME CARD ── */}
-                      {(msg.attachmentType === "WELCOME" || msg.welcomeData) && (
-                        <div className="space-y-2.5 pb-2 mb-2.5 p-3 sm:p-4 rounded-2xl bg-gradient-to-br from-amber-950/80 via-slate-900 to-emerald-950/80 border border-amber-500/40 shadow-xl text-slate-100">
-                          {/* Official Header */}
-                          <div className="flex items-center justify-between pb-2 border-b border-amber-500/30">
-                            <div className="flex items-center gap-2">
-                              <div className="w-8 h-8 rounded-xl bg-amber-500/20 text-amber-300 border border-amber-500/40 flex items-center justify-center text-sm shadow-sm shrink-0">
-                                🎓
+                      {(msg.attachmentType === "WELCOME" || msg.welcomeData) && (() => {
+                        const enrichedWd = buildEnrichedWelcomeData(msg);
+                        const isAcked = Boolean(enrichedWd.acknowledgedAt);
+                        const isAckBusy = acknowledgingWelcomeMsgId === msg.id;
+                        const ackDateStr = enrichedWd.acknowledgedAt
+                          ? new Date(enrichedWd.acknowledgedAt).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" })
+                          : "";
+                        const activatedDateStr = enrichedWd.qrIssuedAt
+                          ? new Date(enrichedWd.qrIssuedAt).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" })
+                          : "";
+
+                        return (
+                          <div className="nst-isolated-modal space-y-2.5 pb-2 mb-2.5 p-3 sm:p-4 rounded-2xl bg-gradient-to-br from-amber-950/90 via-slate-900 to-emerald-950/90 border border-amber-500/40 shadow-xl text-slate-100">
+                            {/* Official Header */}
+                            <div className="flex items-center justify-between gap-2 pb-2 border-b border-amber-500/30">
+                              <div className="flex items-center gap-2 min-w-0">
+                                <div className="w-8 h-8 rounded-xl bg-amber-500/20 text-amber-300 border border-amber-500/40 flex items-center justify-center text-sm shadow-sm shrink-0">
+                                  🎓
+                                </div>
+                                <div className="min-w-0">
+                                  <span className="font-black text-xs uppercase tracking-wider block text-amber-300 truncate">
+                                    Official Welcome &amp; ID Activation
+                                  </span>
+                                  <span className="text-[10px] text-emerald-300 block font-semibold truncate">
+                                    {enrichedWd.schoolName}
+                                  </span>
+                                </div>
                               </div>
-                              <div className="min-w-0">
-                                <span className="font-black text-xs uppercase tracking-wider block text-amber-300 truncate">
-                                  Official Welcome &amp; ID Activation
+                              <span className="text-[10px] font-mono bg-emerald-500/20 text-emerald-200 border border-emerald-400/40 px-2 py-0.5 rounded-lg font-bold uppercase shrink-0">
+                                Active ID
+                              </span>
+                            </div>
+
+                            {/* Student Info Box */}
+                            <div className="p-2.5 rounded-xl bg-black/50 border border-white/15 space-y-1.5 text-xs">
+                              <div className="flex items-center justify-between gap-2">
+                                <span className="font-black text-white text-sm flex items-center gap-1.5 truncate" style={{ color: "#ffffff" }}>
+                                  <span className="truncate" style={{ color: "#ffffff" }}>{enrichedWd.studentName}</span>
+                                  <span className="text-emerald-400 text-xs shrink-0">✅</span>
                                 </span>
-                                <span className="text-[10px] text-emerald-300 block font-semibold truncate">
-                                  {msg.welcomeData?.schoolName || school?.name || "Official School Desk"}
+                                <span className="text-[10px] font-mono text-emerald-200 bg-emerald-950/90 border border-emerald-500/40 px-2 py-0.5 rounded-md font-bold shrink-0">
+                                  {enrichedWd.className || "Class"}
                                 </span>
                               </div>
+                              <div className="flex items-center justify-between text-[11px] text-slate-200 font-mono pt-1 border-t border-white/10 tabular-nums" style={{ color: "#e2e8f0" }}>
+                                <span>Adm No: <strong className="text-white" style={{ color: "#ffffff" }}>{enrichedWd.admissionNo}</strong></span>
+                                <span>Roll No: <strong className="text-white" style={{ color: "#ffffff" }}>{enrichedWd.rollNo || "01"}</strong></span>
+                              </div>
+                              <div className="flex items-center justify-between text-[10px] text-slate-300 font-mono pt-1 border-t border-white/10 tabular-nums">
+                                <span>QR Token: <strong className="text-amber-300">{enrichedWd.verificationToken}</strong></span>
+                                {activatedDateStr && <span>Activated: <strong className="text-emerald-300">{activatedDateStr}</strong></span>}
+                              </div>
                             </div>
-                            <span className="text-[10px] font-mono bg-amber-500/20 text-amber-300 border border-amber-500/30 px-2 py-0.5 rounded-full font-bold uppercase shrink-0">
-                              Active ID
-                            </span>
-                          </div>
 
-                          {/* Student Info Box */}
-                          <div className="p-2.5 rounded-xl bg-black/40 border border-white/10 space-y-1.5 text-xs">
-                            <div className="flex items-center justify-between">
-                              <span className="font-black text-white text-sm flex items-center gap-1.5 truncate">
-                                <span>{msg.welcomeData?.studentName || msg.studentName || "Student"}</span>
-                                <span className="text-emerald-400 text-xs">✅</span>
-                              </span>
-                              <span className="text-[10px] font-mono text-emerald-300 bg-emerald-950/80 border border-emerald-500/30 px-2 py-0.5 rounded font-bold shrink-0">
-                                {msg.welcomeData?.className || "Class 10"}
-                              </span>
+                            {/* Quick Highlights Badge */}
+                            <div className="grid grid-cols-2 gap-1.5 text-[10px] text-slate-100">
+                              <div className="p-1.5 rounded-lg bg-emerald-950/80 border border-emerald-500/35 flex items-center gap-1.5">
+                                <span>📚</span>
+                                <span className="font-bold text-emerald-200">100% Free Notes</span>
+                              </div>
+                              <div className="p-1.5 rounded-lg bg-blue-950/80 border border-blue-500/35 flex items-center gap-1.5">
+                                <span>⏱️</span>
+                                <span className="font-bold text-blue-200">Live Attendance</span>
+                              </div>
                             </div>
-                            <div className="flex items-center justify-between text-[11px] text-slate-300 font-mono pt-1 border-t border-white/10">
-                              <span>Adm No: <strong className="text-white">{msg.welcomeData?.admissionNo || "ADM-001"}</strong></span>
-                              <span>Roll No: <strong className="text-white">{msg.welcomeData?.rollNo || "01"}</strong></span>
+
+                            {/* Parent Acknowledgement Status / Action */}
+                            {isAcked ? (
+                              <div className="px-2.5 py-2 rounded-xl bg-emerald-950/80 border border-emerald-400/40 text-[11px] text-emerald-200 font-bold flex items-center justify-between gap-2">
+                                <span className="flex items-center gap-1.5">
+                                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                                  <span>अभिभावक द्वारा पठित व स्वीकृत</span>
+                                </span>
+                                <span className="font-mono text-[10px] text-emerald-300 tabular-nums">{ackDateStr}</span>
+                              </div>
+                            ) : (
+                              <button
+                                type="button"
+                                disabled={isAckBusy}
+                                onClick={async () => {
+                                  setAcknowledgingWelcomeMsgId(msg.id);
+                                  try {
+                                    await acknowledgeSchoolWelcomeLetter({
+                                      schoolId: enrichedWd.schoolId || school?.id || "",
+                                      studentId: enrichedWd.studentId,
+                                      messageId: msg.id,
+                                      acknowledgedBy:
+                                        currentUserRole === "ADMIN"
+                                          ? `${currentUserName || "Admin"} (Admin)`
+                                          : enrichedWd.fatherName
+                                          ? `${enrichedWd.fatherName} (Parent)`
+                                          : currentUserName || "Parent / Student",
+                                      acknowledgedRole: currentUserRole === "ADMIN" ? "ADMIN" : "PARENT",
+                                    });
+                                    toast.success("✅ स्वागत पत्र स्वीकृति (Acknowledgement) दर्ज हो गई!");
+                                  } catch {
+                                    toast.error("स्वीकृति दर्ज करने में त्रुटि आई।");
+                                  } finally {
+                                    setAcknowledgingWelcomeMsgId(null);
+                                  }
+                                }}
+                                className="w-full min-h-[38px] py-1.5 px-3 rounded-xl bg-emerald-600/25 hover:bg-emerald-600/40 border border-emerald-400/45 text-emerald-200 font-bold text-[11px] flex items-center justify-center gap-1.5 transition cursor-pointer"
+                              >
+                                <CheckCircle2 className="w-3.5 h-3.5" />
+                                <span>{isAckBusy ? "Recording..." : "अभिभावक स्वीकृति दर्ज करें (Acknowledge)"}</span>
+                              </button>
+                            )}
+
+                            {/* Action Buttons: View Welcome Card, PDF & ID Card */}
+                            <div className="space-y-1.5">
+                              <button
+                                type="button"
+                                onClick={() => setSelectedWelcomeData(enrichedWd)}
+                                className="w-full min-h-[42px] py-2 px-3 rounded-xl bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-slate-950 font-black text-xs flex items-center justify-center gap-1.5 shadow-md transition cursor-pointer active:scale-95"
+                              >
+                                <Sparkles className="w-3.5 h-3.5 shrink-0" />
+                                <span>स्वागत पत्र, QR व हिस्ट्री देखें</span>
+                              </button>
+
+                              <div className="grid grid-cols-2 gap-1.5">
+                                <button
+                                  type="button"
+                                  onClick={() => triggerWelcomePdfDownload(enrichedWd)}
+                                  className="min-h-[38px] py-1.5 px-2.5 rounded-xl bg-slate-800/90 hover:bg-slate-700 border border-white/15 text-slate-100 font-bold text-[11px] flex items-center justify-center gap-1.5 transition cursor-pointer whitespace-nowrap"
+                                >
+                                  <FileText className="w-3.5 h-3.5 text-amber-300 shrink-0" />
+                                  <span>Welcome PDF</span>
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => openWelcomeStudentIdCard(enrichedWd)}
+                                  className="min-h-[38px] py-1.5 px-2.5 rounded-xl bg-slate-800/90 hover:bg-slate-700 border border-white/15 text-slate-100 font-bold text-[11px] flex items-center justify-center gap-1.5 transition cursor-pointer whitespace-nowrap"
+                                >
+                                  <Download className="w-3.5 h-3.5 text-emerald-300 shrink-0" />
+                                  <span>ID Card</span>
+                                </button>
+                              </div>
                             </div>
                           </div>
-
-                          {/* Quick Highlights Badge */}
-                          <div className="grid grid-cols-2 gap-1.5 text-[10px] text-slate-200">
-                            <div className="p-1.5 rounded-lg bg-emerald-950/60 border border-emerald-500/30 flex items-center gap-1.5">
-                              <span>📚</span>
-                              <span className="font-bold text-emerald-300">100% Free Notes</span>
-                            </div>
-                            <div className="p-1.5 rounded-lg bg-blue-950/60 border border-blue-500/30 flex items-center gap-1.5">
-                              <span>⏱️</span>
-                              <span className="font-bold text-blue-300">Live Attendance</span>
-                            </div>
-                          </div>
-
-                          {/* Action Button: View Full Welcome Letter */}
-                          <button
-                            type="button"
-                            onClick={() => {
-                              const wd: NstaWelcomeData = msg.welcomeData || {
-                                studentId: msg.studentId || "std",
-                                studentName: msg.studentName || "Student",
-                                admissionNo: "ADM-001",
-                                rollNo: "01",
-                                className: "Class 10",
-                                schoolName: school?.name || "Official School Desk",
-                                issuedAt: msg.createdAt,
-                              };
-                              setSelectedWelcomeData(wd);
-                            }}
-                            className="w-full py-2 px-3 rounded-xl bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-600 hover:to-amber-700 text-slate-950 font-black text-xs flex items-center justify-center gap-1.5 shadow-md shadow-amber-950/30 transition cursor-pointer active:scale-95"
-                          >
-                            <Sparkles className="w-3.5 h-3.5" />
-                            <span>स्वागत पत्र व विवरण देखें (Welcome Letter)</span>
-                          </button>
-                        </div>
-                      )}
+                        );
+                      })()}
 
                       {/* ── SPECIAL RENDER: OFFICIAL SCHOOL BIRTHDAY CARD ── */}
                       {(msg.attachmentType === "BIRTHDAY" || msg.birthdayData) && (
-                        <div className="space-y-2.5 pb-2 mb-2.5 p-3 sm:p-4 rounded-2xl bg-gradient-to-br from-rose-950/80 via-slate-900 to-amber-950/80 border border-amber-500/50 shadow-xl text-slate-100">
+                        <div className="nst-isolated-modal space-y-2.5 pb-2 mb-2.5 p-3 sm:p-4 rounded-2xl bg-gradient-to-br from-rose-950/90 via-slate-900 to-amber-950/90 border border-amber-500/50 shadow-xl text-slate-100">
                           {/* Header */}
                           <div className="flex items-center justify-between pb-2 border-b border-rose-500/30">
                             <div className="flex items-center gap-2">
@@ -6219,30 +6560,30 @@ export const NstaMessengerSuite: React.FC<Props> = ({
                                 </span>
                               </div>
                             </div>
-                            <span className="text-[10px] font-mono bg-rose-500/20 text-rose-300 border border-rose-500/30 px-2 py-0.5 rounded-full font-bold uppercase shrink-0">
+                            <span className="text-[10px] font-mono bg-rose-500/20 text-rose-200 border border-rose-500/30 px-2 py-0.5 rounded-lg font-bold uppercase shrink-0">
                               Birthday VIP 🎉
                             </span>
                           </div>
 
                           {/* Student Info Box */}
-                          <div className="p-2.5 rounded-xl bg-black/40 border border-white/10 space-y-1.5 text-xs">
+                          <div className="p-2.5 rounded-xl bg-black/50 border border-white/15 space-y-1.5 text-xs">
                             <div className="flex items-center justify-between">
                               <span className="font-black text-white text-sm flex items-center gap-1.5 truncate">
                                 <span>{msg.birthdayData?.studentName || msg.studentName || "Student"}</span>
                                 <span className="text-amber-400 text-xs">👑</span>
                               </span>
-                              <span className="text-[10px] font-mono text-rose-300 bg-rose-950/80 border border-rose-500/30 px-2 py-0.5 rounded font-bold shrink-0">
+                              <span className="text-[10px] font-mono text-rose-200 bg-rose-950/90 border border-rose-500/40 px-2 py-0.5 rounded font-bold shrink-0">
                                 {msg.birthdayData?.className || "Class 10"}
                               </span>
                             </div>
-                            <div className="flex items-center justify-between text-[11px] text-slate-300 font-mono pt-1 border-t border-white/10">
+                            <div className="flex items-center justify-between text-[11px] text-slate-200 font-mono pt-1 border-t border-white/10">
                               <span>Adm No: <strong className="text-white">{msg.birthdayData?.admissionNo || "ADM-001"}</strong></span>
                               <span>DOB: <strong className="text-amber-300">{msg.birthdayData?.dateOfBirth || "Today"}</strong></span>
                             </div>
                           </div>
 
                           {/* Principal Blessing Quote */}
-                          <div className="p-2 rounded-xl bg-rose-950/40 border border-rose-500/20 text-[11px] text-slate-300 italic leading-snug">
+                          <div className="p-2 rounded-xl bg-rose-950/50 border border-rose-500/25 text-[11px] text-slate-200 italic leading-snug">
                             "विद्यालय परिवार की ओर से जन्मदिवस पर असीम स्नेह व मंगलकामनाएं। आपका भविष्य ज्ञान, उत्तम स्वास्थ्य और सफलता से जगमगाए!"
                           </div>
 
@@ -6263,7 +6604,7 @@ export const NstaMessengerSuite: React.FC<Props> = ({
                               };
                               setSelectedBirthdayData(bd);
                             }}
-                            className="w-full py-2 px-3 rounded-xl bg-gradient-to-r from-rose-600 via-rose-500 to-amber-600 hover:opacity-95 text-white font-black text-xs flex items-center justify-center gap-1.5 shadow-md shadow-rose-950/40 transition cursor-pointer active:scale-95"
+                            className="w-full min-h-[42px] py-2 px-3 rounded-xl bg-gradient-to-r from-rose-600 via-rose-500 to-amber-600 hover:opacity-95 text-white font-black text-xs flex items-center justify-center gap-1.5 shadow-md shadow-rose-950/40 transition cursor-pointer active:scale-95"
                           >
                             <span>🎉 जन्मदिन शुभकामना पत्र देखें (Birthday Greetings)</span>
                           </button>
@@ -8325,7 +8666,89 @@ export const NstaMessengerSuite: React.FC<Props> = ({
         onClose={() => setSelectedWelcomeData(null)}
         welcomeData={selectedWelcomeData}
         onOpenSchoolDesk={() => setActiveTab("school")}
+        onOpenIdCard={(wd) => {
+          setSelectedWelcomeData(null);
+          openWelcomeStudentIdCard(wd);
+        }}
+        defaultRoleForAck={currentUserRole === "ADMIN" ? "ADMIN" : "PARENT"}
+        onAcknowledged={(ack) => {
+          setSelectedWelcomeData((prev) =>
+            prev
+              ? {
+                  ...prev,
+                  acknowledgedAt: ack.acknowledgedAt,
+                  acknowledgedBy: ack.acknowledgedBy,
+                  acknowledgedRole: ack.acknowledgedRole,
+                  activationHistory: ack.activationHistory,
+                }
+              : prev
+          );
+        }}
       />
+
+      {/* ── DIRECT ID CARD MODAL FROM WELCOME CARD ── */}
+      {welcomeIdCardStudent && (
+        <StudentIdCardModal
+          isOpen={Boolean(welcomeIdCardStudent)}
+          onClose={() => setWelcomeIdCardStudent(null)}
+          student={welcomeIdCardStudent}
+          school={school}
+          classes={safeClasses}
+        />
+      )}
+
+      {/* ── OFFSCREEN A4 WELCOME PDF RENDERER ── */}
+      {welcomePdfExportData && (() => {
+        const wd = welcomePdfExportData;
+        const ver = wd.verificationToken && wd.qrExpiresAt
+          ? { token: wd.verificationToken, issuedAt: wd.qrIssuedAt || wd.issuedAt, expiresAt: wd.qrExpiresAt }
+          : buildStudentVerificationToken({
+              schoolId: wd.schoolId || school?.id,
+              studentId: wd.studentId,
+              admissionNo: wd.admissionNo,
+              issuedAt: wd.qrIssuedAt || wd.issuedAt,
+            });
+        const qrUrl = buildStudentIdCardQrUrl({
+          schoolId: wd.schoolId || school?.id || "",
+          studentId: wd.studentId,
+          rollNo: wd.rollNo || "",
+          classId: wd.classId || "",
+          studentName: wd.studentName,
+          admissionNo: wd.admissionNo,
+          className: wd.className || "",
+          schoolName: wd.schoolName,
+          verificationToken: ver.token,
+          qrIssuedAt: ver.issuedAt,
+          qrExpiresAt: ver.expiresAt,
+        });
+        return (
+          <div
+            aria-hidden="true"
+            style={{ position: "fixed", left: "-10000px", top: 0, pointerEvents: "none", opacity: 0, zIndex: -1 }}
+          >
+            <div ref={welcomePdfSheetRef}>
+              <WelcomeLetterA4Sheet
+                welcomeData={wd}
+                qrVerifyUrl={qrUrl}
+                verificationToken={ver.token}
+                qrIssuedAt={ver.issuedAt}
+                qrExpiresAt={ver.expiresAt}
+                isExpired={wd.qrStatus === "EXPIRED" || wd.qrStatus === "REVOKED"}
+                acknowledgedAt={wd.acknowledgedAt}
+                acknowledgedBy={wd.acknowledgedBy}
+                history={buildNormalizedActivationHistory(
+                  wd,
+                  ver.token,
+                  ver.issuedAt,
+                  wd.acknowledgedAt,
+                  wd.acknowledgedBy,
+                  wd.activationHistory
+                )}
+              />
+            </div>
+          </div>
+        );
+      })()}
 
       {/* ── OFFICIAL SCHOOL BIRTHDAY MODAL ── */}
       <SchoolBirthdayModal

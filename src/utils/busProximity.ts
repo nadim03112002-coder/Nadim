@@ -4,6 +4,8 @@ export interface StudentHomePin {
   rollNo?: string;
   className?: string;
   busRoute?: string;
+  busNumber?: string;
+  busStop?: string;
   homeLat: number;
   homeLng: number;
   homeAddress?: string;

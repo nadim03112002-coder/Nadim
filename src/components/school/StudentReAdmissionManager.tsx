@@ -10,6 +10,7 @@ import type {
 import { sortSchoolClasses } from "../../school-types";
 import {
   saveStudent,
+  renewStudentSessionDigitalId,
   updateStudent,
   deleteStudent,
   saveClass,
@@ -752,10 +753,17 @@ export const StudentReAdmissionManager: React.FC<Props> = ({
         admissionDueBalance: 0,
       };
 
-      await saveStudent(savedStudent);
+      const finalSavedStudent = await renewStudentSessionDigitalId(school.id, {
+        oldStudent: selectedStudent,
+        updatedStudent: savedStudent,
+        newSessionName: targetSession.name || targetSession.id,
+        renewedBy: "Student Re-Admission Desk",
+        deactivatePreviousRecord: !isEditingExisting,
+        dispatchWelcome: !isEditingExisting,
+      });
       setLocallyAddedStudents((prev) => [
-        savedStudent,
-        ...prev.filter((s) => s.id !== savedStudent.id),
+        finalSavedStudent,
+        ...prev.filter((s) => s.id !== finalSavedStudent.id),
       ]);
 
       const feeDoc = buildReAdmissionFeeDoc(
@@ -956,9 +964,16 @@ export const StudentReAdmissionManager: React.FC<Props> = ({
           admissionDueBalance: 0,
         };
 
-        await saveStudent(newSt);
-        setLocallyAddedStudents((prev) => [newSt, ...prev.filter((x) => x.id !== newSt.id)]);
-        if (onReAdmitted) onReAdmitted(newSt);
+        const finalBulkStudent = await renewStudentSessionDigitalId(school.id, {
+          oldStudent: st,
+          updatedStudent: newSt,
+          newSessionName: targetSession.name || targetSession.id,
+          renewedBy: "Bulk Class Re-Admission",
+          deactivatePreviousRecord: true,
+          dispatchWelcome: true,
+        });
+        setLocallyAddedStudents((prev) => [finalBulkStudent, ...prev.filter((x) => x.id !== finalBulkStudent.id)]);
+        if (onReAdmitted) onReAdmitted(finalBulkStudent);
 
         const feeDoc = buildReAdmissionFeeDoc(
           newSt,

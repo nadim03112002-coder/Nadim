@@ -129,8 +129,10 @@ import campusHeroImg from "../../assets/images/school_campus_hero_1794756374517.
 import smartLabImg from "../../assets/images/smart_classroom_lab_1794756374079.jpg";
 import sportsArenaImg from "../../assets/images/school_sports_arena_1794756373791.jpg";
 import { resolveTelegramUrl } from "../../services/telegramStorageService";
-const EntranceTestModal = React.lazy(() =>
-  import("./EntranceTestModal").then((m) => ({ default: m.EntranceTestModal }))
+import { lazyWithRetry } from "../../utils/lazyWithRetry";
+const EntranceTestModal = lazyWithRetry(
+  () => import("./EntranceTestModal").then((m) => ({ default: m.EntranceTestModal })),
+  "Entrance Test Modal"
 );
 
 interface Props {
@@ -1037,31 +1039,8 @@ export const PublicSchoolWebsite: React.FC<Props> = ({
     }
   };
 
-  if (!school) {
-    return (
-      <PremiumLoadingState
-        title="Loading School Website..."
-        subtitle="Preparing official digital campus"
-        tone="dark"
-        variant="fullscreen"
-        accent="amber"
-        actions={
-          onBack ? (
-            <button
-              type="button"
-              onClick={onBack}
-              className="px-4 py-2 rounded-lg bg-white/10 text-xs font-semibold text-white hover:bg-white/20 cursor-pointer"
-            >
-              Back
-            </button>
-          ) : undefined
-        }
-      />
-    );
-  }
-
   const bannerColor = school?.bannerColor || "#1e3a8a";
-  const savedLogo = getSavedSchoolLogo(school.logoUrl, school.id);
+  const savedLogo = getSavedSchoolLogo(school?.logoUrl, school?.id);
   const hasValidLogo = Boolean(savedLogo && !isAppLogo(savedLogo) && !logoImgFailed);
 
   useEffect(() => {
@@ -1071,9 +1050,9 @@ export const PublicSchoolWebsite: React.FC<Props> = ({
   useEffect(() => {
     setHeroBannerFailed(false);
   }, [heroBannerUrl, school?.id]);
-  const cleanPhoneDigits = (websiteCfg.whatsappNumber || school.phone || "").replace(/\D/g, "");
-  const primaryPhone = (school.phone || "").split(",")[0]?.trim() || "";
-  const regNo = getVisibleSchoolRegNo(school);
+  const cleanPhoneDigits = (websiteCfg.whatsappNumber || school?.phone || "").replace(/\D/g, "");
+  const primaryPhone = (school?.phone || "").split(",")[0]?.trim() || "";
+  const regNo = school ? getVisibleSchoolRegNo(school) : "";
   const hasMultipleSchools = schools.length > 1;
 
   // Top Publicity Scrolling Ticker (Admin-editable via school.websiteConfig; excludes email ID)
@@ -1126,6 +1105,7 @@ export const PublicSchoolWebsite: React.FC<Props> = ({
   const topTickerItems = useMemo(() => {
     const custom = parseCustomTickerItems(rawWebsiteCfg.topTickerText);
     if (custom.length > 0) return custom;
+    if (!school) return [];
     return buildDefaultSchoolTickerItems({
       school,
       sessionLabel,
@@ -1363,6 +1343,57 @@ export const PublicSchoolWebsite: React.FC<Props> = ({
       }
       return true;
     };
+
+    // 0. NSTA-SCHOOL-DRIVER: Bus Driver ID Card QR format
+    if (trimmed.includes("NSTA-SCHOOL-DRIVER:") || trimmed.includes("NSTA-DRIVER:")) {
+      const prefix = trimmed.includes("NSTA-SCHOOL-DRIVER:") ? "NSTA-SCHOOL-DRIVER:" : "NSTA-DRIVER:";
+      const body = (trimmed.split(prefix)[1] || "").split(/[\r\n]/)[0];
+      const parts = body.split(":").map((p) => {
+        try {
+          return decodeURIComponent(p);
+        } catch {
+          return p;
+        }
+      });
+      const [
+        qrSchoolId,
+        qrBusId,
+        qrBusNumber,
+        qrRoute,
+        qrDriverName,
+        qrDriverPhone,
+        _qrSchoolCode,
+        qrSchoolName,
+      ] = parts;
+
+      if (!checkSchoolOwnership(qrSchoolId, qrSchoolName)) {
+        setVerifiedResult(null);
+        setVerifyError(`This Driver ID Card QR belongs to ${qrSchoolName || "another school"}, not ${school.name}.`);
+        return;
+      }
+
+      setVerifyType("idcard");
+      setVerifySearchQuery(qrBusNumber || qrDriverName || qrBusId || "");
+      setVerifiedResult({
+        found: true,
+        qrVerified: true,
+        type: "driver_id",
+        officialVerified: true,
+        school: qrSchoolName || school.name,
+        schoolCode: school.code || regNo || "",
+        student: qrDriverName || "Authorized Bus Driver",
+        roll: qrBusNumber || "BUS",
+        regNo: qrBusId || "DRIVER",
+        class: qrRoute ? `Transport • ${qrRoute}` : "Authorized Transport Driver",
+        phone: qrDriverPhone || "",
+        status: "Verified Official Bus Driver ID",
+        total: qrBusNumber ? `Bus: ${qrBusNumber}` : "Authorized Transport Pass",
+        date: new Date().toISOString().slice(0, 10),
+        session: currentSessionLabel,
+      });
+      toast.success("Driver ID QR verified successfully!");
+      return;
+    }
 
     // 1. NSTA-SCHOOL: or NSTA-SCHOOL-STAFF: ID Card QR format (raw OR inside Chrome URL #hash)
     if (trimmed.includes("NSTA-SCHOOL:") || trimmed.includes("NSTA-SCHOOL-STAFF:")) {
@@ -1796,6 +1827,29 @@ export const PublicSchoolWebsite: React.FC<Props> = ({
     { id: "verify", label: "Verify" },
     { id: "contact", label: "Contact" },
   ];
+
+  if (!school) {
+    return (
+      <PremiumLoadingState
+        title="Loading School Website..."
+        subtitle="Preparing official digital campus"
+        tone="dark"
+        variant="fullscreen"
+        accent="amber"
+        actions={
+          onBack ? (
+            <button
+              type="button"
+              onClick={onBack}
+              className="px-4 py-2 rounded-lg bg-white/10 text-xs font-semibold text-white hover:bg-white/20 cursor-pointer"
+            >
+              Back
+            </button>
+          ) : undefined
+        }
+      />
+    );
+  }
 
   return (
     <div className="nst-isolated-modal min-h-screen bg-[#FAFBFD] dark:bg-[#070D19] text-slate-900 dark:text-slate-100 antialiased selection:bg-amber-400/30">
@@ -4471,7 +4525,7 @@ export const PublicSchoolWebsite: React.FC<Props> = ({
                                   className="w-full min-h-[38px] px-3 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-700 text-white text-[11px] font-bold inline-flex items-center justify-center gap-1.5 cursor-pointer"
                                 >
                                   <RotateCcw className="w-3.5 h-3.5" />
-                                  <span>Resubmit with Screenshot &amp; UTR</span>
+                                  <span>Resubmit with Payment Screenshot</span>
                                 </button>
                               )}
                             </div>

@@ -17,6 +17,8 @@ import { onAuthStateChanged } from 'firebase/auth';
 import { AppLoadingScreen } from './components/AppLoadingScreen';
 import { PremiumLoadingState } from './components/school/PremiumLoadingState';
 import { persistActiveSchoolBrand } from './utils/activeSchoolBrand';
+import { ErrorBoundary } from './components/ErrorBoundary';
+import { setErrorLoggerUser, setErrorLoggerContext, setErrorLoggerModule, logErrorToFirebase, extractFunctionName } from './utils/errorLogger';
 import {
   DEFAULT_LIFE_MAKER_SCHOOL,
   DEFAULT_SCHOOL_ID,
@@ -38,6 +40,12 @@ import {
   syncCurrentUrlForBackNavigation,
   useBackHandler,
 } from './utils/backNavigation';
+import {
+  isDriverUser,
+  isCorruptedDriverStudentRecord,
+  promoteCorruptedUserToDriverIfApplicable,
+  purgeCorruptedDriverEntriesFromLocalCache,
+} from './utils/driverIdentity';
 
 // Resilient dynamic import helper that retries transient network or dev-server warm-up blips
 function lazyWithRetry<T extends React.ComponentType<any>>(
@@ -64,7 +72,11 @@ function lazyWithRetry<T extends React.ComponentType<any>>(
         window.location.reload();
       }
     } catch {}
-    // Return a self-contained fallback screen instead of throwing to avoid crashing the whole root app
+    // Log non-fatal chunk load failure and return a self-contained fallback screen instead of throwing
+    void logErrorToFirebase(
+      lastError instanceof Error ? lastError : new Error(`Failed to dynamically load ${moduleName}`),
+      { type: 'network', severity: 'high', moduleName, functionName: 'lazyWithRetry' }
+    );
     const FailureFallback: React.FC<any> = (props) => (
       <div className="flex-1 min-h-screen min-h-[100dvh] w-full bg-slate-950 flex flex-col items-center justify-center p-6 text-center text-slate-100">
         <div className="w-14 h-14 rounded-2xl bg-amber-500/10 border border-amber-500/20 flex items-center justify-center text-2xl mb-4 text-amber-400">
@@ -93,6 +105,31 @@ function lazyWithRetry<T extends React.ComponentType<any>>(
       </div>
     );
     return { default: FailureFallback as unknown as T };
+  });
+}
+
+// Resilient lazy loader for optional background overlays (prompts/banners) so transient fetch errors never crash RootErrorBoundary
+function lazyOptionalOverlay<T extends React.ComponentType<any>>(
+  importer: () => Promise<{ default: T }>,
+  widgetName: string
+) {
+  return lazy(async () => {
+    let lastError: unknown;
+    for (let attempt = 0; attempt < 4; attempt++) {
+      try {
+        return await importer();
+      } catch (err) {
+        lastError = err;
+        console.warn(`[lazyOptionalOverlay] Attempt ${attempt + 1}/4 for ${widgetName} failed:`, err);
+        await new Promise((resolve) => setTimeout(resolve, 350 * (attempt + 1)));
+      }
+    }
+    void logErrorToFirebase(
+      lastError instanceof Error ? lastError : new Error(`Failed to fetch optional widget: ${widgetName}`),
+      { type: 'network', severity: 'low', moduleName: `Overlay → ${widgetName}`, functionName: 'lazyOptionalOverlay' }
+    );
+    const EmptyWidget: React.FC<any> = () => null;
+    return { default: EmptyWidget as unknown as T };
   });
 }
 
@@ -127,14 +164,17 @@ const OnlineAdmissionManager = lazyWithRetry(
   'Online Admission 2027-28'
 );
 
-const PwaInstallPrompt = lazy(() =>
-  import('./components/PwaInstallPrompt').then(m => ({ default: m.PwaInstallPrompt || (m as any).default }))
+const PwaInstallPrompt = lazyOptionalOverlay(
+  () => import('./components/PwaInstallPrompt').then(m => ({ default: m.PwaInstallPrompt || (m as any).default })),
+  'PwaInstallPrompt'
 );
-const NotificationPrompt = lazy(() =>
-  import('./components/NotificationPrompt').then(m => ({ default: m.NotificationPrompt || (m as any).default }))
+const NotificationPrompt = lazyOptionalOverlay(
+  () => import('./components/NotificationPrompt').then(m => ({ default: m.NotificationPrompt || (m as any).default })),
+  'NotificationPrompt'
 );
-const NotificationPermissionGate = lazy(() =>
-  import('./components/NotificationPermissionGate').then(m => ({ default: m.NotificationPermissionGate || (m as any).default }))
+const NotificationPermissionGate = lazyOptionalOverlay(
+  () => import('./components/NotificationPermissionGate').then(m => ({ default: m.NotificationPermissionGate || (m as any).default })),
+  'NotificationPermissionGate'
 );
 
 import { PublicWebsiteTopBar, type WebsiteTopNavSection } from './components/school/PublicWebsiteTopBar';
@@ -250,7 +290,7 @@ export const isSchoolPortalUser = (u?: any): boolean => {
   const ut = (u.userType || '').toString().trim().toUpperCase();
   const prov = (u.provider || '').toString().trim().toLowerCase();
   const emailLower = (u.email || '').toString().trim().toLowerCase();
-  if (r === 'DRIVER' || isAdminUser(u)) return false;
+  if (r === 'DRIVER' || isDriverUser(u) || isAdminUser(u)) return false;
   return Boolean(
     ut === 'SCHOOL_STUDENT' ||
     r === 'SCHOOL_STUDENT' ||
@@ -325,6 +365,28 @@ const getInitialUser = () => {
           }
         } else if (isAdminUser(parsed)) {
           parsed.role = 'ADMIN';
+        } else {
+          const promotedDriver = promoteCorruptedUserToDriverIfApplicable(parsed);
+          if (promotedDriver) {
+            try {
+              purgeCorruptedDriverEntriesFromLocalCache(parsed.id || parsed.uid);
+              localStorage.setItem('nst_current_user', JSON.stringify(promotedDriver));
+              localStorage.setItem('nst_app_view_mode', 'DRIVER');
+            } catch {}
+            return promotedDriver;
+          }
+          if (isCorruptedDriverStudentRecord(parsed)) {
+            purgeCorruptedDriverEntriesFromLocalCache(parsed.id || parsed.uid);
+            delete parsed.studentId;
+            delete parsed.admissionNo;
+            delete parsed.classId;
+            delete parsed.className;
+            delete parsed.rollNo;
+            delete parsed.userType;
+            try {
+              localStorage.setItem('nst_current_user', JSON.stringify(parsed));
+            } catch {}
+          }
         }
         return parsed;
       }
@@ -370,7 +432,7 @@ export function App() {
   const [view, setView] = useState<AppViewMode>(() => {
     try {
       const u = getInitialUser();
-      if (u && (u?.role || '').toString().trim().toUpperCase() === 'DRIVER') return 'DRIVER';
+      if (isDriverUser(u)) return 'DRIVER';
     } catch {}
     return 'SCHOOL_ERP';
   });
@@ -493,6 +555,37 @@ export function App() {
     });
   }, []);
 
+  // Global uncaught runtime & async promise crash reporting for Admin Crash Notice Board
+  useEffect(() => {
+    const onWindowError = (event: ErrorEvent) => {
+      const errObj = event.error instanceof Error
+        ? event.error
+        : new Error(event.message || 'Uncaught Runtime Error');
+      void logErrorToFirebase(errObj, {
+        type: 'runtime',
+        severity: 'high',
+        functionName: extractFunctionName(errObj?.stack),
+      });
+    };
+    const onUnhandledRejection = (event: PromiseRejectionEvent) => {
+      const reason = event.reason;
+      const errObj = reason instanceof Error
+        ? reason
+        : new Error(typeof reason === 'string' ? reason : (reason?.message || 'Unhandled Promise Rejection'));
+      void logErrorToFirebase(errObj, {
+        type: 'promise',
+        severity: 'high',
+        functionName: extractFunctionName(errObj?.stack),
+      });
+    };
+    window.addEventListener('error', onWindowError);
+    window.addEventListener('unhandledrejection', onUnhandledRejection);
+    return () => {
+      window.removeEventListener('error', onWindowError);
+      window.removeEventListener('unhandledrejection', onUnhandledRejection);
+    };
+  }, []);
+
   useEffect(() => {
     let active = true;
     const loadSchools = async () => {
@@ -583,6 +676,39 @@ export function App() {
 
     return visiblePublicSchools[0];
   }, [visiblePublicSchools, urlSchoolParam, selectedPublicSchoolId]);
+
+  useEffect(() => {
+    const resolvedUid = user?.uid || user?.id || null;
+    const resolvedName = user?.name || user?.displayName || null;
+    const resolvedRole = user?.role || user?.schoolRole || null;
+    const resolvedPhone = user?.mobile || user?.phone || user?.fatherPhone || null;
+    const resolvedSchoolId = user?.schoolId || activePublicSchool?.id || null;
+    const resolvedSchoolName = user?.schoolName || activePublicSchool?.name || null;
+
+    setErrorLoggerUser(resolvedUid, resolvedName, resolvedRole, resolvedPhone);
+    setErrorLoggerContext({
+      schoolId: resolvedSchoolId,
+      schoolName: resolvedSchoolName,
+      studentName: user?.role === 'STUDENT' || user?.schoolRole === 'STUDENT' ? resolvedName : null,
+      className: user?.className || user?.class || null,
+    });
+
+    if (isPublicDocVerify) {
+      setErrorLoggerModule('Public → Document Verification (/verify)');
+    } else if (driverConsoleParams) {
+      setErrorLoggerModule('Driver GPS Console (Standalone)');
+    } else if (!user && routePath === '/login') {
+      setErrorLoggerModule('Login Portal (/login)');
+    } else if (routePath === '/admission') {
+      setErrorLoggerModule('Online Admission Form (/admission)');
+    } else if (!user || showPublicWebsite) {
+      setErrorLoggerModule('Public School Website');
+    } else if (view === 'DRIVER') {
+      setErrorLoggerModule('Driver GPS Console');
+    } else {
+      setErrorLoggerModule(`School ERP (${resolvedRole || 'Portal'})`);
+    }
+  }, [user, activePublicSchool?.id, activePublicSchool?.name, routePath, showPublicWebsite, view]);
 
   const handleSelectPublicSchool = (schoolId: string) => {
     setSelectedPublicSchoolId(schoolId);
@@ -892,18 +1018,21 @@ export function App() {
         }
       } catch {}
     }
-    // 0. Bus Driver: DIRECT TO DEDICATED DRIVER GPS DASHBOARD!
-    if (newUser && (newUser.role || '').toString().trim().toUpperCase() === 'DRIVER') {
-      newUser.role = 'DRIVER';
+    // 0. Bus Driver (or corrupted Driver-as-Student record): DIRECT TO DEDICATED DRIVER GPS DASHBOARD!
+    const promotedDriver = promoteCorruptedUserToDriverIfApplicable(newUser);
+    if (promotedDriver || (newUser && isDriverUser(newUser))) {
+      const finalDriverUser = promotedDriver || { ...newUser, role: 'DRIVER', schoolRole: 'DRIVER' };
       try {
+        purgeCorruptedDriverEntriesFromLocalCache(finalDriverUser.id || finalDriverUser.uid);
         localStorage.removeItem('nst_logged_out');
-        localStorage.setItem('nst_current_user', JSON.stringify(newUser));
+        localStorage.setItem('nst_current_user', JSON.stringify(finalDriverUser));
+        localStorage.setItem('nsta_cached_user', JSON.stringify(finalDriverUser));
         localStorage.setItem('nst_app_view_mode', 'DRIVER');
-        if (newUser.schoolId) {
-          localStorage.setItem('nst_active_school_id', newUser.schoolId);
+        if (finalDriverUser.schoolId) {
+          localStorage.setItem('nst_active_school_id', finalDriverUser.schoolId);
         }
       } catch (e) {}
-      setUser(newUser);
+      setUser(finalDriverUser);
       setView('DRIVER');
       return;
     }
@@ -1313,7 +1442,9 @@ export function App() {
   if (isPublicDocVerify) {
     const isLoggedIn = Boolean(user);
     const verifyPortalLabel =
-      user && (isSchoolAdminRole(user) || isAdminUser(user) || ['TEACHER', 'ACCOUNTANT'].includes((user.role || '').toString().toUpperCase()))
+      isDriverUser(user)
+        ? 'Switch to Driver Portal'
+        : user && (isSchoolAdminRole(user) || isAdminUser(user) || ['TEACHER', 'ACCOUNTANT'].includes((user.role || '').toString().toUpperCase()))
         ? 'Switch to ERP Portal'
         : 'Switch to Student Portal';
     return (
@@ -1329,6 +1460,13 @@ export function App() {
           onSelectSchool={handleSelectPublicSchool}
           onOpenAccount={handleOpenAccountSection}
           onSwitchToPortal={() => {
+            if (isDriverUser(user)) {
+              setView('DRIVER');
+              try { localStorage.setItem('nst_app_view_mode', 'DRIVER'); } catch {}
+            } else if (isSchoolPortalUser(user)) {
+              setView('SCHOOL_ERP');
+              try { localStorage.setItem('nst_app_view_mode', 'SCHOOL_ERP'); } catch {}
+            }
             setShowPublicWebsite(false);
             triggerSplash('to_app');
             navigateToPath('/', { clearSearch: true });
@@ -1340,23 +1478,25 @@ export function App() {
           }}
         />
         <div className="flex-1 flex flex-col">
-          <Suspense
-            fallback={
-              <PremiumLoadingState
-                title="Verifying Official Document..."
-                subtitle="Authenticating certificate & school signature"
-                tone="dark"
-                variant="fullscreen"
-                accent="emerald"
+          <ErrorBoundary fallbackLabel="Document Verification Portal">
+            <Suspense
+              fallback={
+                <PremiumLoadingState
+                  title="Verifying Official Document..."
+                  subtitle="Authenticating certificate & school signature"
+                  tone="dark"
+                  variant="fullscreen"
+                  accent="emerald"
+                />
+              }
+            >
+              <DocumentVerificationView
+                onBack={() => {
+                  navigateToPath('/', { clearSearch: true });
+                }}
               />
-            }
-          >
-            <DocumentVerificationView
-              onBack={() => {
-                navigateToPath('/', { clearSearch: true });
-              }}
-            />
-          </Suspense>
+            </Suspense>
+          </ErrorBoundary>
         </div>
       </div>
     );
@@ -1403,40 +1543,42 @@ export function App() {
             </span>
           </div>
         )}
-        <Suspense
-          fallback={
-            <PremiumLoadingState
-              title="Loading Driver GPS Dashboard..."
-              subtitle={driverConsoleParams.route ? `Route: ${driverConsoleParams.route}` : "Connecting live fleet telemetry"}
-              tone="dark"
-              variant="fullscreen"
-              accent="amber"
-              schoolId={driverConsoleParams.schoolId}
-              schoolName={driverConsoleParams.schoolName}
-            />
-          }
-        >
-          <DriverTripConsole
-            school={{
-              id: driverConsoleParams.schoolId,
-              code: driverConsoleParams.schoolCode,
-              name: driverConsoleParams.schoolName,
-            } as any}
-            initialBusId={driverConsoleParams.busId || undefined}
-            initialBusMeta={
-              driverConsoleParams.busId || driverConsoleParams.busNumber
-                ? {
-                    id: driverConsoleParams.busId || 'bus_direct',
-                    busNumber: driverConsoleParams.busNumber || 'School Bus',
-                    route: driverConsoleParams.route || 'School Bus Route',
-                    driverName: driverConsoleParams.driverName || 'Driver',
-                    driverPhone: driverConsoleParams.driverPhone || '',
-                  }
-                : undefined
+        <ErrorBoundary fallbackLabel="Driver GPS Dashboard">
+          <Suspense
+            fallback={
+              <PremiumLoadingState
+                title="Loading Driver GPS Dashboard..."
+                subtitle={driverConsoleParams.route ? `Route: ${driverConsoleParams.route}` : "Connecting live fleet telemetry"}
+                tone="dark"
+                variant="fullscreen"
+                accent="amber"
+                schoolId={driverConsoleParams.schoolId}
+                schoolName={driverConsoleParams.schoolName}
+              />
             }
-            standaloneMode={true}
-          />
-        </Suspense>
+          >
+            <DriverTripConsole
+              school={{
+                id: driverConsoleParams.schoolId,
+                code: driverConsoleParams.schoolCode,
+                name: driverConsoleParams.schoolName,
+              } as any}
+              initialBusId={driverConsoleParams.busId || undefined}
+              initialBusMeta={
+                driverConsoleParams.busId || driverConsoleParams.busNumber
+                  ? {
+                      id: driverConsoleParams.busId || 'bus_direct',
+                      busNumber: driverConsoleParams.busNumber || 'School Bus',
+                      route: driverConsoleParams.route || 'School Bus Route',
+                      driverName: driverConsoleParams.driverName || 'Driver',
+                      driverPhone: driverConsoleParams.driverPhone || '',
+                    }
+                  : undefined
+              }
+              standaloneMode={true}
+            />
+          </Suspense>
+        </ErrorBoundary>
       </div>
     );
   }
@@ -1507,7 +1649,9 @@ export function App() {
 
   const renderPublicAdmissionShell = (loggedInMode: boolean) => {
     const portalBtnLabel =
-      user && (isSchoolAdminRole(user) || isAdminUser(user) || ['TEACHER', 'ACCOUNTANT'].includes((user.role || '').toString().toUpperCase()))
+      isDriverUser(user)
+        ? 'Switch to Driver Portal'
+        : user && (isSchoolAdminRole(user) || isAdminUser(user) || ['TEACHER', 'ACCOUNTANT'].includes((user.role || '').toString().toUpperCase()))
         ? 'Switch to ERP Portal'
         : 'Switch to Student Portal';
     const activeAdmSessObj = publicAdmSessions.find((s: any) => s?.active) || publicAdmSessions[0] || null;
@@ -1530,6 +1674,13 @@ export function App() {
           onSelectSchool={handleSelectPublicSchool}
           onOpenAccount={handleOpenAccountSection}
           onSwitchToPortal={() => {
+            if (isDriverUser(user)) {
+              setView('DRIVER');
+              try { localStorage.setItem('nst_app_view_mode', 'DRIVER'); } catch {}
+            } else if (isSchoolPortalUser(user)) {
+              setView('SCHOOL_ERP');
+              try { localStorage.setItem('nst_app_view_mode', 'SCHOOL_ERP'); } catch {}
+            }
             setShowPublicWebsite(false);
             triggerSplash('to_app');
             navigateToPath('/');
@@ -1541,20 +1692,22 @@ export function App() {
           }}
         />
         <div className="flex-1 flex flex-col">
-          <Suspense fallback={renderSchoolLoader(`Loading Online Admission ${nextYearNum}...`, true)}>
-            <OnlineAdmissionManager
-              key={activePublicSchool?.id || 'public-adm'}
-              school={activePublicSchool}
-              classes={publicAdmClasses}
-              sessions={publicAdmSessions}
-              activeSession={activeAdmSessObj}
-              admissionSessionLabel={nextYearNum}
-              isAdmin={false}
-              viewMode="admissions_only"
-              hideTopNavbar={true}
-              onBack={() => navigateToPath('/')}
-            />
-          </Suspense>
+          <ErrorBoundary fallbackLabel="Online Admission Form">
+            <Suspense fallback={renderSchoolLoader(`Loading Online Admission ${nextYearNum}...`, true)}>
+              <OnlineAdmissionManager
+                key={activePublicSchool?.id || 'public-adm'}
+                school={activePublicSchool}
+                classes={publicAdmClasses}
+                sessions={publicAdmSessions}
+                activeSession={activeAdmSessObj}
+                admissionSessionLabel={nextYearNum}
+                isAdmin={false}
+                viewMode="admissions_only"
+                hideTopNavbar={true}
+                onBack={() => navigateToPath('/')}
+              />
+            </Suspense>
+          </ErrorBoundary>
         </div>
       </div>
       {renderBootSplash()}
@@ -1584,22 +1737,26 @@ export function App() {
                 </span>
               </div>
             )}
-            <Suspense fallback={renderSchoolLoader('Loading School Account Portal...', !isDarkMode)}>
-              <Auth
-                onLogin={handleLogin}
-                appSettings={settings}
-                logActivity={logActivity}
-                onBackToWebsite={() => {
-                  triggerSplash('to_website');
-                  setShowPublicWebsite(true);
-                  navigateToPath('/');
-                }}
-              />
-            </Suspense>
+            <ErrorBoundary fallbackLabel="School Account Login">
+              <Suspense fallback={renderSchoolLoader('Loading School Account Portal...', !isDarkMode)}>
+                <Auth
+                  onLogin={handleLogin}
+                  appSettings={settings}
+                  logActivity={logActivity}
+                  onBackToWebsite={() => {
+                    triggerSplash('to_website');
+                    setShowPublicWebsite(true);
+                    navigateToPath('/');
+                  }}
+                />
+              </Suspense>
+            </ErrorBoundary>
 
-            <Suspense fallback={null}>
-              <NotificationPermissionGate userId="" />
-            </Suspense>
+            <ErrorBoundary fallback={() => null} fallbackLabel="Notification Gate">
+              <Suspense fallback={null}>
+                <NotificationPermissionGate userId="" />
+              </Suspense>
+            </ErrorBoundary>
           </div>
           {renderBootSplash()}
         </>
@@ -1613,38 +1770,42 @@ export function App() {
     return (
       <>
       <div className="min-h-screen min-h-[100dvh] w-full flex flex-col bg-[#F8F9FB]">
-        <Suspense fallback={renderSchoolLoader('Loading School Campus Website...')}>
-          <PublicSchoolWebsite
-            school={activePublicSchool}
-            schools={visiblePublicSchools}
-            selectedSchoolId={activePublicSchool?.id}
-            onSelectSchool={handleSelectPublicSchool}
-            classes={publicAdmClasses}
-            sessions={publicAdmSessions}
-            isAuthenticated={false}
-            onOpenAccount={handleOpenAccountSection}
-            onOpenAdmission={() => {
-              setShowBootSplash(false);
-              setShowPublicWebsite(true);
-              navigateToPath('/admission');
-            }}
-            onOpenVerification={(type, data) => {
-              navigateToPath('/verify', {
-                searchParams: {
-                  ...(type ? { type } : {}),
-                  ...(data ? { data } : {}),
-                  ...(activePublicSchool?.id ? { school: activePublicSchool.id } : {}),
-                },
-              });
-            }}
-          />
-        </Suspense>
-        <Suspense fallback={null}>
-          <PwaInstallPrompt
-            schoolName={activePublicSchool?.name}
-            schoolLogoUrl={activePublicSchool?.logoUrl}
-          />
-        </Suspense>
+        <ErrorBoundary fallbackLabel="Public School Website">
+          <Suspense fallback={renderSchoolLoader('Loading School Campus Website...')}>
+            <PublicSchoolWebsite
+              school={activePublicSchool}
+              schools={visiblePublicSchools}
+              selectedSchoolId={activePublicSchool?.id}
+              onSelectSchool={handleSelectPublicSchool}
+              classes={publicAdmClasses}
+              sessions={publicAdmSessions}
+              isAuthenticated={false}
+              onOpenAccount={handleOpenAccountSection}
+              onOpenAdmission={() => {
+                setShowBootSplash(false);
+                setShowPublicWebsite(true);
+                navigateToPath('/admission');
+              }}
+              onOpenVerification={(type, data) => {
+                navigateToPath('/verify', {
+                  searchParams: {
+                    ...(type ? { type } : {}),
+                    ...(data ? { data } : {}),
+                    ...(activePublicSchool?.id ? { school: activePublicSchool.id } : {}),
+                  },
+                });
+              }}
+            />
+          </Suspense>
+        </ErrorBoundary>
+        <ErrorBoundary fallback={() => null} fallbackLabel="PWA Install Prompt">
+          <Suspense fallback={null}>
+            <PwaInstallPrompt
+              schoolName={activePublicSchool?.name}
+              schoolLogoUrl={activePublicSchool?.logoUrl}
+            />
+          </Suspense>
+        </ErrorBoundary>
       </div>
       {renderBootSplash()}
       </>
@@ -1657,55 +1818,66 @@ export function App() {
       return renderPublicAdmissionShell(true);
     }
     const portalLabel =
-      isSchoolAdminRole(user) || isAdminUser(user) || ['TEACHER', 'ACCOUNTANT'].includes((user.role || '').toString().toUpperCase())
+      isDriverUser(user)
+        ? 'Switch to Driver Portal'
+        : isSchoolAdminRole(user) || isAdminUser(user) || ['TEACHER', 'ACCOUNTANT'].includes((user.role || '').toString().toUpperCase())
         ? 'Switch to ERP Portal'
         : 'Switch to Student Portal';
     return (
       <>
       <div className="min-h-screen min-h-[100dvh] w-full flex flex-col bg-[#F8F9FB]">
-        <Suspense fallback={renderSchoolLoader('Loading School Campus Website...')}>
-          <PublicSchoolWebsite
-            school={activePublicSchool}
-            schools={visiblePublicSchools}
-            selectedSchoolId={activePublicSchool?.id}
-            onSelectSchool={handleSelectPublicSchool}
-            classes={publicAdmClasses}
-            sessions={publicAdmSessions}
-            isAuthenticated={true}
-            portalButtonLabel={portalLabel}
-            onSwitchToPortal={() => {
-              if (isSchoolPortalUser(user)) {
-                setView('SCHOOL_ERP');
-                try {
-                  localStorage.setItem('nst_app_view_mode', 'SCHOOL_ERP');
-                } catch {}
-              }
-              setShowPublicWebsite(false);
-              triggerSplash('to_app');
-              navigateToPath('/');
-            }}
-            onOpenAdmission={() => {
-              setShowBootSplash(false);
-              setShowPublicWebsite(true);
-              navigateToPath('/admission');
-            }}
-            onOpenVerification={(type, data) => {
-              navigateToPath('/verify', {
-                searchParams: {
-                  ...(type ? { type } : {}),
-                  ...(data ? { data } : {}),
-                  ...(activePublicSchool?.id ? { school: activePublicSchool.id } : {}),
-                },
-              });
-            }}
-          />
-        </Suspense>
-        <Suspense fallback={null}>
-          <PwaInstallPrompt
-            schoolName={activePublicSchool?.name}
-            schoolLogoUrl={activePublicSchool?.logoUrl}
-          />
-        </Suspense>
+        <ErrorBoundary fallbackLabel="Public School Website">
+          <Suspense fallback={renderSchoolLoader('Loading School Campus Website...')}>
+            <PublicSchoolWebsite
+              school={activePublicSchool}
+              schools={visiblePublicSchools}
+              selectedSchoolId={activePublicSchool?.id}
+              onSelectSchool={handleSelectPublicSchool}
+              classes={publicAdmClasses}
+              sessions={publicAdmSessions}
+              isAuthenticated={true}
+              portalButtonLabel={portalLabel}
+              onSwitchToPortal={() => {
+                if (isDriverUser(user)) {
+                  setView('DRIVER');
+                  try {
+                    localStorage.setItem('nst_app_view_mode', 'DRIVER');
+                  } catch {}
+                } else if (isSchoolPortalUser(user)) {
+                  setView('SCHOOL_ERP');
+                  try {
+                    localStorage.setItem('nst_app_view_mode', 'SCHOOL_ERP');
+                  } catch {}
+                }
+                setShowPublicWebsite(false);
+                triggerSplash('to_app');
+                navigateToPath('/');
+              }}
+              onOpenAdmission={() => {
+                setShowBootSplash(false);
+                setShowPublicWebsite(true);
+                navigateToPath('/admission');
+              }}
+              onOpenVerification={(type, data) => {
+                navigateToPath('/verify', {
+                  searchParams: {
+                    ...(type ? { type } : {}),
+                    ...(data ? { data } : {}),
+                    ...(activePublicSchool?.id ? { school: activePublicSchool.id } : {}),
+                  },
+                });
+              }}
+            />
+          </Suspense>
+        </ErrorBoundary>
+        <ErrorBoundary fallback={() => null} fallbackLabel="PWA Install Prompt">
+          <Suspense fallback={null}>
+            <PwaInstallPrompt
+              schoolName={activePublicSchool?.name}
+              schoolLogoUrl={activePublicSchool?.logoUrl}
+            />
+          </Suspense>
+        </ErrorBoundary>
       </div>
       {renderBootSplash()}
       </>
@@ -1731,64 +1903,68 @@ export function App() {
           </span>
         </div>
       )}
-      {/* ── MAIN DASHBOARD VIEWPORT WITH SUSPENSE ───────────────────────── */}
+      {/* ── MAIN DASHBOARD VIEWPORT WITH SUSPENSE & ERROR ISOLATION ───────────────────────── */}
       <div className="flex-1 flex flex-col">
-        <Suspense fallback={renderSchoolLoader(`Loading ${view === 'DRIVER' ? 'Driver GPS' : 'School ERP'}...`)}>
-          {view === 'DRIVER' ? (
-            <DriverTripConsole
-              school={{
-                id: user.schoolId || '',
-                code: user.schoolCode || '',
-                name: user.schoolName || 'School Bus Fleet',
-              } as any}
-              initialBusId={user.busId || undefined}
-              initialBusMeta={
-                user.busId || user.busNumber
-                  ? {
-                      id: user.busId || 'bus_driver',
-                      busNumber: user.busNumber || 'School Bus',
-                      route: user.busRoute || 'School Bus Route',
-                      driverName: user.name || 'Driver',
-                      driverPhone: user.mobile || '',
-                      stops: Array.isArray(user.busStops) ? user.busStops : undefined,
-                    }
-                  : undefined
-              }
-              standaloneMode={true}
-              onLogout={handleLogout}
-            />
-          ) : (
-            <SchoolEcosystem
-              key={user.uid || user.id || 'school-ecosystem'}
-              uid={user.uid || user.id || 'admin_uid'}
-              email={user.email || ''}
-              displayName={user.name || (user.role === 'TEACHER' ? 'Teacher' : isSchoolAdminEmail(user.email) || user.role === 'SCHOOL_ADMIN' ? 'SHAHID KHAN SIR (Principal & School Admin)' : 'Student')}
-              isSuperAdmin={Boolean(isSuperAdminEmail(user.email) || user.role === 'SUPERADMIN')}
-              userRole={user.role || (isSchoolAdminEmail(user.email) ? 'SCHOOL_ADMIN' : 'STUDENT')}
-              user={user}
-              defaultSchoolId={user.schoolId || ''}
-              forceAdminView={isSchoolAdminEmail(user.email) || user.role === 'SCHOOL_ADMIN' || user.role === 'ADMIN' || user.role === 'SUPERADMIN' || user.role === 'PRINCIPAL'}
-              onVisitWebsite={handleVisitWebsiteFromPortal}
-              onOpenPublicAdmission={(sid) => {
-                if (sid) handleSelectPublicSchool(sid);
-                setShowBootSplash(false);
-                setShowPublicWebsite(true);
-                navigateToPath('/admission');
-              }}
-              onLogout={handleLogout}
-            />
-          )}
-        </Suspense>
+        <ErrorBoundary fallbackLabel={view === 'DRIVER' || isDriverUser(user) ? 'Driver GPS Dashboard' : 'School ERP Portal'}>
+          <Suspense fallback={renderSchoolLoader(`Loading ${view === 'DRIVER' || isDriverUser(user) ? 'Driver GPS' : 'School ERP'}...`)}>
+            {view === 'DRIVER' || isDriverUser(user) ? (
+              <DriverTripConsole
+                school={{
+                  id: user.schoolId || '',
+                  code: user.schoolCode || '',
+                  name: user.schoolName || 'School Bus Fleet',
+                } as any}
+                initialBusId={user.busId || undefined}
+                initialBusMeta={
+                  user.busId || user.busNumber
+                    ? {
+                        id: user.busId || 'bus_driver',
+                        busNumber: user.busNumber || 'School Bus',
+                        route: user.busRoute || 'School Bus Route',
+                        driverName: user.name || 'Driver',
+                        driverPhone: user.mobile || '',
+                        stops: Array.isArray(user.busStops) ? user.busStops : undefined,
+                      }
+                    : undefined
+                }
+                standaloneMode={true}
+                onLogout={handleLogout}
+              />
+            ) : (
+              <SchoolEcosystem
+                key={user.uid || user.id || 'school-ecosystem'}
+                uid={user.uid || user.id || 'admin_uid'}
+                email={user.email || ''}
+                displayName={user.name || (user.role === 'TEACHER' ? 'Teacher' : isSchoolAdminEmail(user.email) || user.role === 'SCHOOL_ADMIN' ? 'SHAHID KHAN SIR (Principal & School Admin)' : 'Student')}
+                isSuperAdmin={Boolean(isSuperAdminEmail(user.email) || user.role === 'SUPERADMIN')}
+                userRole={user.role || (isSchoolAdminEmail(user.email) ? 'SCHOOL_ADMIN' : 'STUDENT')}
+                user={user}
+                defaultSchoolId={user.schoolId || ''}
+                forceAdminView={isSchoolAdminEmail(user.email) || user.role === 'SCHOOL_ADMIN' || user.role === 'ADMIN' || user.role === 'SUPERADMIN' || user.role === 'PRINCIPAL'}
+                onVisitWebsite={handleVisitWebsiteFromPortal}
+                onOpenPublicAdmission={(sid) => {
+                  if (sid) handleSelectPublicSchool(sid);
+                  setShowBootSplash(false);
+                  setShowPublicWebsite(true);
+                  navigateToPath('/admission');
+                }}
+                onLogout={handleLogout}
+              />
+            )}
+          </Suspense>
+        </ErrorBoundary>
       </div>
 
-      <Suspense fallback={null}>
-        <PwaInstallPrompt
-          schoolName={user?.schoolName || activePublicSchool?.name}
-          schoolLogoUrl={activePublicSchool?.logoUrl}
-        />
-        <NotificationPrompt userId={user?.uid || user?.id || ''} />
-        <NotificationPermissionGate userId={user?.uid || user?.id || ''} />
-      </Suspense>
+      <ErrorBoundary fallback={() => null} fallbackLabel="Notifications & Install Prompts">
+        <Suspense fallback={null}>
+          <PwaInstallPrompt
+            schoolName={user?.schoolName || activePublicSchool?.name}
+            schoolLogoUrl={activePublicSchool?.logoUrl}
+          />
+          <NotificationPrompt userId={user?.uid || user?.id || ''} />
+          <NotificationPermissionGate userId={user?.uid || user?.id || ''} />
+        </Suspense>
+      </ErrorBoundary>
     </div>
     {renderBootSplash()}
     </>

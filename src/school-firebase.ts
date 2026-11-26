@@ -51,9 +51,29 @@ import type {
   StudentAcknowledgedLeave, StudentAbsenteeCallLog,
   SchoolEvent, SchoolEventType,
   AdminAttendanceRecord, StaffDailyAttendanceRecord, StaffDailyAttendanceEntry,
-  FeeCallFollowUpRecord, SimCallLogRecord, UpiPaymentProofRecord
+  FeeCallFollowUpRecord, SimCallLogRecord, UpiPaymentProofRecord,
+  UpiAlertReceiverTarget, UpiFamilyAllocationItem,
+  StudentActivationEvent
 } from "./school-types";
+import {
+  buildStudentVerificationToken,
+  generateRandomVerificationToken,
+} from "./utils/qrVerifyUrl";
 import { sortSchoolClasses } from "./school-types";
+import {
+  registerStudentIdCardLinkSlot,
+  unregisterStudentIdCardLinkSlot,
+  checkLinkedStudentsSlotValidity,
+  subscribeToStudentLinkSlots,
+  getOrCreateLinkDeviceId,
+} from "./utils/studentIdCardLinkSlots";
+export {
+  registerStudentIdCardLinkSlot,
+  unregisterStudentIdCardLinkSlot,
+  checkLinkedStudentsSlotValidity,
+  subscribeToStudentLinkSlots,
+  getOrCreateLinkDeviceId,
+};
 import {
   getDemoSchoolDataset,
   isDemoDataEnabled,
@@ -2440,8 +2460,80 @@ export const setLocalStudents = (schoolId: string, students: SchoolStudent[]) =>
   } catch {}
 };
 
-export const saveStudent = async (student: SchoolStudent) => {
-  const prepared = { ...student, active: student.active !== false };
+const sanitizeRtdbTokenKey = (token: string) =>
+  String(token || "").trim().replace(/[.#$[\]/]/g, "_");
+
+export const revokeStudentVerificationToken = async (
+  schoolId: string,
+  token?: string | null,
+  studentId?: string | null,
+  reason = "SESSION_RENEWED_OR_ROTATED",
+  replacedBy?: string
+): Promise<void> => {
+  const cleanTok = String(token || "").trim();
+  if (!schoolId || !cleanTok) return;
+  const nowIso = new Date().toISOString();
+  const tokenKey = sanitizeRtdbTokenKey(cleanTok);
+  if (rtdb) {
+    try {
+      await withTimeout(
+        set(
+          ref(rtdb, `schools/${schoolId}/qr_tokens/${tokenKey}`),
+          sanitizeForFirestore({
+            token: cleanTok,
+            studentId: studentId || "",
+            schoolId,
+            status: "REVOKED",
+            revokedAt: nowIso,
+            revokedReason: reason,
+            replacedBy: replacedBy || undefined,
+            updatedAt: nowIso,
+          })
+        ),
+        2000
+      );
+    } catch {}
+  }
+};
+
+export const saveStudent = async (
+  student: SchoolStudent,
+  options?: { skipAutoWelcome?: boolean; revokePreviousToken?: string | null }
+) => {
+  const nowIso = new Date().toISOString();
+  const ver = student.verificationToken && student.qrExpiresAt
+    ? {
+        token: student.verificationToken,
+        issuedAt: student.qrIssuedAt || student.createdAt || nowIso,
+        expiresAt: student.qrExpiresAt,
+      }
+    : generateRandomVerificationToken({
+        issuedAt: student.qrIssuedAt || student.createdAt || nowIso,
+        expiresAt: student.qrExpiresAt,
+      });
+
+  const existingHistory = Array.isArray(student.activationHistory) ? [...student.activationHistory] : [];
+  const ensureEvent = (
+    step: StudentActivationEvent["step"],
+    label: string,
+    actor = "School Admin System",
+    details?: string
+  ) => {
+    if (!existingHistory.some((ev) => ev && ev.step === step)) {
+      existingHistory.push({ step, label, timestamp: nowIso, actor, details });
+    }
+  };
+  ensureEvent("DIGITAL_ID_CREATED", "Digital Student ID Generated", "School ERP", `Adm No: ${student.admissionNo || student.id}`);
+  ensureEvent("QR_VERIFICATION_ACTIVE", "QR Verification Card Activated", "Security Desk", `Token: ${ver.token}`);
+
+  const prepared: SchoolStudent = {
+    ...student,
+    active: student.active !== false,
+    verificationToken: ver.token,
+    qrIssuedAt: ver.issuedAt,
+    qrExpiresAt: ver.expiresAt,
+    activationHistory: existingHistory,
+  };
   if (prepared.photoUrl && prepared.photoUrl.startsWith("data:image/")) {
     prepared.photoUrl = await ensureCloudImageUrl(prepared.photoUrl, `std_${student.schoolId}_${student.id}`);
   }
@@ -2466,6 +2558,58 @@ export const saveStudent = async (student: SchoolStudent) => {
 
   if (rtdb) {
     try { await withTimeout(set(ref(rtdb, `schools/${student.schoolId}/students/${student.id}`), sanitized), 2000); } catch {}
+    // Sync non-sensitive QR Verification Registry node + opaque revocable token index
+    try {
+      await withTimeout(
+        set(
+          ref(rtdb, `schools/${student.schoolId}/qr_verifications/${student.id}`),
+          sanitizeForFirestore({
+            studentId: sanitized.id,
+            schoolId: sanitized.schoolId,
+            name: sanitized.name,
+            admissionNo: sanitized.admissionNo || "",
+            rollNo: sanitized.rollNo || "",
+            className: sanitized.className || "",
+            sessionId: sanitized.sessionId || "",
+            verificationToken: ver.token,
+            qrIssuedAt: ver.issuedAt,
+            qrExpiresAt: ver.expiresAt,
+            qrStatus: sanitized.active !== false ? "ACTIVE" : "REVOKED",
+            active: sanitized.active !== false,
+            welcomeAcknowledgedAt: sanitized.welcomeAcknowledgedAt || undefined,
+            welcomeAcknowledgedBy: sanitized.welcomeAcknowledgedBy || undefined,
+            activationHistory: sanitized.activationHistory || [],
+            updatedAt: nowIso,
+          })
+        ),
+        2000
+      );
+      await withTimeout(
+        set(
+          ref(rtdb, `schools/${student.schoolId}/qr_tokens/${sanitizeRtdbTokenKey(ver.token)}`),
+          sanitizeForFirestore({
+            token: ver.token,
+            studentId: sanitized.id,
+            schoolId: sanitized.schoolId,
+            sessionId: sanitized.sessionId || "",
+            issuedAt: ver.issuedAt,
+            expiresAt: ver.expiresAt,
+            status: sanitized.active !== false ? "ACTIVE" : "REVOKED",
+            updatedAt: nowIso,
+          })
+        ),
+        2000
+      );
+    } catch {}
+  }
+  if (options?.revokePreviousToken && options.revokePreviousToken !== ver.token) {
+    void revokeStudentVerificationToken(
+      student.schoolId,
+      options.revokePreviousToken,
+      student.id,
+      "SESSION_RENEWED_OR_ROTATED",
+      ver.token
+    );
   }
   if (db) {
     try { await withTimeout(setDoc(d(`schools/${student.schoolId}/students/${student.id}`), sanitized), 3000); } catch {}
@@ -2473,11 +2617,147 @@ export const saveStudent = async (student: SchoolStudent) => {
   touchSchoolSyncVersion(student.schoolId, "students");
 
   // Auto-dispatch official welcome message to NSTA Messenger School Desk when ID is created
-  try {
-    void dispatchOfficialSchoolWelcomeMessage(sanitized, { triggerPopup: true });
-  } catch {}
+  if (!options?.skipAutoWelcome) {
+    try {
+      void dispatchOfficialSchoolWelcomeMessage(sanitized, { triggerPopup: true });
+    } catch {}
+  }
 
   return sanitized;
+};
+
+/**
+ * Automated New Academic Session Digital ID Renewal:
+ * Invalidates old session QR token (`REVOKED`), generates a fresh opaque revocable token
+ * with new 1-year expiry, records SESSION_RENEWED milestone, and refreshes Welcome Letter.
+ */
+export const renewStudentSessionDigitalId = async (
+  schoolId: string,
+  params: {
+    oldStudent?: Partial<SchoolStudent> | null;
+    updatedStudent: SchoolStudent;
+    newSessionName?: string;
+    renewedBy?: string;
+    deactivatePreviousRecord?: boolean;
+    dispatchWelcome?: boolean;
+  }
+): Promise<SchoolStudent> => {
+  const { oldStudent, updatedStudent, newSessionName, renewedBy } = params;
+  const nowIso = new Date().toISOString();
+  const prevToken = String(oldStudent?.verificationToken || updatedStudent.verificationToken || "").trim();
+  const freshVer = generateRandomVerificationToken({ issuedAt: nowIso });
+
+  const prevHistory = Array.isArray(updatedStudent.activationHistory)
+    ? updatedStudent.activationHistory.filter(
+        (ev) =>
+          ev &&
+          ev.step !== "QR_VERIFICATION_ACTIVE" &&
+          ev.step !== "SESSION_RENEWED" &&
+          ev.step !== "QR_TOKEN_REVOKED"
+      )
+    : [];
+
+  const renewedHistory: StudentActivationEvent[] = [
+    ...prevHistory,
+    ...(prevToken
+      ? [
+          {
+            step: "QR_TOKEN_REVOKED" as const,
+            label: "Previous Session QR Token Invalidated",
+            timestamp: nowIso,
+            actor: renewedBy || "Session Renewal Workflow",
+            details: `Revoked Token: ${prevToken}`,
+          },
+        ]
+      : []),
+    {
+      step: "SESSION_RENEWED" as const,
+      label: `Academic Session Renewed (${newSessionName || updatedStudent.sessionId || "New Session"})`,
+      timestamp: nowIso,
+      actor: renewedBy || "School Administration",
+      details: `Class: ${updatedStudent.className || updatedStudent.classId}`,
+    },
+    {
+      step: "QR_VERIFICATION_ACTIVE" as const,
+      label: "New Session QR Verification Activated",
+      timestamp: nowIso,
+      actor: "Security Registry",
+      details: `Token: ${freshVer.token} • Valid till ${freshVer.expiresAt.slice(0, 10)}`,
+    },
+  ];
+
+  const prevTokensList = Array.from(
+    new Set([
+      ...((updatedStudent as any).previousVerificationTokens || []),
+      ...(prevToken && prevToken !== freshVer.token ? [prevToken] : []),
+    ])
+  );
+
+  if (prevToken && prevToken !== freshVer.token) {
+    await revokeStudentVerificationToken(
+      schoolId,
+      prevToken,
+      oldStudent?.id || updatedStudent.id,
+      "SESSION_RENEWED_OR_ROTATED",
+      freshVer.token
+    );
+  }
+
+  // If re-admission created a brand-new student document ID for the new session, revoke old verification node too
+  if (
+    params.deactivatePreviousRecord &&
+    oldStudent?.id &&
+    oldStudent.id !== updatedStudent.id &&
+    rtdb
+  ) {
+    try {
+      await withTimeout(
+        set(
+          ref(rtdb, `schools/${schoolId}/qr_verifications/${oldStudent.id}`),
+          sanitizeForFirestore({
+            studentId: oldStudent.id,
+            schoolId,
+            name: oldStudent.name || updatedStudent.name,
+            verificationToken: prevToken || undefined,
+            qrStatus: "REVOKED",
+            active: false,
+            revokedAt: nowIso,
+            replacedByStudentId: updatedStudent.id,
+            replacedByToken: freshVer.token,
+          })
+        ),
+        2000
+      );
+    } catch {}
+  }
+
+  const renewedStudent: SchoolStudent & { previousVerificationTokens?: string[] } = {
+    ...updatedStudent,
+    active: true,
+    verificationToken: freshVer.token,
+    qrIssuedAt: freshVer.issuedAt,
+    qrExpiresAt: freshVer.expiresAt,
+    previousVerificationTokens: prevTokensList,
+    activationHistory: renewedHistory,
+  };
+
+  const saved = await saveStudent(renewedStudent, {
+    skipAutoWelcome: true,
+    revokePreviousToken: prevToken,
+  });
+
+  if (params.dispatchWelcome !== false) {
+    try {
+      await dispatchOfficialSchoolWelcomeMessage(saved, {
+        force: true,
+        triggerPopup: false,
+        activationHistory: renewedHistory,
+        approvedBy: renewedBy || "Session Renewal Desk",
+      });
+    } catch {}
+  }
+
+  return saved;
 };
 
 const isActiveSchoolStudentRecord = (s: any): boolean => {
@@ -2526,25 +2806,6 @@ export const getStudentOrAdmissionRecord = async (
   const cleanName = (queryParam.name || "").trim().toLowerCase();
   const cleanId = (queryParam.id || "").trim();
   const cleanPhone = (queryParam.phone || "").replace(/\D/g, "");
-
-  // Special match for Nadim Anwar scoped strictly to default school
-  if ((schoolId === DEFAULT_SCHOOL_ID || schoolId === "dps_gurgaon_sector45") && (cleanName.includes("nadim") || cleanAdm.includes("6616"))) {
-    return {
-      name: "Nadim Anwar",
-      rollNo: "63",
-      admissionNo: "ADM-2026-6616",
-      fatherName: "Mustak",
-      motherName: "Sayda khatoon",
-      phone: "+918292665601",
-      bloodGroup: "O+",
-      dateOfBirth: "2002-11-01",
-      address: "Chapra",
-      classId: "cls_nursery",
-      className: "NURSERY",
-      schoolName: "LIFE MAKER PUBLIC SCHOOL",
-      monthlyFee: 350
-    };
-  }
 
   // 1. Check IndexedDB cache strictly for THIS schoolId first!
   try {
@@ -2672,17 +2933,19 @@ export const getStudentOrAdmissionRecord = async (
 };
 
 export const isStudentInClass = (
-  student: { classId?: string; className?: string; id?: string },
-  targetClassId?: string,
-  targetClassName?: string
+  student: { classId?: string; className?: string; id?: string } | any,
+  targetClassId?: unknown,
+  targetClassName?: unknown
 ): boolean => {
   if (!student || typeof student !== "object") return false;
-  if (!targetClassId && !targetClassName) return true;
+  const rawTClassId = typeof targetClassId === "string" || typeof targetClassId === "number" ? String(targetClassId) : "";
+  const rawTClassName = typeof targetClassName === "string" || typeof targetClassName === "number" ? String(targetClassName) : "";
+  if (!rawTClassId && !rawTClassName) return true;
 
-  const sClassId = (student.classId || "").toLowerCase().trim();
-  const sClassName = (student.className || "").toLowerCase().trim();
-  const tClassId = (targetClassId || "").toLowerCase().trim();
-  const tClassName = (targetClassName || "").toLowerCase().trim();
+  const sClassId = (typeof student.classId === "string" || typeof student.classId === "number" ? String(student.classId) : "").toLowerCase().trim();
+  const sClassName = (typeof student.className === "string" || typeof student.className === "number" ? String(student.className) : "").toLowerCase().trim();
+  const tClassId = rawTClassId.toLowerCase().trim();
+  const tClassName = rawTClassName.toLowerCase().trim();
 
   // 1. Exact match
   if (tClassId && sClassId === tClassId) return true;
@@ -2716,8 +2979,8 @@ export const isStudentInClass = (
   }
 
   // 5. Match student ID prefix (e.g. demo_std_kg1_... or demo_student_kg1_...)
-  if (student.id && tKey) {
-    const stdIdClean = student.id.toLowerCase();
+  if ((typeof student.id === "string" || typeof student.id === "number") && tKey) {
+    const stdIdClean = String(student.id).toLowerCase();
     if (stdIdClean.includes(`_${tKey}_`) || stdIdClean.includes(`_${tKey.replace(/^c/i, "")}_`)) {
       return true;
     }
@@ -6551,16 +6814,23 @@ export const linkStudentAccount = async (
     };
   }
 
-  // Already linked to someone else?
-  if (match.iicUid && match.iicUid !== iicUid) {
-    return {
-      success: false,
-      message: "Yeh student record pehle se kisi aur account se link hai. Agar yeh aapka record hai to school admin se reset karwayen."
-    };
-  }
+  // Register permanent ID-card link slot honoring school plan limits (Lite=1, Elite=2, Ultra=4)
+  // Automatically unlinks the oldest account/device if the limit is exceeded.
+  const slotRes = await registerStudentIdCardLinkSlot({
+    schoolId,
+    studentId: match.id,
+    studentName: match.name,
+    uid: iicUid,
+    holderLabel: iicUid,
+  });
 
   // Update student record with iicUid and verified phone
-  const updatePayload: any = { iicUid };
+  const updatePayload: any = {
+    iicUid,
+    linkedHolders: slotRes.slots,
+    linkLimit: slotRes.limit,
+    slotUpdatedAt: new Date().toISOString(),
+  };
   if (!match.phone || match.phone.replace(/\D/g, "").slice(-10) !== cleanPhone) {
     updatePayload.phone = cleanPhone;
   }
@@ -6579,11 +6849,34 @@ export const linkStudentAccount = async (
   };
   await saveSchoolUserProfile(profile);
 
+  // Persist into user's linked student list cleanly
+  try {
+    const existingBundle = await getUserLinkedStudents(iicUid).catch(() => null);
+    const prevList = Array.isArray(existingBundle?.students) ? existingBundle!.students : [];
+    const entry = {
+      ...match,
+      type: 'STUDENT',
+      schoolId,
+      phone: updatePayload.phone || match.phone,
+      linkedAt: new Date().toISOString(),
+    };
+    const merged = [
+      ...prevList.filter((s: any) => !(s?.id === match.id && (s?.schoolId || schoolId) === schoolId)),
+      entry,
+    ];
+    await saveUserLinkedStudents(iicUid, merged, `${schoolId}__${match.id}`);
+  } catch {}
+
+  const transferNote =
+    slotRes.evicted.length > 0
+      ? ` (${slotRes.planName} Plan limit ${slotRes.limit}: pichhle ${slotRes.evicted.length} account se link automatic hat gaya)`
+      : ` (${slotRes.planName} Plan: ${slotRes.slots.length}/${slotRes.limit} account linked)`;
+
   return {
     success: true,
-    message: `🎉 Mubarak ho ${match.name}! Aapka account successfully link ho gaya hai.`,
+    message: `🎉 Mubarak ho ${match.name}! Aapka account hamesha ke liye permanently link ho gaya hai.${transferNote}`,
     studentId: match.id,
-    student: match
+    student: { ...match, linkedHolders: slotRes.slots, linkLimit: slotRes.limit }
   };
 };
 
@@ -7221,20 +7514,49 @@ export const subscribeStaffLeaves = (
   };
 };
 
-// 5. STUDENT PROMOTION SYSTEM (Batch promote)
+// 5. STUDENT PROMOTION SYSTEM (Batch promote + Automated Session Digital ID & QR Renewal)
 export const promoteStudents = async (
   schoolId: string,
   targetClassId: string,
   targetSessionId: string,
-  studentIds: string[]
+  studentIds: string[],
+  targetClassName?: string
 ): Promise<{ success: boolean; count: number }> => {
   let count = 0;
+  const localStudents = getLocalStudents(schoolId);
   for (const id of studentIds) {
     try {
-      await updateDoc(d(`schools/${schoolId}/students/${id}`), sanitizeForFirestore({
-        classId: targetClassId,
-        sessionId: targetSessionId,
-      }));
+      const existing = localStudents.find((s) => s.id === id) || (await getStudent(schoolId, id).catch(() => null));
+      if (existing) {
+        const sessionChanged = Boolean(targetSessionId && existing.sessionId !== targetSessionId);
+        const updatedRecord: SchoolStudent = {
+          ...existing,
+          classId: targetClassId,
+          ...(targetClassName ? { className: targetClassName } : {}),
+          sessionId: targetSessionId,
+        };
+        if (sessionChanged) {
+          await renewStudentSessionDigitalId(schoolId, {
+            oldStudent: existing,
+            updatedStudent: updatedRecord,
+            newSessionName: targetSessionId,
+            renewedBy: "Batch Promotion Workflow",
+            dispatchWelcome: true,
+          });
+        } else {
+          await updateDoc(d(`schools/${schoolId}/students/${id}`), sanitizeForFirestore({
+            classId: targetClassId,
+            ...(targetClassName ? { className: targetClassName } : {}),
+            sessionId: targetSessionId,
+          }));
+        }
+      } else {
+        await updateDoc(d(`schools/${schoolId}/students/${id}`), sanitizeForFirestore({
+          classId: targetClassId,
+          ...(targetClassName ? { className: targetClassName } : {}),
+          sessionId: targetSessionId,
+        }));
+      }
       count++;
     } catch (e) {
       console.warn("[promoteStudents] Failed for student", id, e);
@@ -7415,6 +7737,61 @@ export const updateAdmissionStatus = async (
     try { await withTimeout(setDoc(d(`schools/${schoolId}/admissions/${appId}`), patch, { merge: true }), 2500); } catch {}
   }
   touchSchoolSyncVersion(schoolId, "admissions");
+};
+
+export const checkDuplicateAdmissionScreenshotHash = async (
+  schoolId: string,
+  screenshotHash: string,
+  excludeAppId?: string
+): Promise<{ duplicate: boolean; studentName?: string; applicationNo?: string }> => {
+  const cleanHash = String(screenshotHash || "").trim();
+  if (!schoolId || !cleanHash) return { duplicate: false };
+
+  try {
+    const localList = getSchoolCacheSync<import('./school-types').AdmissionApplication[]>(
+      LOCAL_ADMISSIONS_KEY(schoolId),
+      []
+    );
+    const localHit = (Array.isArray(localList) ? localList : []).find(
+      (a) =>
+        a &&
+        a.id !== excludeAppId &&
+        a.status !== "rejected" &&
+        String(a.paymentScreenshotHash || "").trim() === cleanHash
+    );
+    if (localHit) {
+      return {
+        duplicate: true,
+        studentName: localHit.studentName,
+        applicationNo: localHit.applicationNo,
+      };
+    }
+  } catch {}
+
+  if (db) {
+    try {
+      const qDup = query(
+        col(`schools/${schoolId}/admissions`),
+        where("paymentScreenshotHash", "==", cleanHash),
+        limit(5)
+      );
+      const snap = await withTimeout(getDocs(qDup), 2500, null as any);
+      if (snap && Array.isArray(snap.docs)) {
+        for (const docSnap of snap.docs) {
+          const rec = docSnap.data() as import('./school-types').AdmissionApplication | undefined;
+          if (rec && rec.id !== excludeAppId && rec.status !== "rejected") {
+            return {
+              duplicate: true,
+              studentName: rec.studentName,
+              applicationNo: rec.applicationNo,
+            };
+          }
+        }
+      }
+    } catch {}
+  }
+
+  return { duplicate: false };
 };
 
 export const deleteAdmissionApplication = async (
@@ -10080,17 +10457,33 @@ export const dispatchOfficialSchoolWelcomeMessage = async (
     phone?: string;
     photoUrl?: string;
     photoURL?: string;
+    sessionId?: string;
+    verificationToken?: string;
+    qrIssuedAt?: string;
+    qrExpiresAt?: string;
+    welcomeAcknowledgedAt?: string;
+    welcomeAcknowledgedBy?: string;
+    activationHistory?: StudentActivationEvent[];
   },
   options?: {
     force?: boolean;
     schoolName?: string;
     schoolLogo?: string;
+    schoolAddress?: string;
+    schoolPhone?: string;
+    principalName?: string;
+    principalSignatureUrl?: string;
+    managerName?: string;
+    managerSignatureUrl?: string;
     triggerPopup?: boolean;
+    activationHistory?: StudentActivationEvent[];
+    approvedBy?: string;
   }
 ): Promise<NstaMessage | null> => {
   if (!student || !student.id || !student.name) return null;
   const targetSchoolId = !student.schoolId || student.schoolId === "dps_gurgaon_sector45" ? DEFAULT_SCHOOL_ID : student.schoolId;
   const sentKey = `nst_welcome_sent_${targetSchoolId}_${student.id}`;
+  const nowIso = new Date().toISOString();
 
   const cleanAdmNo = student.admissionNo || `ADM-${student.id.slice(-6).toUpperCase()}`;
   const cleanRollNo = student.rollNo || "01";
@@ -10098,23 +10491,77 @@ export const dispatchOfficialSchoolWelcomeMessage = async (
     student.className ||
     (student.classId ? student.classId.replace(/^cls_/i, "Class ") : "Class 10");
 
-  // Determine school name & branding
-  let resolvedSchoolName = options?.schoolName || student.schoolName || "";
-  let resolvedSchoolLogo = options?.schoolLogo || "";
+  // Determine school name & branding cleanly from school registry
+  let matchedSchool: School | undefined;
+  try {
+    const schools = getLocalSchools();
+    matchedSchool = schools.find((s) => s.id === targetSchoolId);
+  } catch {}
 
-  if (!resolvedSchoolName) {
-    try {
-      const schools = getLocalSchools();
-      const matched = schools.find((s) => s.id === targetSchoolId);
-      if (matched?.name) {
-        resolvedSchoolName = matched.name;
-        resolvedSchoolLogo = matched.logoUrl || "";
-      }
-    } catch {}
-  }
+  let resolvedSchoolName = options?.schoolName || student.schoolName || matchedSchool?.name || "";
+  const resolvedSchoolLogo = options?.schoolLogo || matchedSchool?.logoUrl || "";
+  const resolvedSchoolAddress = options?.schoolAddress || matchedSchool?.address || "";
+  const resolvedSchoolPhone = options?.schoolPhone || matchedSchool?.phone || matchedSchool?.mobile || "";
+  const resolvedPrincipalName = options?.principalName || matchedSchool?.principalName || "Principal";
+  const resolvedPrincipalSign = options?.principalSignatureUrl || matchedSchool?.principalSignatureUrl || "";
+  const resolvedManagerName = options?.managerName || matchedSchool?.managerName || "";
+  const resolvedManagerSign = options?.managerSignatureUrl || matchedSchool?.managerSignatureUrl || "";
+
   if (!resolvedSchoolName) {
     resolvedSchoolName = targetSchoolId === DEFAULT_SCHOOL_ID ? "LIFE MAKER PUBLIC SCHOOL" : "NSTA Digital School";
   }
+
+  const ver = student.verificationToken && student.qrExpiresAt
+    ? {
+        token: student.verificationToken,
+        issuedAt: student.qrIssuedAt || nowIso,
+        expiresAt: student.qrExpiresAt,
+      }
+    : buildStudentVerificationToken({
+        schoolId: targetSchoolId,
+        studentId: student.id,
+        admissionNo: cleanAdmNo,
+        issuedAt: student.qrIssuedAt || nowIso,
+        expiresAt: student.qrExpiresAt,
+      });
+
+  const historyMap = new Map<StudentActivationEvent["step"], StudentActivationEvent>();
+  const baseEvents: StudentActivationEvent[] = [
+    ...(Array.isArray(student.activationHistory) ? student.activationHistory : []),
+    ...(Array.isArray(options?.activationHistory) ? options.activationHistory : []),
+  ];
+  for (const ev of baseEvents) {
+    if (ev && ev.step) historyMap.set(ev.step, ev);
+  }
+  if (!historyMap.has("DIGITAL_ID_CREATED")) {
+    historyMap.set("DIGITAL_ID_CREATED", {
+      step: "DIGITAL_ID_CREATED",
+      label: "Digital Student ID Generated",
+      timestamp: ver.issuedAt,
+      actor: options?.approvedBy || "School ERP",
+      details: `Adm No: ${cleanAdmNo} • Roll: ${cleanRollNo}`,
+    });
+  }
+  if (!historyMap.has("QR_VERIFICATION_ACTIVE")) {
+    historyMap.set("QR_VERIFICATION_ACTIVE", {
+      step: "QR_VERIFICATION_ACTIVE",
+      label: "QR Verification Card Activated",
+      timestamp: ver.issuedAt,
+      actor: "Security Desk",
+      details: `Token: ${ver.token}`,
+    });
+  }
+  if (!historyMap.has("WELCOME_LETTER_SENT")) {
+    historyMap.set("WELCOME_LETTER_SENT", {
+      step: "WELCOME_LETTER_SENT",
+      label: "Official Welcome Letter Sent to Desk",
+      timestamp: nowIso,
+      actor: "School Official Desk",
+      details: resolvedSchoolName,
+    });
+  }
+  const mergedHistory = Array.from(historyMap.values());
+  const msgId = `msg_welcome_${student.id}_${Date.now()}`;
 
   const welcomePayload: NstaWelcomeData = {
     studentId: student.id,
@@ -10123,13 +10570,28 @@ export const dispatchOfficialSchoolWelcomeMessage = async (
     rollNo: cleanRollNo,
     classId: student.classId,
     className: cleanClassName,
+    schoolId: targetSchoolId,
     schoolName: resolvedSchoolName,
     schoolLogo: resolvedSchoolLogo,
+    schoolAddress: resolvedSchoolAddress || undefined,
+    schoolPhone: resolvedSchoolPhone || undefined,
     fatherName: student.fatherName,
     mobile: student.phone || student.mobile,
-    session: "2026-27",
+    session: student.sessionId || "2026-27",
     verificationBadge: "VERIFIED_STUDENT_ID",
-    issuedAt: new Date().toISOString(),
+    verificationToken: ver.token,
+    qrIssuedAt: ver.issuedAt,
+    qrExpiresAt: ver.expiresAt,
+    qrStatus: "ACTIVE",
+    principalName: resolvedPrincipalName,
+    principalSignatureUrl: resolvedPrincipalSign || undefined,
+    managerName: resolvedManagerName || undefined,
+    managerSignatureUrl: resolvedManagerSign || undefined,
+    messageId: msgId,
+    acknowledgedAt: student.welcomeAcknowledgedAt,
+    acknowledgedBy: student.welcomeAcknowledgedBy,
+    activationHistory: mergedHistory,
+    issuedAt: nowIso,
   };
 
   // Set popup flags so the student sees the celebratory Welcome Modal on login/scan
@@ -10145,6 +10607,10 @@ export const dispatchOfficialSchoolWelcomeMessage = async (
     }
   } catch {}
 
+  const helplineLine = resolvedSchoolPhone
+    ? `📞 स्कूल हेल्पलाइन: ${resolvedSchoolPhone}${matchedSchool?.email ? ` | ✉️ ${matchedSchool.email}` : ""}`
+    : `🏛️ संपर्क: विद्यालय कार्यालय (${resolvedSchoolName})`;
+
   const welcomeText = `🌟 *आधिकारिक स्वागत संदेश | OFFICIAL WELCOME LETTER* 🌟
 
 प्रिय विद्यार्थी *${student.name}*,
@@ -10155,7 +10621,8 @@ export const dispatchOfficialSchoolWelcomeMessage = async (
 • **प्रवेश संख्या (Admission No):** ${cleanAdmNo}
 • **कक्षा (Class & Section):** ${cleanClassName}
 • **रोल नंबर (Roll No):** ${cleanRollNo}
-• **सत्र (Academic Session):** 2026-27
+• **सत्र (Academic Session):** ${welcomePayload.session}
+• **वेरिफिकेशन टोकन (QR Token):** ${ver.token} (Valid till ${ver.expiresAt.slice(0, 10)})
 • **आईडी स्थिति:** ✅ सक्रिय व प्रमाणित (Digital ID Card Active)
 
 🚀 *पोर्टल पर उपलब्ध मुख्य सुविधाएं (Digital Campus Facilities)*:
@@ -10165,20 +10632,20 @@ export const dispatchOfficialSchoolWelcomeMessage = async (
 4. 🧾 *शुल्क पर्ची व आधिकारिक रसीदें* - पारदर्शी ऑनलाइन फीस लेजर, पासबुक और POS रसीदें।
 5. 💬 *NSTA मैसेंजर स्कूल डेस्क* - स्कूल के सभी सर्कुलर, नोटिस, गृहकार्य व शिक्षक मार्गदर्शन।
 
-📌 *महत्वपूर्ण निर्देश (Guidelines)*:
-• आपकी डिजिटल आईडी सक्रिय है। आप इसे स्कूल QR कोड स्कैनर द्वारा कभी भी 1-टैप में लॉगिन कर सकते हैं।
-• सभी आवश्यक स्कूल सर्कुलर व अवकाश सूचना इसी स्कूल डेस्क पर प्राप्त होंगी।
-• किसी भी समस्या हेतु विद्यालय कार्यालय अथवा कक्षा शिक्षक से संपर्क करें।
+📌 *महत्वपूर्ण सुरक्षा व पोर्टल निर्देश (Security Guidelines)*:
+• आपकी डिजिटल आईडी का QR कोड केवल पहचान सत्यापन (ID Verification) के लिए है; पोर्टल लॉगिन हेतु अभिभावक मोबाइल/जन्मतिथि सत्यापन आवश्यक है।
+• अभिभावक कृपया ऊपर दिए गए बटन से Welcome Letter पढ़कर स्वीकृति (Acknowledge) दर्ज करें व PDF सुरक्षित रखें।
 
 विद्यालय परिवार आपके उज्ज्वल भविष्य और उच्चतम शैक्षणिक सफलता की मंगलकामना करता है!
 
 सादर,
+*${resolvedPrincipalName}*
 *प्रधानाचार्य एवं विद्यालय प्रशासन (Principal & Academic Administration)*
 🏛️ *${resolvedSchoolName}*
-📞 हेल्पलाइन: 9525400122, 9835763641 | ✉️ support@nsta.app`;
+${helplineLine}`;
 
   const welcomeMsg: NstaMessage = {
-    id: `msg_welcome_${student.id}_${Date.now()}`,
+    id: msgId,
     schoolId: targetSchoolId,
     threadType: "SCHOOL_DESK",
     studentId: student.id,
@@ -10190,7 +10657,7 @@ export const dispatchOfficialSchoolWelcomeMessage = async (
     text: welcomeText,
     attachmentType: "WELCOME",
     welcomeData: welcomePayload,
-    createdAt: new Date().toISOString(),
+    createdAt: nowIso,
     status: "sent",
   };
 
@@ -10209,7 +10676,7 @@ export const dispatchOfficialSchoolWelcomeMessage = async (
       senderIds: ["STAFF_ADMIN", "school_admin", `admin_${targetSchoolId}`],
       senderName: resolvedSchoolName,
       title: `🎓 Welcome to ${resolvedSchoolName}!`,
-      body: `प्रिय ${student.name}, आपका डिजिटल आईडी कार्ड व पोर्टल सक्रिय कर दिया गया है।`,
+      body: `प्रिय ${student.name}, आपका डिजिटल आईडी कार्ड व स्वागत पत्र सक्रिय कर दिया गया है।`,
       type: "SCHOOL_NOTICE",
       icon: resolvedSchoolLogo,
       senderPhoto: resolvedSchoolLogo,
@@ -10225,6 +10692,262 @@ export const dispatchOfficialSchoolWelcomeMessage = async (
   }
 
   return welcomeMsg;
+};
+
+/**
+ * Unified Automated Digital Campus Onboarding Workflow:
+ * Admission Approved -> Digital Student ID Created -> QR Verification Active -> Welcome Letter Sent
+ */
+export const runAutomatedStudentOnboardingWorkflow = async (
+  student: SchoolStudent,
+  options?: {
+    school?: Partial<School> | null;
+    approvedBy?: string;
+    admissionReceiptNo?: string;
+    forceWelcomeDispatch?: boolean;
+    triggerPopup?: boolean;
+  }
+): Promise<{ student: SchoolStudent; welcomeMessage: NstaMessage | null }> => {
+  const nowIso = new Date().toISOString();
+  const ver = student.verificationToken && student.qrExpiresAt
+    ? {
+        token: student.verificationToken,
+        issuedAt: student.qrIssuedAt || nowIso,
+        expiresAt: student.qrExpiresAt,
+      }
+    : buildStudentVerificationToken({
+        schoolId: student.schoolId,
+        studentId: student.id,
+        admissionNo: student.admissionNo,
+        issuedAt: nowIso,
+      });
+
+  const actor = options?.approvedBy || "School Admission Desk";
+  const existing = Array.isArray(student.activationHistory) ? [...student.activationHistory] : [];
+  const upsertStep = (
+    step: StudentActivationEvent["step"],
+    label: string,
+    stepActor: string,
+    details?: string
+  ) => {
+    if (!existing.some((e) => e && e.step === step)) {
+      existing.push({ step, label, timestamp: nowIso, actor: stepActor, details });
+    }
+  };
+
+  upsertStep(
+    "ADMISSION_APPROVED",
+    "Admission Approved & Enrolled",
+    actor,
+    options?.admissionReceiptNo ? `Receipt #${options.admissionReceiptNo}` : `Class ${student.className || student.classId}`
+  );
+  upsertStep(
+    "DIGITAL_ID_CREATED",
+    "Digital Student ID Generated",
+    "School ERP",
+    `Adm: ${student.admissionNo || student.id} • Roll: ${student.rollNo || "—"}`
+  );
+  upsertStep(
+    "QR_VERIFICATION_ACTIVE",
+    "QR Verification Card Activated",
+    "Security Registry",
+    `Token: ${ver.token}`
+  );
+  upsertStep(
+    "WELCOME_LETTER_SENT",
+    "Official Welcome Letter Sent to Desk",
+    options?.school?.name || "School Official Desk",
+    "Available on NSTA Messenger & Student Portal"
+  );
+
+  const enrichedStudent: SchoolStudent = {
+    ...student,
+    active: student.active !== false,
+    verificationToken: ver.token,
+    qrIssuedAt: ver.issuedAt,
+    qrExpiresAt: ver.expiresAt,
+    activationHistory: existing,
+  };
+
+  const savedStudent = await saveStudent(enrichedStudent, { skipAutoWelcome: true });
+  const welcomeMessage = await dispatchOfficialSchoolWelcomeMessage(savedStudent, {
+    force: options?.forceWelcomeDispatch ?? false,
+    triggerPopup: options?.triggerPopup ?? true,
+    schoolName: options?.school?.name,
+    schoolLogo: options?.school?.logoUrl,
+    schoolAddress: options?.school?.address,
+    schoolPhone: options?.school?.phone || options?.school?.mobile,
+    principalName: options?.school?.principalName,
+    principalSignatureUrl: options?.school?.principalSignatureUrl,
+    managerName: options?.school?.managerName,
+    managerSignatureUrl: options?.school?.managerSignatureUrl,
+    activationHistory: existing,
+    approvedBy: actor,
+  });
+
+  return { student: savedStudent, welcomeMessage };
+};
+
+/**
+ * Records Parent/Student Acknowledgement of Official Welcome Letter & Digital ID Onboarding.
+ */
+export const acknowledgeSchoolWelcomeLetter = async (params: {
+  schoolId: string;
+  studentId: string;
+  messageId?: string;
+  acknowledgedBy?: string;
+  acknowledgedRole?: "PARENT" | "STUDENT" | "ADMIN";
+}): Promise<{
+  acknowledgedAt: string;
+  acknowledgedBy: string;
+  acknowledgedRole: "PARENT" | "STUDENT" | "ADMIN";
+  activationHistory: StudentActivationEvent[];
+}> => {
+  const { schoolId, studentId, messageId } = params;
+  const nowIso = new Date().toISOString();
+  const actorName = params.acknowledgedBy || "Parent / Guardian";
+  const actorRole = params.acknowledgedRole || "PARENT";
+
+  const ackEvent: StudentActivationEvent = {
+    step: "PARENT_ACKNOWLEDGED",
+    label: "Welcome Letter Read & Acknowledged by Parent",
+    timestamp: nowIso,
+    actor: `${actorName} (${actorRole})`,
+    details: "Digital Campus Onboarding Confirmed",
+  };
+
+  let mergedHistory: StudentActivationEvent[] = [ackEvent];
+
+  // 1. Update local NstaMessage(s) for this student
+  const msgCacheKey = `nst_school_nsta_msgs_${schoolId}`;
+  try {
+    const curMsgs = getSchoolCacheSync<NstaMessage[]>(msgCacheKey, []);
+    const updatedMsgs = (Array.isArray(curMsgs) ? curMsgs : []).map((m) => {
+      const isTarget =
+        m &&
+        (m.attachmentType === "WELCOME" || Boolean(m.welcomeData)) &&
+        ((messageId && m.id === messageId) || m.studentId === studentId || m.welcomeData?.studentId === studentId);
+      if (!isTarget) return m;
+      const prevHist = Array.isArray(m.welcomeData?.activationHistory) ? m.welcomeData!.activationHistory! : [];
+      const nextHist = [
+        ...prevHist.filter((e) => e.step !== "PARENT_ACKNOWLEDGED"),
+        ackEvent,
+      ];
+      mergedHistory = nextHist;
+      const updatedMsg: NstaMessage = {
+        ...m,
+        status: "read",
+        welcomeData: {
+          ...(m.welcomeData as NstaWelcomeData),
+          acknowledgedAt: nowIso,
+          acknowledgedBy: actorName,
+          acknowledgedRole: actorRole,
+          activationHistory: nextHist,
+        },
+      };
+      if (rtdb) {
+        void withTimeout(
+          update(ref(rtdb, `schools/${schoolId}/nsta_messages/${m.id}`), sanitizeForFirestore({
+            status: "read",
+            welcomeData: updatedMsg.welcomeData,
+          })),
+          2500
+        ).catch(() => {});
+      }
+      if (db) {
+        void withTimeout(
+          setDoc(d(`schools/${schoolId}/nsta_messages/${m.id}`), sanitizeForFirestore(updatedMsg), { merge: true } as any),
+          2500
+        ).catch(() => {});
+      }
+      return updatedMsg;
+    });
+    setSchoolCacheSync(msgCacheKey, updatedMsgs);
+  } catch {}
+
+  // 2. Update local + remote SchoolStudent record & QR Verification registry
+  try {
+    const localList = getLocalStudents(schoolId);
+    const targetStu = localList.find((s) => s.id === studentId);
+    if (targetStu) {
+      const prevHist = Array.isArray(targetStu.activationHistory) ? targetStu.activationHistory : [];
+      const nextHist = [
+        ...prevHist.filter((e) => e.step !== "PARENT_ACKNOWLEDGED"),
+        ackEvent,
+      ];
+      if (nextHist.length >= mergedHistory.length) mergedHistory = nextHist;
+      const updatedStu = {
+        ...targetStu,
+        welcomeAcknowledgedAt: nowIso,
+        welcomeAcknowledgedBy: actorName,
+        activationHistory: mergedHistory,
+      };
+      setLocalStudents(schoolId, localList.map((s) => (s.id === studentId ? updatedStu : s)));
+    }
+    if (rtdb) {
+      const patch = sanitizeForFirestore({
+        welcomeAcknowledgedAt: nowIso,
+        welcomeAcknowledgedBy: actorName,
+        activationHistory: mergedHistory,
+      });
+      void withTimeout(update(ref(rtdb, `schools/${schoolId}/students/${studentId}`), patch), 2500).catch(() => {});
+      void withTimeout(update(ref(rtdb, `schools/${schoolId}/qr_verifications/${studentId}`), patch), 2500).catch(() => {});
+    }
+    if (db) {
+      void withTimeout(
+        updateDoc(d(`schools/${schoolId}/students/${studentId}`), sanitizeForFirestore({
+          welcomeAcknowledgedAt: nowIso,
+          welcomeAcknowledgedBy: actorName,
+          activationHistory: mergedHistory,
+        })),
+        2500
+      ).catch(() => {});
+    }
+  } catch {}
+
+  // 3. Update localStorage pending welcome payload if open
+  try {
+    const keys = [`nst_show_welcome_popup_${studentId}`, "nst_pending_welcome_student"];
+    keys.forEach((k) => {
+      const raw = localStorage.getItem(k);
+      if (raw && raw.startsWith("{")) {
+        const parsed = JSON.parse(raw);
+        if (parsed && (!parsed.studentId || parsed.studentId === studentId)) {
+          localStorage.setItem(k, JSON.stringify({
+            ...parsed,
+            acknowledgedAt: nowIso,
+            acknowledgedBy: actorName,
+            acknowledgedRole: actorRole,
+            activationHistory: mergedHistory,
+          }));
+        }
+      }
+    });
+  } catch {}
+
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new CustomEvent("nsta-messages-updated", { detail: { schoolId, action: "WELCOME_ACKNOWLEDGED", studentId } }));
+    window.dispatchEvent(
+      new CustomEvent("nst-school-welcome-acknowledged", {
+        detail: {
+          schoolId,
+          studentId,
+          messageId,
+          acknowledgedAt: nowIso,
+          acknowledgedBy: actorName,
+          acknowledgedRole: actorRole,
+          activationHistory: mergedHistory,
+        },
+      })
+    );
+  }
+
+  return {
+    acknowledgedAt: nowIso,
+    acknowledgedBy: actorName,
+    acknowledgedRole: actorRole,
+    activationHistory: mergedHistory,
+  };
 };
 
 // ── STUDENT BIRTHDAY UTILITIES (स्वचालित जन्मदिन शुभकामना इंजन) ──
@@ -10374,7 +11097,7 @@ export const dispatchOfficialSchoolBirthdayWish = async (
 सस्नेह व शुभाशीर्वाद,
 *प्रधानाचार्य एवं समस्त शिक्षकगण (Principal & Faculty Members)*
 🏛️ *${resolvedSchoolName}*
-📞 हेल्पलाइन: 9525400122, 9835763641 | ✉️ support@nsta.app`;
+✉️ Official School Desk Portal`;
 
   const birthdayMsg: NstaMessage = {
     id: `msg_bday_${student.id}_${currentYear}_${Date.now()}`,
@@ -12142,21 +12865,87 @@ export const saveUpiPaymentProof = async (
   const schoolId = proof.schoolId;
   if (!schoolId) return { ok: false, error: "School ID missing." };
   const cleanUtr = normalizeUpiUtr(proof.utrNumber);
-  if (cleanUtr.length < 6) {
+  if (cleanUtr.length > 0 && cleanUtr.length < 6) {
     return { ok: false, error: "Kripya kam se kam 6 anko ka sahi UTR / Transaction ID darj karein." };
   }
+  if (!cleanUtr && !proof.screenshotUrl) {
+    return { ok: false, error: "Kripya payment screenshot upload karein." };
+  }
+  const cleanScreenshotHash = String(proof.screenshotHash || "").trim();
   const existingList = getLocalUpiProofs(schoolId);
-  const duplicate = existingList.find(
-    (p) =>
-      p.id !== proof.id &&
-      normalizeUpiUtr(p.utrNumber) === cleanUtr &&
-      (p.status === "PENDING" || p.status === "APPROVED")
-  );
+  const duplicate = cleanUtr
+    ? existingList.find(
+        (p) =>
+          p.id !== proof.id &&
+          normalizeUpiUtr(p.utrNumber) === cleanUtr &&
+          (p.status === "PENDING" || p.status === "APPROVED")
+      )
+    : undefined;
   if (duplicate) {
     return {
       ok: false,
       error: `Yeh UTR (${cleanUtr}) pehle se ${duplicate.studentName} ke liye darj hai (Duplicate UTR).`,
     };
+  }
+  const duplicateScreenshot = cleanScreenshotHash
+    ? existingList.find(
+        (p) =>
+          p.id !== proof.id &&
+          String(p.screenshotHash || "").trim() === cleanScreenshotHash &&
+          (p.status === "PENDING" || p.status === "APPROVED")
+      )
+    : undefined;
+  if (duplicateScreenshot) {
+    return {
+      ok: false,
+      error: `यह पेमेंट स्क्रीनशॉट पहले से ${duplicateScreenshot.studentName} के लिए सबमिट है (Duplicate Screenshot)। कृपया नया और सही पेमेंट स्क्रीनशॉट अपलोड करें।`,
+    };
+  }
+
+  // Cross-device Firestore duplicate verification (catches duplicates across different phones)
+  if (db) {
+    if (cleanUtr) {
+      try {
+        const qUtr = query(
+          col(`schools/${schoolId}/upi_proofs`),
+          where("utrNumber", "==", cleanUtr),
+          limit(5)
+        );
+        const utrSnap = await withTimeout(getDocs(qUtr), 2500, null as any);
+        if (utrSnap && Array.isArray(utrSnap.docs)) {
+          for (const docSnap of utrSnap.docs) {
+            const p = docSnap.data() as UpiPaymentProofRecord | undefined;
+            if (p && p.id !== proof.id && (p.status === "PENDING" || p.status === "APPROVED")) {
+              return {
+                ok: false,
+                error: `Yeh UTR (${cleanUtr}) pehle se ${p.studentName} ke liye darj hai (Duplicate UTR).`,
+              };
+            }
+          }
+        }
+      } catch {}
+    }
+    if (cleanScreenshotHash) {
+      try {
+        const qHash = query(
+          col(`schools/${schoolId}/upi_proofs`),
+          where("screenshotHash", "==", cleanScreenshotHash),
+          limit(5)
+        );
+        const hashSnap = await withTimeout(getDocs(qHash), 2500, null as any);
+        if (hashSnap && Array.isArray(hashSnap.docs)) {
+          for (const docSnap of hashSnap.docs) {
+            const p = docSnap.data() as UpiPaymentProofRecord | undefined;
+            if (p && p.id !== proof.id && (p.status === "PENDING" || p.status === "APPROVED")) {
+              return {
+                ok: false,
+                error: `यह पेमेंट स्क्रीनशॉट पहले से ${p.studentName} के लिए सबमिट है (Duplicate Screenshot)। कृपया नया और सही पेमेंट स्क्रीनशॉट अपलोड करें।`,
+              };
+            }
+          }
+        }
+      } catch {}
+    }
   }
 
   let finalScreenshotUrl = proof.screenshotUrl || "";
@@ -12172,6 +12961,7 @@ export const saveUpiPaymentProof = async (
     ...proof,
     utrNumber: cleanUtr,
     screenshotUrl: finalScreenshotUrl,
+    ...(cleanScreenshotHash ? { screenshotHash: cleanScreenshotHash } : {}),
     status: proof.status || "PENDING",
     submittedAt: proof.submittedAt || new Date().toISOString(),
     createdAt: proof.createdAt || new Date().toISOString(),
@@ -12258,76 +13048,368 @@ export const subscribeSchoolUpiProofs = (
   };
 };
 
+export const resolveAuthorizedUpiReceivers = (
+  school?: School | null
+): UpiAlertReceiverTarget[] => {
+  const configured = Array.isArray(school?.upiAlertReceivers)
+    ? school.upiAlertReceivers.filter((r) => r && r.id && r.role)
+    : [];
+  if (configured.length > 0) return configured;
+  // Backward-compatible default when admin hasn't customized receivers yet: Admin + Accountant
+  return [
+    { id: "admin", role: "admin", name: "School Admin / Principal" },
+    { id: "accountant_admin", role: "accountant", name: "School Accountant" },
+  ];
+};
+
+export const isUserAuthorizedUpiReceiver = (params: {
+  school?: School | null;
+  role: "admin" | "accountant" | "teacher";
+  userId?: string;
+}): boolean => {
+  const { school, role, userId } = params;
+  const configured = Array.isArray(school?.upiAlertReceivers)
+    ? school.upiAlertReceivers.filter((r) => r && r.id && r.role)
+    : [];
+  if (configured.length === 0) {
+    return role === "admin" || role === "accountant";
+  }
+  if (role === "admin") {
+    return configured.some((r) => r.role === "admin");
+  }
+  if (role === "accountant") {
+    return configured.some(
+      (r) =>
+        r.role === "accountant" &&
+        (!userId || r.id === userId || r.id === "accountant_admin")
+    );
+  }
+  if (role === "teacher") {
+    const cleanUid = String(userId || "").trim();
+    return Boolean(
+      cleanUid && configured.some((r) => r.role === "teacher" && r.id === cleanUid)
+    );
+  }
+  return false;
+};
+
+export const getAuthorizedUpiPushTargetIds = (school?: School | null): string[] => {
+  const receivers = resolveAuthorizedUpiReceivers(school);
+  const targets = new Set<string>();
+  for (const r of receivers) {
+    if (r.role === "admin") {
+      targets.add("STAFF_ADMIN");
+      targets.add("school_admin");
+      if (school?.createdBy) targets.add(String(school.createdBy).trim());
+    } else if (r.role === "accountant") {
+      targets.add(String(r.id).trim());
+      targets.add("accountant_admin");
+    } else if (r.role === "teacher") {
+      targets.add(String(r.id).trim());
+    }
+  }
+  return Array.from(targets).filter(Boolean);
+};
+
 export const approveUpiPaymentProof = async (params: {
   schoolId: string;
   proof: UpiPaymentProofRecord;
   approverName: string;
-  approverRole: "accountant" | "manager";
+  approverRole: "accountant" | "manager" | "admin" | "teacher";
+  approverId?: string;
+  confirmedAmount?: number;
 }): Promise<{ receiptNo: string; fee: MonthlyFee; proof: UpiPaymentProofRecord }> => {
-  const { schoolId, proof, approverName, approverRole } = params;
+  const { schoolId, proof, approverName, approverRole, approverId, confirmedAmount } = params;
   const nowIso = new Date().toISOString();
-  const receiptNo = `UPI-${Date.now().toString().slice(-6)}`;
+  const roleLabel =
+    approverRole === "accountant"
+      ? "Accountant"
+      : approverRole === "teacher"
+      ? "Staff"
+      : "Admin";
+  const feeCollectorRole: "accountant" | "manager" =
+    approverRole === "manager" || approverRole === "admin" ? "manager" : "accountant";
+
+  const finalConfirmedAmt = Math.max(
+    0,
+    Math.round(
+      confirmedAmount !== undefined && Number.isFinite(Number(confirmedAmount))
+        ? Number(confirmedAmount)
+        : Number(proof.amount) || 0
+    )
+  );
 
   const existingFees = getLocalFees(schoolId);
-  const existing = existingFees.find(
-    (f) => f.studentId === proof.studentId && f.month === proof.month
-  );
-  const billed = Number(existing?.monthlyAmount ?? existing?.amount ?? proof.amount);
-  const prevPaid = existing?.paid
-    ? Number(existing?.paidAmount ?? billed)
-    : Number(existing?.paidAmount ?? 0);
-  const payAmt = Math.max(0, Number(proof.amount) || 0);
-  const newPaidTotal = existing?.paid ? prevPaid : prevPaid + payAmt;
-  const newBalance = Math.max(0, billed - newPaidTotal);
+  const familyList =
+    proof.isFamilyCombined && Array.isArray(proof.familyAllocations) && proof.familyAllocations.length > 0
+      ? proof.familyAllocations
+      : null;
 
-  const feeRecord: MonthlyFee = {
-    ...(existing || {}),
-    schoolId,
-    sessionId: proof.sessionId || existing?.sessionId || "",
-    studentId: proof.studentId,
-    studentName: proof.studentName,
-    rollNo: proof.rollNo || existing?.rollNo || "",
-    classId: proof.classId,
-    className: proof.className || existing?.className,
-    month: proof.month,
-    amount: billed,
-    monthlyAmount: billed,
-    paid: newBalance <= 0,
-    status: newBalance <= 0 ? "Paid" : "Partial",
-    paidDate: nowIso,
-    paidBy: approverName,
-    collectedBy: `${approverRole === "accountant" ? "Accountant" : "Admin"} (${approverName})`,
-    collectedByRole: approverRole,
-    collectedByName: approverName,
-    receiptNo,
-    paymentMode: "online_upi",
-    paidAmount: newPaidTotal,
-    lastPaidAmount: payAmt,
-    lastReceiptPaidAmount: payAmt,
-    lastPaidDate: nowIso,
-    balanceDue: newBalance,
-    updatedAt: nowIso,
-    payModeInfo: {
-      payMode: "UPI QR (Verified)",
-      date: nowIso.slice(0, 10),
-      bank: "School UPI",
-      number: proof.utrNumber,
-      onlineAmount: payAmt,
-      offlineAmount: 0,
-    },
-    note: proof.note
-      ? `UPI UTR: ${proof.utrNumber} · ${proof.note}`
-      : `UPI UTR: ${proof.utrNumber}`,
-  };
+  let primaryReceiptNo = "";
+  let primaryFeeRecord: MonthlyFee | null = null;
+  let updatedFamilyAllocations: UpiFamilyAllocationItem[] | undefined = undefined;
+  let familyReceiptNo: string | undefined = undefined;
 
-  await saveFee(feeRecord);
+  if (familyList) {
+    familyReceiptNo = `FAM-UPI-${Date.now().toString().slice(-6)}`;
+    primaryReceiptNo = familyReceiptNo;
+    let remainingPool = finalConfirmedAmt;
+    const allocatedList: UpiFamilyAllocationItem[] = [];
+
+    for (let idx = 0; idx < familyList.length; idx++) {
+      const member = familyList[idx];
+      const existing = existingFees.find(
+        (f) => f.studentId === member.studentId && f.month === member.month
+      );
+      const isFree = Boolean(member.isFreeEducation) || Number(member.billedAmount || 0) <= 0;
+      const memberReceiptNo = `${familyReceiptNo}-${idx + 1}`;
+
+      if (isFree) {
+        const freeFee: MonthlyFee = {
+          ...(existing || {}),
+          schoolId,
+          sessionId: proof.sessionId || existing?.sessionId || "",
+          studentId: member.studentId,
+          studentName: member.studentName,
+          rollNo: member.rollNo || existing?.rollNo || "",
+          classId: member.classId,
+          className: member.className || existing?.className,
+          month: member.month,
+          amount: 0,
+          monthlyAmount: 0,
+          paid: true,
+          status: "Paid",
+          paidDate: nowIso,
+          paidBy: approverName,
+          collectedBy: `${roleLabel} (${approverName})`,
+          collectedByRole: feeCollectorRole,
+          collectedByName: approverName,
+          receiptNo: memberReceiptNo,
+          familyReceiptNo,
+          familyGroupId: proof.studentId,
+          paymentMode: "online_upi",
+          paidAmount: 0,
+          lastPaidAmount: 0,
+          lastReceiptPaidAmount: 0,
+          lastPaidDate: nowIso,
+          balanceDue: 0,
+          updatedAt: nowIso,
+          note: "Free Education / 100% Sibling Concession (Family Combined UPI)",
+        };
+        await saveFee(freeFee);
+        if (!primaryFeeRecord) primaryFeeRecord = freeFee;
+        allocatedList.push({
+          ...member,
+          allocatedAmount: 0,
+          receiptNo: memberReceiptNo,
+          remainingDue: 0,
+        });
+        continue;
+      }
+
+      const billed = Math.max(
+        0,
+        Number(existing?.monthlyAmount ?? existing?.amount ?? member.billedAmount ?? 0)
+      );
+      const prevPaid = existing?.paid
+        ? billed
+        : Number(existing?.paidAmount ?? 0);
+      const need = Math.max(0, billed - prevPaid);
+      const alloc = Math.min(remainingPool, need);
+      remainingPool = Math.max(0, remainingPool - alloc);
+
+      const newPaidTotal = existing?.paid ? prevPaid : prevPaid + alloc;
+      const newBalance = Math.max(0, billed - newPaidTotal);
+
+      const memberFee: MonthlyFee = {
+        ...(existing || {}),
+        schoolId,
+        sessionId: proof.sessionId || existing?.sessionId || "",
+        studentId: member.studentId,
+        studentName: member.studentName,
+        rollNo: member.rollNo || existing?.rollNo || "",
+        classId: member.classId,
+        className: member.className || existing?.className,
+        month: member.month,
+        amount: billed,
+        monthlyAmount: billed,
+        paid: newBalance <= 0,
+        status: newBalance <= 0 ? "Paid" : alloc > 0 ? "Partial" : existing?.status || "Due",
+        paidDate: alloc > 0 ? nowIso : existing?.paidDate,
+        paidBy: alloc > 0 ? approverName : existing?.paidBy,
+        collectedBy: alloc > 0 ? `${roleLabel} (${approverName})` : existing?.collectedBy,
+        collectedByRole: alloc > 0 ? feeCollectorRole : existing?.collectedByRole,
+        collectedByName: alloc > 0 ? approverName : existing?.collectedByName,
+        receiptNo: alloc > 0 ? memberReceiptNo : existing?.receiptNo,
+        familyReceiptNo,
+        familyGroupId: proof.studentId,
+        paymentMode: alloc > 0 ? "online_upi" : existing?.paymentMode,
+        paidAmount: newPaidTotal,
+        lastPaidAmount: alloc > 0 ? alloc : existing?.lastPaidAmount,
+        lastReceiptPaidAmount: alloc > 0 ? alloc : existing?.lastReceiptPaidAmount,
+        lastPaidDate: alloc > 0 ? nowIso : existing?.lastPaidDate,
+        balanceDue: newBalance,
+        updatedAt: nowIso,
+        payModeInfo:
+          alloc > 0
+            ? {
+                payMode: "Family Combined UPI (Verified)",
+                date: nowIso.slice(0, 10),
+                bank: "School UPI",
+                number: proof.utrNumber || familyReceiptNo,
+                onlineAmount: alloc,
+                offlineAmount: 0,
+              }
+            : existing?.payModeInfo,
+        note:
+          alloc > 0
+            ? proof.utrNumber
+              ? `Family Combined UPI UTR: ${proof.utrNumber} (${familyReceiptNo})${proof.note ? ` · ${proof.note}` : ""}`
+              : `Family Combined UPI Screenshot (${familyReceiptNo})${proof.note ? ` · ${proof.note}` : ""}`
+            : existing?.note,
+      };
+
+      if (alloc > 0) {
+        await saveFee(memberFee);
+        autoSettleFeeCallFollowUp(schoolId, member.studentId, {
+          receiptNo: memberReceiptNo,
+          amountPaid: alloc,
+          remainingDue: newBalance,
+          actorName: approverName,
+          studentName: member.studentName,
+          fatherName: proof.fatherName,
+          classId: member.classId,
+          className: member.className,
+          rollNo: member.rollNo,
+          phone: proof.phone,
+        }).catch(() => {});
+
+        autoSendFeeSlipToSchoolDesk({
+          schoolId,
+          studentId: member.studentId,
+          studentName: member.studentName,
+          slipType: "FEE_RECEIPT",
+          month: member.month,
+          monthLabel: member.monthLabel || member.month,
+          amount: alloc,
+          balanceDue: newBalance,
+          receiptNo: memberReceiptNo,
+          dueDate: nowIso.slice(0, 10),
+        }).catch(() => {});
+      }
+
+      if (!primaryFeeRecord) primaryFeeRecord = memberFee;
+      allocatedList.push({
+        ...member,
+        allocatedAmount: alloc,
+        receiptNo: alloc > 0 ? memberReceiptNo : undefined,
+        remainingDue: newBalance,
+      });
+    }
+
+    updatedFamilyAllocations = allocatedList;
+  } else {
+    const receiptNo = `UPI-${Date.now().toString().slice(-6)}`;
+    primaryReceiptNo = receiptNo;
+
+    const existing = existingFees.find(
+      (f) => f.studentId === proof.studentId && f.month === proof.month
+    );
+    const billed = Number(
+      existing?.monthlyAmount ?? existing?.amount ?? proof.billedAmount ?? proof.amount
+    );
+    const prevPaid = existing?.paid
+      ? Number(existing?.paidAmount ?? billed)
+      : Number(existing?.paidAmount ?? 0);
+    const payAmt = finalConfirmedAmt;
+    const newPaidTotal = existing?.paid ? prevPaid : prevPaid + payAmt;
+    const newBalance = Math.max(0, billed - newPaidTotal);
+
+    const feeRecord: MonthlyFee = {
+      ...(existing || {}),
+      schoolId,
+      sessionId: proof.sessionId || existing?.sessionId || "",
+      studentId: proof.studentId,
+      studentName: proof.studentName,
+      rollNo: proof.rollNo || existing?.rollNo || "",
+      classId: proof.classId,
+      className: proof.className || existing?.className,
+      month: proof.month,
+      amount: billed,
+      monthlyAmount: billed,
+      paid: newBalance <= 0,
+      status: newBalance <= 0 ? "Paid" : "Partial",
+      paidDate: nowIso,
+      paidBy: approverName,
+      collectedBy: `${roleLabel} (${approverName})`,
+      collectedByRole: feeCollectorRole,
+      collectedByName: approverName,
+      receiptNo,
+      paymentMode: "online_upi",
+      paidAmount: newPaidTotal,
+      lastPaidAmount: payAmt,
+      lastReceiptPaidAmount: payAmt,
+      lastPaidDate: nowIso,
+      balanceDue: newBalance,
+      updatedAt: nowIso,
+      payModeInfo: {
+        payMode: "UPI QR (Verified)",
+        date: nowIso.slice(0, 10),
+        bank: "School UPI",
+        number: proof.utrNumber || receiptNo,
+        onlineAmount: payAmt,
+        offlineAmount: 0,
+      },
+      note: proof.utrNumber
+        ? proof.note
+          ? `UPI UTR: ${proof.utrNumber} · ${proof.note}`
+          : `UPI UTR: ${proof.utrNumber}`
+        : proof.note
+        ? `UPI Screenshot Verified · ${proof.note}`
+        : `UPI Screenshot Verified${proof.paidTime ? ` (${proof.paidTime})` : ""}`,
+    };
+
+    await saveFee(feeRecord);
+    primaryFeeRecord = feeRecord;
+
+    autoSettleFeeCallFollowUp(schoolId, proof.studentId, {
+      receiptNo,
+      amountPaid: payAmt,
+      remainingDue: newBalance,
+      actorName: approverName,
+      studentName: proof.studentName,
+      fatherName: proof.fatherName,
+      classId: proof.classId,
+      className: proof.className,
+      rollNo: proof.rollNo,
+      phone: proof.phone,
+    }).catch(() => {});
+
+    autoSendFeeSlipToSchoolDesk({
+      schoolId,
+      studentId: proof.studentId,
+      studentName: proof.studentName,
+      slipType: "FEE_RECEIPT",
+      month: proof.month,
+      monthLabel: proof.monthLabel || proof.month,
+      amount: payAmt,
+      balanceDue: newBalance,
+      receiptNo,
+      dueDate: nowIso.slice(0, 10),
+    }).catch(() => {});
+  }
 
   const updatedProof: UpiPaymentProofRecord = sanitizeForFirestore({
     ...proof,
+    confirmedAmount: finalConfirmedAmt,
     status: "APPROVED",
     reviewedAt: nowIso,
     reviewedBy: approverName,
-    receiptNo,
+    reviewedByRole: approverRole,
+    reviewedById: approverId,
+    receiptNo: primaryReceiptNo,
+    ...(familyReceiptNo ? { familyReceiptNo } : {}),
+    ...(updatedFamilyAllocations ? { familyAllocations: updatedFamilyAllocations } : {}),
   });
 
   const nextProofs = [
@@ -12338,6 +13420,10 @@ export const approveUpiPaymentProof = async (params: {
   markSchoolCacheFresh(UPI_PROOFS_CACHE_KEY(schoolId));
   if (typeof window !== "undefined") {
     window.dispatchEvent(new CustomEvent("upi-proofs-updated", { detail: { schoolId } }));
+    window.dispatchEvent(new CustomEvent("upi-proof-resolved", { detail: { schoolId, proofId: updatedProof.id } }));
+    try {
+      (window as any).LifeMakerAndroid?.markUpiProofHandled?.(updatedProof.id);
+    } catch {}
   }
 
   if (db) {
@@ -12351,33 +13437,11 @@ export const approveUpiPaymentProof = async (params: {
     } catch {}
   }
 
-  autoSettleFeeCallFollowUp(schoolId, proof.studentId, {
-    receiptNo,
-    amountPaid: payAmt,
-    remainingDue: newBalance,
-    actorName: approverName,
-    studentName: proof.studentName,
-    fatherName: proof.fatherName,
-    classId: proof.classId,
-    className: proof.className,
-    rollNo: proof.rollNo,
-    phone: proof.phone,
-  }).catch(() => {});
-
-  autoSendFeeSlipToSchoolDesk({
-    schoolId,
-    studentId: proof.studentId,
-    studentName: proof.studentName,
-    slipType: "FEE_RECEIPT",
-    month: proof.month,
-    monthLabel: proof.monthLabel || proof.month,
-    amount: payAmt,
-    balanceDue: newBalance,
-    receiptNo,
-    dueDate: nowIso.slice(0, 10),
-  }).catch(() => {});
-
-  return { receiptNo, fee: feeRecord, proof: updatedProof };
+  return {
+    receiptNo: primaryReceiptNo,
+    fee: primaryFeeRecord!,
+    proof: updatedProof,
+  };
 };
 
 export const rejectUpiPaymentProof = async (params: {
@@ -12385,8 +13449,10 @@ export const rejectUpiPaymentProof = async (params: {
   proofId: string;
   reason: string;
   reviewerName: string;
+  reviewerRole?: "admin" | "accountant" | "teacher" | "manager";
+  reviewerId?: string;
 }): Promise<UpiPaymentProofRecord | null> => {
-  const { schoolId, proofId, reason, reviewerName } = params;
+  const { schoolId, proofId, reason, reviewerName, reviewerRole, reviewerId } = params;
   const list = getLocalUpiProofs(schoolId);
   const existing = list.find((p) => p.id === proofId);
   if (!existing) return null;
@@ -12397,6 +13463,8 @@ export const rejectUpiPaymentProof = async (params: {
     rejectionReason: String(reason || "Payment verify nahi hua").trim(),
     reviewedAt: new Date().toISOString(),
     reviewedBy: reviewerName,
+    ...(reviewerRole ? { reviewedByRole: reviewerRole } : {}),
+    ...(reviewerId ? { reviewedById: reviewerId } : {}),
   });
 
   setLocalUpiProofs(
@@ -12406,6 +13474,10 @@ export const rejectUpiPaymentProof = async (params: {
   markSchoolCacheFresh(UPI_PROOFS_CACHE_KEY(schoolId));
   if (typeof window !== "undefined") {
     window.dispatchEvent(new CustomEvent("upi-proofs-updated", { detail: { schoolId } }));
+    window.dispatchEvent(new CustomEvent("upi-proof-resolved", { detail: { schoolId, proofId } }));
+    try {
+      (window as any).LifeMakerAndroid?.markUpiProofHandled?.(proofId);
+    } catch {}
   }
 
   if (db) {

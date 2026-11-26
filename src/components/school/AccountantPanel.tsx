@@ -1,6 +1,7 @@
 // @ts-nocheck
 import React, { Suspense, useState, useEffect, useMemo } from "react";
 import { safeOpenExternalUrl } from "../../utils/safeBrowserActions";
+import { setErrorLoggerModule, setErrorLoggerContext } from "../../utils/errorLogger";
 import {
   IndianRupee,
   Receipt,
@@ -105,7 +106,8 @@ import {
   getLocalAttendance,
   syncPendingFeeCallFollowUps,
   getPendingFeeFollowUpSyncCount,
-  subscribeSchoolUpiProofs
+  subscribeSchoolUpiProofs,
+  isUserAuthorizedUpiReceiver
 } from "../../school-firebase";
 import { sendSchoolPushNotification } from "../../utils/schoolPushClient";
 import { DEMO_SESSION_ID, setDemoDataEnabled } from "./demoDataStore";
@@ -152,6 +154,7 @@ import {
 } from "../../school-types";
 import { LanguageToggleButton } from "./LanguageToggleButton";
 import { PendingUpiApprovalsPanel } from "./PendingUpiApprovalsPanel";
+import { UpiProofVerificationPopup } from "./UpiProofVerificationPopup";
 import { OfficialFeeReceiptModal } from "./OfficialFeeReceiptModal";
 import { pickLang, useAppLang } from "../../utils/appLang";
 import { useSchoolWalkieChannel } from "../../utils/schoolWalkieService";
@@ -272,6 +275,11 @@ export const AccountantPanel: React.FC<Props> = ({
   const [activeTab, setActiveTab] = useState<AccountantTab>(() =>
     getPendingActiveTagadaCall(schoolId) ? "fee_tagada" : "home"
   );
+
+  useEffect(() => {
+    setErrorLoggerModule(`Accountant Portal → ${activeTab}`);
+    if (schoolId) setErrorLoggerContext({ schoolId });
+  }, [activeTab, schoolId]);
   const [lang] = useAppLang();
   const [upiProofs, setUpiProofs] = useState<UpiPaymentProofRecord[]>([]);
   const [showUpiDesk, setShowUpiDesk] = useState(false);
@@ -281,6 +289,23 @@ export const AccountantPanel: React.FC<Props> = ({
     if (!schoolId) return;
     return subscribeSchoolUpiProofs(schoolId, setUpiProofs);
   }, [schoolId]);
+  useEffect(() => {
+    const onReceiversUpdated = (ev: Event) => {
+      const detail = (ev as CustomEvent)?.detail;
+      if (detail?.schoolId === schoolId && Array.isArray(detail?.upiAlertReceivers)) {
+        setSchool((prev) =>
+          prev ? { ...prev, upiAlertReceivers: detail.upiAlertReceivers } : prev
+        );
+      }
+    };
+    window.addEventListener("school-upi-receivers-updated", onReceiversUpdated);
+    return () => window.removeEventListener("school-upi-receivers-updated", onReceiversUpdated);
+  }, [schoolId]);
+  const isUpiReceiverAuthorized = isUserAuthorizedUpiReceiver({
+    school,
+    role: "accountant",
+    userId: activeAccountant?.id || accountantId,
+  });
   const pendingUpiCount = upiProofs.filter((p) => p.status === "PENDING").length;
 
   const [school, setSchool] = useState<School | null>(() => cachedBootstrap?.sch || null);
@@ -2504,12 +2529,15 @@ export const AccountantPanel: React.FC<Props> = ({
               />
 
               {/* ── PENDING UPI SCREENSHOT VERIFICATIONS ─────────────────────── */}
-              {(showUpiDesk || pendingUpiCount > 0) && (
+              {(showUpiDesk || (pendingUpiCount > 0 && isUpiReceiverAuthorized)) && (
                 <PendingUpiApprovalsPanel
                   schoolId={schoolId}
                   proofs={upiProofs}
                   approverName={activeAccountant?.name || "Accountant"}
                   approverRole="accountant"
+                  approverId={activeAccountant?.id || accountantId || "accountant_admin"}
+                  isAdmin={false}
+                  school={school}
                   onClose={showUpiDesk ? () => setShowUpiDesk(false) : undefined}
                   onApprovedReceipt={(approvedFee) => {
                     setFees((prev) => {
@@ -3867,6 +3895,24 @@ export const AccountantPanel: React.FC<Props> = ({
           initialFormat="pos"
         />
       )}
+      <UpiProofVerificationPopup
+        schoolId={schoolId}
+        school={school}
+        proofs={upiProofs}
+        authorized={isUpiReceiverAuthorized}
+        approverName={activeAccountant?.name || "Accountant"}
+        approverRole="accountant"
+        approverId={activeAccountant?.id || accountantId || "accountant_admin"}
+        onApprovedReceipt={(approvedFee) => {
+          setFees((prev) => {
+            const next = prev.filter(
+              (f) => !(f.studentId === approvedFee.studentId && f.month === approvedFee.month)
+            );
+            return [approvedFee, ...next];
+          });
+          setApprovedUpiReceiptFee(approvedFee);
+        }}
+      />
     </div>
   );
 };

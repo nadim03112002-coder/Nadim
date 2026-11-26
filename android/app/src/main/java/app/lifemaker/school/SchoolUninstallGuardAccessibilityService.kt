@@ -110,7 +110,8 @@ class SchoolUninstallGuardAccessibilityService : AccessibilityService() {
         // Allow 4.5s grace window right after user enables Accessibility toggle in Settings
         if (now - connectedAtMs < 4500L) return
 
-        // Respect Admin PIN-verified lock off or temporary 2-minute unlock window
+        // Respect School Admin ON/OFF toggle, PIN-verified lock off, or temporary 2-minute unlock window
+        if (!AppPrefs.isUninstallPinRequired(applicationContext)) return
         if (!AppPrefs.isAccessibilityGuardLocked(applicationContext)) return
         if (now < AppPrefs.getGuardUnlockUntilMs(applicationContext)) return
 

@@ -36,12 +36,6 @@ export const SchoolHomeCard: React.FC<Props> = ({
   card3D = false,
   isDarkMode = false,
 }) => {
-  if (!school) return null;
-
-  const accent = themeAccent || school.bannerColor || "#6366f1";
-  const bg = cardBg || (isDarkMode ? "#0f172a" : "#ffffff");
-  const initial = (school.name || "SC").trim().slice(0, 2).toUpperCase();
-
   const [attendanceStatus, setAttendanceStatus] = useState<{
     checked: boolean;
     present: boolean;
@@ -61,6 +55,12 @@ export const SchoolHomeCard: React.FC<Props> = ({
     }
     return () => { isMounted = false; };
   }, [school?.id, studentId, studentClassId]);
+
+  if (!school) return null;
+
+  const accent = themeAccent || school.bannerColor || "#6366f1";
+  const bg = cardBg || (isDarkMode ? "#0f172a" : "#ffffff");
+  const initial = (school.name || "SC").trim().slice(0, 2).toUpperCase();
 
   const cardStyle: React.CSSProperties = card3D
     ? {

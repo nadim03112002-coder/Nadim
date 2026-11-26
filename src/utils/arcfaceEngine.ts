@@ -65,15 +65,16 @@ async function withPromiseTimeout<T>(
 
 async function isWasmAssetBaseReachable(base: string): Promise<boolean> {
   try {
-    const mjsRes = await fetchWithTimeout(`${base}ort-wasm-simd-threaded.mjs`, { method: "HEAD" }, 2200).catch(() =>
-      fetchWithTimeout(`${base}ort-wasm-simd-threaded.mjs`, { method: "GET" }, 2500)
-    );
+    const [mjsRes, wasmRes] = await Promise.all([
+      fetchWithTimeout(`${base}ort-wasm-simd-threaded.mjs`, { method: "HEAD" }, 3500).catch(() =>
+        fetchWithTimeout(`${base}ort-wasm-simd-threaded.mjs`, { method: "GET" }, 4000)
+      ),
+      fetchWithTimeout(`${base}ort-wasm-simd-threaded.wasm`, { method: "HEAD" }, 3500).catch(() => null),
+    ]);
     const mjsCt = (mjsRes.headers.get("content-type") || "").toLowerCase();
     if (!mjsRes.ok || mjsCt.includes("text/html")) {
       return false;
     }
-
-    const wasmRes = await fetchWithTimeout(`${base}ort-wasm-simd-threaded.wasm`, { method: "HEAD" }, 2200).catch(() => null);
     if (wasmRes) {
       const wasmCt = (wasmRes.headers.get("content-type") || "").toLowerCase();
       if (!wasmRes.ok || wasmCt.includes("text/html")) {
@@ -167,13 +168,13 @@ export async function initArcFaceEngine(): Promise<boolean> {
       console.log("[ArcFace 512D] Loading MobileFaceNet ONNX model from:", modelUrl);
 
       lastArcFaceError = null;
-      // Fetch ONNX model bytes directly once with strict timeout for reliable loading across mobile/WebView
+      // Fetch ONNX model bytes directly once with generous timeout for reliable loading across mobile/WebView
       let modelSource: string | Uint8Array = modelUrl;
       try {
-        const res = await fetchWithTimeout(modelUrl, {}, 10000);
+        const res = await fetchWithTimeout(modelUrl, {}, 30000);
         const ct = (res.headers.get("content-type") || "").toLowerCase();
         if (res.ok && !ct.includes("text/html")) {
-          const buf = await withPromiseTimeout(res.arrayBuffer(), 10000, "ArcFace model download");
+          const buf = await withPromiseTimeout(res.arrayBuffer(), 30000, "ArcFace model download");
           if (buf.byteLength > 100000) {
             modelSource = new Uint8Array(buf);
           }
@@ -193,28 +194,38 @@ export async function initArcFaceEngine(): Promise<boolean> {
             executionProviders: ["wasm"],
             graphOptimizationLevel: "all",
           }),
-          9000,
+          30000,
           "ArcFace SIMD WASM init"
         );
       } catch (wasmErr: any) {
-        console.warn("[ArcFace 512D] Primary WASM session init failed, retrying safe non-SIMD basic mode:", wasmErr);
-        try {
-          ort.env.wasm.numThreads = 1;
-          ort.env.wasm.simd = false;
-          (ort.env.wasm as any).proxy = false;
-          ort.env.wasm.wasmPaths = workingWasmBase;
-          arcfaceSession = await withPromiseTimeout(
-            ort.InferenceSession.create(modelSource as any, {
-              executionProviders: ["wasm"],
-              graphOptimizationLevel: "basic",
-            }),
-            8000,
-            "ArcFace fallback WASM init"
-          );
-        } catch (fallbackErr: any) {
-          lastArcFaceError = fallbackErr?.message || wasmErr?.message || "ONNX WASM failed to initialize";
-          console.error("[ArcFace 512D] ONNX WASM unavailable:", lastArcFaceError);
+        const errMsg = String(wasmErr?.message || wasmErr || "");
+        const isTimedOutOrBusy =
+          errMsg.includes("timed out") ||
+          errMsg.includes("multiple calls to 'initWasm()'");
+        if (isTimedOutOrBusy) {
+          lastArcFaceError = errMsg || "ONNX WASM init timed out";
+          console.warn("[ArcFace 512D] ONNX WASM init deferred (using Face-API neural fallback):", lastArcFaceError);
           arcfaceSession = null;
+        } else {
+          console.warn("[ArcFace 512D] Primary WASM session init failed, retrying safe non-SIMD basic mode:", wasmErr);
+          try {
+            ort.env.wasm.numThreads = 1;
+            ort.env.wasm.simd = false;
+            (ort.env.wasm as any).proxy = false;
+            ort.env.wasm.wasmPaths = workingWasmBase;
+            arcfaceSession = await withPromiseTimeout(
+              ort.InferenceSession.create(modelSource as any, {
+                executionProviders: ["wasm"],
+                graphOptimizationLevel: "basic",
+              }),
+              25000,
+              "ArcFace fallback WASM init"
+            );
+          } catch (fallbackErr: any) {
+            lastArcFaceError = fallbackErr?.message || wasmErr?.message || "ONNX WASM failed to initialize";
+            console.warn("[ArcFace 512D] ONNX WASM unavailable (using Face-API neural fallback):", lastArcFaceError);
+            arcfaceSession = null;
+          }
         }
       }
 
@@ -239,7 +250,7 @@ export async function initArcFaceEngine(): Promise<boolean> {
           if (arcfaceSession) {
             await arcfaceSession.run({ [arcfaceSession.inputNames[0]]: dummyTensor });
           }
-        }, 5000);
+        }, 8000);
         console.log("[ArcFace 512D] Pre-warm inference complete!");
       } catch (warmErr) {
         console.warn("[ArcFace 512D] Pre-warm note:", warmErr);
@@ -248,7 +259,7 @@ export async function initArcFaceEngine(): Promise<boolean> {
       isInitializing = false;
       return true;
     } catch (err) {
-      console.error("[ArcFace 512D] Failed to load ONNX model:", err);
+      console.warn("[ArcFace 512D] Failed to load ONNX model:", err);
       arcfaceSession = null;
       isInitializing = false;
       initPromise = null;
@@ -259,11 +270,25 @@ export async function initArcFaceEngine(): Promise<boolean> {
   return initPromise;
 }
 
-// Auto-initialize in background on client load
+// Auto-initialize gently in background after initial page load completes so it never starves React boot
 if (typeof window !== "undefined") {
-  setTimeout(() => {
-    initArcFaceEngine().catch(() => {});
-  }, 200);
+  const scheduleArcFacePrewarm = () => {
+    const navConn = (navigator as any)?.connection;
+    if (navConn?.saveData) return;
+    const run = () => {
+      initArcFaceEngine().catch(() => {});
+    };
+    if (typeof (window as any).requestIdleCallback === "function") {
+      (window as any).requestIdleCallback(() => setTimeout(run, 2500), { timeout: 6000 });
+    } else {
+      setTimeout(run, 4000);
+    }
+  };
+  if (document.readyState === "complete") {
+    scheduleArcFacePrewarm();
+  } else {
+    window.addEventListener("load", scheduleArcFacePrewarm, { once: true });
+  }
 }
 
 // ── 5-POINT CANONICAL LANDMARKS & UMEYAMA SIMILARITY TRANSFORM ──────────────

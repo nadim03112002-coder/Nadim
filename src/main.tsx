@@ -4,6 +4,8 @@ import App from './App';
 import './index.css';
 import './app.css';
 import { Toaster } from 'sonner';
+import { logErrorToFirebase, extractFunctionName, deriveErrorReason, getErrorLoggerContextSnapshot } from './utils/errorLogger';
+import { copyTextSafely } from './components/ErrorBoundary';
 
 // Tier 1 Google Maps Platform Demo Key quota & auth failure detection
 if (typeof window !== 'undefined') {
@@ -48,16 +50,17 @@ interface ErrorBoundaryProps {
 interface ErrorBoundaryState {
   hasError: boolean;
   error: Error | null;
+  copied?: boolean;
 }
 
 class RootErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState> {
   constructor(props: ErrorBoundaryProps) {
     super(props);
-    this.state = { hasError: false, error: null };
+    this.state = { hasError: false, error: null, copied: false };
   }
 
   static getDerivedStateFromError(error: Error): ErrorBoundaryState {
-    return { hasError: true, error };
+    return { hasError: true, error, copied: false };
   }
 
   componentDidCatch(error: Error, errorInfo: ErrorInfo) {
@@ -66,13 +69,22 @@ class RootErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState
     if (typeof (window as any).hidePreReactSplash === 'function') {
       (window as any).hidePreReactSplash();
     }
-    // Auto-recover from stale chunks / dual React instance when dev server was restarted
     const errStr = String(error?.message || error || '');
-    if (
+    const isChunkOrHookError =
       errStr.includes("reading 'useState'") ||
       errStr.includes("Invalid hook call") ||
-      errStr.includes("Failed to fetch dynamically imported module")
-    ) {
+      errStr.includes("Failed to fetch dynamically imported module");
+
+    logErrorToFirebase(error, {
+      type: 'react',
+      severity: 'critical',
+      componentStack: errorInfo?.componentStack ?? undefined,
+      moduleName: 'Root Application',
+      functionName: extractFunctionName(error?.stack, errorInfo?.componentStack ?? undefined),
+    }).catch(() => {});
+
+    // Auto-recover from stale chunks / dual React instance when dev server was restarted
+    if (isChunkOrHookError) {
       const reloadKey = '__nsta_stale_chunk_reload';
       const lastReload = Number(sessionStorage.getItem(reloadKey) || 0);
       if (Date.now() - lastReload > 8000) {
@@ -85,6 +97,27 @@ class RootErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState
 
   handleReload = () => {
     window.location.reload();
+  };
+
+  handleCopyDetails = () => {
+    const err = this.state.error;
+    const msg = err?.message || String(err || 'Unknown error');
+    const ctx = getErrorLoggerContextSnapshot();
+    const report = [
+      `SCHOOL+ Crash Report`,
+      `Module: ${ctx.activeModule || 'Root Application'}`,
+      `Function: ${extractFunctionName(err?.stack) || 'Unknown'}`,
+      `Reason: ${deriveErrorReason(msg, 'react')}`,
+      `User: ${ctx.userName || 'Guest'} (${ctx.userRole || 'Unknown'})`,
+      `Error: ${msg}`,
+      `Stack: ${(err?.stack || '').slice(0, 600)}`,
+    ].join('\n');
+    void copyTextSafely(report).then((ok) => {
+      if (ok) {
+        this.setState({ copied: true });
+        setTimeout(() => this.setState({ copied: false }), 2000);
+      }
+    });
   };
 
   handleReset = () => {
@@ -105,14 +138,20 @@ class RootErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState
             </div>
             <h2 className="text-xl font-bold text-slate-100 mb-2">Application Notice</h2>
             <p className="text-sm text-slate-400 mb-6">
-              A temporary issue occurred while rendering. Click below to reload or reset the view.
+              A temporary issue occurred while rendering. Admin has been notified automatically. Click below to reload.
             </p>
-            <div className="flex items-center justify-center gap-3">
+            <div className="flex flex-wrap items-center justify-center gap-3">
               <button
                 onClick={this.handleReload}
                 className="px-5 py-2.5 bg-blue-600 hover:bg-blue-500 text-white font-medium rounded-xl text-sm transition-colors shadow-lg shadow-blue-600/25"
               >
                 Reload App
+              </button>
+              <button
+                onClick={this.handleCopyDetails}
+                className="px-4 py-2.5 bg-slate-800 hover:bg-slate-700 text-amber-300 font-medium rounded-xl text-sm transition-colors border border-slate-700"
+              >
+                {this.state.copied ? '✓ Copied' : 'Copy Error'}
               </button>
               <button
                 onClick={this.handleReset}

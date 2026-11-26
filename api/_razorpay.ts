@@ -39,6 +39,11 @@ export interface RazorpayOrderRecord {
   monthLabel: string;
   feeId: string;
   expectedAmount: number;
+  baseAmount?: number;
+  convenienceFee?: number;
+  convenienceFeePct?: number;
+  totalChargedAmount?: number;
+  fastPay?: boolean;
   expectedPaise: number;
   feeItems?: any[];
   storeItems?: {
@@ -335,6 +340,8 @@ export async function createSchoolRazorpayOrder(input: {
   month?: string;
   monthLabel?: string;
   amount: number;
+  baseAmount?: number;
+  fastPay?: boolean;
   feeId?: string;
   feeItems?: any[];
   purpose?: "fee_payment" | "store_order" | "admission_fee";
@@ -350,7 +357,7 @@ export async function createSchoolRazorpayOrder(input: {
       ? "admission_fee"
       : "fee_payment";
   const month = String(input.month || new Date().toISOString().slice(0, 7)).trim();
-  const amount = Math.round(Number(input.amount || 0));
+  const requestedBaseAmount = Math.round(Number(input.baseAmount ?? input.amount ?? 0));
 
   if (!schoolId || !studentId || (purpose === "fee_payment" && !input.month)) {
     return {
@@ -358,7 +365,7 @@ export async function createSchoolRazorpayOrder(input: {
       body: { ok: false, error: "schoolId, studentId aur month zaroori hain" },
     };
   }
-  if (!Number.isFinite(amount) || amount <= 0) {
+  if (!Number.isFinite(requestedBaseAmount) || requestedBaseAmount <= 0) {
     return {
       status: 400,
       body: { ok: false, error: "Payable amount ₹1 se adhik hona chahiye" },
@@ -382,9 +389,10 @@ export async function createSchoolRazorpayOrder(input: {
     };
   }
 
+  let baseAmount = requestedBaseAmount;
   const feeKey = `${studentId}_${month}`;
   if (purpose === "fee_payment") {
-    // Prevent duplicate payment if this exact student+month fee is already fully paid
+    // Prevent duplicate payment and enforce fixed full remaining fee when server record exists
     const existingFee = await rtdbGet<any>(
       `schools/${cleanRtdbKey(schoolId)}/fees/${cleanRtdbKey(feeKey)}`
     );
@@ -401,9 +409,36 @@ export async function createSchoolRazorpayOrder(input: {
         },
       };
     }
+
+    if (existingFee && !existingFee.cancelled) {
+      const serverBilled = Number(existingFee.monthlyAmount ?? existingFee.amount ?? 0);
+      const serverPaid = Number(existingFee.paidAmount ?? 0);
+      const serverDue =
+        existingFee.balanceDue !== undefined
+          ? Math.round(Number(existingFee.balanceDue))
+          : Math.max(0, Math.round(serverBilled - serverPaid));
+      if (serverDue > 0 && requestedBaseAmount < serverDue) {
+        return {
+          status: 400,
+          body: {
+            ok: false,
+            error: `Fast Pay par poori baaki fee (₹${serverDue.toLocaleString(
+              "en-IN"
+            )}) fixed jama karni hoti hai — amount kam nahi kiya ja sakta.`,
+          },
+        };
+      }
+      if (serverDue > 0) {
+        baseAmount = Math.max(serverDue, requestedBaseAmount);
+      }
+    }
   }
 
-  const expectedPaise = amount * 100;
+  const isFastPayFee = purpose === "fee_payment";
+  const convenienceFeePct = isFastPayFee ? 5 : 0;
+  const convenienceFee = isFastPayFee ? Math.round(baseAmount * 0.05) : 0;
+  const totalPayable = baseAmount + convenienceFee;
+  const expectedPaise = totalPayable * 100;
   const receiptTag =
     purpose === "store_order"
       ? `NSTA-STR-${studentId.slice(-5)}-${Date.now().toString(36).slice(-5)}`.slice(0, 40)
@@ -432,6 +467,9 @@ export async function createSchoolRazorpayOrder(input: {
         studentId,
         studentName: String(input.studentName || "Student").slice(0, 80),
         purpose,
+        fastPay: isFastPayFee ? "true" : "false",
+        baseAmount: String(baseAmount),
+        convenienceFee: String(convenienceFee),
         applicationId: input.applicationId || "",
         applicationNo: input.applicationNo || "",
         month,
@@ -489,7 +527,12 @@ export async function createSchoolRazorpayOrder(input: {
         : purpose === "admission_fee"
         ? (input.applicationId || rzpOrder.id)
         : (input.feeId || feeKey),
-    expectedAmount: amount,
+    expectedAmount: baseAmount,
+    baseAmount,
+    convenienceFee,
+    convenienceFeePct,
+    totalChargedAmount: totalPayable,
+    fastPay: isFastPayFee,
     expectedPaise,
     feeItems: Array.isArray(input.feeItems) ? input.feeItems : undefined,
     storeItems: purpose === "store_order" && Array.isArray(input.storeItems) ? input.storeItems : undefined,
@@ -509,6 +552,11 @@ export async function createSchoolRazorpayOrder(input: {
       currency: rzpOrder.currency || "INR",
       keyId: cfg.keyId,
       mode: cfg.keyId.startsWith("rzp_live_") ? "live" : "test",
+      baseAmount,
+      convenienceFee,
+      convenienceFeePct,
+      totalPayable,
+      fastPay: isFastPayFee,
     },
   };
 }
@@ -732,23 +780,28 @@ async function finalizeRazorpayOrderPaid(params: {
     return { duplicate: false, receiptNo, sale: saleRecord };
   }
 
-  // ── BRANCH B: MONTHLY / ADMISSION FEE PAYMENT ──────────────────────────
+  // ── BRANCH B: MONTHLY FEE PAYMENT ──────────────────────────────────────
   const receiptNo = `RZP-${paymentId.replace(/^pay_/, "").slice(0, 8).toUpperCase()}`;
   const feeDocId = cleanRtdbKey(`${order.studentId}_${order.month}`);
 
   const prevFee =
     (await rtdbGet<any>(`schools/${safeSchool}/fees/${feeDocId}`)) || {};
 
+  const baseFeePaid = Number(order.baseAmount ?? order.expectedAmount ?? 0);
+  const convenienceFee = Number(order.convenienceFee || 0);
+  const convenienceFeePct = Number(order.convenienceFeePct || (convenienceFee > 0 ? 5 : 0));
+  const totalCharged = Number(order.totalChargedAmount || baseFeePaid + convenienceFee);
+
   const prevPaid = Number(prevFee.paidAmount || 0);
   const billedTotal = Math.max(
     Number(prevFee.amount || 0),
-    Number(order.expectedAmount || 0)
+    baseFeePaid
   );
   const newPaidAmount = Math.min(
     billedTotal,
     prevPaid > 0 && prevFee.paid !== true
-      ? prevPaid + order.expectedAmount
-      : Math.max(prevPaid, order.expectedAmount)
+      ? prevPaid + baseFeePaid
+      : Math.max(prevPaid, baseFeePaid)
   );
   const remainingDue = Math.max(0, billedTotal - newPaidAmount);
   const isFullyPaid = remainingDue <= 0;
@@ -768,24 +821,41 @@ async function finalizeRazorpayOrderPaid(params: {
     amount: billedTotal,
     monthlyAmount: prevFee.monthlyAmount ?? billedTotal,
     paidAmount: newPaidAmount,
+    lastPaidAmount: baseFeePaid,
+    lastReceiptPaidAmount: baseFeePaid,
+    lastPaidDate: paidAt,
     balanceDue: remainingDue,
     paid: isFullyPaid,
     status: isFullyPaid ? "PAID" : "PARTIAL",
     paidDate: paidAt,
-    paidBy: `Razorpay (${method || "UPI/Online"})`,
-    paymentMode: `Razorpay ${method ? String(method).toUpperCase() : "Online"}`,
+    paidBy: order.fastPay
+      ? `Fast Pay Razorpay (${method || "UPI/Online"})`
+      : `Razorpay (${method || "UPI/Online"})`,
+    paymentMode: order.fastPay
+      ? `Fast Pay Razorpay ${method ? String(method).toUpperCase() : "Online"}`
+      : `Razorpay ${method ? String(method).toUpperCase() : "Online"}`,
     receiptNo,
     razorpayOrderId: order.orderId,
     razorpayPaymentId: paymentId,
     verifiedViaWebhook: verifiedVia === "webhook",
+    convenienceFee,
+    convenienceFeePct,
+    gatewayTotalPaid: totalCharged,
+    fastPay: Boolean(order.fastPay),
     feeItems: prevFee.feeItems || order.feeItems || [],
     payModeInfo: {
-      payMode: "NSTA Online (Razorpay)",
-      onlinePaid: order.expectedAmount,
+      payMode: order.fastPay ? "Fast Pay (Razorpay +5%)" : "NSTA Online (Razorpay)",
+      date: paidAt.slice(0, 10),
+      bank: "RAZORPAY GATEWAY",
+      number: paymentId,
+      onlinePaid: baseFeePaid,
+      onlineAmount: baseFeePaid,
       cashPaid: 0,
       discountAmount: Number(prevFee.payModeInfo?.discountAmount || 0),
       transactionId: paymentId,
       razorpayOrderId: order.orderId,
+      convenienceFee,
+      totalCharged,
     },
     updatedAt: paidAt,
   };
@@ -804,6 +874,10 @@ async function finalizeRazorpayOrderPaid(params: {
   });
 
   // 3. Deliver Official Receipt to student's NSTA Messenger School Desk
+  const convSummary =
+    convenienceFee > 0
+      ? ` (+5% Fast Pay Charge: ₹${convenienceFee.toLocaleString("en-IN")}, Total Paid: ₹${totalCharged.toLocaleString("en-IN")})`
+      : "";
   const msgId = `rzp-rcp-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
   const deskMessage = {
     id: msgId,
@@ -814,14 +888,16 @@ async function finalizeRazorpayOrderPaid(params: {
     senderId: "school_admin",
     senderName: "School Accounts & Online Fee Desk",
     senderRole: "ADMIN",
-    text: `✅ ${order.monthLabel || order.month} ki online fee ₹${order.expectedAmount.toLocaleString(
+    text: `✅ ${order.monthLabel || order.month} ki online fee ₹${baseFeePaid.toLocaleString(
       "en-IN"
-    )} safalta-purvak prapt ho gayi hai! Official Receipt: ${receiptNo} (Payment ID: ${paymentId}).`,
+    )}${convSummary} safalta-purvak prapt ho gayi hai! Official Receipt: ${receiptNo} (Payment ID: ${paymentId}).`,
     feeSlip: {
       type: "FEE_RECEIPT",
       month: order.month,
       monthLabel: order.monthLabel || order.month,
-      amount: order.expectedAmount,
+      amount: baseFeePaid,
+      convenienceFee,
+      gatewayTotalPaid: totalCharged,
       balanceDue: remainingDue,
       monthlyAmount: billedTotal,
       studentName: order.studentName,
@@ -843,7 +919,7 @@ async function finalizeRazorpayOrderPaid(params: {
         schoolId: order.schoolId,
         studentId: order.studentId,
         studentName: order.studentName,
-        amount: order.expectedAmount,
+        amount: baseFeePaid,
         monthLabel: order.monthLabel || order.month,
         receiptNo,
         purpose: "fee_payment",

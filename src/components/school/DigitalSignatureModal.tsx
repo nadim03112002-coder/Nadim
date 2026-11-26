@@ -4,9 +4,10 @@ import {
   X, PenTool, Check, RotateCcw, Trash2, Upload, Shield, Award,
   CreditCard, FileText, CheckCircle2, AlertCircle, Sparkles, User, Download
 } from "lucide-react";
-import type { School } from "../../school-types";
+import type { School, SchoolSignatureRoutingConfig } from "../../school-types";
 import { updateSchool } from "../../school-firebase";
 import { uploadImageToImgBB } from "../../services/imgbbService";
+import { SignatureRoutingSettingsPanel } from "./SignatureRoutingSettingsPanel";
 
 export type DigitalSignatureTab = "principal" | "director" | "manager" | "accountant" | "exam_controller";
 
@@ -26,6 +27,7 @@ interface Props {
     accountantName?: string;
     examControllerSignatureUrl?: string;
     examControllerName?: string;
+    signatureRouting?: SchoolSignatureRoutingConfig;
   }) => void;
 }
 
@@ -52,6 +54,9 @@ export const DigitalSignatureModal: React.FC<Props> = ({
   const [accountantName, setAccountantName] = useState<string>(school?.accountantName || "");
   const [examControllerSig, setExamControllerSig] = useState<string>(school?.examControllerSignatureUrl || "");
   const [examControllerName, setExamControllerName] = useState<string>(school?.examControllerName || "Exam Controller");
+  const [signatureRouting, setSignatureRouting] = useState<SchoolSignatureRoutingConfig | undefined>(
+    school?.signatureRouting
+  );
 
   // Canvas drawing state
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -77,6 +82,7 @@ export const DigitalSignatureModal: React.FC<Props> = ({
       setAccountantName(school.accountantName || "");
       setExamControllerSig(school.examControllerSignatureUrl || "");
       setExamControllerName(school.examControllerName || "Exam Controller");
+      setSignatureRouting(school.signatureRouting);
     }
   }, [school]);
 
@@ -574,6 +580,7 @@ export const DigitalSignatureModal: React.FC<Props> = ({
         accountantName: trimmedAccountantName,
         examControllerSignatureUrl: finalExamController || "",
         examControllerName: trimmedExamName,
+        ...(signatureRouting ? { signatureRouting } : {}),
       });
 
       if (onSignaturesUpdated) {
@@ -587,6 +594,7 @@ export const DigitalSignatureModal: React.FC<Props> = ({
           accountantName: trimmedAccountantName,
           examControllerSignatureUrl: finalExamController,
           examControllerName: trimmedExamName,
+          signatureRouting,
         });
       }
 
@@ -983,27 +991,14 @@ export const DigitalSignatureModal: React.FC<Props> = ({
             </div>
           </div>
 
-          {/* Live Document Visualizer: Where this signature appears */}
-          <div className="pt-2 border-t border-slate-200 dark:border-slate-700 space-y-2">
-            <p className="text-[11px] font-black text-slate-500 uppercase tracking-wider flex items-center gap-1.5">
-              <Sparkles className="w-3.5 h-3.5 text-amber-500" />
-              <span>Kahan-Kahan Yeh Signature Automatic Lagega:</span>
-            </p>
-
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
-              {[
-                { title: "Student ID Card", icon: "🪪", desc: "Principal Signature Box" },
-                { title: "Fee Receipts", icon: "💰", desc: "Auth. Signatory on slip" },
-                { title: "Report Card / Marks", icon: "📊", desc: "Head of Institution" },
-                { title: "Certificates / TC", icon: "📜", desc: "Official Authorized Sign" },
-              ].map(item => (
-                <div key={item.title} className="p-2.5 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700">
-                  <div className="text-base mb-0.5">{item.icon}</div>
-                  <p className="font-bold text-slate-900 dark:text-white text-[11px] leading-tight">{item.title}</p>
-                  <p className="text-[10px] text-slate-500 mt-0.5">{item.desc}</p>
-                </div>
-              ))}
-            </div>
+          {/* Per-document Signature Routing Settings */}
+          <div className="pt-2 border-t border-slate-200 dark:border-slate-700">
+            <SignatureRoutingSettingsPanel
+              compact
+              value={signatureRouting}
+              saving={saving}
+              onChange={setSignatureRouting}
+            />
           </div>
         </div>
 

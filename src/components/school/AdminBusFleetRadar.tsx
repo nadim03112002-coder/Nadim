@@ -3,10 +3,10 @@ import React, { useState, useEffect } from "react";
 import {
   Bus, Navigation, MapPin, Gauge, Phone, ExternalLink,
   RefreshCw, Radio, CheckCircle2, Clock, AlertCircle,
-  Sliders, Shield, Play, Map as MapIcon, Plus, Copy, Link2, X, Home, Crosshair, QrCode, Edit3, Trash2, LocateFixed
+  Sliders, Shield, Play, Map as MapIcon, Plus, Copy, Link2, X, Home, Crosshair, QrCode, Edit3, Trash2, LocateFixed, Users, Search
 } from "lucide-react";
 import type { School, BusLiveLocation, SchoolStudent, SchoolBusRoute } from "../../school-types";
-import { shouldUseDemoForSchool, updateStudent } from "../../school-firebase";
+import { shouldUseDemoForSchool, updateStudent, getStudents, getLocalStudents } from "../../school-firebase";
 import { safeOpenExternalUrl } from "../../utils/safeBrowserActions";
 import { rtdb } from "../../firebase";
 import { ref as dbRef, onValue, set as rtdbSet } from "firebase/database";
@@ -21,6 +21,7 @@ import {
   buildMergedFleetList,
   getLocalRoutes,
   updateRouteStopCoordinate,
+  saveStudentStopLocationPin,
 } from "../../utils/schoolTransportStore";
 import {
   LiveBusGoogleMap,
@@ -144,6 +145,45 @@ const AdminBusFleetRadarInner: React.FC<Props> = ({
   const [selfPinInput, setSelfPinInput] = useState<string>("");
   const [showSelfPinBox, setShowSelfPinBox] = useState<boolean>(false);
   const [selectedDriverForIdCard, setSelectedDriverForIdCard] = useState<DriverIdCardData | null>(null);
+
+  // Admin Student-Stop Location Picker Modal state
+  const [schoolStudents, setSchoolStudents] = useState<SchoolStudent[]>(() =>
+    school?.id ? getLocalStudents(school.id) : []
+  );
+  const [showStudentPinModal, setShowStudentPinModal] = useState<boolean>(false);
+  const [studentSearch, setStudentSearch] = useState<string>("");
+  const [selectedPinStudentId, setSelectedPinStudentId] = useState<string>("");
+  const [customPinStudentName, setCustomPinStudentName] = useState<string>("");
+  const [studentStopInput, setStudentStopInput] = useState<string>("");
+  const [studentPinLinkInput, setStudentPinLinkInput] = useState<string>("");
+  const [savingStudentPin, setSavingStudentPin] = useState<boolean>(false);
+  const [pinningStudentTarget, setPinningStudentTarget] = useState<{
+    studentId: string;
+    studentName: string;
+    rollNo?: string;
+    className?: string;
+    busStop: string;
+    busRoute: string;
+    busNumber: string;
+    busId: string;
+  } | null>(null);
+
+  useEffect(() => {
+    if (!canManageFleet || !school?.id) return;
+    let active = true;
+    const cached = getLocalStudents(school.id);
+    if (cached.length > 0) setSchoolStudents(cached);
+    getStudents(school.id)
+      .then((list) => {
+        if (active && Array.isArray(list) && list.length > 0) {
+          setSchoolStudents(list);
+        }
+      })
+      .catch(() => {});
+    return () => {
+      active = false;
+    };
+  }, [canManageFleet, school?.id]);
 
   const buildDriverPortalUrl = (bus?: BusLiveLocation | null) => {
     const origin = typeof window !== "undefined" ? window.location.origin : "";
@@ -325,11 +365,10 @@ const AdminBusFleetRadarInner: React.FC<Props> = ({
     };
     window.addEventListener("nst_bus_location_update", handleBusUpdate);
 
-    // 3. Supabase Realtime + Firebase RTDB listeners (locations + configured fleet)
+    // 3. Firebase RTDB live GPS + fleet listeners
     let unsubRtdbLoc1: any = null;
     let unsubRtdbLoc2: any = null;
     let unsubRtdbFleet: any = null;
-    let unsubSbLoc: any = null;
     let unsubSbFleet: any = null;
 
     const mergeIncomingLocations = (busArr: BusLiveLocation[]) => {
@@ -389,11 +428,6 @@ const AdminBusFleetRadarInner: React.FC<Props> = ({
     };
 
     if (sid) {
-      unsubSbLoc = sbRtdbSubscribe(`school_bus_locations/${sid}`, (val) => {
-        if (val && typeof val === "object") {
-          mergeIncomingLocations(Object.values(val) as BusLiveLocation[]);
-        }
-      });
       unsubSbFleet = sbRtdbSubscribe(`schools/${sid}/bus_fleet`, (val) => {
         if (val && typeof val === "object") {
           mergeIncomingFleet(val);
@@ -427,7 +461,6 @@ const AdminBusFleetRadarInner: React.FC<Props> = ({
       window.removeEventListener("nst_bus_location_update", handleBusUpdate);
       window.removeEventListener("school-transport-updated", loadLocalBuses);
       clearInterval(interval);
-      if (typeof unsubSbLoc === "function") unsubSbLoc();
       if (typeof unsubSbFleet === "function") unsubSbFleet();
       if (typeof unsubRtdbLoc1 === "function") unsubRtdbLoc1();
       if (typeof unsubRtdbLoc2 === "function") unsubRtdbLoc2();
@@ -686,17 +719,85 @@ const AdminBusFleetRadarInner: React.FC<Props> = ({
 
   const mapHomePinOverlays = React.useMemo<MapHomePinOverlay[]>(() => {
     if (!showHomePinsOnMap) return [];
-    return proximityList.slice(0, 20).map((item) => ({
+    const distByStudentId = new Map(
+      proximityList.map((p) => [p.studentId, formatDistanceShort(p.distanceMeters)])
+    );
+    return homePins.slice(0, 30).map((item) => ({
       id: item.studentId,
-      label: item.studentName.split(" ")[0],
-      sublabel: `${item.studentName}${item.className ? ` (${item.className})` : ""}`,
+      label: item.busStop
+        ? `${item.studentName.split(" ")[0]} (${item.busStop})`
+        : item.studentName.split(" ")[0],
+      sublabel: `${item.studentName}${item.className ? ` (${item.className})` : ""}${item.busStop ? ` • Stop: ${item.busStop}` : ""}`,
       lat: item.homeLat,
       lng: item.homeLng,
-      distanceText: formatDistanceShort(item.distanceMeters),
+      distanceText: distByStudentId.get(item.studentId),
     }));
-  }, [showHomePinsOnMap, proximityList]);
+  }, [showHomePinsOnMap, homePins, proximityList]);
+
+  const handleSaveStudentStopLocation = async (
+    target: {
+      studentId: string;
+      studentName: string;
+      rollNo?: string;
+      className?: string;
+      busStop: string;
+      busRoute: string;
+      busNumber: string;
+      busId: string;
+    },
+    lat: number,
+    lng: number
+  ) => {
+    if (!school?.id) return;
+    setSavingStudentPin(true);
+    try {
+      const stopName = target.busStop.trim() || `${target.studentName.split(" ")[0]} Stop`;
+      const saved = await saveStudentStopLocationPin(
+        school.id,
+        {
+          studentId: target.studentId,
+          studentName: target.studentName,
+          rollNo: target.rollNo,
+          className: target.className,
+          busRoute: target.busRoute,
+          busNumber: target.busNumber,
+          busStop: stopName,
+          homeLat: lat,
+          homeLng: lng,
+          updatedAt: new Date().toISOString(),
+        },
+        { busId: target.busId, overwriteStopCoord: true }
+      );
+      if (saved) {
+        setHomePins((prev) => [saved, ...prev.filter((p) => p.studentId !== saved.studentId)]);
+      }
+      if (!target.studentId.startsWith("custom_stop_")) {
+        await updateStudent(school.id, target.studentId, {
+          usesBus: true,
+          homeLat: lat,
+          homeLng: lng,
+          busStop: stopName,
+          busRoute: target.busRoute,
+          busNumber: target.busNumber,
+        }).catch(() => {});
+      }
+      setRoutesList(getLocalRoutes(school.id));
+      toast.success(
+        `📍 ${target.studentName} (${stopName}) ki location save aur Stop Pin link ho gayi!`
+      );
+      setShowStudentPinModal(false);
+      setPinningStudentTarget(null);
+      setStudentPinLinkInput("");
+    } finally {
+      setSavingStudentPin(false);
+    }
+  };
 
   const handlePinStopOnMap = async (lat: number, lng: number) => {
+    if (pinningStudentTarget) {
+      await handleSaveStudentStopLocation(pinningStudentTarget, lat, lng);
+      return;
+    }
     if (!pinningStopName || !currentSelectedBus || !school?.id) return;
     const updated = await updateRouteStopCoordinate(
       school.id,
@@ -985,44 +1086,65 @@ const AdminBusFleetRadarInner: React.FC<Props> = ({
           </div>
 
           {/* Admin 1-Tap Stop Pinning Bar (Pin any Stop directly on the Map) */}
-          {canManageFleet && visualizerMode === "map" && selectedBusRouteObj && selectedBusRouteObj.stops.length > 0 && (
+          {canManageFleet && visualizerMode === "map" && (
             <div className="mt-3 p-2.5 rounded-2xl bg-slate-900/90 border border-slate-800 flex flex-wrap items-center gap-1.5 text-[11px]">
-              <span className="font-black text-amber-300 flex items-center gap-1 mr-1">
-                <LocateFixed size={13} /> Pin Route Stops:
-              </span>
-              {selectedBusRouteObj.stops.map((st, idx) => {
-                const hasCoords = Number.isFinite(Number(st.lat)) && Number.isFinite(Number(st.lng));
-                const isPicking = pinningStopName === st.stopName;
-                return (
-                  <button
-                    key={st.id || `${st.stopName}_${idx}`}
-                    type="button"
-                    onClick={() =>
-                      setPinningStopName((prev) => (prev === st.stopName ? null : st.stopName))
-                    }
-                    className={`px-2 py-1 rounded-lg font-bold border flex items-center gap-1 cursor-pointer transition ${
-                      isPicking
-                        ? "bg-amber-500 text-slate-950 border-white animate-pulse"
-                        : hasCoords
-                          ? "bg-emerald-950/60 text-emerald-300 border-emerald-500/40 hover:bg-emerald-900/60"
-                          : "bg-slate-950 text-slate-300 border-slate-700 hover:border-amber-500/50"
-                    }`}
-                    title={
-                      hasCoords
-                        ? `Pinned (${Number(st.lat).toFixed(4)}, ${Number(st.lng).toFixed(4)}) — क्लिक करके लोकेशन बदलें`
-                        : "क्लिक करें और फिर मैप पर इस स्टॉप की जगह टैप करें"
-                    }
-                  >
-                    <span>{idx + 1}. {st.stopName}</span>
-                    {hasCoords && <CheckCircle2 size={11} className="text-emerald-400" />}
-                  </button>
-                );
-              })}
-              {pinningStopName && (
+              {selectedBusRouteObj && selectedBusRouteObj.stops.length > 0 && (
+                <>
+                  <span className="font-black text-amber-300 flex items-center gap-1 mr-1">
+                    <LocateFixed size={13} /> Pin Route Stops:
+                  </span>
+                  {selectedBusRouteObj.stops.map((st, idx) => {
+                    const hasCoords = Number.isFinite(Number(st.lat)) && Number.isFinite(Number(st.lng));
+                    const isPicking = pinningStopName === st.stopName && !pinningStudentTarget;
+                    return (
+                      <button
+                        key={st.id || `${st.stopName}_${idx}`}
+                        type="button"
+                        onClick={() => {
+                          setPinningStudentTarget(null);
+                          setPinningStopName((prev) => (prev === st.stopName ? null : st.stopName));
+                        }}
+                        className={`px-2 py-1 rounded-lg font-bold border flex items-center gap-1 cursor-pointer transition ${
+                          isPicking
+                            ? "bg-amber-500 text-slate-950 border-white animate-pulse"
+                            : hasCoords
+                              ? "bg-emerald-950/60 text-emerald-300 border-emerald-500/40 hover:bg-emerald-900/60"
+                              : "bg-slate-950 text-slate-300 border-slate-700 hover:border-amber-500/50"
+                        }`}
+                        title={
+                          hasCoords
+                            ? `Pinned (${Number(st.lat).toFixed(4)}, ${Number(st.lng).toFixed(4)}) — क्लिक करके लोकेशन बदलें`
+                            : "क्लिक करें और फिर मैप पर इस स्टॉप की जगह टैप करें"
+                        }
+                      >
+                        <span>{idx + 1}. {st.stopName}</span>
+                        {hasCoords && <CheckCircle2 size={11} className="text-emerald-400" />}
+                      </button>
+                    );
+                  })}
+                </>
+              )}
+
+              <button
+                type="button"
+                onClick={() => {
+                  setPinningStopName(null);
+                  setPinningStudentTarget(null);
+                  setShowStudentPinModal(true);
+                }}
+                className="ml-auto px-2.5 py-1 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-bold border border-indigo-400/40 flex items-center gap-1 cursor-pointer"
+              >
+                <Plus size={12} /> Student Location (Stop) Add Karein
+              </button>
+
+              {(pinningStopName || pinningStudentTarget) && (
                 <button
                   type="button"
-                  onClick={() => setPinningStopName(null)}
-                  className="ml-auto px-2 py-1 rounded-lg bg-rose-950/70 text-rose-300 border border-rose-500/30 font-bold cursor-pointer"
+                  onClick={() => {
+                    setPinningStopName(null);
+                    setPinningStudentTarget(null);
+                  }}
+                  className="px-2 py-1 rounded-lg bg-rose-950/70 text-rose-300 border border-rose-500/30 font-bold cursor-pointer"
                 >
                   Cancel Pin
                 </button>
@@ -1042,7 +1164,11 @@ const AdminBusFleetRadarInner: React.FC<Props> = ({
                 heightClass="h-[440px] sm:h-[540px]"
                 schoolId={school?.id}
                 schoolCode={school?.code}
-                pinPickLabel={pinningStopName}
+                pinPickLabel={
+                  pinningStudentTarget
+                    ? `${pinningStudentTarget.studentName} (${pinningStudentTarget.busStop || "Stop"})`
+                    : pinningStopName
+                }
                 onPickLocation={handlePinStopOnMap}
                 showOpenInMapsButton={true}
               />
@@ -1121,21 +1247,64 @@ const AdminBusFleetRadarInner: React.FC<Props> = ({
 
           {/* LIVE FREE HOUSE PROXIMITY BOARD (Visible in BOTH Radar & Map modes) */}
           <div className="mb-3 rounded-2xl bg-slate-900/80 border border-slate-800 p-3 space-y-2">
-            <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center justify-between gap-2 flex-wrap">
               <h4 className="text-xs font-black text-emerald-300 flex items-center gap-1.5">
-                <Home size={14} /> किसके घर के पास गाड़ी पहुँची (Live Free Distance)
+                <Home size={14} /> किसके घर / स्टॉप के पास गाड़ी पहुँची (Student Stop Locations)
               </h4>
-              <span className="text-[10px] text-slate-400 font-mono">
-                {proximityList.length} Homes Linked
-              </span>
+              <div className="flex items-center gap-2">
+                <span className="text-[10px] text-slate-400 font-mono">
+                  {homePins.length} Locations
+                </span>
+                {canManageFleet && (
+                  <button
+                    type="button"
+                    onClick={() => setShowStudentPinModal(true)}
+                    className="px-2.5 py-1 rounded-lg bg-emerald-600/20 hover:bg-emerald-600/30 border border-emerald-500/40 text-emerald-300 text-[11px] font-bold flex items-center gap-1 cursor-pointer"
+                  >
+                    <Plus size={12} /> Add Student Location
+                  </button>
+                )}
+              </div>
             </div>
 
-            {proximityList.length === 0 ? (
+            {homePins.length === 0 ? (
               <p className="text-[11px] text-slate-400">
-                {homePins.length === 0
-                  ? "अभी किसी बच्चे के घर का GPS Pin सेव नहीं है। Student Bus Roster में 'Set Home Pin' या Student App से घर का लोकेशन सेव करें।"
-                  : "बस का लाइव GPS शुरू होते ही सभी बच्चों के घर की दूरी यहाँ मीटर/किमी में दिखेगी।"}
+                अभी किसी बच्चे/स्टॉप का GPS Pin सेव नहीं है। ऊपर <strong>+ Add Student Location</strong> दबाकर हर बच्चे की लोकेशन जोड़ें — वही उसका स्टॉप लोकेशन बन जाएगी।
               </p>
+            ) : proximityList.length === 0 ? (
+              <div className="max-h-40 overflow-y-auto space-y-1.5 pr-1">
+                {homePins.slice(0, 15).map((item) => (
+                  <div
+                    key={item.studentId}
+                    className="px-2.5 py-2 rounded-xl border bg-slate-950/80 border-slate-800 flex items-center justify-between gap-2 text-xs"
+                  >
+                    <div className="min-w-0">
+                      <p className="font-bold text-white truncate">
+                        {item.studentName}
+                        {item.className ? (
+                          <span className="text-[10px] text-slate-400 font-normal ml-1.5">
+                            ({item.className})
+                          </span>
+                        ) : null}
+                      </p>
+                      <p className="text-[10px] text-amber-300 truncate">
+                        📍 Stop: {item.busStop || "Home Stop"} • {item.homeLat.toFixed(4)}, {item.homeLng.toFixed(4)}
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        safeOpenExternalUrl(
+                          `https://www.google.com/maps?q=${item.homeLat},${item.homeLng}`
+                        )
+                      }
+                      className="text-[10px] text-indigo-300 hover:underline cursor-pointer shrink-0"
+                    >
+                      View Map ↗
+                    </button>
+                  </div>
+                ))}
+              </div>
             ) : (
               <div className="max-h-40 overflow-y-auto space-y-1.5 pr-1">
                 {proximityList.slice(0, 12).map((item) => (
@@ -1150,6 +1319,11 @@ const AdminBusFleetRadarInner: React.FC<Props> = ({
                     <div className="min-w-0">
                       <p className="font-bold text-white truncate">
                         {item.studentName}
+                        {item.busStop ? (
+                          <span className="text-[10px] text-amber-300 font-semibold ml-1.5">
+                            • {item.busStop}
+                          </span>
+                        ) : null}
                         {item.className ? (
                           <span className="text-[10px] text-slate-400 font-normal ml-1.5">
                             ({item.className})
@@ -1343,6 +1517,266 @@ const AdminBusFleetRadarInner: React.FC<Props> = ({
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* Add Student / Stop Location Modal */}
+      {showStudentPinModal && (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="w-full max-w-md bg-slate-900 border border-slate-800 rounded-3xl p-5 shadow-2xl text-white space-y-4">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-800">
+              <h3 className="text-base font-black text-white flex items-center gap-2">
+                <MapPin className="w-5 h-5 text-emerald-400" />
+                <span>Add Student Location (Stop Pin)</span>
+              </h3>
+              <button
+                type="button"
+                onClick={() => setShowStudentPinModal(false)}
+                className="text-slate-400 hover:text-white cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="space-y-3 text-xs">
+              <p className="text-[11px] text-slate-300 bg-emerald-950/40 border border-emerald-500/30 rounded-xl p-2.5">
+                Har student ki location add karein — ye automatically unke <strong>Bus Stop ki location</strong> ban jayegi aur Driver Console par <strong>Auto-Checkpoint</strong> dikhayegi.
+              </p>
+
+              {/* Search & Select Student */}
+              <div>
+                <label className="block text-slate-400 mb-1 font-bold">Student Chunein</label>
+                <div className="relative mb-1.5">
+                  <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-500" />
+                  <input
+                    type="text"
+                    value={studentSearch}
+                    onChange={(e) => setStudentSearch(e.target.value)}
+                    placeholder="Naam ya Roll No se khojein..."
+                    className="w-full pl-8 pr-3 py-1.5 rounded-xl bg-slate-950 border border-slate-700 text-white"
+                  />
+                </div>
+                <select
+                  value={selectedPinStudentId}
+                  onChange={(e) => {
+                    const id = e.target.value;
+                    setSelectedPinStudentId(id);
+                    const found = schoolStudents.find((s) => s.id === id);
+                    if (found) {
+                      setStudentStopInput(found.busStop || `${found.name.split(" ")[0]} Stop`);
+                    }
+                  }}
+                  className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-white"
+                >
+                  <option value="">-- Select Student (ya niche custom naam likhein) --</option>
+                  {schoolStudents
+                    .filter((st) => {
+                      const q = studentSearch.trim().toLowerCase();
+                      if (!q) return true;
+                      return (
+                        (st.name || "").toLowerCase().includes(q) ||
+                        (st.rollNo || "").toLowerCase().includes(q) ||
+                        (st.className || "").toLowerCase().includes(q)
+                      );
+                    })
+                    .slice(0, 60)
+                    .map((st) => (
+                      <option key={st.id} value={st.id}>
+                        {st.name} {st.className ? `(${st.className})` : ""}{" "}
+                        {st.busStop ? `• ${st.busStop}` : ""}
+                      </option>
+                    ))}
+                </select>
+              </div>
+
+              {!selectedPinStudentId && (
+                <div>
+                  <label className="block text-slate-400 mb-1 font-bold">
+                    Ya Direct Student Name Likhein
+                  </label>
+                  <input
+                    type="text"
+                    value={customPinStudentName}
+                    onChange={(e) => setCustomPinStudentName(e.target.value)}
+                    placeholder="e.g. Aarav Kumar (Class 4)"
+                    className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-white"
+                  />
+                </div>
+              )}
+
+              <div>
+                <label className="block text-slate-400 mb-1 font-bold">
+                  Stop / Chauk ka Naam (Auto-Checkpoint Name)
+                </label>
+                <input
+                  type="text"
+                  value={studentStopInput}
+                  onChange={(e) => setStudentStopInput(e.target.value)}
+                  placeholder="e.g. Nagra Chowk / Station Road"
+                  className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-white"
+                />
+                {selectedBusRouteObj && selectedBusRouteObj.stops.length > 0 && (
+                  <div className="flex flex-wrap gap-1 mt-1.5">
+                    {selectedBusRouteObj.stops.slice(0, 6).map((sp) => (
+                      <button
+                        key={sp.id || sp.stopName}
+                        type="button"
+                        onClick={() => setStudentStopInput(sp.stopName)}
+                        className="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-[10px] text-slate-300 cursor-pointer"
+                      >
+                        {sp.stopName}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* Location Input */}
+              <div className="space-y-2 pt-1 border-t border-slate-800">
+                <label className="block text-slate-300 font-bold">
+                  Location Set Karein (3 Aasan Tarike):
+                </label>
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={studentPinLinkInput}
+                    onChange={(e) => setStudentPinLinkInput(e.target.value)}
+                    placeholder="Google Maps link paste karein ya lat, lng"
+                    className="flex-1 px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-white"
+                  />
+                  <button
+                    type="button"
+                    disabled={savingStudentPin}
+                    onClick={async () => {
+                      const pickedStudent = schoolStudents.find(
+                        (s) => s.id === selectedPinStudentId
+                      );
+                      const studentName =
+                        pickedStudent?.name || customPinStudentName.trim();
+                      if (!studentName) {
+                        toast.error("Student chunein ya naam likhein.");
+                        return;
+                      }
+                      const parsed = await resolveGoogleMapsLocationInput(studentPinLinkInput);
+                      if (!parsed) {
+                        toast.error("Valid Google Maps link ya 'lat, lng' daalein.");
+                        return;
+                      }
+                      await handleSaveStudentStopLocation(
+                        {
+                          studentId:
+                            pickedStudent?.id || `custom_stop_${Date.now()}`,
+                          studentName,
+                          rollNo: pickedStudent?.rollNo,
+                          className: pickedStudent?.className,
+                          busStop:
+                            studentStopInput.trim() ||
+                            pickedStudent?.busStop ||
+                            `${studentName.split(" ")[0]} Stop`,
+                          busRoute: currentSelectedBus?.route || pickedStudent?.busRoute || "",
+                          busNumber: currentSelectedBus?.busNumber || pickedStudent?.busNumber || "",
+                          busId: currentSelectedBus?.busId || "",
+                        },
+                        parsed.lat,
+                        parsed.lng
+                      );
+                    }}
+                    className="px-3.5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold cursor-pointer shrink-0"
+                  >
+                    Save
+                  </button>
+                </div>
+
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    disabled={savingStudentPin}
+                    onClick={() => {
+                      const pickedStudent = schoolStudents.find(
+                        (s) => s.id === selectedPinStudentId
+                      );
+                      const studentName =
+                        pickedStudent?.name || customPinStudentName.trim();
+                      if (!studentName) {
+                        toast.error("Pehle Student chunein ya naam likhein.");
+                        return;
+                      }
+                      if (!navigator.geolocation) {
+                        toast.error("Device me GPS available nahi hai.");
+                        return;
+                      }
+                      navigator.geolocation.getCurrentPosition(
+                        (pos) => {
+                          void handleSaveStudentStopLocation(
+                            {
+                              studentId:
+                                pickedStudent?.id || `custom_stop_${Date.now()}`,
+                              studentName,
+                              rollNo: pickedStudent?.rollNo,
+                              className: pickedStudent?.className,
+                              busStop:
+                                studentStopInput.trim() ||
+                                pickedStudent?.busStop ||
+                                `${studentName.split(" ")[0]} Stop`,
+                              busRoute:
+                                currentSelectedBus?.route || pickedStudent?.busRoute || "",
+                              busNumber:
+                                currentSelectedBus?.busNumber || pickedStudent?.busNumber || "",
+                              busId: currentSelectedBus?.busId || "",
+                            },
+                            Number(pos.coords.latitude.toFixed(6)),
+                            Number(pos.coords.longitude.toFixed(6))
+                          );
+                        },
+                        (err) => toast.error(err?.message || "GPS permission allow karein."),
+                        { enableHighAccuracy: true, timeout: 10000 }
+                      );
+                    }}
+                    className="py-2 px-3 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-bold flex items-center justify-center gap-1.5 cursor-pointer"
+                  >
+                    <Crosshair size={13} /> My Current GPS
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const pickedStudent = schoolStudents.find(
+                        (s) => s.id === selectedPinStudentId
+                      );
+                      const studentName =
+                        pickedStudent?.name || customPinStudentName.trim();
+                      if (!studentName) {
+                        toast.error("Pehle Student chunein ya naam likhein.");
+                        return;
+                      }
+                      setPinningStudentTarget({
+                        studentId:
+                          pickedStudent?.id || `custom_stop_${Date.now()}`,
+                        studentName,
+                        rollNo: pickedStudent?.rollNo,
+                        className: pickedStudent?.className,
+                        busStop:
+                          studentStopInput.trim() ||
+                          pickedStudent?.busStop ||
+                          `${studentName.split(" ")[0]} Stop`,
+                        busRoute:
+                          currentSelectedBus?.route || pickedStudent?.busRoute || "",
+                        busNumber:
+                          currentSelectedBus?.busNumber || pickedStudent?.busNumber || "",
+                        busId: currentSelectedBus?.busId || "",
+                      });
+                      setShowStudentPinModal(false);
+                      setVisualizerMode("map");
+                      toast.info("Ab Live Map par us jagah tap karein jahan student ka stop hai!");
+                    }}
+                    className="py-2 px-3 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-black flex items-center justify-center gap-1.5 cursor-pointer"
+                  >
+                    <LocateFixed size={13} /> Map Par Tap Karein
+                  </button>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
       )}

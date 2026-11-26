@@ -37,6 +37,7 @@ import {
   resolveAccountantPermissions,
   resolveTeacherPermissions,
 } from "../../utils/schoolRolePermissions";
+import { UpiAlertReceiverSelector } from "./UpiAlertReceiverSelector";
 
 interface Props {
   school: School;
@@ -525,6 +526,14 @@ export const RolesPermissionsManager: React.FC<Props> = ({
           </div>
         </div>
       </div>
+
+      {/* BharatPe / UPI Screenshot Alert Receiver Assignment */}
+      <UpiAlertReceiverSelector
+        school={school}
+        schoolId={school.id}
+        teachers={localTeachers}
+        accountants={accountants}
+      />
 
       {/* Controls Bar: Role Type Tabs + Search + Filter */}
       <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-3 sm:p-4 flex flex-col md:flex-row md:items-center justify-between gap-3">

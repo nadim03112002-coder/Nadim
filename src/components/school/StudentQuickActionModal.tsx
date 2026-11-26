@@ -7,7 +7,8 @@ import {
   Clock, ArrowRight, ExternalLink, ReceiptText, Eye, Edit3, Save,
   FileText, BookOpen, GraduationCap, CheckCircle2, Copy, Sparkles, MapPin,
   Bus, HeartPulse, UserCheck, AlertTriangle, ArrowUpRight, CheckSquare, Sparkle, Tag,
-  Users, Activity, Star, RefreshCw, FileCheck, Download, Loader2
+  Users, Activity, Star, RefreshCw, FileCheck, Download, Loader2,
+  Crosshair, Link2
 } from "lucide-react";
 import {
   getStudentFees, getMonthlyAttendance, currentMonthStr, saveFee,
@@ -29,6 +30,8 @@ import { buildStudentIdCardQrUrl } from "../../utils/qrVerifyUrl";
 import { normalizeWhatsappOrPhone, sanitizeIndianPhoneInput } from "../../utils/schoolReferralSiblingEngine";
 import { exportHtmlDocumentToPdf } from "../../utils/universalPdfExport";
 import { EasyScanQrPanel } from "./EasyScanQrPanel";
+import { resolveGoogleMapsLocationInput, type StudentHomePin } from "../../utils/busProximity";
+import { saveStudentStopLocationPin, getLocalRoutes } from "../../utils/schoolTransportStore";
 
 export type StudentQuickActionTab =
   | "profile"
@@ -132,6 +135,9 @@ export const StudentQuickActionModal: React.FC<Props> = ({
   // Transport Details Form
   const [savingTransport, setSavingTransport] = useState(false);
   const [transportSavedToast, setTransportSavedToast] = useState(false);
+  const [stopPinInput, setStopPinInput] = useState("");
+  const [resolvingStopLink, setResolvingStopLink] = useState(false);
+  const [capturingStopGps, setCapturingStopGps] = useState(false);
   const [transportForm, setTransportForm] = useState({
     usesBus: false,
     busNumber: "",
@@ -144,6 +150,9 @@ export const StudentQuickActionModal: React.FC<Props> = ({
     conductorPhone: "",
     transportDistanceKm: "",
     transportModeIfNo: "Walking" as "Walking" | "Guardian",
+    homeLat: undefined as number | undefined,
+    homeLng: undefined as number | undefined,
+    homeAddress: "",
   });
 
   // Remarks & Medical Sensitivity Form
@@ -197,11 +206,31 @@ export const StudentQuickActionModal: React.FC<Props> = ({
         category: student.category || "General",
       });
 
+      let cachedPin: StudentHomePin | undefined;
+      try {
+        if (school?.id) {
+          const allPins = JSON.parse(localStorage.getItem(`nst_student_home_pins_${school.id}`) || "{}") || {};
+          cachedPin = allPins[student.id];
+        }
+      } catch {}
+      const resolvedLat =
+        typeof (student as any).homeLat === "number"
+          ? (student as any).homeLat
+          : typeof cachedPin?.homeLat === "number"
+            ? cachedPin.homeLat
+            : undefined;
+      const resolvedLng =
+        typeof (student as any).homeLng === "number"
+          ? (student as any).homeLng
+          : typeof cachedPin?.homeLng === "number"
+            ? cachedPin.homeLng
+            : undefined;
+
       setTransportForm({
         usesBus: Boolean(student.usesBus || student.busFee || student.busRoute),
-        busNumber: (student as any).busNumber || "",
-        busRoute: student.busRoute || "",
-        busStop: (student as any).busStop || student.address || "",
+        busNumber: (student as any).busNumber || cachedPin?.busNumber || "",
+        busRoute: student.busRoute || cachedPin?.busRoute || "",
+        busStop: (student as any).busStop || cachedPin?.busStop || student.address || "",
         busFee: student.busFee || 0,
         driverName: (student as any).driverName || "",
         driverPhone: (student as any).driverPhone || "",
@@ -209,7 +238,15 @@ export const StudentQuickActionModal: React.FC<Props> = ({
         conductorPhone: (student as any).conductorPhone || "",
         transportDistanceKm: String((student as any).transportDistanceKm || ""),
         transportModeIfNo: (student as any).transportModeIfNo || "Walking",
+        homeLat: resolvedLat,
+        homeLng: resolvedLng,
+        homeAddress: (student as any).homeAddress || cachedPin?.homeAddress || student.address || "",
       });
+      setStopPinInput(
+        typeof resolvedLat === "number" && typeof resolvedLng === "number"
+          ? `${resolvedLat}, ${resolvedLng}`
+          : ""
+      );
 
       setRemarksForm({
         homeworkStatus: (student as any).homeworkStatus || "नियमित — सभी गृहकार्य पूर्ण (Regular)",
@@ -345,12 +382,71 @@ export const StudentQuickActionModal: React.FC<Props> = ({
     }
   };
 
+  const handleApplyStopLink = async () => {
+    if (!stopPinInput.trim()) {
+      toast.error("Google Maps link ya 'lat, lng' daalein (jaise: 28.4595, 77.0266)");
+      return;
+    }
+    setResolvingStopLink(true);
+    try {
+      const parsed = await resolveGoogleMapsLocationInput(stopPinInput);
+      if (!parsed) {
+        toast.error("Valid Google Maps link ya 'lat, lng' daalein (jaise: 28.4595, 77.0266)");
+        return;
+      }
+      setTransportForm((prev) => ({
+        ...prev,
+        usesBus: true,
+        homeLat: parsed.lat,
+        homeLng: parsed.lng,
+      }));
+      setStopPinInput(`${parsed.lat}, ${parsed.lng}`);
+      toast.success(`Stop GPS (${parsed.lat.toFixed(4)}, ${parsed.lng.toFixed(4)}) set ho gaya — Save dabakar confirm karein.`);
+    } finally {
+      setResolvingStopLink(false);
+    }
+  };
+
+  const handleCaptureStopGps = () => {
+    if (!navigator.geolocation) {
+      toast.error("Device me GPS supported nahi hai.");
+      return;
+    }
+    setCapturingStopGps(true);
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        const lat = Number(pos.coords.latitude.toFixed(6));
+        const lng = Number(pos.coords.longitude.toFixed(6));
+        setTransportForm((prev) => ({
+          ...prev,
+          usesBus: true,
+          homeLat: lat,
+          homeLng: lng,
+        }));
+        setStopPinInput(`${lat}, ${lng}`);
+        setCapturingStopGps(false);
+        toast.success(`Live GPS (${lat.toFixed(4)}, ${lng.toFixed(4)}) capture ho gaya!`);
+      },
+      (err) => {
+        setCapturingStopGps(false);
+        toast.error(err?.message || "GPS location capture nahi ho saki.");
+      },
+      { enableHighAccuracy: true, timeout: 10000 }
+    );
+  };
+
   const handleSaveTransport = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!school?.id || !activeStudent?.id) return;
     setSavingTransport(true);
     try {
-      const updates = {
+      const hasCoords =
+        typeof transportForm.homeLat === "number" &&
+        typeof transportForm.homeLng === "number" &&
+        Number.isFinite(transportForm.homeLat) &&
+        Number.isFinite(transportForm.homeLng);
+
+      const updates: any = {
         usesBus: transportForm.usesBus,
         busNumber: transportForm.busNumber.trim(),
         busRoute: transportForm.busRoute.trim(),
@@ -363,7 +459,43 @@ export const StudentQuickActionModal: React.FC<Props> = ({
         transportDistanceKm: transportForm.transportDistanceKm.trim(),
         transportModeIfNo: transportForm.transportModeIfNo,
       };
+
+      if (hasCoords) {
+        updates.homeLat = transportForm.homeLat;
+        updates.homeLng = transportForm.homeLng;
+        updates.homeAddress = (transportForm.homeAddress || transportForm.busStop || activeStudent.address || "").trim();
+      }
+
       await updateStudent(school.id, activeStudent.id, updates);
+
+      if (hasCoords) {
+        const routesList = getLocalRoutes(school.id);
+        const routeLow = updates.busRoute.toLowerCase();
+        const busLow = updates.busNumber.toLowerCase();
+        const matchedRoute = routesList.find(
+          (r) =>
+            (routeLow && (r.routeName.toLowerCase() === routeLow || r.routeName.toLowerCase().includes(routeLow))) ||
+            (busLow && r.busNumber.toLowerCase() === busLow)
+        );
+        const pinRecord: StudentHomePin = {
+          studentId: activeStudent.id,
+          studentName: activeStudent.name,
+          rollNo: activeStudent.rollNo,
+          className: activeStudent.className || "",
+          busRoute: updates.busRoute || matchedRoute?.routeName || "",
+          busStop: updates.busStop || `${(activeStudent.name || "Student").split(" ")[0]} Stop`,
+          busNumber: updates.busNumber || matchedRoute?.busNumber || "",
+          homeLat: transportForm.homeLat!,
+          homeLng: transportForm.homeLng!,
+          homeAddress: updates.homeAddress || "",
+          updatedAt: new Date().toISOString(),
+        };
+        await saveStudentStopLocationPin(school.id, pinRecord, {
+          busId: matchedRoute?.busId,
+          overwriteStopCoord: true,
+        });
+      }
+
       setActiveStudent(prev => prev ? { ...prev, ...updates } : prev);
       setTransportSavedToast(true);
       setTimeout(() => setTransportSavedToast(false), 2500);
@@ -2224,6 +2356,54 @@ export const StudentQuickActionModal: React.FC<Props> = ({
                     className="w-full px-3 py-2 border rounded-xl bg-white dark:bg-slate-700 dark:border-slate-600 font-medium"
                     placeholder="e.g. योगी बाबा पेट्रोल पंप के पास"
                   />
+                </div>
+
+                <div className="sm:col-span-2 p-3 rounded-xl bg-teal-50/70 dark:bg-teal-950/30 border border-teal-200 dark:border-teal-800 space-y-2">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div>
+                      <p className="font-black text-teal-900 dark:text-teal-200 flex items-center gap-1.5">
+                        <MapPin className="w-3.5 h-3.5 text-teal-600 dark:text-teal-400" />
+                        स्टूडेंट / स्टॉप GPS लोकेशन (Auto-Checkpoint ke liye)
+                      </p>
+                      <p className="text-[11px] text-teal-700 dark:text-teal-300/80">
+                        Yahan add ki gayi student location automatically unke Bus Stop checkpoint se link ho jayegi.
+                      </p>
+                    </div>
+                    {typeof transportForm.homeLat === "number" && typeof transportForm.homeLng === "number" && (
+                      <span className="px-2 py-0.5 rounded-full bg-emerald-100 dark:bg-emerald-900/50 text-emerald-700 dark:text-emerald-300 font-mono text-[10px] font-bold">
+                        Pin: {transportForm.homeLat.toFixed(4)}, {transportForm.homeLng.toFixed(4)}
+                      </span>
+                    )}
+                  </div>
+                  <div className="flex flex-col sm:flex-row gap-2">
+                    <input
+                      type="text"
+                      value={stopPinInput}
+                      onChange={e => setStopPinInput(e.target.value)}
+                      placeholder="Google Maps share link ya lat, lng (e.g. 28.4595, 77.0266)"
+                      className="flex-1 px-3 py-2 border rounded-xl bg-white dark:bg-slate-800 dark:border-slate-600 font-medium text-xs"
+                    />
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      <button
+                        type="button"
+                        onClick={handleApplyStopLink}
+                        disabled={resolvingStopLink}
+                        className="px-3 py-2 rounded-xl bg-teal-600 hover:bg-teal-500 text-white font-bold text-[11px] flex items-center gap-1 cursor-pointer disabled:opacity-50"
+                      >
+                        {resolvingStopLink ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Link2 className="w-3.5 h-3.5" />}
+                        Link Set
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleCaptureStopGps}
+                        disabled={capturingStopGps}
+                        className="px-3 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-[11px] flex items-center gap-1 cursor-pointer disabled:opacity-50"
+                      >
+                        {capturingStopGps ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Crosshair className="w-3.5 h-3.5" />}
+                        My GPS
+                      </button>
+                    </div>
+                  </div>
                 </div>
 
                 <div className="space-y-1">

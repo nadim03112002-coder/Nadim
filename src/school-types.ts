@@ -224,6 +224,50 @@ export const isSchoolEliteCurriculum = (school?: School | null): boolean => {
 export const isSchoolElitePlan = (school?: School | null): boolean =>
   isSchoolEliteCurriculum(school);
 
+export type SchoolPlanTierName = "Lite" | "Elite" | "Ultra";
+
+/**
+ * Resolves the active subscription tier cleanly (without assuming Elite when school is null).
+ * - Ultra (whitelabel_5000 / isUltra): 4 concurrent ID-card account holders
+ * - Elite (enterprise_2000 / full / isElite): 2 concurrent ID-card account holders
+ * - Lite (starter_200 / growth_500 / lite / default): 1 ID-card account holder
+ */
+export const getSchoolPlanTierName = (school?: Partial<School> | null): SchoolPlanTierName => {
+  if (!school) return "Lite";
+  const sub = school.subscription;
+  if (
+    sub?.tier === "whitelabel_5000" ||
+    (school as any).isUltra === true ||
+    (typeof sub?.tier === "string" && sub.tier.toLowerCase().includes("ultra"))
+  ) {
+    return "Ultra";
+  }
+  if (
+    school.id === "demo_school" ||
+    school.id?.startsWith("demo") ||
+    school.id?.includes("demo") ||
+    (school as any).isDemo === true ||
+    (school as any).isElite === true ||
+    (school as any).customCurriculumEnabled === true ||
+    sub?.isElite === true ||
+    sub?.customCurriculumEnabled === true ||
+    sub?.tier === "enterprise_2000" ||
+    sub?.tier === "full" ||
+    (typeof sub?.tier === "string" && sub.tier.toLowerCase().includes("elite"))
+  ) {
+    return "Elite";
+  }
+  if (isSchoolEliteCurriculum(school as School)) return "Elite";
+  return "Lite";
+};
+
+export const getSchoolStudentAccountLimit = (school?: Partial<School> | null): 1 | 2 | 4 => {
+  const tier = getSchoolPlanTierName(school);
+  if (tier === "Ultra") return 4;
+  if (tier === "Elite") return 2;
+  return 1;
+};
+
 // Custom Website CMS (Banner, Principal/Teacher Photos, Memories Gallery) is exclusive to Elite & White-Label schools; Lite gets Default Website only
 export const hasCustomWebsiteCmsAccess = (school?: School | null): boolean =>
   isSchoolEliteCurriculum(school);
@@ -347,6 +391,125 @@ export const schoolPrintFieldEnabled = (
   field: SchoolPrintField,
 ) => (settings?.[document] ?? DEFAULT_SCHOOL_DOCUMENT_PRINT_FIELDS[document]).includes(field);
 
+export type SchoolSignatureRole =
+  | "principal"
+  | "manager"
+  | "director"
+  | "accountant"
+  | "exam_controller";
+
+export type FeeSlipSignatoryOption = "manager" | "principal" | "accountant" | "director";
+export type FeeReceiptSignatoryOption =
+  | "collector"
+  | "collector_and_principal"
+  | "accountant"
+  | "manager"
+  | "principal"
+  | "director";
+export type AdmissionReceiptSignatoryOption =
+  | "collector_and_principal"
+  | "collector"
+  | "manager"
+  | "principal"
+  | "director";
+export type StandardDocSignatoryOption = "principal" | "manager" | "director";
+export type ExamDocSignatoryOption = "principal" | "manager" | "director" | "exam_controller";
+
+export interface SchoolSignatureRoutingConfig {
+  feeSlip?: FeeSlipSignatoryOption;
+  feeReceipt?: FeeReceiptSignatoryOption;
+  admissionReceipt?: AdmissionReceiptSignatoryOption;
+  idCard?: StandardDocSignatoryOption;
+  certificate?: StandardDocSignatoryOption;
+  admitCard?: ExamDocSignatoryOption;
+  marksheet?: ExamDocSignatoryOption;
+}
+
+export const DEFAULT_SCHOOL_SIGNATURE_ROUTING: Required<SchoolSignatureRoutingConfig> = {
+  feeSlip: "manager",
+  feeReceipt: "collector",
+  admissionReceipt: "collector_and_principal",
+  idCard: "principal",
+  certificate: "principal",
+  admitCard: "principal",
+  marksheet: "principal",
+};
+
+export type DpsSignatoryMode =
+  | "both"
+  | "cashier_only"
+  | "principal_only"
+  | "manager_only"
+  | "accountant_only"
+  | "director_only";
+
+export const mapFeeSlipRoutingToSignatoryMode = (
+  routing?: SchoolSignatureRoutingConfig
+): DpsSignatoryMode => {
+  const opt = routing?.feeSlip || DEFAULT_SCHOOL_SIGNATURE_ROUTING.feeSlip;
+  if (opt === "principal") return "principal_only";
+  if (opt === "accountant") return "accountant_only";
+  if (opt === "director") return "director_only";
+  return "manager_only";
+};
+
+export const mapFeeReceiptRoutingToSignatoryMode = (
+  routing?: SchoolSignatureRoutingConfig
+): DpsSignatoryMode => {
+  const opt = routing?.feeReceipt || DEFAULT_SCHOOL_SIGNATURE_ROUTING.feeReceipt;
+  if (opt === "collector_and_principal") return "both";
+  if (opt === "accountant") return "accountant_only";
+  if (opt === "manager") return "manager_only";
+  if (opt === "principal") return "principal_only";
+  if (opt === "director") return "director_only";
+  return "cashier_only";
+};
+
+export const resolveSchoolSignatory = (
+  school: Partial<School> | undefined | null,
+  role: SchoolSignatureRole = "principal",
+  fallbackTitle?: string
+): { role: SchoolSignatureRole; roleLabel: string; name: string; signatureUrl: string } => {
+  if (role === "manager") {
+    return {
+      role,
+      roleLabel: "Manager",
+      name: school?.managerName || "Manager",
+      signatureUrl: school?.managerSignatureUrl || "",
+    };
+  }
+  if (role === "director") {
+    return {
+      role,
+      roleLabel: "Director",
+      name: school?.directorName || "Director",
+      signatureUrl: school?.directorSignatureUrl || "",
+    };
+  }
+  if (role === "accountant") {
+    return {
+      role,
+      roleLabel: "Accountant",
+      name: school?.accountantName || "Accountant",
+      signatureUrl: school?.accountantSignatureUrl || "",
+    };
+  }
+  if (role === "exam_controller") {
+    return {
+      role,
+      roleLabel: "Exam Controller",
+      name: school?.examControllerName || "Exam Controller",
+      signatureUrl: school?.examControllerSignatureUrl || "",
+    };
+  }
+  return {
+    role: "principal",
+    roleLabel: fallbackTitle || "Principal",
+    name: school?.principalName || "Principal",
+    signatureUrl: school?.principalSignatureUrl || "",
+  };
+};
+
 export interface School {
   id: string;
   name: string;
@@ -385,10 +548,12 @@ export interface School {
   apkUpdateNotes?: string; // Short release notes shown inside in-app update alert
   customFields?: SchoolProfileCustomField[];
   documentPrintFields?: SchoolDocumentPrintFields;
+  signatureRouting?: SchoolSignatureRoutingConfig;
   documentTemplates?: any; // School-level template selections, color customizations & custom templates for ID Card, Admit Card, Marksheet, Fee Slip
   idCardFieldSettings?: Record<string, boolean>;
   admissionFieldSettings?: AdmissionFormFieldSettings;
   upiId?: string; // Official School UPI ID for Scan & Pay on Fee Due Slips
+  upiAlertReceivers?: UpiAlertReceiverTarget[]; // Admin-selected staff who receive BharatPe/UPI screenshot popups & alerts
   tagline?: string; // Short tagline shown on school card
   bannerColor?: string; // Hex color for card banner
   subscription: SchoolSubscription;
@@ -401,6 +566,7 @@ export interface School {
   lockCode?: string;
   lockCodeActive?: boolean;
   // Centralized School Uninstall Guard Security PIN (SHA-256 hash set by School Admin, synced to all school devices)
+  uninstallPinRequired?: boolean;
   uninstallGuardPinHash?: string;
   uninstallGuardPinUpdatedAt?: string;
   // School-level lock — set by super admin, blocks all students from logging in
@@ -865,6 +1031,14 @@ export interface TeacherSalaryStructure {
   updatedAt?: string;
 }
 
+export interface StudentIdCardLinkSlot {
+  holderKey: string;
+  holderUid: string;
+  deviceId?: string;
+  holderLabel?: string;
+  linkedAt: string;
+}
+
 export interface SchoolStudent {
   id: string; // Firebase Auth UID
   schoolId: string;
@@ -908,6 +1082,9 @@ export interface SchoolStudent {
   createdAt: string;
   photoUrl?: string; // Cloud CDN URL of student photo
   iicUid?: string; // linked IIC account UID
+  linkedHolders?: StudentIdCardLinkSlot[]; // Ordered active ID card holders (Lite=1, Elite=2, Ultra=4)
+  linkLimit?: number;
+  slotUpdatedAt?: string;
   usesBus?: boolean; // whether student avails school bus / transport
   busRoute?: string; // bus route or stop name
   busStop?: string; // boarding / drop stop
@@ -1005,6 +1182,13 @@ export interface SchoolStudent {
   waivedFeeHeads?: Record<string, WaivedFeeHeadRecord>;
   paidCampaignIds?: string[];
   postAdmissionPurchases?: PostAdmissionPurchaseRecord[];
+  // Digital Campus Onboarding, Verification Token & Parent Acknowledgement
+  verificationToken?: string;
+  qrIssuedAt?: string;
+  qrExpiresAt?: string;
+  welcomeAcknowledgedAt?: string;
+  welcomeAcknowledgedBy?: string;
+  activationHistory?: StudentActivationEvent[];
 }
 
 // ── CANONICAL CLASS & STREAM CONFIGURATION ──────────────────────────────────
@@ -1278,6 +1462,10 @@ export interface MonthlyFee {
   razorpayOrderId?: string;
   razorpayPaymentId?: string;
   verifiedViaWebhook?: boolean;
+  convenienceFee?: number;
+  convenienceFeePct?: number;
+  gatewayTotalPaid?: number;
+  fastPay?: boolean;
   cancelled?: boolean;
   updatedAt?: string;
   note?: string;
@@ -1314,6 +1502,13 @@ export interface MonthlyFee {
     number: string;
     onlineAmount?: number;
     offlineAmount?: number;
+    onlinePaid?: number;
+    cashPaid?: number;
+    discountAmount?: number;
+    transactionId?: string;
+    razorpayOrderId?: string;
+    convenienceFee?: number;
+    totalCharged?: number;
   };
   items?: {
     id: string;
@@ -1798,6 +1993,7 @@ export interface AdmissionApplication {
   assignedRollNo?: string;
   assignedSection?: string;
   paymentScreenshotUrl?: string;
+  paymentScreenshotHash?: string;
   transactionRef?: string;
   paymentMode?: string;
   paymentSubmittedAt?: string;
@@ -2287,6 +2483,21 @@ export interface NstaFeeSlipData {
   particulars?: { head: string; amount: number }[];
 }
 
+export interface StudentActivationEvent {
+  step:
+    | "ADMISSION_APPROVED"
+    | "DIGITAL_ID_CREATED"
+    | "QR_VERIFICATION_ACTIVE"
+    | "WELCOME_LETTER_SENT"
+    | "PARENT_ACKNOWLEDGED"
+    | "SESSION_RENEWED"
+    | "QR_TOKEN_REVOKED";
+  label: string;
+  timestamp: string;
+  actor?: string;
+  details?: string;
+}
+
 export interface NstaWelcomeData {
   studentId: string;
   studentName: string;
@@ -2294,12 +2505,28 @@ export interface NstaWelcomeData {
   rollNo?: string;
   classId?: string;
   className?: string;
+  schoolId?: string;
   schoolName: string;
   schoolLogo?: string;
+  schoolAddress?: string;
+  schoolPhone?: string;
   fatherName?: string;
   mobile?: string;
   session?: string;
   verificationBadge?: string;
+  verificationToken?: string;
+  qrIssuedAt?: string;
+  qrExpiresAt?: string;
+  qrStatus?: "ACTIVE" | "EXPIRED" | "REVOKED";
+  principalName?: string;
+  principalSignatureUrl?: string;
+  managerName?: string;
+  managerSignatureUrl?: string;
+  messageId?: string;
+  acknowledgedAt?: string;
+  acknowledgedBy?: string;
+  acknowledgedRole?: "PARENT" | "STUDENT" | "ADMIN";
+  activationHistory?: StudentActivationEvent[];
   issuedAt: string;
 }
 
@@ -3056,6 +3283,28 @@ export interface SimCallLogRecord {
   syncedAt: string;
 }
 
+export interface UpiAlertReceiverTarget {
+  id: string; // "admin" | accountantId | teacherId
+  role: "admin" | "accountant" | "teacher";
+  name: string;
+  phone?: string;
+}
+
+export interface UpiFamilyAllocationItem {
+  studentId: string;
+  studentName: string;
+  classId: string;
+  className?: string;
+  rollNo?: string;
+  month: string;
+  monthLabel?: string;
+  billedAmount: number;
+  isFreeEducation?: boolean;
+  allocatedAmount?: number;
+  receiptNo?: string;
+  remainingDue?: number;
+}
+
 export interface UpiPaymentProofRecord {
   id: string;
   schoolId: string;
@@ -3070,15 +3319,24 @@ export interface UpiPaymentProofRecord {
   month: string;
   monthLabel?: string;
   amount: number;
+  billedAmount?: number;
+  confirmedAmount?: number;
+  paidTime?: string;
   utrNumber: string;
   screenshotUrl: string;
+  screenshotHash?: string;
   note?: string;
   status: "PENDING" | "APPROVED" | "REJECTED";
   submittedAt: string;
   reviewedAt?: string;
   reviewedBy?: string;
+  reviewedByRole?: "admin" | "accountant" | "teacher" | "manager";
+  reviewedById?: string;
   rejectionReason?: string;
   receiptNo?: string;
+  isFamilyCombined?: boolean;
+  familyReceiptNo?: string;
+  familyAllocations?: UpiFamilyAllocationItem[];
   createdAt?: string;
 }
 

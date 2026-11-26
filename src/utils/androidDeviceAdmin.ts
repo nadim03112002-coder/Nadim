@@ -6,6 +6,7 @@ export interface AndroidDeviceAdminStatus {
   isUninstallBlocked: boolean;
   isAccessibilityGuardEnabled: boolean;
   isAccessibilityGuardLocked: boolean;
+  uninstallPinRequired: boolean;
   hasNativeAdminPin: boolean;
   tempUnlockRemainingSec: number;
   enabledAt: number;
@@ -28,6 +29,8 @@ interface LifeMakerDeviceAdminBridge {
   isAccessibilityGuardEnabled?: () => boolean;
   openAccessibilityGuardSettings?: () => void;
   setAccessibilityGuardLocked?: (locked: boolean) => boolean;
+  setUninstallPinRequired?: (required: boolean) => boolean;
+  isUninstallPinRequired?: () => boolean;
   unlockUninstallProtectionTemporarily?: (seconds: number) => boolean;
   syncAdminPinHash?: (pinHash: string) => void;
   hasNativeAdminPin?: () => boolean;
@@ -39,10 +42,58 @@ const DEFAULT_SHORT_RECEIVER = "app.lifemaker.school/.SchoolDeviceAdminReceiver"
 const DEFAULT_RECEIVER = "app.lifemaker.school/app.lifemaker.school.SchoolDeviceAdminReceiver";
 const ADMIN_PIN_HASH_STORAGE_KEY = "lm_device_admin_pin_hash_v1";
 const SCHOOL_PIN_HASH_PREFIX = "lm_school_admin_pin_hash_";
+const UNINSTALL_PIN_REQUIRED_STORAGE_KEY = "lm_uninstall_pin_required_v1";
+const SCHOOL_PIN_REQUIRED_PREFIX = "lm_school_uninstall_pin_required_";
 
 function getBridge(): LifeMakerDeviceAdminBridge | undefined {
   if (typeof window === "undefined") return undefined;
   return (window as unknown as { LifeMakerAndroid?: LifeMakerDeviceAdminBridge }).LifeMakerAndroid;
+}
+
+export function getCachedUninstallPinRequired(schoolId?: string): boolean {
+  if (typeof window === "undefined") return true;
+  try {
+    if (schoolId) {
+      const schVal = localStorage.getItem(`${SCHOOL_PIN_REQUIRED_PREFIX}${schoolId}`);
+      if (schVal === "false") return false;
+      if (schVal === "true") return true;
+    }
+    const globalVal = localStorage.getItem(UNINSTALL_PIN_REQUIRED_STORAGE_KEY);
+    if (globalVal === "false") return false;
+    return true;
+  } catch {
+    return true;
+  }
+}
+
+export function syncUninstallPinRequiredToNative(
+  required: boolean,
+  schoolId?: string,
+  options?: { syncGuardLock?: boolean }
+): void {
+  const bridge = getBridge();
+  const prevRequired = getCachedUninstallPinRequired(schoolId);
+  try {
+    localStorage.setItem(UNINSTALL_PIN_REQUIRED_STORAGE_KEY, required ? "true" : "false");
+    if (schoolId) {
+      localStorage.setItem(`${SCHOOL_PIN_REQUIRED_PREFIX}${schoolId}`, required ? "true" : "false");
+    }
+  } catch {}
+
+  try {
+    bridge?.setUninstallPinRequired?.(required);
+  } catch {}
+
+  // Backward-compatible sync for APKs using isAccessibilityGuardLocked:
+  // When OFF -> unlock guard so Accessibility Service never shows the PIN prompt.
+  // When ON  -> lock guard on explicit toggle or OFF->ON transition (without clobbering active temp unlock).
+  try {
+    if (!required) {
+      bridge?.setAccessibilityGuardLocked?.(false);
+    } else if (options?.syncGuardLock || !prevRequired) {
+      bridge?.setAccessibilityGuardLocked?.(true);
+    }
+  } catch {}
 }
 
 export function getCachedSchoolAdminPinHash(schoolId?: string): string {
@@ -94,11 +145,16 @@ export function syncSchoolAdminPinHashToNative(
 
 export function syncStoredAdminPinToNative(): void {
   const bridge = getBridge();
-  if (!bridge || typeof bridge.syncAdminPinHash !== "function") return;
+  if (!bridge) return;
   try {
-    const stored = localStorage.getItem(ADMIN_PIN_HASH_STORAGE_KEY);
-    if (stored && stored.trim().length > 0) {
-      bridge.syncAdminPinHash(stored.trim());
+    if (typeof bridge.syncAdminPinHash === "function") {
+      const stored = localStorage.getItem(ADMIN_PIN_HASH_STORAGE_KEY);
+      if (stored && stored.trim().length > 0) {
+        bridge.syncAdminPinHash(stored.trim());
+      }
+    }
+    if (typeof bridge.setUninstallPinRequired === "function") {
+      bridge.setUninstallPinRequired(getCachedUninstallPinRequired());
     }
   } catch {}
 }
@@ -131,6 +187,7 @@ export function getAndroidDeviceAdminStatus(): AndroidDeviceAdminStatus {
   const bridge = getBridge();
   const isNative = Boolean(bridge && (bridge.isNativeApp?.() ?? true));
 
+  const cachedPinRequired = getCachedUninstallPinRequired();
   const fallback: AndroidDeviceAdminStatus = {
     isNativeApp: isNative,
     supported: false,
@@ -138,7 +195,8 @@ export function getAndroidDeviceAdminStatus(): AndroidDeviceAdminStatus {
     isDeviceOwner: false,
     isUninstallBlocked: false,
     isAccessibilityGuardEnabled: false,
-    isAccessibilityGuardLocked: true,
+    isAccessibilityGuardLocked: cachedPinRequired,
+    uninstallPinRequired: cachedPinRequired,
     hasNativeAdminPin: false,
     tempUnlockRemainingSec: 0,
     enabledAt: 0,
@@ -159,6 +217,14 @@ export function getAndroidDeviceAdminStatus(): AndroidDeviceAdminStatus {
     if (!raw) return fallback;
     const parsed = JSON.parse(raw) as Partial<AndroidDeviceAdminStatus>;
     const shortComp = String(parsed.shortReceiverComponent || DEFAULT_SHORT_RECEIVER);
+    const guardLocked =
+      parsed.isAccessibilityGuardLocked === undefined
+        ? true
+        : Boolean(parsed.isAccessibilityGuardLocked);
+    const pinRequired =
+      parsed.uninstallPinRequired === undefined
+        ? cachedPinRequired && guardLocked
+        : Boolean(parsed.uninstallPinRequired);
     return {
       isNativeApp: isNative,
       supported: Boolean(parsed.supported),
@@ -166,10 +232,8 @@ export function getAndroidDeviceAdminStatus(): AndroidDeviceAdminStatus {
       isDeviceOwner: Boolean(parsed.isDeviceOwner),
       isUninstallBlocked: Boolean(parsed.isUninstallBlocked),
       isAccessibilityGuardEnabled: Boolean(parsed.isAccessibilityGuardEnabled),
-      isAccessibilityGuardLocked:
-        parsed.isAccessibilityGuardLocked === undefined
-          ? true
-          : Boolean(parsed.isAccessibilityGuardLocked),
+      isAccessibilityGuardLocked: guardLocked,
+      uninstallPinRequired: pinRequired,
       hasNativeAdminPin: Boolean(parsed.hasNativeAdminPin),
       tempUnlockRemainingSec: Number(parsed.tempUnlockRemainingSec || 0),
       enabledAt: Number(parsed.enabledAt || 0),

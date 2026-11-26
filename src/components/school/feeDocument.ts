@@ -1,7 +1,13 @@
 import { jsPDF } from "jspdf";
 import html2canvas from "html2canvas";
 import { renderHtmlToCanvasSafe } from "../../utils/safePdfCapture";
-import type { MonthlyFee, SchoolStudent } from "../../school-types";
+import {
+  mapFeeSlipRoutingToSignatoryMode,
+  mapFeeReceiptRoutingToSignatoryMode,
+  type MonthlyFee,
+  type SchoolStudent,
+  type SchoolSignatureRoutingConfig,
+} from "../../school-types";
 import {
   generateDpsReceiptHtml,
   generatePosSlipHtml,
@@ -48,6 +54,7 @@ interface FeeDocumentOptions {
     managerSignatureUrl?: string;
     accountantName?: string;
     accountantSignatureUrl?: string;
+    signatureRouting?: SchoolSignatureRoutingConfig;
   };
 }
 
@@ -204,12 +211,14 @@ export function buildDpsReceiptData({
     collectedByRole: fee.collectedByRole || "accountant",
     collectedByName: fee.collectedByName,
     collectorSignatureUrl: fee.collectorSignatureUrl,
-    signatoryMode: isDueDemandSlip ? "principal_only" : "both",
+    signatoryMode: isDueDemandSlip
+      ? mapFeeSlipRoutingToSignatoryMode(schoolDetails?.signatureRouting)
+      : mapFeeReceiptRoutingToSignatoryMode(schoolDetails?.signatureRouting),
     cashierTitle:
       fee.collectedByRole === "manager"
         ? (fee.collectedByName || schoolDetails?.managerName || "Manager")
         : (fee.collectedByName || schoolDetails?.accountantName || "Accountant"),
-    signatoryTitle: schoolDetails?.principalName || "Principal",
+    signatoryTitle: schoolDetails?.managerName || "Manager",
   };
 }
 

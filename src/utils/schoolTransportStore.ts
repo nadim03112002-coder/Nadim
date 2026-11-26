@@ -4,6 +4,7 @@ import type {
   SchoolBusRoute,
   VehicleFitnessRecord,
 } from "../school-types";
+import type { StudentHomePin } from "./busProximity";
 import { shouldUseDemoForSchool, isDemoSchoolId } from "../school-firebase";
 import { rtdb } from "../firebase";
 import { ref as rtdbRef, set as rtdbSet, remove as rtdbRemove } from "firebase/database";
@@ -344,20 +345,59 @@ export async function updateRouteStopCoordinate(
   busId: string,
   stopName: string,
   lat: number,
-  lng: number
+  lng: number,
+  options?: { appendIfMissing?: boolean; overwriteExisting?: boolean }
 ): Promise<SchoolBusRoute | null> {
-  if (!schoolId || !busId || !stopName) return null;
+  if (!schoolId || !stopName) return null;
   const routes = getLocalRoutes(schoolId);
-  const targetRoute = routes.find((r) => r.busId === busId || r.id === busId || r.id === `route_${busId}`);
-  const cleanLat = Number(lat.toFixed(6));
-  const cleanLng = Number(lng.toFixed(6));
-  if (!targetRoute) return null;
+  const cleanBusId = String(busId || "").trim();
+  const targetRoute =
+    routes.find(
+      (r) =>
+        cleanBusId &&
+        (r.busId === cleanBusId || r.id === cleanBusId || r.id === `route_${cleanBusId}`)
+    ) || (routes.length === 1 ? routes[0] : undefined);
+  const cleanLat = Number(Number(lat).toFixed(6));
+  const cleanLng = Number(Number(lng).toFixed(6));
+  if (!targetRoute || !Number.isFinite(cleanLat) || !Number.isFinite(cleanLng)) return null;
 
-  const updatedStops = targetRoute.stops.map((s) =>
-    s.stopName.trim().toLowerCase() === stopName.trim().toLowerCase()
-      ? { ...s, lat: cleanLat, lng: cleanLng }
-      : s
+  const stopNorm = stopName.trim().toLowerCase();
+  const existingIdx = targetRoute.stops.findIndex(
+    (s) => s.stopName.trim().toLowerCase() === stopNorm
   );
+
+  let updatedStops = [...targetRoute.stops];
+  if (existingIdx >= 0) {
+    const cur = updatedStops[existingIdx];
+    const alreadyHasCoords =
+      Number.isFinite(Number(cur.lat)) && Number.isFinite(Number(cur.lng));
+    if (alreadyHasCoords && options?.overwriteExisting === false) {
+      return targetRoute;
+    }
+    updatedStops[existingIdx] = { ...cur, lat: cleanLat, lng: cleanLng };
+  } else if (options?.appendIfMissing !== false) {
+    const newStop = {
+      id: `stp_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+      stopName: stopName.trim(),
+      pickupTime: "07:30",
+      dropTime: "14:15",
+      distanceKm: 0,
+      lat: cleanLat,
+      lng: cleanLng,
+    };
+    // Keep School Main Gate at the end if present
+    const schoolGateIdx = updatedStops.findIndex((s) =>
+      /school|campus|gate|विद्यालय/i.test(s.stopName || "")
+    );
+    if (schoolGateIdx >= 0) {
+      updatedStops.splice(schoolGateIdx, 0, newStop);
+    } else {
+      updatedStops.push(newStop);
+    }
+  } else {
+    return targetRoute;
+  }
+
   const updatedRoute: SchoolBusRoute = {
     ...targetRoute,
     stops: updatedStops,
@@ -365,6 +405,89 @@ export async function updateRouteStopCoordinate(
   };
   await saveRouteRecord(schoolId, updatedRoute);
   return updatedRoute;
+}
+
+/**
+ * Saves a student's stop/home GPS location and automatically attaches its coordinates
+ * to the matching bus route stop (so adding student locations builds the stop map & auto-checkpoints).
+ */
+export async function saveStudentStopLocationPin(
+  schoolId: string,
+  pin: StudentHomePin,
+  options?: { busId?: string; overwriteStopCoord?: boolean }
+): Promise<StudentHomePin | null> {
+  if (!schoolId || !pin?.studentId) return null;
+  const lat = Number(Number(pin.homeLat).toFixed(6));
+  const lng = Number(Number(pin.homeLng).toFixed(6));
+  if (!Number.isFinite(lat) || !Number.isFinite(lng) || (Math.abs(lat) < 0.001 && Math.abs(lng) < 0.001)) {
+    return null;
+  }
+
+  const normalizedPin: StudentHomePin = {
+    ...pin,
+    homeLat: lat,
+    homeLng: lng,
+    busStop: (pin.busStop || "").trim(),
+    busRoute: (pin.busRoute || "").trim(),
+    busNumber: (pin.busNumber || "").trim(),
+    updatedAt: pin.updatedAt || new Date().toISOString(),
+  };
+
+  try {
+    const k = `nst_student_home_pins_${schoolId}`;
+    const existing = JSON.parse(localStorage.getItem(k) || "{}") || {};
+    existing[normalizedPin.studentId] = normalizedPin;
+    localStorage.setItem(k, JSON.stringify(existing));
+  } catch {}
+
+  try {
+    void sbRtdbSet(`schools/${schoolId}/student_home_pins/${normalizedPin.studentId}`, normalizedPin).catch(() => {});
+    if (rtdb) {
+      await rtdbSet(
+        rtdbRef(rtdb, `schools/${schoolId}/student_home_pins/${normalizedPin.studentId}`),
+        normalizedPin
+      ).catch(() => {});
+    }
+  } catch {}
+
+  // Link to matching Route Stop so Driver Auto-Checkpoints & Map immediately reflect it
+  const stopLabel = normalizedPin.busStop || `${normalizedPin.studentName.split(" ")[0]} Stop`;
+  const routes = getLocalRoutes(schoolId);
+  const routeLow = (normalizedPin.busRoute || "").toLowerCase();
+  const busNumLow = (normalizedPin.busNumber || "").toLowerCase();
+  const matchedRoute =
+    routes.find((r) => options?.busId && (r.busId === options.busId || r.id === options.busId)) ||
+    routes.find(
+      (r) =>
+        (routeLow &&
+          (r.routeName.toLowerCase() === routeLow ||
+            r.routeName.toLowerCase().includes(routeLow) ||
+            routeLow.includes(r.routeName.toLowerCase()))) ||
+        (busNumLow &&
+          (r.busNumber.toLowerCase() === busNumLow ||
+            r.busNumber.toLowerCase().includes(busNumLow)))
+    ) ||
+    routes[0];
+
+  if (matchedRoute && stopLabel) {
+    await updateRouteStopCoordinate(
+      schoolId,
+      matchedRoute.busId || matchedRoute.id,
+      stopLabel,
+      lat,
+      lng,
+      {
+        appendIfMissing: Boolean(normalizedPin.busStop),
+        overwriteExisting: Boolean(options?.overwriteStopCoord),
+      }
+    );
+  }
+
+  try {
+    window.dispatchEvent(new CustomEvent("school-transport-updated", { detail: { schoolId } }));
+  } catch {}
+
+  return normalizedPin;
 }
 
 export async function deleteRouteRecord(schoolId: string, routeId: string): Promise<SchoolBusRoute[]> {

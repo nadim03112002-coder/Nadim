@@ -302,6 +302,7 @@ export async function sendSchoolPushNotification(payload: {
   classId?: string;
   className?: string;
   studentIds?: string[];
+  targetUserIds?: string[];
   userId?: string;
   classBroadcast?: boolean;
   schoolBroadcast?: boolean;
@@ -314,7 +315,7 @@ export async function sendSchoolPushNotification(payload: {
   allowSelf?: boolean;
   title: string;
   body: string;
-  type?: "MONTHLY_FEE" | "FEE_RECEIPT" | "SCHOOL_NOTICE" | "SCHOOL_HOLIDAY" | "HOMEWORK" | "DEFAULT" | "NSTA_MESSAGE" | "CALL_INCOMING" | "WALKIE_VOICE" | "WALKIE_TTS";
+  type?: "MONTHLY_FEE" | "FEE_RECEIPT" | "SCHOOL_NOTICE" | "SCHOOL_HOLIDAY" | "HOMEWORK" | "DEFAULT" | "NSTA_MESSAGE" | "CALL_INCOMING" | "WALKIE_VOICE" | "WALKIE_TTS" | "UPI_PAYMENT_PROOF" | "UPI_PROOF_RESOLVED";
   threadType?: "CLASS_GROUP" | "SCHOOL_DESK" | "TEACHER_CHAT" | "STUDENT_CHAT";
   voiceSpeak?: boolean;
   url?: string;
@@ -324,6 +325,7 @@ export async function sendSchoolPushNotification(payload: {
   walkieAudioBase64?: string;
   walkieMimeType?: string;
   walkieSpeechText?: string;
+  extraData?: Record<string, string>;
 }): Promise<{ delivered: number; matchedDevices: number; rtdbDispatched?: boolean }> {
   const timestamp = Date.now();
   const notifId = `school_notif_${timestamp}_${Math.random().toString(36).slice(2, 7)}`;
@@ -393,6 +395,18 @@ export async function sendSchoolPushNotification(payload: {
         ? Array.from(new Set(payload.studentIds.map((id) => String(id).trim()).filter(Boolean)))
         : [];
 
+      const targetUserIdsList = Array.isArray(payload.targetUserIds)
+        ? Array.from(new Set(payload.targetUserIds.map((id) => String(id).trim()).filter(Boolean)))
+        : [];
+      const sanitizedExtraData =
+        payload.extraData && typeof payload.extraData === "object"
+          ? Object.fromEntries(
+              Object.entries(payload.extraData)
+                .filter(([, v]) => v !== undefined && v !== null)
+                .map(([k, v]) => [String(k).slice(0, 64), String(v).slice(0, 600)])
+            )
+          : undefined;
+
       const notifPayload = {
         id: notifId,
         type: payload.type || "SCHOOL_NOTICE",
@@ -420,9 +434,21 @@ export async function sendSchoolPushNotification(payload: {
         ...(payload.walkieMimeType ? { walkieMimeType: payload.walkieMimeType } : {}),
         ...(payload.walkieSpeechText ? { walkieSpeechText: payload.walkieSpeechText } : {}),
         ...(targetStudentIds.length > 0 ? { studentIds: targetStudentIds } : {}),
+        ...(targetUserIdsList.length > 0 ? { targetUserIds: targetUserIdsList } : {}),
+        ...(sanitizedExtraData ? { extraData: sanitizedExtraData } : {}),
       };
 
       const rtdbWrites: Promise<any>[] = [];
+
+      if (targetUserIdsList.length > 0) {
+        targetUserIdsList.forEach((uid) => {
+          if (!allowSelf && senderIdSet.has(uid)) return;
+          const cleanId = uid.replace(/[.#$[\]/]/g, "_");
+          if (cleanId) {
+            rtdbWrites.push(set(ref(rtdb, `user_notifications/${cleanId}/${notifId}`), notifPayload).catch(() => {}));
+          }
+        });
+      }
 
       if (targetStudentIds.length > 0) {
         targetStudentIds.forEach((stId) => {
@@ -442,9 +468,10 @@ export async function sendSchoolPushNotification(payload: {
         }
       }
 
-      // School-scoped real-time channel for School Broadcasts, Class Broadcasts, or School-wide alerts (not private 1-to-1/per-student alerts)
+      // School-scoped real-time channel for School Broadcasts, Class Broadcasts, or School-wide alerts (never when targetUserIds is specified)
       if (
         payload.schoolId &&
+        targetUserIdsList.length === 0 &&
         (payload.schoolBroadcast || payload.classBroadcast || (targetStudentIds.length === 0 && !payload.userId))
       ) {
         const cleanSchoolId = String(payload.schoolId).trim().replace(/[.#$[\]/]/g, "_");
@@ -453,7 +480,7 @@ export async function sendSchoolPushNotification(payload: {
         }
       }
 
-      if (!payload.schoolId && targetStudentIds.length === 0 && !payload.userId) {
+      if (!payload.schoolId && targetStudentIds.length === 0 && targetUserIdsList.length === 0 && !payload.userId) {
         rtdbWrites.push(set(ref(rtdb, `broadcast_notifications/${notifId}`), notifPayload).catch(() => {}));
       }
 

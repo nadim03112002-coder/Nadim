@@ -56,37 +56,156 @@ export interface StudentIdQrInput {
   monthlyFee?: number | string;
   className?: string;
   schoolName?: string;
+  verificationToken?: string;
+  qrIssuedAt?: string;
+  qrExpiresAt?: string;
+}
+
+/**
+ * Generates a cryptographically random, opaque, revocable verification token (VTR-...)
+ * containing ZERO student PII (no admission number, name, phone, or studentId encoded).
+ */
+export function generateRandomVerificationToken(input?: {
+  issuedAt?: string;
+  expiresAt?: string;
+}): { token: string; issuedAt: string; expiresAt: string } {
+  const issuedAt = cleanPart(input?.issuedAt) || new Date().toISOString();
+  const defaultExpMs = (Date.parse(issuedAt) || Date.now()) + 365 * 24 * 60 * 60 * 1000;
+  const expiresAt = cleanPart(input?.expiresAt) || new Date(defaultExpMs).toISOString();
+
+  const alphabet = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ";
+  let randPart = "";
+  try {
+    const bytes = new Uint8Array(12);
+    if (typeof crypto !== "undefined" && typeof crypto.getRandomValues === "function") {
+      crypto.getRandomValues(bytes);
+    } else {
+      for (let i = 0; i < bytes.length; i++) bytes[i] = Math.floor(Math.random() * 256);
+    }
+    for (let i = 0; i < bytes.length; i++) {
+      randPart += alphabet[bytes[i] % alphabet.length];
+    }
+  } catch {
+    randPart = (Date.now().toString(36) + Math.random().toString(36).slice(2, 10))
+      .toUpperCase()
+      .replace(/[^A-Z0-9]/g, "X")
+      .slice(0, 12)
+      .padEnd(12, "7");
+  }
+
+  return {
+    token: `VTR-${randPart}`,
+    issuedAt,
+    expiresAt,
+  };
+}
+
+/**
+ * Legacy deterministic verification token helper retained strictly for backwards compatibility
+ * with pre-existing VT2-... cards when no stored random VTR-... token is present yet.
+ */
+export function buildStudentVerificationToken(input: {
+  schoolId?: string;
+  studentId?: string;
+  admissionNo?: string;
+  issuedAt?: string;
+  expiresAt?: string;
+}): { token: string; issuedAt: string; expiresAt: string } {
+  const issuedAt = cleanPart(input.issuedAt) || new Date().toISOString();
+  const defaultExpMs = (Date.parse(issuedAt) || Date.now()) + 365 * 24 * 60 * 60 * 1000;
+  const expiresAt = cleanPart(input.expiresAt) || new Date(defaultExpMs).toISOString();
+  const rawSeed = [
+    cleanPart(input.schoolId || "school"),
+    cleanPart(input.studentId || "std"),
+    cleanPart(input.admissionNo || ""),
+    issuedAt.slice(0, 10),
+    expiresAt.slice(0, 10),
+  ].join("|");
+  let h1 = 0x811c9dc5;
+  let h2 = 0x9e3779b9;
+  for (let i = 0; i < rawSeed.length; i++) {
+    const ch = rawSeed.charCodeAt(i);
+    h1 ^= ch;
+    h1 = Math.imul(h1, 0x01000193);
+    h2 ^= ch + i;
+    h2 = Math.imul(h2, 0x85ebca6b);
+  }
+  const token = `VT2-${(h1 >>> 0).toString(36).toUpperCase().padStart(6, "0")}${(h2 >>> 0)
+    .toString(36)
+    .toUpperCase()
+    .padStart(6, "0")}`;
+  return { token, issuedAt, expiresAt };
+}
+
+export function isQrVerificationExpired(expiresAt?: string | null): boolean {
+  if (!expiresAt) return false;
+  const ts = Date.parse(expiresAt);
+  if (Number.isNaN(ts)) return false;
+  return Date.now() > ts;
 }
 
 export function buildStudentIdToken(input: StudentIdQrInput): string {
+  const ver = input.verificationToken
+    ? {
+        token: cleanPart(input.verificationToken),
+        issuedAt: cleanPart(input.qrIssuedAt) || new Date().toISOString(),
+        expiresAt:
+          cleanPart(input.qrExpiresAt) ||
+          new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString(),
+      }
+    : generateRandomVerificationToken({
+        issuedAt: input.qrIssuedAt,
+        expiresAt: input.qrExpiresAt,
+      });
+
+  // Legacy positional format kept strictly for backwards compatibility when explicitly requested
   return `NSTA-SCHOOL:${[
     encPart(input.schoolId || ""),
     encPart(input.studentId || ""),
     encPart(input.rollNo || ""),
     encPart(input.classId || ""),
     encPart(cleanPart(input.studentName).slice(0, 32)),
-    encPart(input.admissionNo || ""),
-    encPart(input.phone || ""),
-    encPart(cleanPart(input.fatherName).slice(0, 28)),
-    encPart(cleanPart(input.motherName).slice(0, 28)),
-    encPart(input.bloodGroup || ""),
-    encPart(input.dob || ""),
-    encPart(cleanPart(input.address).slice(0, 40)),
-    encPart(input.monthlyFee ?? ""),
+    "", // slot 5: admissionNo omitted from QR for privacy
+    "", // slot 6: phone omitted for privacy
+    "", // slot 7: fatherName omitted from public QR
+    "", // slot 8: motherName omitted from public QR
+    "", // slot 9: bloodGroup omitted from public QR
+    "", // slot 10: dob omitted from public QR
+    "", // slot 11: address omitted from public QR
+    "", // slot 12: monthlyFee omitted for privacy
     encPart(cleanPart(input.className).slice(0, 24)),
     encPart(cleanPart(input.schoolName).slice(0, 48)),
+    encPart(ver.token),
+    encPart(ver.expiresAt.slice(0, 10)),
   ].join(":")}`;
 }
 
 export function buildStudentIdCardQrUrl(input: StudentIdQrInput): string {
   const origin = getQrBaseOrigin();
-  const token = buildStudentIdToken(input);
+  const ver = input.verificationToken
+    ? {
+        token: cleanPart(input.verificationToken),
+        issuedAt: cleanPart(input.qrIssuedAt) || new Date().toISOString(),
+        expiresAt:
+          cleanPart(input.qrExpiresAt) ||
+          new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString(),
+      }
+    : buildStudentVerificationToken({
+        schoolId: input.schoolId,
+        studentId: input.studentId,
+        admissionNo: input.admissionNo,
+        issuedAt: input.qrIssuedAt,
+        expiresAt: input.qrExpiresAt,
+      });
+
+  // Compact opaque QR verification URL: contains ZERO Admission No, name, phone, or PII.
+  // Low-density QR renders bold and scans effortlessly on CR80 cards and opens the official verify portal.
   const params = new URLSearchParams();
   params.set("verify", "doc");
   params.set("type", "idcard");
   if (input.schoolId) params.set("s", cleanPart(input.schoolId));
-  if (input.studentId) params.set("u", cleanPart(input.studentId));
-  return `${origin}/?${params.toString()}#${token}`;
+  params.set("t", ver.token);
+  return `${origin}/?${params.toString()}`;
 }
 
 export interface StaffIdQrInput {
@@ -209,14 +328,14 @@ export interface FeeReceiptQrInput {
 
 export function buildFeeReceiptQrUrl(input: FeeReceiptQrInput): string {
   const origin = getQrBaseOrigin();
-  const loginToken = `NSTA-SCHOOL:${[
+  const receiptVerifyToken = `NSTA-SCHOOL:${[
     encPart(input.schoolId || "school_campus"),
     encPart(input.studentId || ""),
     encPart(input.rollNo || ""),
     encPart(input.className || ""),
     encPart(cleanPart(input.studentName).slice(0, 32)),
     encPart(input.admissionNo || ""),
-    encPart(input.phone || ""),
+    "", // omit phone from public QR URL for privacy
   ].join(":")}`;
 
   const compactItems = (input.items || []).slice(0, 8).map((it) => [
@@ -242,7 +361,6 @@ export function buildFeeReceiptQrUrl(input: FeeReceiptQrInput): string {
     cl: cleanPart(input.className).slice(0, 24),
     rl: cleanPart(input.rollNo).slice(0, 16),
     adm: cleanPart(input.admissionNo).slice(0, 28),
-    ph: cleanPart(input.phone).slice(0, 20),
     ss: cleanPart(input.session).slice(0, 20),
     dt: cleanPart(input.receiptDate).slice(0, 28),
     tm: cleanPart(input.receiptTime).slice(0, 16),
@@ -260,12 +378,12 @@ export function buildFeeReceiptQrUrl(input: FeeReceiptQrInput): string {
     sig: cleanPart(input.signatoryTitle).slice(0, 32),
   };
 
-  let url = `${origin}/?verify=doc&type=fee_receipt&s=${encPart(input.schoolId || "")}&u=${encPart(input.studentId || "")}&rno=${encPart(input.receiptNo || "")}&data=${encodeURIComponent(JSON.stringify(compactPayload))}#${loginToken}`;
+  let url = `${origin}/?verify=doc&type=fee_receipt&s=${encPart(input.schoolId || "")}&u=${encPart(input.studentId || "")}&rno=${encPart(input.receiptNo || "")}&data=${encodeURIComponent(JSON.stringify(compactPayload))}#${receiptVerifyToken}`;
   if (url.length > 1400) {
     // Trim non-essential strings so QR stays crisp and easy to scan
     compactPayload.sa = cleanPart(input.schoolAddress).slice(0, 32);
     compactPayload.it = compactItems.slice(0, 5).map(([d, due, con, paid]) => [String(d).slice(0, 20), due, con, paid]);
-    url = `${origin}/?verify=doc&type=fee_receipt&s=${encPart(input.schoolId || "")}&u=${encPart(input.studentId || "")}&rno=${encPart(input.receiptNo || "")}&data=${encodeURIComponent(JSON.stringify(compactPayload))}#${loginToken}`;
+    url = `${origin}/?verify=doc&type=fee_receipt&s=${encPart(input.schoolId || "")}&u=${encPart(input.studentId || "")}&rno=${encPart(input.receiptNo || "")}&data=${encodeURIComponent(JSON.stringify(compactPayload))}#${receiptVerifyToken}`;
   }
   return url;
 }

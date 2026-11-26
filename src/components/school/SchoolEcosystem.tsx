@@ -1,5 +1,5 @@
 // @ts-nocheck
-import React, { useState, useEffect, lazy, Suspense } from "react";
+import React, { useState, useEffect, useRef, lazy, Suspense } from "react";
 import {
   getSchoolUserProfile,
   saveSchoolUserProfile,
@@ -30,12 +30,17 @@ import {
   isDemoRecord,
   detachUserFromSchool,
   deleteSchool,
+  registerStudentIdCardLinkSlot,
+  unregisterStudentIdCardLinkSlot,
+  checkLinkedStudentsSlotValidity,
+  subscribeToStudentLinkSlots,
 } from "../../school-firebase";
 import { saveUserToLive } from "../../firebase";
 import {
   computeDeviceAdminPinHash,
   getCachedSchoolAdminPinHash,
   syncSchoolAdminPinHashToNative,
+  syncUninstallPinRequiredToNative,
 } from "../../utils/androidDeviceAdmin";
 import { toast } from "sonner";
 import { getDemoSchoolDataset, isDemoDataEnabled, setDemoDataEnabled } from "./demoDataStore";
@@ -44,7 +49,17 @@ import { speakNotification } from "../../utils/voiceNotifyEngine";
 import { QrScannerModal } from "../QrScannerModal";
 import { PremiumLoadingState } from "./PremiumLoadingState";
 import { useBackHandler } from "../../utils/backNavigation";
+import {
+  isDriverUser,
+  isCorruptedDriverStudentRecord,
+  looksLikeDriverIdString,
+  promoteCorruptedUserToDriverIfApplicable,
+  purgeCorruptedDriverEntriesFromLocalCache,
+  resolveDriverFromLocalAndCloudStores,
+} from "../../utils/driverIdentity";
+import { logErrorToFirebase, setErrorLoggerContext, setErrorLoggerModule, extractFunctionName } from "../../utils/errorLogger";
 import type { School, SchoolUserProfile } from "../../school-types";
+import { getSchoolPlanTierName, getSchoolStudentAccountLimit } from "../../school-types";
 import {
   Loader2,
   ShieldCheck,
@@ -134,6 +149,10 @@ const OnlineAdmissionManager = lazyWithRetry(
   () => import("./OnlineAdmissionManager").then(m => ({ default: m.OnlineAdmissionManager || (m as any).default })),
   "OnlineAdmissionManager"
 );
+const DriverTripConsole = lazyWithRetry(
+  () => import("./DriverTripConsole").then(m => ({ default: m.DriverTripConsole || (m as any).default })),
+  "DriverTripConsole"
+);
 
 interface PanelErrorBoundaryProps {
   fallbackTitle?: string;
@@ -157,6 +176,16 @@ class PanelErrorBoundary extends React.Component<PanelErrorBoundaryProps, PanelE
 
   componentDidCatch(error: Error, errorInfo: any) {
     console.error("[PanelErrorBoundary] Caught error:", error, errorInfo);
+    const msg = error?.message || String(error || "");
+    if (!msg.includes("ChunkLoadError") && !msg.includes("dynamically imported module")) {
+      void logErrorToFirebase(error, {
+        type: "react",
+        severity: "critical",
+        componentStack: errorInfo?.componentStack,
+        moduleName: this.props.fallbackTitle || "School ERP Panel",
+        functionName: extractFunctionName(error?.stack, errorInfo?.componentStack),
+      });
+    }
   }
 
   render() {
@@ -411,6 +440,7 @@ export const SchoolEcosystem: React.FC<Props> = ({
   const [manualInput, setManualInput] = useState("");
   const [linkError, setLinkError] = useState<string | null>(null);
   const [showOnlineAdmission, setShowOnlineAdmission] = useState(false);
+  const pendingSlotRegistrationKeysRef = useRef<Set<string>>(new Set());
 
   useBackHandler(isQrModalOpen, () => setIsQrModalOpen(false), 30);
   useBackHandler(showOnlineAdmission, () => setShowOnlineAdmission(false), 10);
@@ -452,9 +482,23 @@ export const SchoolEcosystem: React.FC<Props> = ({
     rawRole === "CASHIER" ||
     profile?.role === "ACCOUNTANT");
 
+  // Guard against corrupt URLs / QR fragments ("https", "//ais-dev-...#NSTA-SCHOOL-DRIVER") entering student/teacher IDs or RTDB paths
+  const isValidSafeEntityId = (val: unknown): boolean => {
+    const s = String(val ?? "").trim();
+    if (!s) return false;
+    const lower = s.toLowerCase();
+    if (lower === "http" || lower === "https") return false;
+    if (lower.includes("://") || lower.includes("?verify=") || lower.includes("nsta-school")) return false;
+    if (/[.#$[\]/:\r\n]/.test(s)) return false;
+    return true;
+  };
+
   // Helper to sanitize a linked student record
   const sanitizeStudentLink = (rec: any) => {
-    if (!rec) return null;
+    if (!rec || !isValidSafeEntityId(rec.id)) return null;
+    if (rec.schoolId && !isValidSafeEntityId(rec.schoolId)) return null;
+    if (rec.classId && !isValidSafeEntityId(rec.classId)) return null;
+    if (isCorruptedDriverStudentRecord(rec)) return null;
     const copy = { ...rec, type: "STUDENT" };
     if (copy.admissionNo && (copy.admissionNo.startsWith("NSTA-") || copy.admissionNo.includes(":"))) {
       copy.admissionNo = copy.id ? `ADM-${String(copy.id).slice(-6).toUpperCase()}` : `ADM-ROLL-${copy.rollNo || "01"}`;
@@ -476,10 +520,12 @@ export const SchoolEcosystem: React.FC<Props> = ({
 
   // 3. PERSISTENT MULTI-STUDENT LINKED LIST + TEACHER ENTITY
   const isDirectStudentLoginProvider =
-    user?.provider === "qr_student_id" ||
-    user?.provider === "face_recognition_login" ||
-    user?.provider === "student_record" ||
-    (user?.userType === "SCHOOL_STUDENT" && Boolean(user?.admissionNo || user?.studentId));
+    !isDriverUser(user) &&
+    !isCorruptedDriverStudentRecord(user) &&
+    (user?.provider === "qr_student_id" ||
+      user?.provider === "face_recognition_login" ||
+      user?.provider === "student_record" ||
+      (user?.userType === "SCHOOL_STUDENT" && Boolean(user?.admissionNo || user?.studentId)));
 
   const [linkedStudents, setLinkedStudents] = useState<any[]>(() => {
     if (isDirectStudentLoginProvider) {
@@ -561,16 +607,54 @@ export const SchoolEcosystem: React.FC<Props> = ({
 
   const [linkedTeacher, setLinkedTeacher] = useState<any>(() => {
     if (user?.provider === "qr_teacher_id") {
-      return {
-        type: "TEACHER",
-        id: user.id || user.uid,
-        name: user.name || "Teacher",
-        schoolId: user.schoolId || defaultSchoolId,
-      };
+      const tid = user.id || user.uid;
+      const tsch = user.schoolId || defaultSchoolId;
+      if (isValidSafeEntityId(tid) && (!tsch || isValidSafeEntityId(tsch))) {
+        return {
+          type: "TEACHER",
+          id: tid,
+          name: user.name || "Teacher",
+          schoolId: tsch,
+        };
+      }
     }
     try {
       const saved = getLocalLinkedTeacher(uid);
-      if (saved) return saved;
+      if (saved) {
+        if (isValidSafeEntityId(saved.id) && (!saved.schoolId || isValidSafeEntityId(saved.schoolId))) {
+          return saved;
+        }
+        setLocalLinkedTeacher(uid, null);
+      }
+    } catch {}
+    return null;
+  });
+
+  const [linkedDriver, setLinkedDriver] = useState<any>(() => {
+    const promotedUser = promoteCorruptedUserToDriverIfApplicable(user);
+    if (promotedUser && isValidSafeEntityId(promotedUser.schoolId) && isValidSafeEntityId(promotedUser.busId || promotedUser.id)) {
+      return {
+        type: "DRIVER",
+        id: promotedUser.id,
+        schoolId: promotedUser.schoolId,
+        busId: promotedUser.busId,
+        busNumber: promotedUser.busNumber || "School Bus",
+        route: promotedUser.busRoute || promotedUser.route || "School Bus Route",
+        driverName: promotedUser.name || "Bus Driver",
+        driverPhone: promotedUser.mobile || "",
+        schoolCode: promotedUser.schoolCode || "",
+        schoolName: promotedUser.schoolName || "",
+      };
+    }
+    try {
+      const raw = uid ? localStorage.getItem(`nst_school_linked_driver_${uid}`) : null;
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed && isValidSafeEntityId(parsed.schoolId) && isValidSafeEntityId(parsed.busId || parsed.id)) {
+          return parsed;
+        }
+        if (uid) localStorage.removeItem(`nst_school_linked_driver_${uid}`);
+      }
     } catch {}
     return null;
   });
@@ -583,16 +667,25 @@ export const SchoolEcosystem: React.FC<Props> = ({
         const localBundle = getLocalUserLinkedStudents(uid);
         if (localBundle && Array.isArray(localBundle.students) && localBundle.students.length > 0) {
           const cleaned = localBundle.students.map(sanitizeStudentLink).filter(Boolean);
-          setLinkedStudents((prev) => (prev.length === 0 ? cleaned : prev));
-          setActiveStudentKey((cur) =>
-            cur || localBundle.activeStudentKey || localBundle.activeStudentId || getStudentLinkKey(cleaned[0], defaultSchoolId)
-          );
+          if (cleaned.length < localBundle.students.length) {
+            setLocalUserLinkedStudents(uid, cleaned, cleaned[0] ? getStudentLinkKey(cleaned[0], defaultSchoolId) : "");
+          }
+          if (cleaned.length > 0) {
+            setLinkedStudents((prev) => (prev.length === 0 ? cleaned : prev));
+            setActiveStudentKey((cur) =>
+              cur || localBundle.activeStudentKey || localBundle.activeStudentId || getStudentLinkKey(cleaned[0], defaultSchoolId)
+            );
+          }
         }
       }
       if (user?.provider !== "qr_teacher_id") {
         const savedTeacher = getLocalLinkedTeacher(uid);
         if (savedTeacher) {
-          setLinkedTeacher((prev: any) => prev || savedTeacher);
+          if (isValidSafeEntityId(savedTeacher.id) && (!savedTeacher.schoolId || isValidSafeEntityId(savedTeacher.schoolId))) {
+            setLinkedTeacher((prev: any) => prev || savedTeacher);
+          } else {
+            setLocalLinkedTeacher(uid, null);
+          }
         }
       }
     };
@@ -610,7 +703,8 @@ export const SchoolEcosystem: React.FC<Props> = ({
 
   // Hydrate linked students from Firebase AND prune any students deleted/deactivated in their school!
   useEffect(() => {
-    if (!uid || isExplicitAdmin || isTeacherRole || isAccountantRole || user?.provider === "qr_teacher_id") {
+    purgeCorruptedDriverEntriesFromLocalCache(uid);
+    if (!uid || isExplicitAdmin || isTeacherRole || isAccountantRole || user?.provider === "qr_teacher_id" || isDriverUser(user) || Boolean(linkedDriver)) {
       setHydratingLinkedAccount(false);
       return;
     }
@@ -628,9 +722,41 @@ export const SchoolEcosystem: React.FC<Props> = ({
         if (!mounted) return;
 
         const resolvedProf = freshProfile ?? profile;
-        const cleanedRemote = Array.isArray(bundle?.students)
-          ? bundle!.students.map(sanitizeStudentLink).filter(Boolean)
-          : [];
+        const rawRemoteStudents = Array.isArray(bundle?.students) ? bundle!.students : [];
+        const cleanedRemote = rawRemoteStudents.map(sanitizeStudentLink).filter(Boolean);
+        const prunedCorruptRemote = rawRemoteStudents.length > cleanedRemote.length;
+
+        // Also clean any corrupted cached nst_current_user / nst_active_school_id entries
+        try {
+          const activeSid = localStorage.getItem("nst_active_school_id");
+          if (activeSid && !isValidSafeEntityId(activeSid)) {
+            localStorage.removeItem("nst_active_school_id");
+          }
+          ["nst_current_user", "nsta_cached_user"].forEach((key) => {
+            const rawU = localStorage.getItem(key);
+            if (!rawU) return;
+            const parsedU = JSON.parse(rawU);
+            let dirty = false;
+            if (parsedU?.schoolId && !isValidSafeEntityId(parsedU.schoolId)) {
+              delete parsedU.schoolId;
+              dirty = true;
+            }
+            if (parsedU?.studentId && (!isValidSafeEntityId(parsedU.studentId) || looksLikeDriverIdString(parsedU.studentId))) {
+              delete parsedU.studentId;
+              dirty = true;
+            }
+            if (isCorruptedDriverStudentRecord(parsedU)) {
+              delete parsedU.studentId;
+              delete parsedU.admissionNo;
+              delete parsedU.classId;
+              delete parsedU.className;
+              delete parsedU.rollNo;
+              delete parsedU.userType;
+              dirty = true;
+            }
+            if (dirty) localStorage.setItem(key, JSON.stringify(parsedU));
+          });
+        } catch {}
 
         // Build unified candidate list from remote + current state (without keeping students explicitly cleared in remote)
         const remoteHasExplicitList = Boolean(bundle && Array.isArray(bundle.students));
@@ -644,32 +770,53 @@ export const SchoolEcosystem: React.FC<Props> = ({
         // Preserve any freshly initialized direct QR/Face login student or offline un-synced entries
         if (!remoteHasExplicitList || isDirectStudentLoginProvider || cleanedRemote.length === 0) {
           linkedStudents.forEach((s: any) => {
-            const k = getStudentLinkKey(s, defaultSchoolId);
-            if (k && !candidateMap.has(k)) candidateMap.set(k, s);
+            const sanitizedLocal = sanitizeStudentLink(s);
+            if (!sanitizedLocal) return;
+            const k = getStudentLinkKey(sanitizedLocal, defaultSchoolId);
+            if (k && !candidateMap.has(k)) candidateMap.set(k, sanitizedLocal);
           });
         }
 
-        // Recovery fallback: if user account already has a studentRef/studentId bound on their profile, restore automatically without re-asking QR!
-        const fallbackStudentId = resolvedProf?.studentRef || user?.studentId || "";
-        const fallbackSchoolId = resolvedProf?.schoolId || user?.schoolId || defaultSchoolId;
+        // Recovery fallback: if user account already has a studentRef/studentId bound on their profile, verify slot ownership first so displaced accounts never auto-relink!
+        const rawRefCandidate = resolvedProf?.studentRef || user?.studentId || "";
+        const rawProfClassId = resolvedProf?.classId || user?.classId || "";
+        const isCorruptDriverRef =
+          looksLikeDriverIdString(rawRefCandidate) || looksLikeDriverIdString(rawProfClassId);
+        const fallbackStudentId = !isCorruptDriverRef && isValidSafeEntityId(resolvedProf?.studentRef)
+          ? resolvedProf?.studentRef
+          : !isCorruptDriverRef && isValidSafeEntityId(user?.studentId)
+          ? user?.studentId
+          : "";
+        const fallbackSchoolId = isValidSafeEntityId(resolvedProf?.schoolId)
+          ? resolvedProf?.schoolId
+          : isValidSafeEntityId(user?.schoolId)
+          ? user?.schoolId
+          : defaultSchoolId;
         if (candidateMap.size === 0 && fallbackStudentId && fallbackSchoolId) {
           try {
-            const foundByRef = await findStudentInSchoolRemote(
-              fallbackSchoolId,
-              fallbackStudentId,
-              user?.admissionNo
-            );
-            if (foundByRef && foundByRef.id) {
-              const sanitized = sanitizeStudentLink({
-                ...foundByRef,
-                type: "STUDENT",
-                schoolId: foundByRef.schoolId || fallbackSchoolId,
-                schoolName: (foundByRef as any).schoolName || user?.schoolName || "",
-              });
-              if (sanitized) {
-                const rk = getStudentLinkKey(sanitized, fallbackSchoolId);
-                candidateMap.set(rk, sanitized);
-                void saveUserLinkedStudents(uid, [sanitized], rk);
+            const slotRecoveryCheck = await checkLinkedStudentsSlotValidity({
+              uid,
+              students: [{ id: fallbackStudentId, schoolId: fallbackSchoolId }],
+              defaultSchoolId: fallbackSchoolId,
+            });
+            if (slotRecoveryCheck.displacedStudents.length === 0) {
+              const foundByRef = await findStudentInSchoolRemote(
+                fallbackSchoolId,
+                fallbackStudentId,
+                user?.admissionNo
+              );
+              if (foundByRef && foundByRef.id) {
+                const sanitized = sanitizeStudentLink({
+                  ...foundByRef,
+                  type: "STUDENT",
+                  schoolId: foundByRef.schoolId || fallbackSchoolId,
+                  schoolName: (foundByRef as any).schoolName || user?.schoolName || "",
+                });
+                if (sanitized) {
+                  const rk = getStudentLinkKey(sanitized, fallbackSchoolId);
+                  candidateMap.set(rk, sanitized);
+                  void saveUserLinkedStudents(uid, [sanitized], rk);
+                }
               }
             }
           } catch {}
@@ -677,20 +824,37 @@ export const SchoolEcosystem: React.FC<Props> = ({
 
         const candidates = Array.from(candidateMap.values());
         if (candidates.length === 0) {
-          if (remoteHasExplicitList && linkedStudents.length > 0 && !isDirectStudentLoginProvider) {
+          if (prunedCorruptRemote || (remoteHasExplicitList && linkedStudents.length > 0 && !isDirectStudentLoginProvider)) {
             setLinkedStudents([]);
             setActiveStudentKey("");
+            try {
+              setLocalUserLinkedStudents(uid, [], "");
+              localStorage.setItem("nst_linked_students", "[]");
+              localStorage.setItem(`nst_user_linked_students_${uid}`, JSON.stringify({ students: [], activeStudentKey: "" }));
+            } catch {}
+            if (prunedCorruptRemote) {
+              void saveUserLinkedStudents(uid, [], "");
+            }
           }
           return;
         }
 
-        // Verify every candidate against each school's authoritative cloud student roster
-        const { validStudents, removedStudents, verifiedAnySchool } =
+        // Verify every candidate against each school's authoritative cloud student roster AND ID-Card link slot limit (Lite=1, Elite=2, Ultra=4)
+        const { validStudents, removedStudents: rosterRemoved, verifiedAnySchool } =
           await verifyLinkedStudentsAuthoritative(candidates, defaultSchoolId);
+
+        const slotValidity = await checkLinkedStudentsSlotValidity({
+          uid,
+          students: validStudents,
+          defaultSchoolId,
+        });
+
+        const displacedStudents = slotValidity.displacedStudents || [];
+        const removedStudents = [...rosterRemoved, ...displacedStudents];
 
         if (!mounted) return;
 
-        const cleanedValid = validStudents.map(sanitizeStudentLink).filter(Boolean);
+        const cleanedValid = (slotValidity.activeStudents || []).map(sanitizeStudentLink).filter(Boolean);
         const removedIds = new Set(removedStudents.map((r: any) => getStudentLinkKey(r, defaultSchoolId)));
 
         setLinkedStudents(cleanedValid);
@@ -731,7 +895,7 @@ export const SchoolEcosystem: React.FC<Props> = ({
 
         setActiveStudentKey(nextActiveKey);
 
-        if (removedStudents.length > 0 || verifiedAnySchool || cleanedValid.length > 0) {
+        if (removedStudents.length > 0 || verifiedAnySchool || slotValidity.verifiedAny || cleanedValid.length > 0) {
           try {
             setLocalUserLinkedStudents(uid, cleanedValid, nextActiveKey);
             localStorage.setItem("nst_linked_students", JSON.stringify(cleanedValid));
@@ -740,19 +904,33 @@ export const SchoolEcosystem: React.FC<Props> = ({
               JSON.stringify({ students: cleanedValid, activeStudentKey: nextActiveKey })
             );
           } catch {}
-          if (removedStudents.length > 0) {
+          if (removedStudents.length > 0 || prunedCorruptRemote) {
             void saveUserLinkedStudents(uid, cleanedValid, nextActiveKey);
             void syncLinkedStudentsToPushSubscription(uid, cleanedValid);
-            const removedNames = removedStudents
-              .map((s: any) => s.name)
-              .filter(Boolean)
-              .slice(0, 2)
-              .join(", ");
-            toast.info(
-              removedNames
-                ? `स्कूल से हटाए गए छात्र (${removedNames}) आपके अकाउंट से अपने-आप हटा दिए गए।`
-                : "स्कूल से हटाए गए छात्र आपके अकाउंट से हटा दिए गए।"
-            );
+            if (displacedStudents.length > 0) {
+              const dispNames = displacedStudents.map((s: any) => s.name).filter(Boolean).slice(0, 2).join(", ");
+              toast.warning(
+                dispNames
+                  ? `🔄 ${dispNames} ka ID Card doosre account/device me link hone se is ID se link hat gaya hai.`
+                  : "🔄 Yeh ID Card doosre account me link hone se yahan se unlink ho gaya hai."
+              );
+              if (isDirectStudentLoginProvider && cleanedValid.length === 0 && onLogout) {
+                setTimeout(() => {
+                  try { onLogout(); } catch {}
+                }, 700);
+              }
+            } else {
+              const removedNames = rosterRemoved
+                .map((s: any) => s.name)
+                .filter(Boolean)
+                .slice(0, 2)
+                .join(", ");
+              toast.info(
+                removedNames
+                  ? `स्कूल से हटाए गए छात्र (${removedNames}) आपके अकाउंट से अपने-आप हटा दिए गए।`
+                  : "स्कूल से हटाए गए छात्र आपके अकाउंट से हटा दिए गए।"
+              );
+            }
           }
         }
       } catch {}
@@ -768,6 +946,73 @@ export const SchoolEcosystem: React.FC<Props> = ({
       window.clearTimeout(safetyTimer);
     };
   }, [uid, isExplicitAdmin, isTeacherRole, isAccountantRole, defaultSchoolId, isDirectStudentLoginProvider]);
+
+  // Real-time ID Card link displacement listener (automatically unlinks from older account/device when linked elsewhere)
+  const linkedSlotWatchSig = linkedStudents
+    .map((s: any) => `${s?.schoolId || defaultSchoolId}__${s?.id || ""}`)
+    .sort()
+    .join("|");
+
+  useEffect(() => {
+    if (!uid || isExplicitAdmin || isTeacherRole || isAccountantRole || linkedStudents.length === 0) {
+      return;
+    }
+
+    const unsub = subscribeToStudentLinkSlots({
+      uid,
+      students: linkedStudents,
+      defaultSchoolId,
+      onDisplaced: (displacedSt, record) => {
+        const stSchool = String(displacedSt?.schoolId || defaultSchoolId || "").trim();
+        const guardKey = `${stSchool}__${displacedSt?.id || ""}`;
+        if (pendingSlotRegistrationKeysRef.current.has(guardKey)) return;
+
+        setLinkedStudents((prev) => {
+          const remaining = prev.filter(
+            (item: any) =>
+              !(
+                String(item?.id) === String(displacedSt?.id) &&
+                String(item?.schoolId || defaultSchoolId) === stSchool
+              )
+          );
+          if (remaining.length === prev.length) return prev;
+
+          const nextActive = remaining[0] ? getStudentLinkKey(remaining[0], defaultSchoolId) : "";
+          setActiveStudentKey(nextActive);
+
+          try {
+            setLocalUserLinkedStudents(uid, remaining, nextActive);
+            localStorage.setItem("nst_linked_students", JSON.stringify(remaining));
+            localStorage.setItem(
+              `nst_user_linked_students_${uid}`,
+              JSON.stringify({ students: remaining, activeStudentKey: nextActive })
+            );
+            if (remaining[0]) {
+              localStorage.setItem("nst_current_user", JSON.stringify(remaining[0]));
+            }
+          } catch {}
+
+          void saveUserLinkedStudents(uid, remaining, nextActive);
+          void syncLinkedStudentsToPushSubscription(uid, remaining);
+
+          toast.warning(
+            `🔄 ${displacedSt?.name || "Student"} ka ID Card doosre ID/device me link ho gaya (${record.planName} Plan limit: ${record.limit}). Is account se link automatic hata diya gaya.`
+          );
+
+          if (isDirectStudentLoginProvider && remaining.length === 0 && onLogout) {
+            setTimeout(() => {
+              try { onLogout(); } catch {}
+            }, 800);
+          }
+          return remaining;
+        });
+      },
+    });
+
+    return () => {
+      unsub();
+    };
+  }, [uid, isExplicitAdmin, isTeacherRole, isAccountantRole, defaultSchoolId, isDirectStudentLoginProvider, linkedSlotWatchSig]);
 
   // Auto-attach siblings linked via Admin (familyGroupId / siblingStudentIds) to the Parent's linkedStudents list
   useEffect(() => {
@@ -961,10 +1206,13 @@ export const SchoolEcosystem: React.FC<Props> = ({
     fetchProfile();
   }, [uid, isSuperAdmin, effectiveEmail]);
 
-  const effectiveSchoolId =
+  const rawEffectiveSchoolId =
     (isExplicitAdmin && selectedAdminSchoolId)
       ? selectedAdminSchoolId
       : (linkedEntity?.schoolId || profile?.schoolId || user?.schoolId || defaultSchoolId || (allSchools[0]?.id || ""));
+  const effectiveSchoolId = isValidSafeEntityId(rawEffectiveSchoolId)
+    ? String(rawEffectiveSchoolId).trim()
+    : (isValidSafeEntityId(defaultSchoolId) ? defaultSchoolId : (allSchools[0]?.id || ""));
 
   // ── CENTRALIZED SCHOOL UNINSTALL GUARD PIN SYNC (ONE SCHOOL PIN FOR ALL ROLES & DEVICES) ──
   useEffect(() => {
@@ -979,11 +1227,14 @@ export const SchoolEcosystem: React.FC<Props> = ({
           getLocalSchools().find((s) => s.id === targetSchoolId) ||
           null;
 
-        if (!schoolObj || (!schoolObj.uninstallGuardPinHash && !schoolObj.lockCode)) {
+        if (!schoolObj || (!schoolObj.uninstallGuardPinHash && !schoolObj.lockCode && schoolObj.uninstallPinRequired === undefined)) {
           const remoteSchool = await getSchool(targetSchoolId).catch(() => null);
           if (remoteSchool) schoolObj = remoteSchool;
         }
         if (cancelled) return;
+
+        const pinRequired = schoolObj?.uninstallPinRequired !== false;
+        syncUninstallPinRequiredToNative(pinRequired, targetSchoolId);
 
         let targetHash = (schoolObj?.uninstallGuardPinHash || "").trim();
         if (!targetHash && schoolObj?.lockCode && schoolObj.lockCodeActive !== false) {
@@ -1088,20 +1339,162 @@ export const SchoolEcosystem: React.FC<Props> = ({
   }, [effectiveSchoolId, isExplicitAdmin, isRealTeacher, isAccountantRole, uid, linkedEntity?.id]);
 
   // ── QR SCAN & MANUAL INPUT HANDLER ──────────────────────────────────────────
-  const handleLinkSuccess = (decodedRaw: string, targetType: "AUTO" | "STUDENT" | "TEACHER" = "AUTO") => {
+  const handleLinkSuccess = async (decodedRaw: string, targetType: "AUTO" | "STUDENT" | "TEACHER" = "AUTO") => {
     setLinkError(null);
     const raw = (decodedRaw || "").trim();
     if (!raw) return;
 
     try {
+      const isHttpUrl = /^https?:\/\//i.test(raw);
+      let parsedUrl: URL | null = null;
+      if (isHttpUrl) {
+        try {
+          parsedUrl = new URL(raw);
+        } catch {}
+      }
+      const urlVerifyType = (parsedUrl?.searchParams.get("type") || "").toLowerCase();
+      const urlSchoolParam = (parsedUrl?.searchParams.get("s") || parsedUrl?.searchParams.get("schoolId") || parsedUrl?.searchParams.get("school") || "").trim();
+      const urlUserParam = (parsedUrl?.searchParams.get("u") || "").trim();
+      const urlRoleParam = (parsedUrl?.searchParams.get("role") || "").toLowerCase();
+
+      // 0. Bus Driver ID Card QR / Driver Console URL Detection
+      if (
+        raw.includes("NSTA-SCHOOL-DRIVER") ||
+        raw.includes("NSTA-DRIVER") ||
+        urlVerifyType === "driver_id" ||
+        /[?&]type=driver_id(?:&|#|$)/i.test(raw) ||
+        /[?&]driverConsole=1(?:&|#|$)/i.test(raw)
+      ) {
+        if (targetType === "STUDENT") {
+          setLinkError("यह Bus Driver ID Card है — भाई-बहन जोड़ने के लिए Student ID Card स्कैन करें।");
+          return;
+        }
+
+        let drvSchoolId = urlSchoolParam && isValidSafeEntityId(urlSchoolParam) ? urlSchoolParam : effectiveSchoolId;
+        let drvBusId = (parsedUrl?.searchParams.get("busId") || parsedUrl?.searchParams.get("driverId") || "").trim();
+        let drvBusNumber = "School Bus";
+        let drvRoute = "School Bus Route";
+        let drvName = "Bus Driver";
+        let drvPhone = "";
+        let drvSchoolCode = "";
+        let drvSchoolName = "";
+
+        if (raw.includes("NSTA-SCHOOL-DRIVER:") || raw.includes("NSTA-DRIVER:")) {
+          const drvPrefix = raw.includes("NSTA-SCHOOL-DRIVER:") ? "NSTA-SCHOOL-DRIVER:" : "NSTA-DRIVER:";
+          const token = raw.split(drvPrefix)[1] || "";
+          const cleanToken = token.split("\n")[0].split("\r")[0];
+          const parts = cleanToken.split(":").map((p) => {
+            try { return decodeURIComponent(p); } catch { return p; }
+          });
+          if (parts[0] && isValidSafeEntityId(parts[0])) drvSchoolId = parts[0];
+          if (parts[1] && isValidSafeEntityId(parts[1])) drvBusId = parts[1];
+          if (parts[2]) drvBusNumber = parts[2];
+          if (parts[3]) drvRoute = parts[3];
+          if (parts[4]) drvName = parts[4];
+          if (parts[5]) drvPhone = parts[5];
+          if (parts[6]) drvSchoolCode = parts[6];
+          if (parts[7]) drvSchoolName = parts[7];
+        }
+
+        const safeBusId = drvBusId || "bus_driver";
+        if (!isValidSafeEntityId(drvSchoolId) || !isValidSafeEntityId(safeBusId)) {
+          setLinkError("अमान्य Driver QR कोड — कृपया सही Bus Driver ID Card स्कैन करें।");
+          return;
+        }
+
+        const driverRec = {
+          type: "DRIVER",
+          id: `driver_${safeBusId}`,
+          schoolId: drvSchoolId,
+          busId: safeBusId,
+          busNumber: drvBusNumber,
+          route: drvRoute,
+          driverName: drvName,
+          driverPhone: drvPhone,
+          schoolCode: drvSchoolCode,
+          schoolName: drvSchoolName,
+          linkedAt: new Date().toISOString(),
+        };
+        try {
+          if (uid) localStorage.setItem(`nst_school_linked_driver_${uid}`, JSON.stringify(driverRec));
+        } catch {}
+        setLinkedDriver(driverRec);
+        setHydratingLinkedAccount(false);
+        setIsQrModalOpen(false);
+        toast.success(`🚌 ${drvName} (${drvBusNumber}) — Driver Console खुल रहा है!`);
+        return;
+      }
+
+      // 0B. Manual Driver ID / Mobile Number Detection (prevents Driver IDs from falling into Student Portal)
+      if (
+        targetType !== "TEACHER" &&
+        !isHttpUrl &&
+        !raw.includes("NSTA-SCHOOL:") &&
+        !raw.includes("NSTA-SCHOOL-STAFF:") &&
+        !raw.startsWith("DPS-RECEIPT") &&
+        !raw.includes("AdmNo:")
+      ) {
+        if (looksLikeDriverIdString(raw) && targetType === "STUDENT") {
+          setLinkError("यह Bus Driver ID है — कृपया Driver Portal से लॉगिन करें (भाई-बहन में सिर्फ Student ID जोड़ें)।");
+          return;
+        }
+        const matchedDriver = await resolveDriverFromLocalAndCloudStores(
+          raw,
+          effectiveSchoolId,
+          allSchools
+        ).catch(() => null);
+        if (matchedDriver) {
+          if (targetType === "STUDENT") {
+            // Check if the entered phone/text also matches a student; only block if it's purely a driver or looks like a driver ID
+            const localStus = getLocalStudents(effectiveSchoolId);
+            const digits10 = raw.replace(/\D/g, "").slice(-10);
+            const matchesStu = !looksLikeDriverIdString(raw) && localStus.some((s: any) =>
+              (s?.admissionNo && s.admissionNo.toLowerCase() === raw.toLowerCase()) ||
+              (s?.rollNo && s.rollNo === raw) ||
+              (digits10.length >= 10 && String(s?.phone || "").replace(/\D/g, "").slice(-10) === digits10)
+            );
+            if (!matchesStu) {
+              setLinkError("यह नंबर / ID Bus Driver के नाम पर पंजीकृत है — कृपया Driver Portal से लॉगिन करें।");
+              return;
+            }
+          } else {
+            const driverRec = {
+              type: "DRIVER",
+              id: matchedDriver.id,
+              schoolId: matchedDriver.schoolId || effectiveSchoolId,
+              busId: matchedDriver.busId || matchedDriver.driverId || "bus_driver",
+              busNumber: matchedDriver.busNumber || "School Bus",
+              route: matchedDriver.busRoute || matchedDriver.route || "School Bus Route",
+              driverName: matchedDriver.driverName || matchedDriver.name || "Bus Driver",
+              driverPhone: matchedDriver.driverPhone || matchedDriver.mobile || "",
+              schoolCode: matchedDriver.schoolCode || "",
+              schoolName: matchedDriver.schoolName || "",
+              linkedAt: new Date().toISOString(),
+            };
+            try {
+              if (uid) localStorage.setItem(`nst_school_linked_driver_${uid}`, JSON.stringify(driverRec));
+            } catch {}
+            setLinkedDriver(driverRec);
+            setHydratingLinkedAccount(false);
+            setIsQrModalOpen(false);
+            toast.success(`🚌 ${driverRec.driverName} (${driverRec.busNumber}) — Driver Console खुल रहा है!`);
+            return;
+          }
+        }
+      }
+
       // 1. Staff / Teacher Detection
       const isExplicitTeacher = targetType === "TEACHER";
-      const hasTeacherQrPrefix =
-        raw.startsWith("NSTA-SCHOOL-STAFF:") ||
+      const hasStaffToken =
         raw.includes("NSTA-SCHOOL-STAFF:") ||
+        raw.includes("NSTA-STAFF:") ||
+        raw.includes("NSTA-SCHOOL-TEACHER:") ||
+        (urlVerifyType === "idcard" && (urlRoleParam === "staff" || urlRoleParam === "admin"));
+      const hasTeacherQrPrefix =
+        hasStaffToken ||
         raw.startsWith("STAFF:") ||
         raw.startsWith("TEACHER:") ||
-        raw.includes("TEACHER") ||
+        (!isHttpUrl && raw.includes("TEACHER")) ||
         raw.toUpperCase().startsWith("TEA-") ||
         raw.toUpperCase().startsWith("EMP-");
 
@@ -1110,7 +1503,8 @@ export const SchoolEcosystem: React.FC<Props> = ({
       if (
         !hasTeacherQrPrefix &&
         targetType !== "STUDENT" &&
-        !raw.startsWith("NSTA-SCHOOL:") &&
+        !isHttpUrl &&
+        !raw.includes("NSTA-SCHOOL:") &&
         !raw.startsWith("DPS-RECEIPT") &&
         !raw.includes("AdmNo:")
       ) {
@@ -1137,20 +1531,32 @@ export const SchoolEcosystem: React.FC<Props> = ({
       }
 
       if (isExplicitTeacher || hasTeacherQrPrefix || matchedTeacher) {
-        let teacherId = matchedTeacher?.id || `staff_${Date.now()}`;
+        let teacherId = matchedTeacher?.id || "";
         let teacherName = matchedTeacher?.name || "Teacher";
         let schId = matchedTeacher?.schoolId || effectiveSchoolId;
 
-        if (raw.startsWith("NSTA-SCHOOL-STAFF:") || raw.includes("NSTA-SCHOOL-STAFF:")) {
-          const token = raw.includes("NSTA-SCHOOL-STAFF:") ? raw.split("NSTA-SCHOOL-STAFF:")[1] : raw;
+        if (raw.includes("NSTA-SCHOOL-STAFF:") || raw.includes("NSTA-STAFF:") || raw.includes("NSTA-SCHOOL-TEACHER:")) {
+          const prefix = raw.includes("NSTA-SCHOOL-STAFF:")
+            ? "NSTA-SCHOOL-STAFF:"
+            : raw.includes("NSTA-STAFF:")
+            ? "NSTA-STAFF:"
+            : "NSTA-SCHOOL-TEACHER:";
+          const token = raw.split(prefix)[1] || "";
           const clean = token.split("\n")[0].split("\r")[0];
-          const parts = clean.split(":").map(decodeURIComponent);
+          const parts = clean.split(":").map((p) => {
+            try { return decodeURIComponent(p); } catch { return p; }
+          });
           if (parts[0]) schId = parts[0];
           if (parts[1]) teacherId = parts[1];
           if (parts[4]) teacherName = parts[4];
           else if (parts[2]) teacherName = parts[2];
-        } else if (raw.includes(":") && !raw.startsWith("DPS-RECEIPT")) {
-          const parts = raw.split(":").map(decodeURIComponent);
+        } else if (urlUserParam && isValidSafeEntityId(urlUserParam)) {
+          teacherId = urlUserParam;
+          if (urlSchoolParam && isValidSafeEntityId(urlSchoolParam)) schId = urlSchoolParam;
+        } else if (!isHttpUrl && raw.includes(":") && !raw.startsWith("DPS-RECEIPT")) {
+          const parts = raw.split(":").map((p) => {
+            try { return decodeURIComponent(p); } catch { return p; }
+          });
           if (parts[1]) schId = parts[1];
           if (parts[2]) teacherId = parts[2];
           if (parts[4]) teacherName = parts[4];
@@ -1159,7 +1565,7 @@ export const SchoolEcosystem: React.FC<Props> = ({
           teacherId = matchedTeacher.id;
           teacherName = matchedTeacher.name;
           if (matchedTeacher.schoolId) schId = matchedTeacher.schoolId;
-        } else {
+        } else if (!isHttpUrl) {
           // Manual input: Mobile number, Emp ID, or Teacher Name
           const qClean = raw.toLowerCase().trim();
           const cleanDigits = qClean.replace(/\D/g, "");
@@ -1186,6 +1592,12 @@ export const SchoolEcosystem: React.FC<Props> = ({
               if (found.schoolId) schId = found.schoolId;
             }
           } catch {}
+          if (!teacherId) teacherId = `staff_${Date.now()}`;
+        }
+
+        if (!isValidSafeEntityId(teacherId) || (schId && !isValidSafeEntityId(schId))) {
+          setLinkError("अमान्य Teacher QR कोड — कृपया सही Teacher / Staff ID Card स्कैन करें।");
+          return;
         }
 
         const teacherRecord = {
@@ -1219,10 +1631,12 @@ export const SchoolEcosystem: React.FC<Props> = ({
       let extractedAddress = "";
       let extractedFee: number | undefined = undefined;
 
-      if (raw.startsWith("NSTA-SCHOOL") || raw.includes("NSTA-SCHOOL")) {
-        const token = raw.includes("NSTA-SCHOOL:") ? raw.split("NSTA-SCHOOL:")[1] : raw;
+      if (raw.includes("NSTA-SCHOOL:")) {
+        const token = raw.split("NSTA-SCHOOL:")[1] || "";
         const clean = token.split("\n")[0].split("\r")[0];
-        const parts = clean.split(":").map(decodeURIComponent);
+        const parts = clean.split(":").map((p) => {
+          try { return decodeURIComponent(p); } catch { return p; }
+        });
         if (parts[0]) schId = parts[0];
         if (parts[1]) studentId = parts[1];
         if (parts[2]) rollNo = parts[2];
@@ -1261,6 +1675,31 @@ export const SchoolEcosystem: React.FC<Props> = ({
             extractedSchoolName = lastPart;
           }
         }
+      } else if (isHttpUrl && parsedUrl) {
+        // Chrome-clickable Verification URL without #NSTA-SCHOOL: hash token
+        const urlTokenParam = (parsedUrl.searchParams.get("t") || "").trim();
+        const urlAdmParam = (parsedUrl.searchParams.get("adm") || "").trim();
+        if (urlSchoolParam && isValidSafeEntityId(urlSchoolParam)) {
+          schId = urlSchoolParam;
+        }
+        if (urlUserParam && isValidSafeEntityId(urlUserParam)) {
+          studentId = urlUserParam;
+          if (urlAdmParam) admNo = urlAdmParam;
+        } else if (urlTokenParam && schId && isValidSafeEntityId(schId)) {
+          // Match compact VTR-/VT2- verification token against cached students in that school
+          const localMatch = getLocalStudents(schId).find(
+            (s: any) => s?.verificationToken && s.verificationToken === urlTokenParam
+          );
+          if (localMatch && isValidSafeEntityId(localMatch.id)) {
+            studentId = localMatch.id;
+            admNo = localMatch.admissionNo || "";
+            studentName = localMatch.name || "";
+          }
+        }
+        if (!studentId) {
+          setLinkError("यह Verification Link है — कृपया Student ID Card का QR (या Admission No / Mobile No) इस्तेमाल करें।");
+          return;
+        }
       } else if (raw.includes("AdmNo:") || raw.includes("ReceiptNo:") || raw.startsWith("DPS-RECEIPT")) {
         const lines = raw.split(/\r?\n/);
         const map: Record<string, string> = {};
@@ -1276,7 +1715,11 @@ export const SchoolEcosystem: React.FC<Props> = ({
         extractedClassName = map["class"] || "";
         studentId = map["studentid"] || (admNo ? `std_${admNo.replace(/[^a-zA-Z0-9]/g, "_")}` : `std_${Date.now()}`);
       } else {
-        // Plain text admission no or roll no entered manually
+        // Plain text admission no or roll no entered manually — NEVER mint a student from Driver IDs
+        if (looksLikeDriverIdString(raw)) {
+          setLinkError("यह Bus Driver ID स्कूल रिकॉर्ड में नहीं मिला। कृपया सही Driver QR या पंजीकृत मोबाइल नंबर दर्ज करें।");
+          return;
+        }
         admNo = raw;
         studentId = `std_${raw.replace(/[^a-zA-Z0-9]/g, "_")}`;
         studentName = "Student";
@@ -1312,9 +1755,15 @@ export const SchoolEcosystem: React.FC<Props> = ({
           : "";
 
       const resolvedSchoolId = found?.schoolId || schId;
+      const resolvedStudentId = found?.id || studentId || `std_${Date.now()}`;
+      if (!isValidSafeEntityId(resolvedStudentId) || (resolvedSchoolId && !isValidSafeEntityId(resolvedSchoolId))) {
+        setLinkError("अमान्य QR कोड — कृपया सही Student ID Card स्कैन करें।");
+        return;
+      }
+
       const finalRecord = {
         type: "STUDENT",
-        id: found?.id || studentId || `std_${Date.now()}`,
+        id: resolvedStudentId,
         name: studentName || found?.name || "Student",
         admissionNo: cleanAdmNo,
         rollNo: rollNo || found?.rollNo || "01",
@@ -1401,6 +1850,9 @@ export const SchoolEcosystem: React.FC<Props> = ({
         return [...filtered, recordToMerge];
       };
 
+      const guardKeyInitial = `${resolvedSchoolId}__${finalRecord.id}`;
+      pendingSlotRegistrationKeysRef.current.add(guardKeyInitial);
+
       // Append or update in multi-school + multi-student list using strict composite key (schoolId__studentId)
       const initialUpdatedList = mergeLinkedList(linkedStudents, finalRecord);
       setLinkedStudents(initialUpdatedList);
@@ -1416,27 +1868,62 @@ export const SchoolEcosystem: React.FC<Props> = ({
         window.dispatchEvent(new CustomEvent('user-signed-up-prompt-notifications'));
       } catch {}
 
-      // Live Remote Enrichment from Firebase (if scanned on a fresh phone with empty local cache)
+      // Live Remote Enrichment + Permanent Plan-Scoped Slot Registration (Lite=1, Elite=2, Ultra=4)
       void Promise.all([
-        findStudentInSchoolRemote(resolvedSchoolId, finalRecord.id, finalRecord.admissionNo),
-        !finalRecord.schoolName ? getSchool(resolvedSchoolId) : Promise.resolve(null),
-      ]).then(([remoteSt, remoteSch]) => {
-        if (!remoteSt && !remoteSch) return;
-        const enrichedRecord = {
-          ...finalRecord,
-          ...(remoteSt || {}),
-          id: remoteSt?.id || finalRecord.id,
-          schoolId: resolvedSchoolId,
-          schoolName: finalRecord.schoolName || remoteSch?.name || (remoteSt as any)?.schoolName || "",
-          className: finalRecord.className || (remoteSt as any)?.className,
-          monthlyFee: remoteSt?.monthlyFee ?? finalRecord.monthlyFee,
-        };
-        const enrichedKey = getStudentLinkKey(enrichedRecord, resolvedSchoolId);
-        const enrichedList = mergeLinkedList(initialUpdatedList, enrichedRecord);
-        setLinkedStudents(enrichedList);
-        if (enrichedKey) setActiveStudentKey(enrichedKey);
-        persistStudentBinding(enrichedList, enrichedRecord);
-      }).catch(() => {});
+        findStudentInSchoolRemote(resolvedSchoolId, finalRecord.id, finalRecord.admissionNo).catch(() => null),
+        getSchool(resolvedSchoolId).catch(() => null),
+      ]).then(async ([remoteSt, remoteSch]) => {
+        const canonicalId = remoteSt?.id || finalRecord.id;
+        const guardKeyCanonical = `${resolvedSchoolId}__${canonicalId}`;
+        pendingSlotRegistrationKeysRef.current.add(guardKeyCanonical);
+        try {
+          const enrichedRecord = (remoteSt || remoteSch)
+            ? {
+                ...finalRecord,
+                ...(remoteSt || {}),
+                id: canonicalId,
+                schoolId: resolvedSchoolId,
+                schoolName: finalRecord.schoolName || remoteSch?.name || (remoteSt as any)?.schoolName || "",
+                className: finalRecord.className || (remoteSt as any)?.className,
+                monthlyFee: remoteSt?.monthlyFee ?? finalRecord.monthlyFee,
+              }
+            : finalRecord;
+
+          const slotRes = await registerStudentIdCardLinkSlot({
+            schoolId: resolvedSchoolId,
+            studentId: enrichedRecord.id,
+            studentName: enrichedRecord.name,
+            uid,
+            school: remoteSch,
+            holderLabel: effectiveEmail || displayName || user?.name || uid,
+          });
+
+          const enrichedKey = getStudentLinkKey(enrichedRecord, resolvedSchoolId);
+          const enrichedList = mergeLinkedList(initialUpdatedList, enrichedRecord);
+          setLinkedStudents(enrichedList);
+          if (enrichedKey) setActiveStudentKey(enrichedKey);
+          persistStudentBinding(enrichedList, enrichedRecord);
+
+          if (slotRes.ok) {
+            if (slotRes.evicted.length > 0) {
+              toast.success(
+                `✅ ${enrichedRecord.name} is account se permanently link ho gaya! (${slotRes.planName} Plan limit ${slotRes.limit}: pichhle ${slotRes.evicted.length} account se link automatic hat gaya)`
+              );
+            } else {
+              toast.success(
+                `✅ ${enrichedRecord.name} is account se permanently link ho gaya (${slotRes.slots.length}/${slotRes.limit} · ${slotRes.planName} Plan)`
+              );
+            }
+          }
+        } finally {
+          setTimeout(() => {
+            pendingSlotRegistrationKeysRef.current.delete(guardKeyInitial);
+            pendingSlotRegistrationKeysRef.current.delete(guardKeyCanonical);
+          }, 800);
+        }
+      }).catch(() => {
+        pendingSlotRegistrationKeysRef.current.delete(guardKeyInitial);
+      });
     } catch (err: any) {
       setLinkError("QR code decode nahi ho saka. Sahi QR image chunein ya Admission No dalein.");
     }
@@ -1449,6 +1936,10 @@ export const SchoolEcosystem: React.FC<Props> = ({
 
   const handleRemoveLinkedStudent = (studentKeyToRemove: string) => {
     setLinkedStudents((prev) => {
+      const removedTargets = prev.filter((s) => {
+        const k = getStudentLinkKey(s, defaultSchoolId);
+        return k === studentKeyToRemove || s.id === studentKeyToRemove || s.admissionNo === studentKeyToRemove;
+      });
       const remaining = prev.filter((s) => {
         const k = getStudentLinkKey(s, defaultSchoolId);
         return k !== studentKeyToRemove && s.id !== studentKeyToRemove && s.admissionNo !== studentKeyToRemove;
@@ -1465,6 +1956,15 @@ export const SchoolEcosystem: React.FC<Props> = ({
       } catch {}
       void saveUserLinkedStudents(uid, remaining, nextActive);
       void syncLinkedStudentsToPushSubscription(uid, remaining);
+      removedTargets.forEach((rm) => {
+        if (rm?.id) {
+          void unregisterStudentIdCardLinkSlot({
+            schoolId: rm.schoolId || defaultSchoolId,
+            studentId: rm.id,
+            uid,
+          });
+        }
+      });
       return remaining;
     });
   };
@@ -1478,6 +1978,7 @@ export const SchoolEcosystem: React.FC<Props> = ({
     loading ||
     (hydratingLinkedAccount &&
       !linkedEntity &&
+      !linkedDriver &&
       !isExplicitAdmin &&
       !isTeacherRole &&
       !isAccountantRole)
@@ -1844,11 +2345,25 @@ export const SchoolEcosystem: React.FC<Props> = ({
                 }
                 return true;
               });
+              const enrollGuardKey = `${resolvedSchoolId}__${finalRecord.id}`;
+              pendingSlotRegistrationKeysRef.current.add(enrollGuardKey);
               const updatedList = [...filteredPrev, finalRecord];
               setLinkedStudents(updatedList);
               setActiveStudentKey(recordCompositeKey);
               void saveUserLinkedStudents(uid, updatedList, recordCompositeKey);
               void syncLinkedStudentsToPushSubscription(uid, updatedList);
+              void registerStudentIdCardLinkSlot({
+                schoolId: resolvedSchoolId,
+                studentId: finalRecord.id,
+                studentName: finalRecord.name,
+                uid,
+                school: currentSchool,
+                holderLabel: effectiveEmail || displayName || finalRecord.name,
+              }).finally(() => {
+                setTimeout(() => {
+                  pendingSlotRegistrationKeysRef.current.delete(enrollGuardKey);
+                }, 800);
+              });
               void saveSchoolUserProfile({
                 uid,
                 schoolId: resolvedSchoolId,
@@ -1873,8 +2388,81 @@ export const SchoolEcosystem: React.FC<Props> = ({
     );
   }
 
+  // ── 2B. IF USER SCANNED A BUS DRIVER ID CARD QR OR HAS DRIVER ROLE: SHOW LIVE DRIVER TRIP CONSOLE ──
+  const activeDriverMeta =
+    linkedDriver ||
+    (isDriverUser(user)
+      ? {
+          type: "DRIVER",
+          id: user.id || user.uid || "driver_active",
+          schoolId: user.schoolId || effectiveSchoolId,
+          busId: user.busId || "bus_driver",
+          busNumber: user.busNumber || "School Bus",
+          route: user.busRoute || user.route || "School Bus Route",
+          driverName: user.name || "Driver",
+          driverPhone: user.mobile || "",
+          schoolCode: user.schoolCode || "",
+          schoolName: user.schoolName || "School Bus Fleet",
+        }
+      : null);
+
+  if (activeDriverMeta && !isExplicitAdmin && !isRealTeacher && !isAccountantRole) {
+    const driverSchoolObj =
+      allSchools.find((s) => s.id === activeDriverMeta.schoolId) ||
+      getLocalSchools().find((s) => s.id === activeDriverMeta.schoolId) ||
+      ({
+        id: activeDriverMeta.schoolId || "",
+        code: activeDriverMeta.schoolCode || "",
+        name: activeDriverMeta.schoolName || "School Bus Fleet",
+      } as any);
+
+    const handleDriverExit = () => {
+      try {
+        if (uid) localStorage.removeItem(`nst_school_linked_driver_${uid}`);
+      } catch {}
+      setLinkedDriver(null);
+      if (onLogout) onLogout();
+      else if (onBack) onBack();
+    };
+
+    return (
+      <div className={`min-h-screen min-h-[100dvh] w-full flex flex-col ${shellThemeClass}`}>
+        <PanelErrorBoundary fallbackTitle="Driver GPS Dashboard">
+          <Suspense fallback={<PanelLoadingFallback title="Driver GPS" theme={erpTheme} />}>
+            <DriverTripConsole
+              school={driverSchoolObj}
+              initialBusId={activeDriverMeta.busId || undefined}
+              initialBusMeta={{
+                id: activeDriverMeta.busId || "bus_driver",
+                busNumber: activeDriverMeta.busNumber || "School Bus",
+                route: activeDriverMeta.route || "School Bus Route",
+                driverName: activeDriverMeta.driverName || "Driver",
+                driverPhone: activeDriverMeta.driverPhone || "",
+              }}
+              standaloneMode={true}
+              onBack={() => {
+                try {
+                  if (uid) localStorage.removeItem(`nst_school_linked_driver_${uid}`);
+                } catch {}
+                setLinkedDriver(null);
+              }}
+              onLogout={handleDriverExit}
+            />
+          </Suspense>
+        </PanelErrorBoundary>
+      </div>
+    );
+  }
+
   // ── 3. IF NON-ADMIN USER HAS NOT LINKED AN ID CARD YET: SHOW SCAN/CONNECT GATEWAY ──
   if (!linkedEntity) {
+    const currentSchool =
+      allSchools.find((s) => s.id === effectiveSchoolId) ||
+      getLocalSchools().find((s) => s.id === effectiveSchoolId) ||
+      allSchools[0] ||
+      getLocalSchools()[0] ||
+      null;
+
     return (
       <div className={`min-h-screen flex flex-col ${shellThemeClass}`}>
         {/* Header */}
@@ -1953,8 +2541,18 @@ export const SchoolEcosystem: React.FC<Props> = ({
               School ID Card से जुड़ें
             </h1>
             <p className={`text-xs max-w-xs mx-auto leading-relaxed ${erpTheme === "white" ? "text-slate-600" : "text-slate-400"}`}>
-              अपना Live Student या Teacher Dashboard देखने के लिए अपना ID Card या फीस रसीद QR कोड स्कैन करें।
+              अपना Live Student, Teacher या Bus Driver Dashboard देखने के लिए ID Card या फीस रसीद का QR कोड स्कैन करें।
             </p>
+            <div className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg border text-[11px] font-bold ${
+              erpTheme === "white"
+                ? "bg-slate-100 border-slate-200 text-slate-700"
+                : "bg-slate-900/90 border-slate-700/80 text-slate-300"
+            }`}>
+              <ShieldCheck className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
+              <span>
+                Plan Limit ({getSchoolPlanTierName(currentSchool)}): {getSchoolStudentAccountLimit(currentSchool)} {getSchoolStudentAccountLimit(currentSchool) === 1 ? "Account / ID" : "Accounts / Persons"}
+              </span>
+            </div>
           </div>
 
           {linkError && (
@@ -1970,7 +2568,7 @@ export const SchoolEcosystem: React.FC<Props> = ({
 
           {/* Action Cards */}
           <div className="space-y-3">
-            {/* 1. Unified Scan ID Card / Fees QR Button for Both Student & Teacher */}
+            {/* 1. Unified Scan ID Card / Fees QR Button for Student, Teacher & Driver */}
             <button
               onClick={() => {
                 setQrScanMode("AUTO");
@@ -1992,11 +2590,11 @@ export const SchoolEcosystem: React.FC<Props> = ({
                 </div>
                 <div>
                   <h3 className={`font-bold text-sm flex items-center gap-1.5 ${erpTheme === "white" ? "text-slate-900" : "text-white"}`}>
-                    Scan Student / Teacher ID Card
+                    Scan Student / Teacher / Driver ID Card
                     <Sparkles className="w-3.5 h-3.5 text-amber-500" />
                   </h3>
                   <p className={`text-[11px] ${erpTheme === "white" ? "text-slate-600" : "text-slate-400"}`}>
-                    ID Card, फीस रसीद या Teacher Card का QR कोड कैमरा से स्कैन करें
+                    ID Card, फीस रसीद, Teacher या Bus Driver Card का QR कोड कैमरा से स्कैन करें
                   </p>
                 </div>
               </div>
@@ -2054,14 +2652,14 @@ export const SchoolEcosystem: React.FC<Props> = ({
           mode="LOGIN"
           onScanSuccess={(decodedText) => handleLinkSuccess(decodedText, qrScanMode)}
           manualTitle="कैमरा काम न करे तो ID या मोबाइल नंबर से जुड़ें"
-          manualPlaceholder="Mobile / Teacher ID / Roll No / Admission No"
+          manualPlaceholder="Mobile / Student ID / Teacher ID / Driver ID"
           manualSubmitText="जुड़ें"
           title={
             qrScanMode === "TEACHER"
               ? "Scan Teacher / Staff Card"
               : qrScanMode === "STUDENT"
               ? "Scan Student ID Card"
-              : "Scan Student / Teacher ID Card"
+              : "Scan Student / Teacher / Driver ID Card"
           }
         />
       </div>

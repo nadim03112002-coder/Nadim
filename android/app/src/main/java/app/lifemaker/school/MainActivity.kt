@@ -141,6 +141,16 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private val busGpsReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            if (intent?.action != BusGpsForegroundService.ACTION_BUS_LOCATION_UPDATE) return
+            val payload = intent.getStringExtra(BusGpsForegroundService.EXTRA_BUS_PAYLOAD).orEmpty()
+            if (payload.isNotBlank()) {
+                pushBusGpsLocationToWebView(payload)
+            }
+        }
+    }
+
     private val fileChooserLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) { result ->
@@ -256,6 +266,83 @@ class MainActivity : AppCompatActivity() {
             AppPrefs.setDeviceAdminEnabledAt(applicationContext, System.currentTimeMillis())
         }
         pushDeviceAdminStatusToWebView()
+    }
+
+    private val locationPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { results ->
+        val granted =
+            results[Manifest.permission.ACCESS_FINE_LOCATION] == true ||
+            results[Manifest.permission.ACCESS_COARSE_LOCATION] == true ||
+            BusGpsForegroundService.hasLocationPermission(applicationContext)
+        if (granted && AppPrefs.isBusGpsActive(applicationContext)) {
+            BusGpsForegroundService.startOrUpdate(applicationContext)
+        }
+        if (::webView.isInitialized && webAppBridge.isTrustedHostActive) {
+            webView.post {
+                webView.evaluateJavascript(
+                    "window.dispatchEvent(new CustomEvent('android-location-permission', { detail: { granted: $granted } }));",
+                    null
+                )
+            }
+        }
+    }
+
+    private val upiPaymentLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        val rawResponse = result.data?.getStringExtra("response").orEmpty()
+        var parsedStatus = ""
+        var txnRef = ""
+        var approvalRefNo = ""
+        if (rawResponse.isNotBlank()) {
+            rawResponse.split("&").forEach { pair ->
+                val parts = pair.split("=", limit = 2)
+                if (parts.size == 2) {
+                    val key = parts[0].trim().lowercase(Locale.US)
+                    val value = Uri.decode(parts[1].trim())
+                    when (key) {
+                        "status" -> parsedStatus = value.uppercase(Locale.US)
+                        "txnref", "txnid" -> if (txnRef.isEmpty()) txnRef = value
+                        "approvalrefno" -> approvalRefNo = value
+                    }
+                }
+            }
+        }
+        val finalStatus = when {
+            parsedStatus.contains("SUCCESS") -> "SUCCESS"
+            parsedStatus.contains("SUBMITTED") || parsedStatus.contains("PENDING") -> "SUBMITTED"
+            parsedStatus.contains("FAIL") -> "FAILED"
+            result.resultCode == Activity.RESULT_OK -> "RETURNED"
+            else -> "RETURNED"
+        }
+        if (::webView.isInitialized && webAppBridge.isTrustedHostActive) {
+            val safeStatus = JSONObject.quote(finalStatus)
+            val safeTxnRef = JSONObject.quote(txnRef)
+            val safeApproval = JSONObject.quote(approvalRefNo)
+            val safeRaw = JSONObject.quote(rawResponse)
+            val returnedAt = System.currentTimeMillis()
+            webView.post {
+                webView.evaluateJavascript(
+                    """
+                    (function() {
+                      try {
+                        window.dispatchEvent(new CustomEvent('native-upi-result', {
+                          detail: {
+                            status: $safeStatus,
+                            txnRef: $safeTxnRef,
+                            approvalRefNo: $safeApproval,
+                            rawResponse: $safeRaw,
+                            returnedAt: $returnedAt
+                          }
+                        }));
+                      } catch (e) {}
+                    })();
+                    """.trimIndent(),
+                    null
+                )
+            }
+        }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -387,14 +474,17 @@ class MainActivity : AppCompatActivity() {
         val filter = IntentFilter(LifeMakerMessagingService.ACTION_NEW_FCM_TOKEN)
         val parentCallFilter = IntentFilter(ParentCallerAlertHelper.ACTION_INCOMING_PARENT_CALL)
         val missedCallFilter = IntentFilter(ParentCallerAlertHelper.ACTION_MISSED_SCHOOL_CALL)
+        val busGpsFilter = IntentFilter(BusGpsForegroundService.ACTION_BUS_LOCATION_UPDATE)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             registerReceiver(fcmTokenReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
             registerReceiver(incomingParentCallReceiver, parentCallFilter, Context.RECEIVER_NOT_EXPORTED)
             registerReceiver(missedSchoolCallReceiver, missedCallFilter, Context.RECEIVER_NOT_EXPORTED)
+            registerReceiver(busGpsReceiver, busGpsFilter, Context.RECEIVER_NOT_EXPORTED)
         } else {
             registerReceiver(fcmTokenReceiver, filter)
             registerReceiver(incomingParentCallReceiver, parentCallFilter)
             registerReceiver(missedSchoolCallReceiver, missedCallFilter)
+            registerReceiver(busGpsReceiver, busGpsFilter)
         }
         registerBatteryReceiver()
         registerNetworkObserver()
@@ -409,6 +499,9 @@ class MainActivity : AppCompatActivity() {
         } catch (_: Exception) {}
         try {
             unregisterReceiver(missedSchoolCallReceiver)
+        } catch (_: Exception) {}
+        try {
+            unregisterReceiver(busGpsReceiver)
         } catch (_: Exception) {}
         unregisterBatteryReceiver()
         unregisterNetworkObserver()
@@ -547,6 +640,7 @@ class MainActivity : AppCompatActivity() {
             val incomingParentCall = parsed?.getQueryParameter("incomingParentCall")?.trim().orEmpty()
             val isPostCall = parsed?.getQueryParameter("postCall")?.trim() == "1"
             val openWalkie = parsed?.getQueryParameter("openWalkie")?.trim() == "1"
+            val openUpiProof = parsed?.getQueryParameter("openUpiProof")?.trim().orEmpty()
             val isMissedSchoolCall = parsed?.getQueryParameter("missedSchoolCall")?.trim() == "1"
             val basePrefix = BuildConfig.APP_BASE_URL.trimEnd('/')
             val isWebLoaded =
@@ -555,7 +649,15 @@ class MainActivity : AppCompatActivity() {
                 webView.progress == 100 &&
                 webView.url?.startsWith(basePrefix) == true
 
-            if (openWalkie && isWebLoaded) {
+            if (openUpiProof.isNotEmpty() && isWebLoaded) {
+                val safeProofId = JSONObject.quote(openUpiProof)
+                webView.post {
+                    webView.evaluateJavascript(
+                        "window.dispatchEvent(new CustomEvent('open-upi-proof', { detail: { proofId: $safeProofId } }));",
+                        null
+                    )
+                }
+            } else if (openWalkie && isWebLoaded) {
                 webView.post {
                     webView.evaluateJavascript(
                         "window.dispatchEvent(new CustomEvent('android-open-walkie'));",
@@ -658,7 +760,25 @@ class MainActivity : AppCompatActivity() {
                     return true
                 }
 
-                // External URLs (tel:, mailto:, WhatsApp, external websites) open safely via OS Intent
+                // Handle Android intent:// URIs safely
+                if (scheme == "intent") {
+                    return try {
+                        val intent = Intent.parseUri(uri.toString(), Intent.URI_INTENT_SCHEME)
+                        if (intent.resolveActivity(packageManager) != null) {
+                            startActivity(intent)
+                        } else {
+                            val fallbackUrl = intent.getStringExtra("browser_fallback_url")
+                            if (!fallbackUrl.isNullOrBlank()) {
+                                view?.loadUrl(fallbackUrl)
+                            }
+                        }
+                        true
+                    } catch (_: Exception) {
+                        true
+                    }
+                }
+
+                // External URLs (upi:, phonepe:, tez:, paytmmp:, tel:, mailto:, WhatsApp, external websites) open safely via OS Intent
                 return try {
                     startActivity(Intent(Intent.ACTION_VIEW, uri))
                     true
@@ -1365,6 +1485,7 @@ class MainActivity : AppCompatActivity() {
             put("isUninstallBlocked", isUninstallBlocked())
             put("isAccessibilityGuardEnabled", isAccessibilityGuardEnabled())
             put("isAccessibilityGuardLocked", AppPrefs.isAccessibilityGuardLocked(applicationContext))
+            put("uninstallPinRequired", AppPrefs.isUninstallPinRequired(applicationContext))
             put("hasNativeAdminPin", AppPrefs.hasAdminPinHash(applicationContext))
             put("tempUnlockRemainingSec", tempUnlockRemainingSec)
             put("enabledAt", AppPrefs.getDeviceAdminEnabledAt(applicationContext))
@@ -1503,6 +1624,15 @@ class MainActivity : AppCompatActivity() {
         pushDeviceAdminStatusToWebView()
         return true
     }
+
+    fun setUninstallPinRequired(required: Boolean): Boolean {
+        AppPrefs.setUninstallPinRequired(applicationContext, required)
+        pushDeviceAdminStatusToWebView()
+        return true
+    }
+
+    fun isUninstallPinRequired(): Boolean =
+        AppPrefs.isUninstallPinRequired(applicationContext)
 
     fun unlockUninstallProtectionTemporarily(seconds: Int): Boolean {
         val safeSec = seconds.coerceIn(0, 1800)
@@ -1663,6 +1793,47 @@ class MainActivity : AppCompatActivity() {
         pushCallerIdStatusToWebView()
     }
 
+    fun requestLocationPermissionIfNeeded() {
+        if (BusGpsForegroundService.hasLocationPermission(applicationContext)) {
+            if (AppPrefs.isBusGpsActive(applicationContext)) {
+                BusGpsForegroundService.startOrUpdate(applicationContext)
+            }
+            if (::webView.isInitialized && webAppBridge.isTrustedHostActive) {
+                webView.post {
+                    webView.evaluateJavascript(
+                        "window.dispatchEvent(new CustomEvent('android-location-permission', { detail: { granted: true } }));",
+                        null
+                    )
+                }
+            }
+            return
+        }
+        try {
+            locationPermissionLauncher.launch(
+                arrayOf(
+                    Manifest.permission.ACCESS_FINE_LOCATION,
+                    Manifest.permission.ACCESS_COARSE_LOCATION
+                )
+            )
+        } catch (_: Exception) {}
+    }
+
+    fun pushBusGpsLocationToWebView(payloadJson: String) {
+        if (!::webView.isInitialized || !webAppBridge.isTrustedHostActive) return
+        webView.post {
+            webView.evaluateJavascript(
+                """
+                (function() {
+                  try {
+                    window.dispatchEvent(new CustomEvent('android-bus-gps-location', { detail: $payloadJson }));
+                  } catch (e) {}
+                })();
+                """.trimIndent(),
+                null
+            )
+        }
+    }
+
     private fun hasPermission(permission: String): Boolean =
         ContextCompat.checkSelfPermission(this, permission) == PackageManager.PERMISSION_GRANTED
 
@@ -1748,6 +1919,128 @@ class MainActivity : AppCompatActivity() {
                 """.trimIndent(),
                 null
             )
+        }
+    }
+
+    fun getInstalledUpiAppsJson(): String {
+        return try {
+            val pm = packageManager
+            val probeUri = Uri.parse("upi://pay?pa=school@upi&pn=School&cu=INR")
+            val probeIntent = Intent(Intent.ACTION_VIEW, probeUri)
+            val resolved = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                pm.queryIntentActivities(
+                    probeIntent,
+                    PackageManager.ResolveInfoFlags.of(PackageManager.MATCH_DEFAULT_ONLY.toLong())
+                )
+            } else {
+                @Suppress("DEPRECATION")
+                pm.queryIntentActivities(probeIntent, PackageManager.MATCH_DEFAULT_ONLY)
+            }
+
+            val priorityOrder = listOf(
+                "com.phonepe.app",
+                "com.google.android.apps.nbu.paisa.user",
+                "net.one97.paytm",
+                "in.org.npci.upiapp",
+                "in.amazon.mShop.android.shopping",
+                "com.dreamplug.androidapp",
+                "com.naviapp",
+                "com.fampay.in",
+                "money.super.payments",
+                "com.whatsapp"
+            )
+
+            val seen = HashSet<String>()
+            val items = mutableListOf<Pair<Int, JSONObject>>()
+            for (info in resolved) {
+                val actInfo = info.activityInfo ?: continue
+                val pkg = actInfo.packageName?.trim().orEmpty()
+                if (pkg.isEmpty() || pkg == packageName || !seen.add(pkg)) continue
+                val label = try {
+                    info.loadLabel(pm).toString().trim().ifBlank { pkg }
+                } catch (_: Exception) {
+                    pkg
+                }
+                val brandKey = when {
+                    pkg.contains("phonepe", ignoreCase = true) -> "phonepe"
+                    pkg.contains("paisa", ignoreCase = true) || label.contains("Google Pay", ignoreCase = true) || label.contains("GPay", ignoreCase = true) -> "gpay"
+                    pkg.contains("paytm", ignoreCase = true) -> "paytm"
+                    pkg.contains("npci.upiapp", ignoreCase = true) || label.contains("BHIM", ignoreCase = true) -> "bhim"
+                    pkg.contains("amazon", ignoreCase = true) -> "amazonpay"
+                    pkg.contains("dreamplug", ignoreCase = true) || label.contains("CRED", ignoreCase = true) -> "cred"
+                    pkg.contains("whatsapp", ignoreCase = true) -> "whatsapp"
+                    pkg.contains("navi", ignoreCase = true) -> "navi"
+                    pkg.contains("fampay", ignoreCase = true) -> "fampay"
+                    pkg.contains("super.payments", ignoreCase = true) -> "supermoney"
+                    else -> "other"
+                }
+                val obj = JSONObject().apply {
+                    put("packageName", pkg)
+                    put("appName", label)
+                    put("brandKey", brandKey)
+                }
+                val prio = priorityOrder.indexOf(pkg).let { if (it >= 0) it else 999 }
+                items.add(prio to obj)
+            }
+            items.sortWith(compareBy<Pair<Int, JSONObject>> { it.first }.thenBy { it.second.optString("appName") })
+            val arr = JSONArray()
+            items.forEach { arr.put(it.second) }
+            arr.toString()
+        } catch (_: Exception) {
+            "[]"
+        }
+    }
+
+    fun launchDedicatedUpiApp(rawUri: String, targetPackage: String?): Boolean {
+        val parsed = try { Uri.parse(rawUri) } catch (_: Exception) { null } ?: return false
+        val scheme = parsed.scheme?.lowercase(Locale.US).orEmpty()
+        if (scheme !in setOf("upi", "phonepe", "tez", "paytmmp", "bhim")) return false
+        return try {
+            val launchIntent = Intent(Intent.ACTION_VIEW, parsed).apply {
+                if (!targetPackage.isNullOrBlank()) {
+                    setPackage(targetPackage)
+                }
+            }
+            if (!targetPackage.isNullOrBlank() && launchIntent.resolveActivity(packageManager) == null) {
+                val fallbackIntent = Intent(Intent.ACTION_VIEW, parsed)
+                val chooser = Intent.createChooser(fallbackIntent, "Pay with UPI App")
+                runOnUiThread {
+                    try {
+                        upiPaymentLauncher.launch(chooser)
+                    } catch (_: Exception) {
+                        chooser.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        startActivity(chooser)
+                    }
+                }
+                return true
+            }
+            runOnUiThread {
+                try {
+                    upiPaymentLauncher.launch(launchIntent)
+                } catch (_: Exception) {
+                    launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    startActivity(launchIntent)
+                }
+            }
+            true
+        } catch (_: Exception) {
+            try {
+                val chooser = Intent.createChooser(
+                    Intent(Intent.ACTION_VIEW, parsed),
+                    "Pay with UPI App"
+                )
+                runOnUiThread {
+                    try {
+                        upiPaymentLauncher.launch(chooser)
+                    } catch (_: Exception) {
+                        chooser.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        startActivity(chooser)
+                    }
+                }
+                true
+            } catch (_: Exception) {
+                false
+            }
         }
     }
 

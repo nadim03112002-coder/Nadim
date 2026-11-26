@@ -1078,13 +1078,13 @@ html.dark, html.dark body, body.dark-mode, .dark-mode body {
     color: #f8fafc !important;
 }
 
-.dark-mode :not(.nst-auth-shell):not(.nst-auth-shell *).bg-white {
+.dark-mode :not(.nst-auth-shell):not(.nst-auth-shell *):not(.nst-isolated-print-light):not(.nst-isolated-print-light *):not(.cr80-id-card):not(.cr80-id-card *):not(.a4-sheet):not(.a4-sheet *).bg-white {
     background-color: #0d0d0d !important;
     border-color: #1c1c1c !important;
 }
 
-.dark-mode :not(.nst-auth-shell):not(.nst-auth-shell *).bg-slate-50,
-.dark-mode :not(.nst-auth-shell):not(.nst-auth-shell *).bg-slate-100 {
+.dark-mode :not(.nst-auth-shell):not(.nst-auth-shell *):not(.nst-isolated-print-light):not(.nst-isolated-print-light *):not(.cr80-id-card):not(.cr80-id-card *):not(.a4-sheet):not(.a4-sheet *).bg-slate-50,
+.dark-mode :not(.nst-auth-shell):not(.nst-auth-shell *):not(.nst-isolated-print-light):not(.nst-isolated-print-light *):not(.cr80-id-card):not(.cr80-id-card *):not(.a4-sheet):not(.a4-sheet *).bg-slate-100 {
     background-color: #111111 !important;
     border-color: #1f1f1f !important;
 }
@@ -1173,15 +1173,15 @@ html.dark, html.dark body, body.dark-mode, .dark-mode body {
     outline: none !important;
 }
 
-.dark-mode :not(.nst-auth-shell):not(.nst-auth-shell *).text-slate-900,
-.dark-mode :not(.nst-auth-shell):not(.nst-auth-shell *).text-slate-800,
-.dark-mode :not(.nst-auth-shell):not(.nst-auth-shell *).text-slate-700,
-.dark-mode :not(.nst-auth-shell):not(.nst-auth-shell *).text-slate-600 {
+.dark-mode :not(.nst-auth-shell):not(.nst-auth-shell *):not(.nst-isolated-print-light):not(.nst-isolated-print-light *):not(.cr80-id-card):not(.cr80-id-card *):not(.a4-sheet):not(.a4-sheet *).text-slate-900,
+.dark-mode :not(.nst-auth-shell):not(.nst-auth-shell *):not(.nst-isolated-print-light):not(.nst-isolated-print-light *):not(.cr80-id-card):not(.cr80-id-card *):not(.a4-sheet):not(.a4-sheet *).text-slate-800,
+.dark-mode :not(.nst-auth-shell):not(.nst-auth-shell *):not(.nst-isolated-print-light):not(.nst-isolated-print-light *):not(.cr80-id-card):not(.cr80-id-card *):not(.a4-sheet):not(.a4-sheet *).text-slate-700,
+.dark-mode :not(.nst-auth-shell):not(.nst-auth-shell *):not(.nst-isolated-print-light):not(.nst-isolated-print-light *):not(.cr80-id-card):not(.cr80-id-card *):not(.a4-sheet):not(.a4-sheet *).text-slate-600 {
     color: #e2e8f0 !important;
 }
 
-.dark-mode :not(.nst-auth-shell):not(.nst-auth-shell *).text-slate-500,
-.dark-mode :not(.nst-auth-shell):not(.nst-auth-shell *).text-slate-400 {
+.dark-mode :not(.nst-auth-shell):not(.nst-auth-shell *):not(.nst-isolated-print-light):not(.nst-isolated-print-light *):not(.cr80-id-card):not(.cr80-id-card *):not(.a4-sheet):not(.a4-sheet *).text-slate-500,
+.dark-mode :not(.nst-auth-shell):not(.nst-auth-shell *):not(.nst-isolated-print-light):not(.nst-isolated-print-light *):not(.cr80-id-card):not(.cr80-id-card *):not(.a4-sheet):not(.a4-sheet *).text-slate-400 {
     color: #94a3b8 !important;
 }
 
@@ -1202,19 +1202,19 @@ html.dark, html.dark body, body.dark-mode, .dark-mode body {
 }
 
 /* Dialogs & Modals */
-.dark-mode :not(.nst-auth-shell):not(.nst-auth-shell *).bg-white.rounded-2xl,
-.dark-mode :not(.nst-auth-shell):not(.nst-auth-shell *).bg-white.rounded-3xl {
+.dark-mode :not(.nst-auth-shell):not(.nst-auth-shell *):not(.nst-isolated-print-light):not(.cr80-id-card):not(.a4-sheet).bg-white.rounded-2xl,
+.dark-mode :not(.nst-auth-shell):not(.nst-auth-shell *):not(.nst-isolated-print-light):not(.cr80-id-card):not(.a4-sheet).bg-white.rounded-3xl {
     background-color: #0d0d0d !important;
     border: 1px solid #222222 !important;
     box-shadow: 0 8px 32px rgba(0,0,0,0.9), 0 0 0 1px rgba(255,255,255,0.03) !important;
 }
 
 /* Premium shadows — deep blacks with micro-border */
-.dark-mode :not(.nst-auth-shell):not(.nst-auth-shell *).shadow-sm  { box-shadow: 0 1px 3px rgba(0,0,0,0.8) !important; border: 1px solid #1a1a1a !important; }
-.dark-mode :not(.nst-auth-shell):not(.nst-auth-shell *).shadow-md  { box-shadow: 0 2px 10px rgba(0,0,0,0.85) !important; border: 1px solid #1e1e1e !important; }
-.dark-mode :not(.nst-auth-shell):not(.nst-auth-shell *).shadow-lg  { box-shadow: 0 4px 20px rgba(0,0,0,0.9) !important; border: 1px solid #222222 !important; }
-.dark-mode :not(.nst-auth-shell):not(.nst-auth-shell *).shadow-xl  { box-shadow: 0 6px 28px rgba(0,0,0,0.92) !important; border: 1px solid #252525 !important; }
-.dark-mode :not(.nst-auth-shell):not(.nst-auth-shell *).shadow-2xl { box-shadow: 0 8px 40px rgba(0,0,0,0.95) !important; border: 1px solid #282828 !important; }
+.dark-mode :not(.nst-auth-shell):not(.nst-auth-shell *):not(.nst-isolated-print-light):not(.cr80-id-card):not(.a4-sheet).shadow-sm  { box-shadow: 0 1px 3px rgba(0,0,0,0.8) !important; border: 1px solid #1a1a1a !important; }
+.dark-mode :not(.nst-auth-shell):not(.nst-auth-shell *):not(.nst-isolated-print-light):not(.cr80-id-card):not(.a4-sheet).shadow-md  { box-shadow: 0 2px 10px rgba(0,0,0,0.85) !important; border: 1px solid #1e1e1e !important; }
+.dark-mode :not(.nst-auth-shell):not(.nst-auth-shell *):not(.nst-isolated-print-light):not(.cr80-id-card):not(.a4-sheet).shadow-lg  { box-shadow: 0 4px 20px rgba(0,0,0,0.9) !important; border: 1px solid #222222 !important; }
+.dark-mode :not(.nst-auth-shell):not(.nst-auth-shell *):not(.nst-isolated-print-light):not(.cr80-id-card):not(.a4-sheet).shadow-xl  { box-shadow: 0 6px 28px rgba(0,0,0,0.92) !important; border: 1px solid #252525 !important; }
+.dark-mode :not(.nst-auth-shell):not(.nst-auth-shell *):not(.nst-isolated-print-light):not(.cr80-id-card):not(.a4-sheet).shadow-2xl { box-shadow: 0 8px 40px rgba(0,0,0,0.95) !important; border: 1px solid #282828 !important; }
 
 /* GLOBAL UI STABILITY FIXES */
 @layer base {
@@ -1497,26 +1497,26 @@ html.dark, html.dark body, body.dark-mode, .dark-mode body {
     --nst-color-text: #f0f6ff;
 }
 
-.dark-mode-blue .bg-white {
+.dark-mode-blue :not(.nst-isolated-print-light):not(.nst-isolated-print-light *):not(.cr80-id-card):not(.cr80-id-card *):not(.a4-sheet):not(.a4-sheet *).bg-white {
     background-color: #0e1628 !important;
     border-color: rgba(59,130,246,0.18) !important;
 }
 
-.dark-mode-blue .bg-slate-50,
-.dark-mode-blue .bg-slate-100 {
+.dark-mode-blue :not(.nst-isolated-print-light):not(.nst-isolated-print-light *):not(.cr80-id-card):not(.cr80-id-card *):not(.a4-sheet):not(.a4-sheet *).bg-slate-50,
+.dark-mode-blue :not(.nst-isolated-print-light):not(.nst-isolated-print-light *):not(.cr80-id-card):not(.cr80-id-card *):not(.a4-sheet):not(.a4-sheet *).bg-slate-100 {
     background-color: #091020 !important;
     border-color: rgba(59,130,246,0.14) !important;
 }
 
-.dark-mode-blue .text-slate-900,
-.dark-mode-blue .text-slate-800,
-.dark-mode-blue .text-slate-700,
-.dark-mode-blue .text-slate-600 {
+.dark-mode-blue :not(.nst-isolated-print-light):not(.nst-isolated-print-light *):not(.cr80-id-card):not(.cr80-id-card *):not(.a4-sheet):not(.a4-sheet *).text-slate-900,
+.dark-mode-blue :not(.nst-isolated-print-light):not(.nst-isolated-print-light *):not(.cr80-id-card):not(.cr80-id-card *):not(.a4-sheet):not(.a4-sheet *).text-slate-800,
+.dark-mode-blue :not(.nst-isolated-print-light):not(.nst-isolated-print-light *):not(.cr80-id-card):not(.cr80-id-card *):not(.a4-sheet):not(.a4-sheet *).text-slate-700,
+.dark-mode-blue :not(.nst-isolated-print-light):not(.nst-isolated-print-light *):not(.cr80-id-card):not(.cr80-id-card *):not(.a4-sheet):not(.a4-sheet *).text-slate-600 {
     color: #e2eeff !important;
 }
 
-.dark-mode-blue .text-slate-500,
-.dark-mode-blue .text-slate-400 {
+.dark-mode-blue :not(.nst-isolated-print-light):not(.nst-isolated-print-light *):not(.cr80-id-card):not(.cr80-id-card *):not(.a4-sheet):not(.a4-sheet *).text-slate-500,
+.dark-mode-blue :not(.nst-isolated-print-light):not(.nst-isolated-print-light *):not(.cr80-id-card):not(.cr80-id-card *):not(.a4-sheet):not(.a4-sheet *).text-slate-400 {
     color: #7b95c4 !important;
 }
 
@@ -1535,19 +1535,19 @@ html.dark, html.dark body, body.dark-mode, .dark-mode body {
     box-shadow: 0 0 0 3px rgba(99,102,241,0.15), inset 0 1px 4px rgba(0,0,10,0.4) !important;
 }
 
-.dark-mode-blue .bg-white.rounded-2xl,
-.dark-mode-blue .bg-white.rounded-3xl {
+.dark-mode-blue :not(.nst-isolated-print-light):not(.cr80-id-card):not(.a4-sheet).bg-white.rounded-2xl,
+.dark-mode-blue :not(.nst-isolated-print-light):not(.cr80-id-card):not(.a4-sheet).bg-white.rounded-3xl {
     background-color: #0e1628 !important;
     border: 1px solid rgba(59,130,246,0.22) !important;
     box-shadow: 0 8px 32px rgba(0,0,20,0.8), 0 0 0 1px rgba(99,102,241,0.06) !important;
 }
 
 /* Premium blue-tinted depth shadows */
-.dark-mode-blue .shadow-sm  { box-shadow: 0 1px 4px rgba(0,0,20,0.7) !important; border: 1px solid rgba(59,130,246,0.12) !important; }
-.dark-mode-blue .shadow-md  { box-shadow: 0 2px 12px rgba(0,0,20,0.75) !important; border: 1px solid rgba(59,130,246,0.14) !important; }
-.dark-mode-blue .shadow-lg  { box-shadow: 0 4px 22px rgba(0,0,20,0.82) !important; border: 1px solid rgba(59,130,246,0.16) !important; }
-.dark-mode-blue .shadow-xl  { box-shadow: 0 6px 32px rgba(0,0,20,0.86) !important; border: 1px solid rgba(59,130,246,0.18) !important; }
-.dark-mode-blue .shadow-2xl { box-shadow: 0 8px 44px rgba(0,0,20,0.9), 0 0 20px rgba(59,130,246,0.05) !important; border: 1px solid rgba(59,130,246,0.2) !important; }
+.dark-mode-blue :not(.nst-isolated-print-light):not(.nst-isolated-print-light *):not(.cr80-id-card):not(.cr80-id-card *):not(.a4-sheet):not(.a4-sheet *).shadow-sm  { box-shadow: 0 1px 4px rgba(0,0,20,0.7) !important; border: 1px solid rgba(59,130,246,0.12) !important; }
+.dark-mode-blue :not(.nst-isolated-print-light):not(.nst-isolated-print-light *):not(.cr80-id-card):not(.cr80-id-card *):not(.a4-sheet):not(.a4-sheet *).shadow-md  { box-shadow: 0 2px 12px rgba(0,0,20,0.75) !important; border: 1px solid rgba(59,130,246,0.14) !important; }
+.dark-mode-blue :not(.nst-isolated-print-light):not(.nst-isolated-print-light *):not(.cr80-id-card):not(.cr80-id-card *):not(.a4-sheet):not(.a4-sheet *).shadow-lg  { box-shadow: 0 4px 22px rgba(0,0,20,0.82) !important; border: 1px solid rgba(59,130,246,0.16) !important; }
+.dark-mode-blue :not(.nst-isolated-print-light):not(.nst-isolated-print-light *):not(.cr80-id-card):not(.cr80-id-card *):not(.a4-sheet):not(.a4-sheet *).shadow-xl  { box-shadow: 0 6px 32px rgba(0,0,20,0.86) !important; border: 1px solid rgba(59,130,246,0.18) !important; }
+.dark-mode-blue :not(.nst-isolated-print-light):not(.nst-isolated-print-light *):not(.cr80-id-card):not(.cr80-id-card *):not(.a4-sheet):not(.a4-sheet *).shadow-2xl { box-shadow: 0 8px 44px rgba(0,0,20,0.9), 0 0 20px rgba(59,130,246,0.05) !important; border: 1px solid rgba(59,130,246,0.2) !important; }
 
 /* Force readability for .explanation in dark modes */
 .dark-mode .explanation,
@@ -3348,8 +3348,8 @@ model-viewer {
 .dark-mode-blue :not(.notes-html-content) .katex { color: #93c5fd !important; }
 
 /* ── White Profile Mode ── */
-[data-pw="1"] .text-white { color: #1e293b !important; }
-[data-pw="1"] [class*="text-white/"] { color: #64748b !important; }
+[data-pw="1"] :not(.nst-isolated-modal):not(.nst-isolated-modal *):not(.nst-isolated-print-light):not(.nst-isolated-print-light *):not(.cr80-id-card):not(.cr80-id-card *).text-white { color: #1e293b !important; }
+[data-pw="1"] :not(.nst-isolated-modal):not(.nst-isolated-modal *):not(.nst-isolated-print-light):not(.nst-isolated-print-light *):not(.cr80-id-card):not(.cr80-id-card *)[class*="text-white/"] { color: #64748b !important; }
 [data-pw="1"] .hover\:bg-white\/5:hover { background-color: rgba(0,0,0,0.05) !important; }
 [data-pw="1"] .hover\:bg-white\/8:hover { background-color: rgba(0,0,0,0.08) !important; }
 [data-pw="1"] .active\:bg-white\/8:active { background-color: rgba(0,0,0,0.08) !important; }
@@ -4716,3 +4716,53 @@ select,
   user-select: text !important;
   -webkit-touch-callout: default !important;
 }
+
+/* ── ISOLATED DARK WELCOME MODAL & CR80 / A4 PRINT LIGHT LOCK ── */
+.nst-isolated-modal .text-white {
+  color: #ffffff !important;
+}
+.nst-isolated-modal .text-slate-100 { color: #f1f5f9 !important; }
+.nst-isolated-modal .text-slate-200 { color: #e2e8f0 !important; }
+.nst-isolated-modal .text-slate-300 { color: #cbd5e1 !important; }
+.nst-isolated-modal .text-slate-400 { color: #94a3b8 !important; }
+
+.cr80-id-card,
+.nst-isolated-print-light,
+.a4-sheet {
+  color-scheme: light !important;
+  background-color: #ffffff !important;
+  color: #0f172a !important;
+}
+.cr80-id-card .bg-white,
+.nst-isolated-print-light .bg-white {
+  background-color: #ffffff !important;
+}
+.cr80-id-card .bg-slate-50,
+.nst-isolated-print-light .bg-slate-50 {
+  background-color: #f8fafc !important;
+}
+.cr80-id-card .text-slate-900,
+.nst-isolated-print-light .text-slate-900 {
+  color: #0f172a !important;
+}
+.cr80-id-card .text-slate-800,
+.nst-isolated-print-light .text-slate-800 {
+  color: #1e293b !important;
+}
+.cr80-id-card .text-slate-700,
+.nst-isolated-print-light .text-slate-700 {
+  color: #334155 !important;
+}
+.cr80-id-card .text-slate-600,
+.nst-isolated-print-light .text-slate-600 {
+  color: #475569 !important;
+}
+.cr80-id-card .text-slate-500,
+.nst-isolated-print-light .text-slate-500 {
+  color: #64748b !important;
+}
+.cr80-id-card .text-white,
+.nst-isolated-print-light .text-white {
+  color: #ffffff !important;
+}
+

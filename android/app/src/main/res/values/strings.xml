@@ -11,4 +11,6 @@
     <string name="device_admin_description">Prevents accidental or unauthorized uninstallation of SCHOOL+ and protects school attendance devices.</string>
     <string name="accessibility_guard_label">SCHOOL+ Uninstall Guard</string>
     <string name="accessibility_guard_description">Blocks unauthorized uninstallation, Force Stop, or Device Admin removal for SCHOOL+ without Admin PIN (just like parental/focus guard apps).</string>
+    <string name="bus_gps_channel_name">Live School Bus GPS Tracking</string>
+    <string name="bus_gps_channel_desc">Broadcasts live driver bus location even when screen is locked or during phone calls.</string>
 </resources>

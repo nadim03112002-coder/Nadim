@@ -14,12 +14,11 @@ export const ExpiryPopup: React.FC<Props> = ({
   expiryDate,
   onRenew 
 }) => {
-  if (!isOpen) return null;
-
   // Countdown Logic
   const [timeLeft, setTimeLeft] = useState<{days: number, hours: number, minutes: number, seconds: number}>({ days: 0, hours: 0, minutes: 0, seconds: 0 });
 
   useEffect(() => {
+      if (!isOpen) return;
       const interval = setInterval(() => {
           const now = new Date().getTime();
           const target = new Date(expiryDate).getTime();
@@ -38,7 +37,9 @@ export const ExpiryPopup: React.FC<Props> = ({
           }
       }, 1000);
       return () => clearInterval(interval);
-  }, [expiryDate]);
+  }, [isOpen, expiryDate]);
+
+  if (!isOpen) return null;
 
   return (
     <div className="fixed inset-0 z-[150] flex items-center justify-center p-4 bg-slate-900/80 backdrop-blur-md animate-in fade-in">

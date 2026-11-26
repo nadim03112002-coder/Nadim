@@ -3,7 +3,13 @@ import React, { useState, useMemo, useEffect } from "react";
 import {
   X, Printer, Download, MessageCircle, CheckCircle2, Loader2, Send, Eye, EyeOff, Palette
 } from "lucide-react";
-import type { School, MonthlyFee, SchoolStudent } from "../../school-types";
+import {
+  mapFeeSlipRoutingToSignatoryMode,
+  mapFeeReceiptRoutingToSignatoryMode,
+  type School,
+  type MonthlyFee,
+  type SchoolStudent,
+} from "../../school-types";
 import {
   generatePosSlipHtml,
   generate4in1A4PageHtml,
@@ -137,7 +143,15 @@ export const OfficialFeeReceiptModal: React.FC<Props> = ({
   const isDueDemand = !fee.paid && Number(fee.paidAmount || 0) === 0;
   const isSlipView = activeFormat === "a6";
   const counterNo = isDueDemand ? "DUE-DEMAND" : isAdmissionReceipt ? "ADM-RECEIPT" : ((fee as any).counterNo || "DPS-RECEIPT");
-  const note = fee.note || (fee as any).remarks || "";
+  const rawNote = fee.note || (fee as any).remarks || "";
+  const convFeeVal = Number(fee.convenienceFee || 0);
+  const convNote =
+    convFeeVal > 0
+      ? `Fast Pay Gateway Fee (${fee.convenienceFeePct || 5}%): ₹${convFeeVal.toLocaleString("en-IN")} • Total Gateway Paid: ₹${Number(
+          fee.gatewayTotalPaid || Number(fee.lastPaidAmount || fee.paidAmount || 0) + convFeeVal
+        ).toLocaleString("en-IN")}`
+      : "";
+  const note = [rawNote, convNote].filter(Boolean).join(" • ");
   const [zoomLevel, setZoomLevel] = useState<number>(() => (isStudentView ? 0.8 : 1));
 
   // School identity & logo state
@@ -363,8 +377,10 @@ export const OfficialFeeReceiptModal: React.FC<Props> = ({
     collectedByRole: fee.collectedByRole || "accountant",
     collectedByName: fee.collectedByName,
     collectorSignatureUrl: fee.collectorSignatureUrl,
-    signatoryTitle: school?.principalName || "Principal",
-    signatoryMode: isDueDemand ? "principal_only" : "both",
+    signatoryTitle: school?.managerName || "Manager",
+    signatoryMode: isDueDemand
+      ? mapFeeSlipRoutingToSignatoryMode(school?.signatureRouting)
+      : mapFeeReceiptRoutingToSignatoryMode(school?.signatureRouting),
     cashierTitle:
       fee.collectedByRole === "manager"
         ? (fee.collectedByName || school?.managerName || "Manager")

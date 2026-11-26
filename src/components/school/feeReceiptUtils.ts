@@ -3,7 +3,7 @@
 // student photo, high-definition vector QR, and 4-in-1 A4 sheet printing (4 receipts per A4 page).
 
 import type { Student, SchoolConfig } from '../../types';
-import type { FamilySlipMemberSummary } from '../../school-types';
+import type { FamilySlipMemberSummary, DpsSignatoryMode } from '../../school-types';
 import { getSchoolCacheSync } from '../../utils/schoolIndexedDb';
 import {
   isAppLogo,
@@ -265,7 +265,7 @@ export interface DpsReceiptData {
   collectedByName?: string;
   collectorSignatureUrl?: string;
   signatoryTitle?: string;
-  signatoryMode?: "both" | "cashier_only" | "principal_only";
+  signatoryMode?: DpsSignatoryMode;
   cashierTitle?: string;
   cashierSignatureUrl?: string;
   templateOverride?: DocumentTemplateConfig;
@@ -1310,12 +1310,72 @@ export function generateDpsReceiptHtml(
 
       <div class="dps-footer-right">
         ${(() => {
+          const resolvedMode: DpsSignatoryMode =
+            data.signatoryMode || (isDemandNote ? "manager_only" : "cashier_only");
+
+          const renderSingleSignatory = (
+            sigImg: string,
+            nameText: string,
+            roleText: string
+          ) => {
+            const hasSig = Boolean(sigImg && (data.showDigitalSignature !== false));
+            return `
+          <div class="dps-sign-block">
+            ${hasSig ? `
+              <img src="${escapeHtml(sigImg)}" alt="${escapeHtml(roleText)} Signature" class="dps-sign-img" />
+            ` : `
+              <div class="dps-sign-manual-space"></div>
+            `}
+            <span class="dps-sign-title">${escapeHtml(nameText)}</span>
+            <span class="dps-sign-role">${escapeHtml(roleText)}</span>
+          </div>
+          `;
+          };
+
+          if (resolvedMode === "manager_only") {
+            return renderSingleSignatory(
+              data.managerSignatureUrl || "",
+              data.managerName || "Manager",
+              (useCustomSlip && activeSlipTpl.rightSignatoryLabel)
+                ? activeSlipTpl.rightSignatoryLabel
+                : "Manager (Sign & Seal)"
+            );
+          }
+
+          if (resolvedMode === "accountant_only") {
+            return renderSingleSignatory(
+              data.accountantSignatureUrl || data.cashierSignatureUrl || "",
+              data.accountantName || data.cashierTitle || "Accountant",
+              (useCustomSlip && activeSlipTpl.rightSignatoryLabel)
+                ? activeSlipTpl.rightSignatoryLabel
+                : "Accountant (Sign & Seal)"
+            );
+          }
+
+          if (resolvedMode === "director_only") {
+            return renderSingleSignatory(
+              data.directorSignatureUrl || "",
+              data.directorName || "Director",
+              (useCustomSlip && activeSlipTpl.rightSignatoryLabel)
+                ? activeSlipTpl.rightSignatoryLabel
+                : "Director (Sign & Seal)"
+            );
+          }
+
+          if (resolvedMode === "principal_only") {
+            return renderSingleSignatory(
+              data.principalSignatureUrl || "",
+              data.principalName || "Principal",
+              (useCustomSlip && activeSlipTpl.rightSignatoryLabel)
+                ? activeSlipTpl.rightSignatoryLabel
+                : (data.principalTitle || "Principal (Sign & Seal)")
+            );
+          }
+
           const isManagerCollector = data.collectedByRole === "manager";
-          const showCollectorBlock =
-            data.signatoryMode === "both" ||
-            data.signatoryMode === "cashier_only" ||
-            (!isDemandNote && data.signatoryMode !== "principal_only");
-          if (!showCollectorBlock) return "";
+          const showCollectorBlock = resolvedMode === "both" || resolvedMode === "cashier_only";
+          const showPrincipalBlock = resolvedMode === "both";
+
           const collectorRoleText = (useCustomSlip && activeSlipTpl.leftSignatoryLabel)
             ? activeSlipTpl.leftSignatoryLabel
             : (isManagerCollector ? "Manager" : "Accountant");
@@ -1326,8 +1386,9 @@ export function generateDpsReceiptHtml(
             ? (data.collectorSignatureUrl || data.managerSignatureUrl || "")
             : (data.collectorSignatureUrl || data.accountantSignatureUrl || data.cashierSignatureUrl || "");
           const hasSigImg = Boolean(collectorSigImg && (data.showDigitalSignature !== false));
-          return `
-          <div class="dps-sign-block" style="margin-right: 10px;">
+
+          const collectorHtml = showCollectorBlock ? `
+          <div class="dps-sign-block"${showPrincipalBlock ? ' style="margin-right: 10px;"' : ""}>
             ${hasSigImg ? `
               <img src="${escapeHtml(collectorSigImg)}" alt="${escapeHtml(collectorRoleText)} Sign" class="dps-sign-img" />
             ` : `
@@ -1336,9 +1397,9 @@ export function generateDpsReceiptHtml(
             <span class="dps-sign-title">${escapeHtml(collectorTitleText)}</span>
             <span class="dps-sign-role">${escapeHtml(collectorRoleText)}</span>
           </div>
-          `;
-        })()}
-        ${(data.signatoryMode !== "cashier_only") ? `
+          ` : "";
+
+          const principalHtml = showPrincipalBlock ? `
           <div class="dps-sign-block">
             ${data.showDigitalSignature && data.principalSignatureUrl ? `
               <img src="${escapeHtml(data.principalSignatureUrl)}" alt="Principal Signature" class="dps-sign-img" />
@@ -1348,7 +1409,10 @@ export function generateDpsReceiptHtml(
             <span class="dps-sign-title">${escapeHtml(data.principalName || "Principal")}</span>
             <span class="dps-sign-role">${escapeHtml((useCustomSlip && activeSlipTpl.rightSignatoryLabel) ? activeSlipTpl.rightSignatoryLabel : (data.principalTitle || "Principal (Sign & Seal)"))}</span>
           </div>
-        ` : ""}
+          ` : "";
+
+          return `${collectorHtml}${principalHtml}`;
+        })()}
       </div>
     </div>
     ${useCustomSlip && activeSlipTpl.footerNote ? `
@@ -4380,7 +4444,11 @@ export function generatePosSlipHtml(
 
       <!-- Signatory & Disclaimer -->
       <div style="display:flex;justify-content:space-between;align-items:flex-end;margin-top:2.5mm;font-size:9px;gap:6px;">
-        ${totalPaid > 0 ? (() => {
+        ${(() => {
+          const resolvedMode: DpsSignatoryMode =
+            data.signatoryMode || (totalPaid === 0 ? "manager_only" : "cashier_only");
+          const slipTag = totalPaid === 0 ? "Type: DUE-SLIP" : "Type: FEE-RECEIPT";
+
           const isManagerCollector = data.collectedByRole === "manager";
           const colRole = (useCustomSlip && activeSlipTpl.leftSignatoryLabel)
             ? activeSlipTpl.leftSignatoryLabel
@@ -4391,25 +4459,74 @@ export function generatePosSlipHtml(
           const colSig = isManagerCollector
             ? (data.collectorSignatureUrl || data.managerSignatureUrl || "")
             : (data.collectorSignatureUrl || data.accountantSignatureUrl || data.cashierSignatureUrl || "");
-          return `
-          <div style="text-align:left;">
-            ${colSig ? `
-              <img src="${escapeHtml(colSig)}" alt="${escapeHtml(colRole)} Sign" style="height:18px;max-width:60px;object-fit:contain;display:block;margin-right:auto;margin-bottom:2px;" />
-            ` : `<div style="height:16px;"></div>`}
-            <span style="font-weight:800;border-top:1px solid #000000;display:inline-block;padding-top:1px;">
-              ${escapeHtml(colName)} (${escapeHtml(colRole)})
-            </span>
-          </div>
-          `;
-        })() : `<span style="font-size:8px;">Type: DUE-SLIP</span>`}
-        <div style="text-align:right;">
-          ${data.showDigitalSignature && data.principalSignatureUrl ? `
-            <img src="${escapeHtml(data.principalSignatureUrl)}" alt="Signature" style="height:18px;max-width:60px;object-fit:contain;display:block;margin-left:auto;margin-bottom:2px;" />
-          ` : `<div style="height:16px;"></div>`}
-          <span style="font-weight:800;border-top:1px solid #000000;display:inline-block;padding-top:1px;">
-            ${escapeHtml((useCustomSlip && activeSlipTpl.rightSignatoryLabel) ? activeSlipTpl.rightSignatoryLabel : (data.principalName || "Principal"))}
-          </span>
-        </div>
+
+          const renderPosSingle = (sig: string, name: string, roleLabel: string) => `
+              <span style="font-size:8px;">${slipTag}</span>
+              <div style="text-align:right;">
+                ${sig && data.showDigitalSignature !== false ? `
+                  <img src="${escapeHtml(sig)}" alt="${escapeHtml(roleLabel)} Signature" style="height:18px;max-width:60px;object-fit:contain;display:block;margin-left:auto;margin-bottom:2px;" />
+                ` : `<div style="height:16px;"></div>`}
+                <span style="font-weight:800;border-top:1px solid #000000;display:inline-block;padding-top:1px;">
+                  ${escapeHtml(name)} (${escapeHtml(roleLabel)})
+                </span>
+              </div>
+            `;
+
+          if (resolvedMode === "manager_only") {
+            return renderPosSingle(
+              data.managerSignatureUrl || "",
+              data.managerName || "Manager",
+              "Manager"
+            );
+          }
+
+          if (resolvedMode === "accountant_only") {
+            return renderPosSingle(
+              data.accountantSignatureUrl || data.cashierSignatureUrl || "",
+              data.accountantName || data.cashierTitle || "Accountant",
+              "Accountant"
+            );
+          }
+
+          if (resolvedMode === "director_only") {
+            return renderPosSingle(
+              data.directorSignatureUrl || "",
+              data.directorName || "Director",
+              "Director"
+            );
+          }
+
+          if (resolvedMode === "principal_only") {
+            return renderPosSingle(
+              data.principalSignatureUrl || "",
+              data.principalName || "Principal",
+              (useCustomSlip && activeSlipTpl.rightSignatoryLabel) ? activeSlipTpl.rightSignatoryLabel : "Principal"
+            );
+          }
+
+          if (resolvedMode === "both") {
+            return `
+              <div style="text-align:left;">
+                ${colSig && data.showDigitalSignature !== false ? `
+                  <img src="${escapeHtml(colSig)}" alt="${escapeHtml(colRole)} Sign" style="height:18px;max-width:60px;object-fit:contain;display:block;margin-right:auto;margin-bottom:2px;" />
+                ` : `<div style="height:16px;"></div>`}
+                <span style="font-weight:800;border-top:1px solid #000000;display:inline-block;padding-top:1px;">
+                  ${escapeHtml(colName)} (${escapeHtml(colRole)})
+                </span>
+              </div>
+              <div style="text-align:right;">
+                ${data.showDigitalSignature && data.principalSignatureUrl ? `
+                  <img src="${escapeHtml(data.principalSignatureUrl)}" alt="Signature" style="height:18px;max-width:60px;object-fit:contain;display:block;margin-left:auto;margin-bottom:2px;" />
+                ` : `<div style="height:16px;"></div>`}
+                <span style="font-weight:800;border-top:1px solid #000000;display:inline-block;padding-top:1px;">
+                  ${escapeHtml((useCustomSlip && activeSlipTpl.rightSignatoryLabel) ? activeSlipTpl.rightSignatoryLabel : (data.principalName || "Principal"))}
+                </span>
+              </div>
+            `;
+          }
+
+          return renderPosSingle(colSig, colName, colRole);
+        })()}
       </div>
 
       <div class="pos-footer-text">

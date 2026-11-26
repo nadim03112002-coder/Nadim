@@ -65,6 +65,12 @@ import {
   parsePrintPayloadBody,
   storePrintDocument,
 } from "./api/_printDocument.js";
+import {
+  verifyStudentIdServer,
+  validateLoginQrServer,
+  verifyStudentSecondFactorServer,
+  fetchSafeRemoteImage,
+} from "./api/_qrSecurity.js";
 
 // Prevent transient socket resets (e.g. pre-warmer closing connections early)
 // or background async errors from terminating the dev/prod server process.
@@ -265,7 +271,7 @@ async function getCachedFcmTokens(): Promise<Record<string, any> | null> {
 async function dispatchFcmToUsers(
   recipientIds: string[],
   broadcast: boolean,
-  payload: { id?: string; title: string; body: string; type?: string; threadType?: string; voiceSpeak?: boolean | string; url?: string; icon?: string; senderId?: string; senderDeviceId?: string; walkieSpeechText?: string; walkieMimeType?: string },
+  payload: { id?: string; title: string; body: string; type?: string; threadType?: string; voiceSpeak?: boolean | string; url?: string; icon?: string; senderId?: string; senderDeviceId?: string; walkieSpeechText?: string; walkieMimeType?: string; extraData?: Record<string, string> },
   filter?: { schoolId?: string; classId?: string; className?: string },
   exclude?: { senderIds?: string[]; senderFcmToken?: string; senderDeviceId?: string }
 ): Promise<number> {
@@ -350,7 +356,16 @@ async function dispatchFcmToUsers(
         String(payload.voiceSpeak ?? "").toLowerCase() === "false" ||
         String(payload.threadType || "").toUpperCase() === "TEACHER_CHAT" ||
         String(payload.url || "").includes("subTab=teacher");
-      const dataPayload = {
+      const sanitizedExtra: Record<string, string> = {};
+      if (payload.extraData && typeof payload.extraData === "object") {
+        for (const [ek, ev] of Object.entries(payload.extraData)) {
+          if (ek && ev !== undefined && ev !== null) {
+            sanitizedExtra[String(ek).slice(0, 64)] = String(ev).slice(0, 600);
+          }
+        }
+      }
+      const dataPayload: Record<string, string> = {
+        ...sanitizedExtra,
         id: String(payload.id || ""),
         title: payload.title,
         body: payload.body,
@@ -1299,6 +1314,7 @@ async function startServer() {
         classId,
         className,
         studentIds,
+        targetUserIds,
         userId,
         classBroadcast,
         schoolBroadcast,
@@ -1319,6 +1335,7 @@ async function startServer() {
         senderPhoto,
         walkieSpeechText,
         walkieMimeType,
+        extraData,
       } = req.body || {};
 
       if (!title || !body) {
@@ -1341,6 +1358,9 @@ async function startServer() {
       const cleanSenderDeviceId = !isSelfAllowed && senderDeviceId ? String(senderDeviceId).trim() : "";
       const cleanSenderFcmToken = !isSelfAllowed && senderFcmToken ? String(senderFcmToken).trim() : "";
 
+      const targetUserSet = Array.isArray(targetUserIds) && targetUserIds.length > 0
+        ? new Set(targetUserIds.map(String).filter((id) => isSelfAllowed || !excludedIdSet.has(id)))
+        : null;
       const targetStudentSet = Array.isArray(studentIds) && studentIds.length > 0
         ? new Set(studentIds.map(String).filter((id) => isSelfAllowed || !excludedIdSet.has(id)))
         : null;
@@ -1370,6 +1390,20 @@ async function startServer() {
         let matchedStudent: LinkedStudentPushMeta | undefined;
 
         if (
+          targetUserSet &&
+          targetUserSet.size > 0
+        ) {
+          if (schoolId && record.schoolId && record.schoolId !== schoolId) {
+            continue;
+          }
+          const matchedEntry = eligibleStudents.find((s) => targetUserSet.has(String(s.id)));
+          if (matchedEntry || (record.userId && targetUserSet.has(String(record.userId)))) {
+            matchedStudent = matchedEntry || ({ id: String(record.userId || "staff"), schoolId: schoolId || "" } as any);
+          }
+        }
+
+        if (
+          !matchedStudent &&
           userId &&
           (isSelfAllowed || !excludedIdSet.has(String(userId).trim())) &&
           (record.userId === String(userId) || eligibleStudents.some((s) => String(s.id) === String(userId)))
@@ -1377,21 +1411,21 @@ async function startServer() {
           matchedStudent = eligibleStudents[0] || ({ id: String(userId), schoolId: schoolId || "" } as any);
         }
 
-        if (!matchedStudent && targetStudentSet && targetStudentSet.size > 0) {
+        if (!matchedStudent && !targetUserSet && targetStudentSet && targetStudentSet.size > 0) {
           matchedStudent = eligibleStudents.find((s) => targetStudentSet.has(String(s.id)));
           if (!matchedStudent && targetStudentSet.has(String(record.userId))) {
             matchedStudent = eligibleStudents[0] || ({ id: String(record.userId), schoolId: schoolId || "" } as any);
           }
         }
 
-        if (!matchedStudent && (classId || className) && (classBroadcast || !targetStudentSet)) {
+        if (!matchedStudent && !targetUserSet && (classId || className) && (classBroadcast || !targetStudentSet)) {
           matchedStudent = eligibleStudents.find((s) => {
             if (schoolId && s.schoolId && s.schoolId !== schoolId) return false;
             return doesClassMatch(s.classId, s.className, classId, className);
           });
         }
 
-        if (!matchedStudent && (schoolBroadcast || (!targetStudentSet && !userId && !classId && !className))) {
+        if (!matchedStudent && !targetUserSet && (schoolBroadcast || (!targetStudentSet && !userId && !classId && !className))) {
           if (schoolId) {
             const schoolMatched = eligibleStudents.find((s) => !s.schoolId || s.schoolId === schoolId);
             if (schoolMatched) {
@@ -1434,38 +1468,45 @@ async function startServer() {
 
       // Also dispatch FCM push to all matching recipient devices (excluding sender)
       const fcmRecipientSet = new Set<string>();
-      if (userId && (isSelfAllowed || !excludedIdSet.has(String(userId).trim()))) {
-        fcmRecipientSet.add(String(userId));
-      }
-      if (Array.isArray(studentIds)) {
-        for (const sid of studentIds) {
-          const s = String(sid);
-          if (s && (isSelfAllowed || !excludedIdSet.has(s))) {
-            fcmRecipientSet.add(s);
+      if (targetUserSet && targetUserSet.size > 0) {
+        for (const uid of targetUserSet) {
+          fcmRecipientSet.add(uid);
+        }
+      } else {
+        if (userId && (isSelfAllowed || !excludedIdSet.has(String(userId).trim()))) {
+          fcmRecipientSet.add(String(userId));
+        }
+        if (Array.isArray(studentIds)) {
+          for (const sid of studentIds) {
+            const s = String(sid);
+            if (s && (isSelfAllowed || !excludedIdSet.has(s))) {
+              fcmRecipientSet.add(s);
+            }
           }
         }
-      }
 
-      // Add linked parent userIds for targeted students (skipping sender's own device/userId)
-      if (Array.isArray(studentIds) && studentIds.length > 0) {
-        const studentIdSet = new Set(studentIds.map(String));
-        for (const sub of subscriptionsMap.values()) {
-          if (!isSelfAllowed) {
-            if (cleanSenderEndpoint && sub.subscription?.endpoint === cleanSenderEndpoint) continue;
-            if (cleanSenderDeviceId && sub.deviceId && sub.deviceId === cleanSenderDeviceId) continue;
-            if (sub.userId && excludedIdSet.has(String(sub.userId).trim())) continue;
-          }
-          const hasStudent = (sub.students || []).some((s) => studentIdSet.has(String(s.id)));
-          if (hasStudent && sub.userId && (isSelfAllowed || !excludedIdSet.has(String(sub.userId).trim()))) {
-            fcmRecipientSet.add(String(sub.userId));
+        // Add linked parent userIds for targeted students (skipping sender's own device/userId)
+        if (Array.isArray(studentIds) && studentIds.length > 0) {
+          const studentIdSet = new Set(studentIds.map(String));
+          for (const sub of subscriptionsMap.values()) {
+            if (!isSelfAllowed) {
+              if (cleanSenderEndpoint && sub.subscription?.endpoint === cleanSenderEndpoint) continue;
+              if (cleanSenderDeviceId && sub.deviceId && sub.deviceId === cleanSenderDeviceId) continue;
+              if (sub.userId && excludedIdSet.has(String(sub.userId).trim())) continue;
+            }
+            const hasStudent = (sub.students || []).some((s) => studentIdSet.has(String(s.id)));
+            if (hasStudent && sub.userId && (isSelfAllowed || !excludedIdSet.has(String(sub.userId).trim()))) {
+              fcmRecipientSet.add(String(sub.userId));
+            }
           }
         }
       }
 
       const isFcmBroadcast =
-        Boolean(schoolBroadcast) ||
-        Boolean(classBroadcast) ||
-        (!userId && (!studentIds || studentIds.length === 0 || studentIds.includes("all")));
+        (!targetUserSet || targetUserSet.size === 0) &&
+        (Boolean(schoolBroadcast) ||
+          Boolean(classBroadcast) ||
+          (!userId && (!studentIds || studentIds.length === 0 || studentIds.includes("all"))));
       const fcmDelivered = await dispatchFcmToUsers(
         Array.from(fcmRecipientSet),
         isFcmBroadcast,
@@ -1482,6 +1523,7 @@ async function startServer() {
           senderDeviceId: cleanSenderDeviceId,
           walkieSpeechText: walkieSpeechText ? String(walkieSpeechText).slice(0, 300) : undefined,
           walkieMimeType: walkieMimeType ? String(walkieMimeType).slice(0, 80) : undefined,
+          extraData: extraData && typeof extraData === "object" ? extraData : undefined,
         },
         { schoolId, classId, className },
         isSelfAllowed
@@ -2371,6 +2413,51 @@ async function startServer() {
       return res.status(200).send(asset.buffer);
     } catch (err: any) {
       return res.redirect(302, "/icons/icon-512.png?v=4");
+    }
+  });
+
+  app.post("/api/qr/verify-id", async (req, res) => {
+    try {
+      res.setHeader("Cache-Control", "no-store");
+      const result = await verifyStudentIdServer(req.body || {});
+      return res.status(result.status).json(result.body);
+    } catch (err: any) {
+      return res.status(500).json({ ok: false, verified: false, error: err?.message || "QR verification error" });
+    }
+  });
+
+  app.post("/api/qr/login-validate", async (req, res) => {
+    try {
+      res.setHeader("Cache-Control", "no-store");
+      const result = await validateLoginQrServer(req.body || {});
+      return res.status(result.status).json(result.body);
+    } catch (err: any) {
+      return res.status(500).json({ ok: false, valid: false, error: err?.message || "QR login validation error" });
+    }
+  });
+
+  app.post("/api/qr/verify-second-factor", async (req, res) => {
+    try {
+      res.setHeader("Cache-Control", "no-store");
+      const result = await verifyStudentSecondFactorServer(req.body || {});
+      return res.status(result.status).json(result.body);
+    } catch (err: any) {
+      return res.status(500).json({ ok: false, verified: false, error: err?.message || "Second-factor check error" });
+    }
+  });
+
+  app.get("/api/image-proxy", async (req, res) => {
+    try {
+      const rawUrl = String(req.query?.url || "");
+      const img = await fetchSafeRemoteImage(rawUrl);
+      if (!img.buffer || img.status !== 200) {
+        return res.status(img.status || 400).json({ error: img.error || "Image proxy error" });
+      }
+      res.setHeader("Content-Type", img.contentType || "image/png");
+      res.setHeader("Cache-Control", "public, max-age=3600");
+      return res.status(200).send(img.buffer);
+    } catch (err: any) {
+      return res.status(500).json({ error: err?.message || "Image proxy error" });
     }
   });
 

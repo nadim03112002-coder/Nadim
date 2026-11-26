@@ -70,6 +70,7 @@ function parseDecodedAttendanceString(
   let className = defaultClassName || "";
   let qrDate = today;
   let isClassQr = false;
+  let qrVerificationToken = "";
   const decodeTokenPart = (value: string) => {
     try {
       return decodeURIComponent(value);
@@ -92,17 +93,19 @@ function parseDecodedAttendanceString(
     try {
       const url = new URL(text.startsWith("http") ? text : `https://nsta.app/${text.replace(/^\//, "")}`);
 
-      // 1A. Direct compact query parameters: ?v=id&s=...&u=...&r=...&c=...&n=...
+      // 1A. Direct compact query parameters: ?v=id&s=...&u=...&r=...&c=...&n=... OR opaque ?verify=doc&type=idcard&t=...&s=...
       const uParam = url.searchParams.get("u") || url.searchParams.get("uid") || url.searchParams.get("studentId");
       const sParam = url.searchParams.get("s") || url.searchParams.get("sid") || url.searchParams.get("schoolId");
       const rParam = url.searchParams.get("r") || url.searchParams.get("roll") || url.searchParams.get("rollNo");
       const cParam = url.searchParams.get("c") || url.searchParams.get("cid") || url.searchParams.get("classId");
       const nParam = url.searchParams.get("n") || url.searchParams.get("name") || url.searchParams.get("studentName");
+      const tParam = url.searchParams.get("t") || url.searchParams.get("vt") || url.searchParams.get("verificationToken");
 
       if (uParam) studentId = uParam;
       if (sParam) schoolId = sParam;
       if (rParam) rollNo = rParam;
       if (cParam) classId = cParam;
+      if (tParam) qrVerificationToken = tParam.trim();
       if (nParam) {
         try {
           studentName = decodeURIComponent(nParam);
@@ -216,6 +219,7 @@ function parseDecodedAttendanceString(
     className,
     qrDate,
     isClassQr,
+    qrVerificationToken,
   };
 }
 
@@ -571,6 +575,61 @@ export const QrAttendanceScannerModal: React.FC<QrAttendanceScannerModalProps> =
         let rollNo = parsed.rollNo || "";
         let schoolId = parsed.schoolId || targetSchoolId || "";
         let classId = parsed.classId || targetClassId || "";
+
+        // Resolve opaque revocable QR token (?verify=doc&type=idcard&t=VTR-...&s=...)
+        if (!studentId && parsed.qrVerificationToken && schoolId) {
+          try {
+            const allSchoolStudents = await getStudents(schoolId);
+            const revokedMatch = allSchoolStudents.find(
+              (s: any) =>
+                Array.isArray(s.previousVerificationTokens) &&
+                s.previousVerificationTokens.includes(parsed.qrVerificationToken)
+            );
+            const activeMatch = allSchoolStudents.find(
+              (s: any) => s.verificationToken === parsed.qrVerificationToken
+            );
+            if (activeMatch) {
+              if (activeMatch.active === false || activeMatch.isDeleted || activeMatch.tcIssued) {
+                throw new Error("यह Student Digital ID स्कूल द्वारा निष्क्रिय या रद्द (Revoked) है।");
+              }
+              studentId = activeMatch.id;
+              studentName = activeMatch.name;
+              rollNo = activeMatch.rollNo || rollNo;
+              classId = activeMatch.classId || classId;
+            } else if (revokedMatch) {
+              throw new Error("पुराने सत्र का QR कार्ड समाप्त/रद्द (Revoked) हो चुका है। नया ID कार्ड स्कैन करें।");
+            }
+          } catch (tokenErr: any) {
+            if (tokenErr?.message?.includes("Revoked") || tokenErr?.message?.includes("रद्द")) {
+              throw tokenErr;
+            }
+          }
+
+          if (!studentId) {
+            try {
+              const vRes = await fetch("/api/qr/verify-id", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ schoolId, t: parsed.qrVerificationToken }),
+              });
+              if (vRes.ok) {
+                const vData = await vRes.json();
+                if (vData?.verified === false && (vData.status === "REVOKED" || vData.status === "EXPIRED")) {
+                  throw new Error(vData.reason || "यह Student ID कार्ड समाप्त या रद्द (Revoked) है।");
+                }
+                if (vData?.verified && vData.studentId) {
+                  studentId = vData.studentId;
+                  studentName = vData.studentName || studentName;
+                  rollNo = vData.rollNo || rollNo;
+                }
+              }
+            } catch (apiErr: any) {
+              if (apiErr?.message?.includes("Revoked") || apiErr?.message?.includes("रद्द") || apiErr?.message?.includes("expired")) {
+                throw apiErr;
+              }
+            }
+          }
+        }
 
         if (!studentId) {
           throw new Error("Student ID detect nahi hua. Kripya valid student ID card ka QR image/code use karein.");

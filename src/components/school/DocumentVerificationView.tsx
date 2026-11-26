@@ -18,6 +18,8 @@ import {
   Clock,
   FileCheck2,
   Sparkles,
+  History,
+  UserCheck,
 } from "lucide-react";
 import { printElementInIframe } from "./AdmissionFormPrintModal";
 import { PremiumLoadingState } from "./PremiumLoadingState";
@@ -30,11 +32,30 @@ import {
   getTeachers,
   getClasses,
 } from "../../school-firebase";
+import type { StudentActivationEvent } from "../../school-types";
 import { getDynamicAcademicSessionLabel } from "../../utils/safeBrowserActions";
 import {
   extractEmbeddedNstaToken,
+  isQrVerificationExpired,
   safeDecodeUriPart,
 } from "../../utils/qrVerifyUrl";
+
+function maskPhoneForPublicView(phone?: string): string {
+  const raw = String(phone || "").trim();
+  if (!raw || raw === "Registered" || raw === "Official Record" || raw === "Private / Verified") {
+    return raw || "Registered";
+  }
+  const digits = raw.replace(/\D/g, "");
+  if (digits.length < 4) return "Registered";
+  return `${"*".repeat(Math.max(4, digits.length - 4))}${digits.slice(-4)}`;
+}
+
+function maskAdmissionForPublicView(adm?: string): string {
+  const raw = String(adm || "").trim();
+  if (!raw || raw === "—" || raw.startsWith("****")) return raw || "Verified";
+  if (raw.length <= 4) return raw;
+  return `${"*".repeat(Math.min(6, Math.max(2, raw.length - 4)))}${raw.slice(-4)}`;
+}
 import {
   generateDpsReceiptHtml,
   DPS_RECEIPT_CSS,
@@ -433,17 +454,24 @@ export const DocumentVerificationView: React.FC<Props> = ({
         // Priority D: Student ID Card (#NSTA-SCHOOL:...)
         else if (studentToken) {
           const pts = studentToken.split(":");
+          const embeddedVt = safeDecodeUriPart(pts[15]) || p.get("vt") || "";
+          const embeddedExp = safeDecodeUriPart(pts[16]) || p.get("exp") || "";
+          const expiredLocally = Boolean(embeddedExp && isQrVerificationExpired(embeddedExp));
           initialRecord = {
             type: "idcard",
             cardRole: "student",
-            officialVerified: true,
+            officialVerified: !expiredLocally,
+            status: expiredLocally ? "EXPIRED" : "VERIFIED",
+            invalidReason: expiredLocally
+              ? "यह Student ID QR कार्ड समाप्त (Expired) हो चुका है। कृपया विद्यालय कार्यालय से नया डिजिटल ID जारी कराएं।"
+              : undefined,
             schoolId: safeDecodeUriPart(pts[0]) || p.get("s") || "",
             studentId: safeDecodeUriPart(pts[1]) || p.get("u") || "",
             roll: safeDecodeUriPart(pts[2]) || "—",
             classId: safeDecodeUriPart(pts[3]) || "",
             student: safeDecodeUriPart(pts[4]) || "Student",
-            regNo: safeDecodeUriPart(pts[5]) || "—",
-            phone: safeDecodeUriPart(pts[6]) || "Registered",
+            regNo: safeDecodeUriPart(pts[5]) || p.get("adm") || "—",
+            phone: pts[6] ? maskPhoneForPublicView(safeDecodeUriPart(pts[6])) : "Registered",
             fatherName: safeDecodeUriPart(pts[7]) || "",
             motherName: safeDecodeUriPart(pts[8]) || "",
             bloodGroup: safeDecodeUriPart(pts[9]) || "",
@@ -452,6 +480,8 @@ export const DocumentVerificationView: React.FC<Props> = ({
             class: safeDecodeUriPart(pts[13]) || (pts[3] ? `Class ${safeDecodeUriPart(pts[3]).slice(0, 10)}` : "—"),
             school: safeDecodeUriPart(pts[14]) || "Registered School",
             session: getDynamicAcademicSessionLabel(),
+            verificationToken: embeddedVt,
+            qrExpiresAt: embeddedExp,
           };
         }
         // Priority E: Legacy Query-Param Verification URL
@@ -468,29 +498,37 @@ export const DocumentVerificationView: React.FC<Props> = ({
           const urlAdmNo = p.get("adm") || p.get("admNo") || p.get("regNo") || urlIdParam || "";
           const urlClassId = p.get("c") || p.get("classId") || "";
           const urlPass = p.get("pass") || "";
+          const urlVt = p.get("t") || p.get("vt") || "";
+          const urlExp = p.get("exp") || "";
+          const expiredLegacy = Boolean(urlExp && isQrVerificationExpired(urlExp));
 
-          if (urlName || urlRoll || urlCertNo || urlIdParam || urlPass || p.get("v") === "id" || p.get("verify")) {
+          if (urlName || urlRoll || urlCertNo || urlIdParam || urlPass || urlVt || p.get("v") === "id" || p.get("verify")) {
             initialRecord = {
               type: urlTypeParam,
               cardRole: p.get("role") === "admin" ? "admin" : p.get("role") === "staff" ? "teacher" : "student",
-              officialVerified: true,
+              officialVerified: !expiredLegacy,
               schoolId: urlSchoolId,
               studentId: urlStudentId,
               classId: urlClassId,
               school: urlSchoolName ? safeDecodeUriPart(urlSchoolName) : (urlSchoolId || "Registered School"),
               schoolCode: urlSchoolId ? `SCH-${urlSchoolId.slice(0, 10).toUpperCase()}` : "—",
-              student: urlName ? safeDecodeUriPart(urlName) : (urlIdParam ? `Record ${urlIdParam}` : "Verified Student"),
+              student: urlName ? safeDecodeUriPart(urlName) : (urlIdParam ? `Record ${urlIdParam}` : "Verifying Identity..."),
               roll: urlRoll || "—",
-              regNo: urlAdmNo ? safeDecodeUriPart(urlAdmNo) : (urlStudentId ? `REG-${urlStudentId.slice(0, 8)}` : "—"),
+              regNo: urlAdmNo ? maskAdmissionForPublicView(safeDecodeUriPart(urlAdmNo)) : "Verified Record",
               class: urlClassId ? `Class ${urlClassId.slice(0, 6)}` : "—",
               session: urlSession,
               certificateNo: urlCertNo ? safeDecodeUriPart(urlCertNo) : "—",
               certificateType: urlCertTitle ? safeDecodeUriPart(urlCertTitle) : "Official Certificate",
               passNumber: urlPass,
-              status: "VERIFIED",
+              status: expiredLegacy ? "EXPIRED" : "VERIFIED",
+              invalidReason: expiredLegacy
+                ? "यह डिजिटल दस्तावेज़ QR कोड समाप्त (Expired) हो चुका है।"
+                : undefined,
               date: new Date().toISOString().split("T")[0],
               photoUrl: "",
-              phone: "Official Record",
+              phone: "Protected Record",
+              verificationToken: urlVt,
+              qrExpiresAt: urlExp,
             };
           }
         }
@@ -554,16 +592,27 @@ export const DocumentVerificationView: React.FC<Props> = ({
               if (targetStudentId) {
                 resolvedStudent = await getStudent(targetSid, targetStudentId).catch(() => null);
               }
-              if (!resolvedStudent && (targetAdmNo || initialRecord.roll !== "—")) {
+              if (!resolvedStudent && (initialRecord.verificationToken || targetAdmNo || initialRecord.roll !== "—")) {
                 const allStudents = await getStudents(targetSid).catch(() => []);
+                const qTok = (initialRecord.verificationToken || "").trim();
                 const qLookup = (targetAdmNo || initialRecord.roll || "").trim().toLowerCase();
-                resolvedStudent =
-                  allStudents.find(
-                    (st) =>
-                      st.id?.toLowerCase() === qLookup ||
-                      st.admissionNo?.toLowerCase() === qLookup ||
-                      st.rollNo?.toLowerCase() === qLookup
-                  ) || null;
+                if (qTok) {
+                  resolvedStudent =
+                    allStudents.find(
+                      (st: any) =>
+                        st.verificationToken === qTok ||
+                        (Array.isArray(st.previousVerificationTokens) && st.previousVerificationTokens.includes(qTok))
+                    ) || null;
+                }
+                if (!resolvedStudent && qLookup) {
+                  resolvedStudent =
+                    allStudents.find(
+                      (st) =>
+                        st.id?.toLowerCase() === qLookup ||
+                        st.admissionNo?.toLowerCase() === qLookup ||
+                        st.rollNo?.toLowerCase() === qLookup
+                    ) || null;
+                }
               }
             }
 
@@ -579,14 +628,92 @@ export const DocumentVerificationView: React.FC<Props> = ({
             }
           }
 
-          if (active && (resolvedSchool || resolvedStudent || resolvedTeacher || resolvedClassName)) {
+          let serverVerifyData: any = null;
+          if (initialRecord.type === "idcard" && initialRecord.cardRole === "student" && (targetSid || targetStudentId || initialRecord.verificationToken)) {
+            try {
+              const sRes = await fetch("/api/qr/verify-id", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  schoolId: targetSid,
+                  studentId: targetStudentId || resolvedStudent?.id || "",
+                  admissionNo: targetAdmNo,
+                  t: initialRecord.verificationToken || p.get("t") || p.get("vt") || "",
+                  vt: initialRecord.verificationToken || p.get("t") || p.get("vt") || "",
+                  exp: initialRecord.qrExpiresAt || p.get("exp") || "",
+                }),
+              });
+              if (sRes.ok) {
+                serverVerifyData = await sRes.json();
+              }
+            } catch {}
+          }
+
+          if (active && (resolvedSchool || resolvedStudent || resolvedTeacher || resolvedClassName || serverVerifyData)) {
             setDocData((prev: any) => {
               if (!prev) return prev;
               const isAdminCard = prev.cardRole === "admin";
+              const isStudentId = prev.type === "idcard" && prev.cardRole === "student";
+              const scannedTok = (prev.verificationToken || "").trim();
+              const isOldSupersededToken = Boolean(
+                scannedTok &&
+                  resolvedStudent &&
+                  ((Array.isArray(resolvedStudent.previousVerificationTokens) &&
+                    resolvedStudent.previousVerificationTokens.includes(scannedTok)) ||
+                    (resolvedStudent.verificationToken && resolvedStudent.verificationToken !== scannedTok))
+              );
+              const studentRevokedLocally = Boolean(
+                isOldSupersededToken ||
+                  (resolvedStudent &&
+                    (resolvedStudent.active === false ||
+                      resolvedStudent.isDeleted === true ||
+                      resolvedStudent.tcIssued === true ||
+                      String(resolvedStudent.qrStatus || "").toUpperCase() === "REVOKED"))
+              );
+              const serverFailedStrict = Boolean(
+                serverVerifyData &&
+                  serverVerifyData.verified === false &&
+                  (serverVerifyData.status === "EXPIRED" ||
+                    serverVerifyData.status === "REVOKED" ||
+                    serverVerifyData.status === "TOKEN_MISMATCH" ||
+                    (serverVerifyData.status === "NOT_FOUND" && Boolean(scannedTok) && !resolvedStudent))
+              );
+              const effectiveExp =
+                resolvedStudent?.qrExpiresAt || serverVerifyData?.qrExpiresAt || prev.qrExpiresAt || "";
+              const expiredCheck = Boolean(effectiveExp && isQrVerificationExpired(effectiveExp));
+              const stillVerified =
+                prev.officialVerified && !studentRevokedLocally && !serverFailedStrict && !expiredCheck;
+
+              const rawResolvedPhone = resolvedStudent?.phone || resolvedTeacher?.phone || prev.phone;
+              const displayPhone = isStudentId
+                ? serverVerifyData?.maskedPhone || maskPhoneForPublicView(rawResolvedPhone)
+                : maskPhoneForPublicView(rawResolvedPhone);
+              const displayAdmissionNo = isStudentId
+                ? serverVerifyData?.maskedAdmissionNo || maskAdmissionForPublicView(resolvedStudent?.admissionNo || prev.regNo)
+                : resolvedTeacher?.employeeId || prev.regNo;
+
               return {
                 ...prev,
+                officialVerified: stillVerified,
+                status: !stillVerified
+                  ? studentRevokedLocally || serverVerifyData?.status === "REVOKED"
+                    ? "REVOKED"
+                    : serverVerifyData?.status === "TOKEN_MISMATCH"
+                    ? "TOKEN_MISMATCH"
+                    : serverVerifyData?.status === "NOT_FOUND"
+                    ? "UNVERIFIED"
+                    : "EXPIRED"
+                  : prev.status || "VERIFIED",
+                invalidReason: !stillVerified
+                  ? isOldSupersededToken
+                    ? "यह पुराने सत्र का QR टोकन नए सत्र में ID नवीनीकरण (Renewal) के बाद अमान्य (Revoked) हो चुका है। कृपया नया ID कार्ड स्कैन करें।"
+                    : studentRevokedLocally
+                    ? "यह Student Digital ID स्कूल प्रशासन द्वारा निष्क्रिय या रद्द (Revoked) कर दिया गया है।"
+                    : serverVerifyData?.reason ||
+                      (expiredCheck ? "यह Student Digital ID QR समाप्त (Expired) हो चुका है।" : prev.invalidReason)
+                  : prev.invalidReason,
                 schoolId: resolvedSchool?.id || prev.schoolId,
-                school: resolvedSchool?.name || prev.school,
+                school: resolvedSchool?.name || serverVerifyData?.schoolName || prev.school,
                 schoolCode: getVisibleSchoolRegNo(resolvedSchool, resolvedSchool?.code || prev.schoolCode),
                 schoolAddress: resolvedSchool?.address || prev.schoolAddress,
                 schoolPhone: resolvedSchool?.phone || resolvedSchool?.mobile || prev.schoolPhone,
@@ -610,17 +737,20 @@ export const DocumentVerificationView: React.FC<Props> = ({
 
                 student:
                   resolvedStudent?.name ||
+                  serverVerifyData?.studentName ||
                   resolvedTeacher?.name ||
                   (isAdminCard ? resolvedSchool?.principalName || prev.student : prev.student),
-                roll: resolvedStudent?.rollNo || resolvedTeacher?.employeeId || prev.roll,
-                regNo: resolvedStudent?.admissionNo || resolvedTeacher?.employeeId || prev.regNo,
-                class: resolvedClassName || resolvedStudent?.className || prev.class,
-                fatherName: resolvedStudent?.fatherName || prev.fatherName,
-                motherName: resolvedStudent?.motherName || prev.motherName,
-                dob: resolvedStudent?.dob || prev.dob,
-                bloodGroup: resolvedStudent?.bloodGroup || prev.bloodGroup,
-                address: resolvedStudent?.address || resolvedTeacher?.address || prev.address,
-                phone: resolvedStudent?.phone || resolvedTeacher?.phone || prev.phone,
+                roll: resolvedStudent?.rollNo || serverVerifyData?.rollNo || resolvedTeacher?.employeeId || prev.roll,
+                regNo: displayAdmissionNo,
+                class: resolvedClassName || resolvedStudent?.className || serverVerifyData?.className || prev.class,
+                session: resolvedStudent?.sessionId || serverVerifyData?.session || prev.session,
+                // Omit sensitive student PII (father/mother/DOB/blood/address) on public QR scans
+                fatherName: isStudentId ? "" : resolvedStudent?.fatherName || prev.fatherName,
+                motherName: isStudentId ? "" : resolvedStudent?.motherName || prev.motherName,
+                dob: isStudentId ? "" : resolvedStudent?.dob || resolvedStudent?.dateOfBirth || prev.dob,
+                bloodGroup: isStudentId ? "" : resolvedStudent?.bloodGroup || prev.bloodGroup,
+                address: isStudentId ? "" : resolvedTeacher?.address || prev.address,
+                phone: displayPhone,
                 photoUrl:
                   resolvedStudent?.photoUrl ||
                   resolvedTeacher?.photoUrl ||
@@ -628,6 +758,19 @@ export const DocumentVerificationView: React.FC<Props> = ({
                   prev.photoUrl,
                 designation: resolvedTeacher?.designation || prev.designation,
                 qualification: resolvedTeacher?.qualification || prev.qualification,
+                verificationToken:
+                  resolvedStudent?.verificationToken || serverVerifyData?.verificationToken || prev.verificationToken,
+                qrIssuedAt: resolvedStudent?.qrIssuedAt || serverVerifyData?.qrIssuedAt || prev.qrIssuedAt,
+                qrExpiresAt: effectiveExp || prev.qrExpiresAt,
+                welcomeAcknowledgedAt:
+                  resolvedStudent?.welcomeAcknowledgedAt || serverVerifyData?.welcomeAcknowledgedAt || prev.welcomeAcknowledgedAt,
+                welcomeAcknowledgedBy:
+                  resolvedStudent?.welcomeAcknowledgedBy || serverVerifyData?.welcomeAcknowledgedBy || prev.welcomeAcknowledgedBy,
+                activationHistory: Array.isArray(resolvedStudent?.activationHistory)
+                  ? resolvedStudent.activationHistory
+                  : Array.isArray(serverVerifyData?.activationHistory)
+                  ? serverVerifyData.activationHistory
+                  : prev.activationHistory,
               };
             });
           }
@@ -826,35 +969,55 @@ export const DocumentVerificationView: React.FC<Props> = ({
         )}
       </div>
 
-      {/* Invalid / Empty State */}
+      {/* Invalid / Expired / Revoked / Empty State */}
       {!docData?.officialVerified ? (
-        <div className="w-full max-w-2xl bg-slate-800/90 border border-slate-700 rounded-2xl p-6 shadow-xl text-slate-100 space-y-4">
+        <div className="w-full max-w-2xl bg-slate-800/95 border border-rose-500/40 rounded-2xl p-6 shadow-xl text-slate-100 space-y-4">
           <div className="flex items-start gap-3.5">
-            <div className="w-12 h-12 rounded-xl bg-amber-500/20 border border-amber-400/50 flex items-center justify-center shrink-0">
+            <div className="w-12 h-12 rounded-xl bg-rose-500/20 border border-rose-400/50 flex items-center justify-center shrink-0">
               {onBack ? (
                 <FileCheck2 className="w-7 h-7 text-amber-400" />
               ) : (
                 <AlertCircle className="w-7 h-7 text-rose-400" />
               )}
             </div>
-            <div className="space-y-1.5">
-              <h3 className="font-black text-base text-white">
-                {onBack
-                  ? "QR Document Verification Portal Ready"
-                  : "अमान्य या अधूरा सत्यापन कोड (Invalid Verification QR)"}
-              </h3>
+            <div className="space-y-2 flex-1">
+              <div className="flex items-center gap-2 flex-wrap">
+                <h3 className="font-black text-base text-white">
+                  {docData?.status === "EXPIRED"
+                    ? "QR Verification Expired (समाप्त हो चुका कोड)"
+                    : docData?.status === "REVOKED"
+                    ? "ID Card Revoked / Inactive (रद्द किया गया ID)"
+                    : docData?.status === "TOKEN_MISMATCH"
+                    ? "Verification Token Mismatch (अमान्य टोकन)"
+                    : onBack
+                    ? "QR Document Verification Portal Ready"
+                    : "अमान्य या अधूरा सत्यापन कोड (Invalid Verification QR)"}
+                </h3>
+                {docData?.status && docData.status !== "UNVERIFIED" && (
+                  <span className="px-2 py-0.5 rounded-md bg-rose-500/20 border border-rose-400/40 text-rose-200 text-[10px] font-black uppercase">
+                    {docData.status}
+                  </span>
+                )}
+              </div>
               <p className="text-xs text-slate-300 leading-relaxed">
-                {onBack
+                {docData?.invalidReason
+                  ? docData.invalidReason
+                  : onBack
                   ? "स्कूल के किसी भी दस्तावेज़ — ID Card (Student / Teacher / Admin / Driver), Marksheet, Fee Receipt, Admit Card, Certificate, Admission Slip या Gate Pass — का QR कोड फोन कैमरे या Google Lens से स्कैन करने पर यह पेज सीधे Chrome ब्राउज़र में असली दस्तावेज़ VERIFIED वॉटरमार्क के साथ दिखाता है।"
-                  : "इस QR कोड में वैध दस्तावेज़ रिकॉर्ड नहीं मिला। कृपया स्कूल द्वारा जारी आधिकारिक दस्तावेज़ का QR कोड स्कैन करें।"}
+                  : "इस QR कोड में वैध दस्तावेज़ रिकॉर्ड नहीं मिला या इसकी वैधता समाप्त हो चुकी है। कृपया स्कूल द्वारा जारी आधिकारिक दस्तावेज़ का QR कोड स्कैन करें।"}
               </p>
+              {docData?.qrExpiresAt && (
+                <p className="text-[11px] font-mono text-amber-300">
+                  Validity Expiry: {docData.qrExpiresAt.slice(0, 10)}
+                </p>
+              )}
             </div>
           </div>
         </div>
       ) : (
         <>
           {/* Compact Verified Status Strip (screen only) */}
-          <div className="w-full max-w-4xl bg-emerald-950/90 border border-emerald-500/50 rounded-2xl px-4 py-3 mb-4 flex flex-wrap items-center justify-between gap-2 shadow-lg text-emerald-100 print:hidden">
+          <div className="w-full max-w-4xl bg-emerald-950/90 border border-emerald-500/50 rounded-2xl px-4 py-3 mb-4 flex flex-wrap items-center justify-between gap-3 shadow-lg text-emerald-100 print:hidden">
             <div className="flex items-center gap-3">
               <div className="w-9 h-9 rounded-xl bg-emerald-500/20 border border-emerald-400 flex items-center justify-center shrink-0">
                 <ShieldCheck className="w-5 h-5 text-emerald-400" />
@@ -867,9 +1030,16 @@ export const DocumentVerificationView: React.FC<Props> = ({
                   <span className="px-2 py-0.5 rounded-full bg-emerald-500 text-slate-950 text-[10px] font-black uppercase tracking-wider">
                     ✓ VERIFIED GENUINE
                   </span>
+                  {docData.welcomeAcknowledgedAt && (
+                    <span className="px-2 py-0.5 rounded-full bg-indigo-500/25 border border-indigo-400/50 text-indigo-100 text-[10px] font-bold flex items-center gap-1">
+                      <UserCheck className="w-3 h-3" /> Parent Acknowledged
+                    </span>
+                  )}
                 </div>
                 <p className="text-[11px] text-emerald-300/90">
                   {docData.school} &bull; Verified in Chrome Browser
+                  {docData.verificationToken ? ` • Token: ${docData.verificationToken}` : ""}
+                  {docData.qrExpiresAt ? ` • Valid Till: ${docData.qrExpiresAt.slice(0, 10)}` : ""}
                 </p>
               </div>
             </div>
@@ -976,6 +1146,12 @@ export const DocumentVerificationView: React.FC<Props> = ({
                           {docData.cardRole === "student" ? "Adm / Reg No:" : "Staff ID:"}
                         </span>
                         <span className="font-black text-slate-900">{docData.regNo}</span>
+                      </div>
+                    )}
+                    {docData.cardRole === "student" && docData.session && (
+                      <div className="flex justify-between gap-2">
+                        <span className="text-slate-500 font-bold">Academic Session:</span>
+                        <span className="font-bold text-emerald-700">{docData.session}</span>
                       </div>
                     )}
                     {docData.fatherName && (
@@ -1100,6 +1276,47 @@ export const DocumentVerificationView: React.FC<Props> = ({
                     </div>
                   )}
                 </div>
+
+                {(docData.verificationToken || docData.qrExpiresAt || (Array.isArray(docData.activationHistory) && docData.activationHistory.length > 0)) && (
+                  <div className="bg-slate-50 border border-slate-200 rounded-xl p-2.5 text-[10px] space-y-1.5">
+                    <div className="font-black text-slate-900 uppercase flex items-center gap-1">
+                      <History className="w-3 h-3 text-indigo-600" />
+                      <span>QR Security &amp; Activation Record</span>
+                    </div>
+                    {docData.verificationToken && (
+                      <div className="flex justify-between gap-2">
+                        <span className="text-slate-500 font-bold">Token:</span>
+                        <span className="font-mono font-bold text-slate-900">{docData.verificationToken}</span>
+                      </div>
+                    )}
+                    {docData.qrExpiresAt && (
+                      <div className="flex justify-between gap-2">
+                        <span className="text-slate-500 font-bold">Valid Till:</span>
+                        <span className="font-bold text-emerald-700">{docData.qrExpiresAt.slice(0, 10)}</span>
+                      </div>
+                    )}
+                    {docData.welcomeAcknowledgedAt && (
+                      <div className="flex justify-between gap-2">
+                        <span className="text-slate-500 font-bold">Parent Ack:</span>
+                        <span className="font-bold text-indigo-700">
+                          {new Date(docData.welcomeAcknowledgedAt).toLocaleDateString("en-IN")}
+                        </span>
+                      </div>
+                    )}
+                    {Array.isArray(docData.activationHistory) && docData.activationHistory.length > 0 && (
+                      <div className="pt-1 border-t border-slate-200 space-y-1">
+                        {(docData.activationHistory as StudentActivationEvent[]).slice(0, 5).map((ev, idx) => (
+                          <div key={ev.id || idx} className="flex items-center justify-between gap-2 text-[9px]">
+                            <span className="font-bold text-slate-700 truncate">{ev.label}</span>
+                            <span className="text-slate-500 shrink-0 tabular-nums">
+                              {ev.timestamp ? new Date(ev.timestamp).toLocaleDateString("en-IN") : ""}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
 
                 <VerifiedWatermarkOverlay label="VERIFIED" />
               </div>

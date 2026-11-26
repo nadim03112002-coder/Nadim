@@ -82,7 +82,7 @@ interface LatLngPoint {
   lng: number;
 }
 
-const DEFAULT_FALLBACK_CENTER: LatLngPoint = { lat: 28.4595, lng: 77.0266 };
+const DEFAULT_FALLBACK_CENTER: LatLngPoint = { lat: 22.5937, lng: 78.9629 };
 
 const ROUTE_COLORS = [
   "#10b981", // emerald
@@ -211,20 +211,34 @@ const LeafletFleetMap: React.FC<LeafletMapProps> = ({
     const el = containerRef.current;
     if (!el || mapRef.current) return;
 
+    const firstRouteStop = routes
+      .flatMap((r) => r.stops || [])
+      .find((s) => isValidLatLng(s.lat, s.lng));
+
+    const hasRealStartAnchor = Boolean(
+      (selectedBus && hasValidCoords(selectedBus)) ||
+        busesWithCoords[0] ||
+        firstRouteStop ||
+        (homePins[0] && isValidLatLng(homePins[0].lat, homePins[0].lng)) ||
+        (schoolPin && isValidLatLng(schoolPin.lat, schoolPin.lng))
+    );
+
     const startCenter: [number, number] =
       selectedBus && hasValidCoords(selectedBus)
         ? [Number(selectedBus.latitude), Number(selectedBus.longitude)]
         : busesWithCoords[0]
           ? [Number(busesWithCoords[0].latitude), Number(busesWithCoords[0].longitude)]
-          : homePins[0] && isValidLatLng(homePins[0].lat, homePins[0].lng)
-            ? [homePins[0].lat, homePins[0].lng]
-            : schoolPin && isValidLatLng(schoolPin.lat, schoolPin.lng)
-              ? [schoolPin.lat, schoolPin.lng]
-              : [DEFAULT_FALLBACK_CENTER.lat, DEFAULT_FALLBACK_CENTER.lng];
+          : firstRouteStop
+            ? [Number(firstRouteStop.lat), Number(firstRouteStop.lng)]
+            : homePins[0] && isValidLatLng(homePins[0].lat, homePins[0].lng)
+              ? [homePins[0].lat, homePins[0].lng]
+              : schoolPin && isValidLatLng(schoolPin.lat, schoolPin.lng)
+                ? [schoolPin.lat, schoolPin.lng]
+                : [DEFAULT_FALLBACK_CENTER.lat, DEFAULT_FALLBACK_CENTER.lng];
 
     const map = L.map(el, {
       center: startCenter,
-      zoom: busesWithCoords.length > 1 ? 13 : 15,
+      zoom: !hasRealStartAnchor ? 5 : busesWithCoords.length > 1 ? 13 : 15,
       zoomControl: false,
       attributionControl: true,
     });
@@ -612,16 +626,32 @@ const LeafletFleetMap: React.FC<LeafletMapProps> = ({
     });
   }, [busesWithCoords, selectedBus?.busId, colorByBusId, onSelectBus, readOnly]);
 
-  // 7. Smooth Auto-Follow Selected Bus
+  const hadSelectedCoordsRef = useRef<boolean>(hasValidCoords(selectedBus));
+
+  // 7. Smooth Auto-Follow Selected Bus (and instant snap when first real GPS fix arrives)
   useEffect(() => {
     const map = mapRef.current;
-    if (!map || !followSelected || !selectedBus || !hasValidCoords(selectedBus)) return;
+    if (!map) return;
+    const validNow = Boolean(selectedBus && hasValidCoords(selectedBus));
+    if (!validNow) {
+      hadSelectedCoordsRef.current = false;
+      return;
+    }
     if (pinPickLabel) return; // Don't steal camera while admin is pinning a stop
+
+    const justAcquiredFirstFix = !hadSelectedCoordsRef.current;
+    hadSelectedCoordsRef.current = true;
+    if (justAcquiredFirstFix && !followSelected) {
+      setFollowSelected(true);
+    }
+    if (!followSelected && !justAcquiredFirstFix) return;
+
     const target: [number, number] = [Number(selectedBus.latitude), Number(selectedBus.longitude)];
     const currentZoom = map.getZoom();
-    map.panTo(target, { animate: true, duration: 0.5 });
-    if (currentZoom < 14 && busesWithCoords.length <= 1) {
-      map.setZoom(15);
+    if (justAcquiredFirstFix || currentZoom < 14) {
+      map.setView(target, Math.max(currentZoom, 16), { animate: true });
+    } else {
+      map.panTo(target, { animate: true, duration: 0.45 });
     }
   }, [
     followSelected,
@@ -738,7 +768,17 @@ const LeafletFleetMap: React.FC<LeafletMapProps> = ({
         {selectedBus && hasValidCoords(selectedBus) && (
           <button
             type="button"
-            onClick={() => setFollowSelected((prev) => !prev)}
+            onClick={() => {
+              const nextFollow = !followSelected;
+              setFollowSelected(nextFollow);
+              if (nextFollow && mapRef.current) {
+                mapRef.current.setView(
+                  [Number(selectedBus.latitude), Number(selectedBus.longitude)],
+                  Math.max(mapRef.current.getZoom(), 16),
+                  { animate: true }
+                );
+              }
+            }}
             className={`px-2.5 py-1.5 rounded-xl border text-[11px] font-bold flex items-center gap-1 shadow-lg backdrop-blur-md cursor-pointer transition ${
               followSelected
                 ? "bg-amber-500 text-slate-950 border-amber-300"
@@ -1002,17 +1042,26 @@ const GoogleMapContent: React.FC<GoogleMapContentProps> = ({
   const circlesRef = useRef<google.maps.Circle[]>([]);
   const initialFitDoneRef = useRef<boolean>(false);
 
+  const hadSelectedCoordsRef = useRef<boolean>(hasValidCoords(selectedBus));
+
   useEffect(() => {
-    if (!map || !followSelected || !selectedBus || !hasValidCoords(selectedBus)) {
+    if (!map) return;
+    const validNow = Boolean(selectedBus && hasValidCoords(selectedBus));
+    if (!validNow) {
+      hadSelectedCoordsRef.current = false;
       return;
     }
+    const justAcquiredFirstFix = !hadSelectedCoordsRef.current;
+    hadSelectedCoordsRef.current = true;
+    if (!followSelected && !justAcquiredFirstFix) return;
+
     map.panTo({
       lat: Number(selectedBus.latitude),
       lng: Number(selectedBus.longitude),
     });
     const currentZoom = map.getZoom();
-    if (!currentZoom || currentZoom < 14) {
-      map.setZoom(15);
+    if (!currentZoom || currentZoom < 14 || justAcquiredFirstFix) {
+      map.setZoom(Math.max(currentZoom || 0, 16));
     }
   }, [map, followSelected, selectedBus?.busId, selectedBus?.latitude, selectedBus?.longitude]);
 
@@ -1260,7 +1309,15 @@ const GoogleMapViewportInner: React.FC<GoogleViewportProps> = ({
       ? { lat: Number(selectedBus.latitude), lng: Number(selectedBus.longitude) }
       : busesWithCoords[0]
         ? { lat: Number(busesWithCoords[0].latitude), lng: Number(busesWithCoords[0].longitude) }
-        : DEFAULT_FALLBACK_CENTER;
+        : schoolPin && isValidLatLng(schoolPin.lat, schoolPin.lng)
+          ? { lat: schoolPin.lat, lng: schoolPin.lng }
+          : DEFAULT_FALLBACK_CENTER;
+
+  const hasInitialPin = Boolean(
+    (selectedBus && hasValidCoords(selectedBus)) ||
+      busesWithCoords[0] ||
+      (schoolPin && isValidLatLng(schoolPin.lat, schoolPin.lng))
+  );
 
   return (
     <div
@@ -1276,7 +1333,7 @@ const GoogleMapViewportInner: React.FC<GoogleViewportProps> = ({
       <GoogleMap
         mapId="DEMO_MAP_ID"
         defaultCenter={initialCenter}
-        defaultZoom={busesWithCoords.length > 1 ? 13 : 15}
+        defaultZoom={!hasInitialPin ? 5 : busesWithCoords.length > 1 ? 13 : 15}
         mapTypeId={mapType}
         gestureHandling="greedy"
         streetViewControl={false}

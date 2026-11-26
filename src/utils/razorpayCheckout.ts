@@ -60,6 +60,26 @@ export async function fetchSchoolRazorpayConfig(
   }
 }
 
+export const FAST_PAY_CONVENIENCE_FEE_PCT = 5;
+
+export interface FastPayFeeBreakdown {
+  baseAmount: number;
+  convenienceFeePct: number;
+  convenienceFee: number;
+  totalPayable: number;
+}
+
+export function calculateFastPayFeeBreakdown(baseFeeAmount: number): FastPayFeeBreakdown {
+  const baseAmount = Math.max(0, Math.round(Number(baseFeeAmount || 0)));
+  const convenienceFee = Math.round(baseAmount * (FAST_PAY_CONVENIENCE_FEE_PCT / 100));
+  return {
+    baseAmount,
+    convenienceFeePct: FAST_PAY_CONVENIENCE_FEE_PCT,
+    convenienceFee,
+    totalPayable: baseAmount + convenienceFee,
+  };
+}
+
 export interface StartStudentFeeCheckoutParams {
   schoolId: string;
   schoolName: string;
@@ -76,7 +96,14 @@ export interface StartStudentFeeCheckoutParams {
   fee: any;
   payableAmount: number;
   monthLabel: string;
-  onSuccess: (result: { receiptNo: string; paymentId: string; fee?: MonthlyFee }) => void;
+  onSuccess: (result: {
+    receiptNo: string;
+    paymentId: string;
+    fee?: MonthlyFee;
+    baseAmount?: number;
+    convenienceFee?: number;
+    totalPayable?: number;
+  }) => void;
   onError: (msg: string) => void;
   onDismiss?: () => void;
 }
@@ -103,6 +130,12 @@ export async function startStudentRazorpayFeeCheckout(
       return;
     }
 
+    const breakdown = calculateFastPayFeeBreakdown(payableAmount);
+    if (breakdown.baseAmount <= 0) {
+      onError("Payable fee amount ₹1 se adhik hona chahiye.");
+      return;
+    }
+
     const month = String(fee?.month || "2026-04");
     const orderRes = await fetch("/api/razorpay/create-order", {
       method: "POST",
@@ -119,7 +152,9 @@ export async function startStudentRazorpayFeeCheckout(
         sessionId: fee?.sessionId || "",
         month,
         monthLabel,
-        amount: payableAmount,
+        amount: breakdown.baseAmount,
+        baseAmount: breakdown.baseAmount,
+        fastPay: true,
         feeId: fee?.id || `${student.id}_${month}`,
         feeItems: Array.isArray(fee?.feeItems) ? fee.feeItems : [],
       }),
@@ -131,13 +166,17 @@ export async function startStudentRazorpayFeeCheckout(
       return;
     }
 
+    const resolvedBase = Number(orderData.baseAmount ?? breakdown.baseAmount);
+    const resolvedConv = Number(orderData.convenienceFee ?? breakdown.convenienceFee);
+    const resolvedTotal = Number(orderData.totalPayable ?? resolvedBase + resolvedConv);
+
     const RazorpayCtor = (window as any).Razorpay;
     const rzp = new RazorpayCtor({
       key: orderData.keyId,
       amount: orderData.amount,
       currency: orderData.currency || "INR",
       name: schoolName || "School Fee Desk",
-      description: `${monthLabel} Fee • ${student.name}${student.rollNo ? ` (Roll ${student.rollNo})` : ""}`,
+      description: `Fast Pay • ${monthLabel} (Fee ₹${resolvedBase} + 5% ₹${resolvedConv} = ₹${resolvedTotal}) • ${student.name}`,
       order_id: orderData.orderId,
       prefill: {
         name: student.name || "",
@@ -148,6 +187,9 @@ export async function startStudentRazorpayFeeCheckout(
         schoolId,
         studentId: student.id,
         month,
+        fastPay: "true",
+        baseAmount: String(resolvedBase),
+        convenienceFee: String(resolvedConv),
       },
       theme: {
         color: "#4f46e5",
@@ -190,6 +232,9 @@ export async function startStudentRazorpayFeeCheckout(
             receiptNo: verifyData.receiptNo || `RZP-${response.razorpay_payment_id.slice(-6).toUpperCase()}`,
             paymentId: response.razorpay_payment_id,
             fee: verifyData.fee,
+            baseAmount: resolvedBase,
+            convenienceFee: resolvedConv,
+            totalPayable: resolvedTotal,
           });
         } catch (err: any) {
           onError(err?.message || "Payment verification error");

@@ -737,6 +737,17 @@ export const listenToForegroundMessages = async (onMessageReceived?: (payload: a
         try { onMessageReceived(payload); } catch (_) {}
       }
 
+      const fcmType = String(payload?.data?.type || '').trim().toUpperCase();
+      if (fcmType === 'UPI_PROOF_RESOLVED') {
+        const resolvedId = String(payload?.data?.proofId || '').trim();
+        if (resolvedId) {
+          try {
+            (window as any).LifeMakerAndroid?.markUpiProofHandled?.(resolvedId);
+          } catch {}
+        }
+        return;
+      }
+
       // 2. Automatically display visual alert so user sees it even when app is open!
       const title = payload.notification?.title || payload.data?.title || 'NSTA Study Alert';
       const body = payload.notification?.body || payload.data?.body || 'New update received!';
@@ -1354,8 +1365,26 @@ export const subscribeToUserNotifications = (
     // E. Universal Class & Targeted-Student Filter Check:
     // Skip class check if this device's studentId/userId was explicitly targeted
     const explicitRecipients: string[] = Array.isArray(item.studentIds) ? item.studentIds.map(String) : [];
+    const singleTargetStudent = String(item.studentId || item.targetStudentId || '').trim();
+    if (
+      singleTargetStudent &&
+      !['all', 'general', 'everyone'].includes(singleTargetStudent.toLowerCase()) &&
+      !ctx.myIds.has(singleTargetStudent) &&
+      !ctx.myIds.has(sanitizeKey(singleTargetStudent)) &&
+      !ctx.studentIds.has(singleTargetStudent)
+    ) {
+      if (notifKey && inboxOwnerKey) {
+        remove(ref(rtdb, `user_notifications/${inboxOwnerKey}/${notifKey}`)).catch(() => {});
+      }
+      return;
+    }
+
     const explicitlyTargeted =
       Boolean(inboxOwnerKey) ||
+      (singleTargetStudent &&
+        (ctx.myIds.has(singleTargetStudent) ||
+          ctx.myIds.has(sanitizeKey(singleTargetStudent)) ||
+          ctx.studentIds.has(singleTargetStudent))) ||
       explicitRecipients.some((rid) => ctx.myIds.has(rid) || ctx.myIds.has(sanitizeKey(rid)));
 
     // If explicitRecipients is specified for private per-student alerts (NOT classBroadcast/schoolBroadcast), only targeted devices should receive it
@@ -1416,6 +1445,19 @@ export const subscribeToUserNotifications = (
     // G. User category preferences check
     const prefs = loadNotificationPreferences(userId);
     if (item.type && !isCategoryEnabled(prefs, item.type)) {
+      if (notifKey && inboxOwnerKey) {
+        remove(ref(rtdb, `user_notifications/${inboxOwnerKey}/${notifKey}`)).catch(() => {});
+      }
+      return;
+    }
+
+    if (String(item.type || '').trim().toUpperCase() === 'UPI_PROOF_RESOLVED') {
+      const resolvedId = String(item.proofId || '').trim();
+      if (resolvedId) {
+        try {
+          (window as any).LifeMakerAndroid?.markUpiProofHandled?.(resolvedId);
+        } catch {}
+      }
       if (notifKey && inboxOwnerKey) {
         remove(ref(rtdb, `user_notifications/${inboxOwnerKey}/${notifKey}`)).catch(() => {});
       }

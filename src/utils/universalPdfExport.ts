@@ -255,27 +255,40 @@ const SVG_PROPS_TO_COPY: string[] = ["fill", "stroke", "stroke-width", "opacity"
 async function fetchImageAsDataUrl(url: string): Promise<string | null> {
   if (!url || url.startsWith("data:") || url.startsWith("blob:")) return url;
   if (imageDataUriCache.has(url)) return imageDataUriCache.get(url) || null;
-  try {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 3500);
-    const resp = await fetch(url, { mode: "cors", signal: controller.signal });
-    clearTimeout(timer);
-    if (!resp.ok) return null;
-    const blob = await resp.blob();
-    const dataUrl = await new Promise<string | null>((resolve) => {
+
+  const readBlobAsDataUrl = (blob: Blob) =>
+    new Promise<string | null>((resolve) => {
       const reader = new FileReader();
       reader.onload = () => resolve(typeof reader.result === "string" ? reader.result : null);
       reader.onerror = () => resolve(null);
       reader.readAsDataURL(blob);
     });
-    if (dataUrl) {
-      if (imageDataUriCache.size > 120) imageDataUriCache.clear();
-      imageDataUriCache.set(url, dataUrl);
+
+  const tryFetch = async (targetUrl: string, mode: RequestMode): Promise<string | null> => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 4500);
+    try {
+      const resp = await fetch(targetUrl, { mode, signal: controller.signal });
+      clearTimeout(timer);
+      if (!resp.ok) return null;
+      const blob = await resp.blob();
+      if (!blob.type.startsWith("image/")) return null;
+      return await readBlobAsDataUrl(blob);
+    } catch {
+      clearTimeout(timer);
+      return null;
     }
-    return dataUrl;
-  } catch {
-    return null;
+  };
+
+  let dataUrl = await tryFetch(url, "cors");
+  if (!dataUrl && /^https:\/\//i.test(url)) {
+    dataUrl = await tryFetch(`/api/image-proxy?url=${encodeURIComponent(url)}`, "same-origin");
   }
+  if (dataUrl) {
+    if (imageDataUriCache.size > 120) imageDataUriCache.clear();
+    imageDataUriCache.set(url, dataUrl);
+  }
+  return dataUrl;
 }
 
 /**
@@ -286,6 +299,10 @@ export async function cloneElementWithMaterializedStyles(sourceRoot: HTMLElement
   const clonedRoot = sourceRoot.cloneNode(true) as HTMLElement;
   const srcNodes: Element[] = [sourceRoot, ...Array.from(sourceRoot.querySelectorAll("*"))];
   const dstNodes: Element[] = [clonedRoot, ...Array.from(clonedRoot.querySelectorAll("*"))];
+  const isPdfLockLightRoot =
+    sourceRoot.getAttribute("data-pdf-lock-light") === "true" ||
+    sourceRoot.classList.contains("nst-isolated-print-light") ||
+    sourceRoot.classList.contains("cr80-id-card");
 
   const imgTasks: Promise<void>[] = [];
 
@@ -300,6 +317,15 @@ export async function cloneElementWithMaterializedStyles(sourceRoot: HTMLElement
         const isSvg = dst instanceof SVGElement;
         const propList = isSvg ? SVG_PROPS_TO_COPY : COMPUTED_PROPS_TO_COPY;
         for (const prop of propList) {
+          // Inside light-locked printable cards, avoid copying horizontal/vertical ellipsis overflow on text tags so html2canvas never clips glyph descenders
+          if (
+            isPdfLockLightRoot &&
+            (prop === "overflow" || prop === "overflow-x" || prop === "overflow-y") &&
+            /^(H1|H2|H3|H4|H5|H6|P|SPAN|STRONG|TD|TH)$/i.test(dst.tagName)
+          ) {
+            dstStyle.setProperty(prop, "visible");
+            continue;
+          }
           const val = cs.getPropertyValue(prop);
           if (!val || val === "none" || val === "normal" || val === "auto") {
             if (prop === "display" || prop === "position" || prop === "background-image") {
@@ -325,12 +351,29 @@ export async function cloneElementWithMaterializedStyles(sourceRoot: HTMLElement
 
       if (dst instanceof HTMLImageElement && src instanceof HTMLImageElement) {
         const rawSrc = src.currentSrc || src.src || dst.getAttribute("src") || "";
+        const fallbackInitials = src.getAttribute("data-fallback-initials") || "";
         dst.setAttribute("crossorigin", "anonymous");
         if (rawSrc && !rawSrc.startsWith("data:") && !rawSrc.startsWith("blob:")) {
           imgTasks.push(
             fetchImageAsDataUrl(rawSrc).then((dataUri) => {
               if (dataUri) {
                 dst.src = dataUri;
+              } else if (fallbackInitials && dst.parentElement) {
+                const badge = document.createElement("div");
+                badge.textContent = fallbackInitials.slice(0, 3).toUpperCase();
+                badge.style.width = dst.style.width || `${src.clientWidth || 32}px`;
+                badge.style.height = dst.style.height || `${src.clientHeight || 32}px`;
+                badge.style.borderRadius = dst.style.borderRadius || "9999px";
+                badge.style.backgroundColor = "#0f172a";
+                badge.style.color = "#ffffff";
+                badge.style.border = "2px solid #fbbf24";
+                badge.style.display = "flex";
+                badge.style.alignItems = "center";
+                badge.style.justifyContent = "center";
+                badge.style.fontWeight = "900";
+                badge.style.fontSize = src.clientWidth >= 48 ? "16px" : "10px";
+                badge.style.flexShrink = "0";
+                dst.parentElement.replaceChild(badge, dst);
               } else {
                 // Keep clean alt placeholder instead of letting tainted canvas crash pdf.output
                 dst.removeAttribute("src");
@@ -350,7 +393,7 @@ export async function cloneElementWithMaterializedStyles(sourceRoot: HTMLElement
   if (imgTasks.length > 0) {
     await Promise.race([
       Promise.allSettled(imgTasks),
-      new Promise<void>((resolve) => setTimeout(resolve, 4500)),
+      new Promise<void>((resolve) => setTimeout(resolve, 6000)),
     ]);
   }
 

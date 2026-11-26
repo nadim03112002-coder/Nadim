@@ -1,7 +1,7 @@
 // @ts-nocheck
 import React, { useState, useEffect, useRef } from "react";
 import QRCode from "react-qr-code";
-import type { School, SchoolClass, SchoolStudent, SchoolSession } from "../../school-types";
+import { resolveSchoolSignatory, type School, type SchoolClass, type SchoolStudent, type SchoolSession } from "../../school-types";
 import {
   FileText, Printer, ChevronLeft, Plus, Trash2, Calendar, Clock,
   CheckSquare, Square, Award, AlertCircle, Building2, Layers, Edit3, User, Shield, Sparkles, UserPlus, PenTool, Palette, Download, Loader2
@@ -85,6 +85,9 @@ export const AdmitCardManager: React.FC<Props> = ({
     code: getVisibleSchoolRegNo(school),
     principalSignatureUrl: school?.principalSignatureUrl || "",
     directorSignatureUrl: school?.directorSignatureUrl || "",
+    managerName: school?.managerName || "",
+    managerSignatureUrl: school?.managerSignatureUrl || "",
+    signatureRouting: school?.signatureRouting,
   });
 
   useEffect(() => {
@@ -102,6 +105,9 @@ export const AdmitCardManager: React.FC<Props> = ({
       code: getVisibleSchoolRegNo(school),
       principalSignatureUrl: school.principalSignatureUrl || "",
       directorSignatureUrl: school.directorSignatureUrl || "",
+      managerName: school.managerName || "",
+      managerSignatureUrl: school.managerSignatureUrl || "",
+      signatureRouting: school.signatureRouting ?? prev.signatureRouting,
     }));
     if (school.principalName) setPrincipalName(school.principalName);
   }, [school]);
@@ -374,7 +380,14 @@ export const AdmitCardManager: React.FC<Props> = ({
     const savedLogo = getSavedSchoolLogo(schoolDetails.logoUrl);
     const regNoVisible = getVisibleSchoolRegNo(school, schoolDetails.code);
     const leftSignLabel = (useCustomAdmitTpl && activeAdmitTemplate.leftSignatoryLabel) ? activeAdmitTemplate.leftSignatoryLabel : (examController || "Exam Controller");
-    const rightSignLabel = (useCustomAdmitTpl && activeAdmitTemplate.rightSignatoryLabel) ? activeAdmitTemplate.rightSignatoryLabel : principalTitle;
+    const admitSig = resolveSchoolSignatory(
+      { ...school, ...schoolDetails, examControllerName: examController, examControllerSignatureUrl } as Partial<School>,
+      schoolDetails.signatureRouting?.admitCard || school?.signatureRouting?.admitCard || "principal",
+      principalTitle
+    );
+    const rightSignLabel = (useCustomAdmitTpl && activeAdmitTemplate.rightSignatoryLabel)
+      ? activeAdmitTemplate.rightSignatoryLabel
+      : admitSig.roleLabel;
 
     if (useCustomAdmitTpl) {
       const watermarkOverlay = activeAdmitTemplate.showWatermark ? (
@@ -527,10 +540,12 @@ export const AdmitCardManager: React.FC<Props> = ({
             </div>
             <div>
               <div className="h-7 border-b border-slate-400 mb-1 flex items-end justify-center">
-                {schoolDetails.principalSignatureUrl ? (
-                  <img src={schoolDetails.principalSignatureUrl} alt="Principal Signature" className="max-h-6 max-w-[100px] object-contain mb-0.5" />
+                {admitSig.signatureUrl ? (
+                  <img src={admitSig.signatureUrl} alt={`${rightSignLabel} Signature`} className="max-h-6 max-w-[100px] object-contain mb-0.5" />
                 ) : (
-                  <span className="italic font-serif font-black text-sm" style={{ color: admitColors.primaryColor }}>{principalName}</span>
+                  <span className="italic font-serif font-black text-sm" style={{ color: admitColors.primaryColor }}>
+                    {admitSig.role === "principal" ? principalName : admitSig.name}
+                  </span>
                 )}
               </div>
               <p className="font-black text-slate-900 uppercase tracking-wider text-[10.5px]">{rightSignLabel}</p>
@@ -565,13 +580,17 @@ export const AdmitCardManager: React.FC<Props> = ({
 
       const admitArch = getLayoutArchitecture(admitVariant);
 
+      const baseAdmitBw = admitArch.frameStyle === "heavy_bars" ? "0px" : activeAdmitTemplate.borderStyle === "double" ? "4px" : "2px";
       const customBorderStyle = {
-        borderColor: admitColors.borderColor,
+        borderTopColor: admitColors.borderColor,
+        borderRightColor: admitColors.borderColor,
+        borderBottomColor: admitColors.borderColor,
+        borderLeftColor: admitColors.borderColor,
         borderStyle: admitArch.frameStyle === "postage_stamp" || admitArch.frameStyle === "ink_dashed" ? "dashed" : activeAdmitTemplate.borderStyle,
-        borderWidth: admitArch.frameStyle === "heavy_bars" ? "0px" : activeAdmitTemplate.borderStyle === "double" ? "4px" : "2px",
-        borderTopWidth: admitArch.frameStyle === "heavy_bars" ? "10px" : undefined,
-        borderBottomWidth: admitArch.frameStyle === "heavy_bars" ? "10px" : undefined,
-        borderLeftWidth: admitArch.frameStyle === "mono_stripe" ? "8px" : undefined,
+        borderTopWidth: admitArch.frameStyle === "heavy_bars" ? "10px" : baseAdmitBw,
+        borderRightWidth: baseAdmitBw,
+        borderBottomWidth: admitArch.frameStyle === "heavy_bars" ? "10px" : baseAdmitBw,
+        borderLeftWidth: admitArch.frameStyle === "mono_stripe" ? "8px" : baseAdmitBw,
         borderRadius: admitArch.frameStyle === "beveled" ? "26px 4px 26px 4px" : undefined,
       };
 
@@ -1020,12 +1039,12 @@ export const AdmitCardManager: React.FC<Props> = ({
                 : undefined,
               backgroundSize: isBlueprint ? "16px 16px" : undefined,
               ...customBorderStyle,
-              borderRadius: isBeveled ? "28px 4px 28px 4px" : undefined,
+              borderRadius: isBeveled ? "28px 4px 28px 4px" : customBorderStyle.borderRadius,
               borderStyle: isPostage ? "dashed" : customBorderStyle.borderStyle,
-              borderTopWidth: isHeavyBars ? "10px" : undefined,
-              borderBottomWidth: isHeavyBars ? "10px" : undefined,
-              borderLeftWidth: isMonoStripe ? "9px" : isSwissCross ? "14px" : undefined,
-              borderLeftColor: isSwissCross ? admitColors.accentColor : undefined,
+              borderTopWidth: isHeavyBars ? "10px" : customBorderStyle.borderTopWidth,
+              borderBottomWidth: isHeavyBars ? "10px" : customBorderStyle.borderBottomWidth,
+              borderLeftWidth: isMonoStripe ? "9px" : isSwissCross ? "14px" : customBorderStyle.borderLeftWidth,
+              borderLeftColor: isSwissCross ? admitColors.accentColor : customBorderStyle.borderLeftColor,
               boxShadow: isStacked
                 ? `6px 6px 0 ${admitColors.accentColor}, 12px 12px 0 ${admitColors.primaryColor}`
                 : admitArch.frameStyle === "museum_plaque"
@@ -1362,17 +1381,19 @@ export const AdmitCardManager: React.FC<Props> = ({
           </div>
           <div>
             <div className="h-8 border-b border-slate-400 mb-1 flex items-end justify-center">
-              {schoolDetails.principalSignatureUrl ? (
+              {admitSig.signatureUrl ? (
                 <img
-                  src={schoolDetails.principalSignatureUrl}
-                  alt="Principal Signature"
+                  src={admitSig.signatureUrl}
+                  alt={`${rightSignLabel} Signature`}
                   className="max-h-7 max-w-[110px] object-contain mb-0.5"
                 />
               ) : (
-                <span className="italic font-serif font-black text-indigo-800 text-sm">{principalName}</span>
+                <span className="italic font-serif font-black text-indigo-800 text-sm">
+                  {admitSig.role === "principal" ? principalName : admitSig.name}
+                </span>
               )}
             </div>
-            <p className="font-black text-slate-900 uppercase tracking-wider text-[11px]">{principalTitle}</p>
+            <p className="font-black text-slate-900 uppercase tracking-wider text-[11px]">{rightSignLabel}</p>
             <p className="text-[10px] text-slate-500">(केन्द्राधीक्षक / मुहर)</p>
           </div>
         </div>

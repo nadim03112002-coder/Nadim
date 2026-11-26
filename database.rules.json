@@ -216,6 +216,27 @@
             ".write": "auth != null",
             ".validate": "newData.child('lat').isNumber() && newData.child('lat').val() >= -90 && newData.child('lat').val() <= 90 && newData.child('lng').isNumber() && newData.child('lng').val() >= -180 && newData.child('lng').val() <= 180"
           }
+        },
+
+        "error_logs": {
+          ".read": "auth != null",
+          ".write": "auth != null",
+          ".indexOn": ["timestamp"]
+        },
+
+        "student_link_slots": {
+          ".read": "auth != null",
+          ".write": "auth != null"
+        }
+      }
+    },
+
+    "school_bus_locations": {
+      "$schoolId": {
+        ".read": "auth != null",
+        "$busId": {
+          ".read": "auth != null",
+          ".write": "auth != null"
         }
       }
     },

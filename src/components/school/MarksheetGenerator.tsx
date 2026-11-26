@@ -18,7 +18,7 @@ import {
   resolveActiveDocumentTemplate,
 } from "../../utils/schoolDocumentTemplates";
 import { SchoolHeaderEditorModal, type SchoolHeaderDetails } from "./SchoolHeaderEditorModal";
-import { schoolPrintFieldEnabled, isBoardClass } from "../../school-types";
+import { schoolPrintFieldEnabled, isBoardClass, resolveSchoolSignatory } from "../../school-types";
 import { QuickAddStudentModal } from "./QuickAddStudentModal";
 import { TeacherSignatureModal } from "./TeacherSignatureModal";
 import { cleanLogoUrl, isAppLogo, getSavedSchoolLogo, getVisibleSchoolRegNo, formatAcademicSession } from "./feeReceiptUtils";
@@ -992,16 +992,16 @@ export const MarksheetGenerator: React.FC<Props> = ({
     }
     setIsPromotingStudents(true);
     try {
-      await promoteStudents(school.id, promoToClassId, promoTargetSession, promoSelectedStudentIds);
+      const toClassName = classes.find(c => c.id === promoToClassId)?.name || "Next Class";
+      await promoteStudents(school.id, promoToClassId, promoTargetSession, promoSelectedStudentIds, toClassName);
       // update local state
       setStudentList(prev =>
         prev.map(s =>
           promoSelectedStudentIds.includes(s.id)
-            ? { ...s, classId: promoToClassId, sessionId: promoTargetSession }
+            ? { ...s, classId: promoToClassId, className: toClassName, sessionId: promoTargetSession }
             : s
         )
       );
-      const toClassName = classes.find(c => c.id === promoToClassId)?.name || "Next Class";
       setPromotionNotice(`🎉 बधाई हो! ${promoSelectedStudentIds.length} छात्र सफलतापूर्वक अगले सत्र (${promoTargetSession}) व ${toClassName} में प्रमोट हो गए!`);
       setShowPromotionModal(false);
       setTimeout(() => setPromotionNotice(null), 6000);
@@ -1028,12 +1028,15 @@ export const MarksheetGenerator: React.FC<Props> = ({
     directorPhone: school?.directorPhone || "",
     principalSignatureUrl: school?.principalSignatureUrl || "",
     directorSignatureUrl: school?.directorSignatureUrl || "",
+    managerName: school?.managerName || "",
+    managerSignatureUrl: school?.managerSignatureUrl || "",
     principalPhotoUrl: school?.principalPhotoUrl || "",
     directorPhotoUrl: school?.directorPhotoUrl || "",
     erpAppUrl: school?.erpAppUrl || DEFAULT_ERP_APP_DOWNLOAD_URL,
     erpAppFeatures: school?.erpAppFeatures || [],
     customFields: school?.customFields || [],
     documentPrintFields: school?.documentPrintFields || {},
+    signatureRouting: school?.signatureRouting,
   });
   useEffect(() => {
     setSchoolDetails(previous => ({
@@ -1052,12 +1055,15 @@ export const MarksheetGenerator: React.FC<Props> = ({
       directorPhone: school.directorPhone || "",
       principalSignatureUrl: school.principalSignatureUrl || "",
       directorSignatureUrl: school.directorSignatureUrl || "",
+      managerName: school.managerName || "",
+      managerSignatureUrl: school.managerSignatureUrl || "",
       principalPhotoUrl: school.principalPhotoUrl || "",
       directorPhotoUrl: school.directorPhotoUrl || "",
       erpAppUrl: school.erpAppUrl || DEFAULT_ERP_APP_DOWNLOAD_URL,
       erpAppFeatures: school.erpAppFeatures || [],
       customFields: school.customFields || [],
       documentPrintFields: school.documentPrintFields || {},
+      signatureRouting: school.signatureRouting ?? previous.signatureRouting,
     }));
   }, [school]);
   const showSchoolDetail = (field: Parameters<typeof schoolPrintFieldEnabled>[2]) =>
@@ -1067,6 +1073,11 @@ export const MarksheetGenerator: React.FC<Props> = ({
       .map(field => `${field.label}: ${field.value}`).join(" • ")
     : "";
   const principalName = schoolDetails.principalName;
+  const msSig = resolveSchoolSignatory(
+    { ...school, ...schoolDetails } as Partial<School>,
+    schoolDetails.signatureRouting?.marksheet || school?.signatureRouting?.marksheet || "principal",
+    schoolDetails.principalTitle || "Principal"
+  );
 
   // Selected Exam Cycle (Default: 'annual')
   const [selectedExamId, setSelectedExamId] = useState<string>("annual");
@@ -3044,18 +3055,18 @@ export const MarksheetGenerator: React.FC<Props> = ({
               </div>
               <div>
                 <div className="h-5 mb-0.5 flex items-end justify-center">
-                  {schoolDetails.principalSignatureUrl ? (
+                  {msSig.signatureUrl ? (
                     <img
-                      src={schoolDetails.principalSignatureUrl}
-                      alt="Principal Signature"
+                      src={msSig.signatureUrl}
+                      alt={`${msSig.roleLabel} Signature`}
                       className="max-h-5 max-w-[70px] object-contain"
                     />
-                  ) : principalName ? (
-                    <span className="italic font-serif font-black text-indigo-900 text-[8px]">{principalName}</span>
+                  ) : msSig.name ? (
+                    <span className="italic font-serif font-black text-indigo-900 text-[8px]">{msSig.name}</span>
                   ) : null}
                 </div>
                 <p className="font-black text-slate-950 uppercase tracking-wider text-[7px]">
-                  {useCustomMsTpl && activeMsTemplate.rightSignatoryLabel ? activeMsTemplate.rightSignatoryLabel : (schoolDetails.principalTitle || "Principal")}
+                  {useCustomMsTpl && activeMsTemplate.rightSignatoryLabel ? activeMsTemplate.rightSignatoryLabel : msSig.roleLabel}
                 </p>
               </div>
             </div>
@@ -3735,18 +3746,18 @@ export const MarksheetGenerator: React.FC<Props> = ({
                   </div>
                   <div>
                     <div className="h-6 mb-0.5 flex items-end justify-center">
-                      {schoolDetails.principalSignatureUrl ? (
+                      {msSig.signatureUrl ? (
                         <img
-                          src={schoolDetails.principalSignatureUrl}
-                          alt="Principal Signature"
+                          src={msSig.signatureUrl}
+                          alt={`${msSig.roleLabel} Signature`}
                           className="max-h-5 max-w-[90px] object-contain mb-0.5"
                         />
-                      ) : principalName ? (
-                        <span className="italic font-serif font-black text-indigo-900 text-[9.5px] mb-0.5">{principalName}</span>
+                      ) : msSig.name ? (
+                        <span className="italic font-serif font-black text-indigo-900 text-[9.5px] mb-0.5">{msSig.name}</span>
                       ) : null}
                     </div>
                     <p className="font-black text-slate-950 uppercase tracking-wider text-[8.5px]">
-                      {useCustomMsTpl && activeMsTemplate.rightSignatoryLabel ? activeMsTemplate.rightSignatoryLabel : (schoolDetails.principalTitle || "Principal")}
+                      {useCustomMsTpl && activeMsTemplate.rightSignatoryLabel ? activeMsTemplate.rightSignatoryLabel : msSig.roleLabel}
                     </p>
                   </div>
                 </div>
@@ -3983,18 +3994,18 @@ export const MarksheetGenerator: React.FC<Props> = ({
                 </div>
                 <div>
                   <div className="h-9 mb-1 flex items-end justify-center">
-                    {schoolDetails.principalSignatureUrl ? (
+                    {msSig.signatureUrl ? (
                       <img
-                        src={schoolDetails.principalSignatureUrl}
-                        alt="Principal Signature"
+                        src={msSig.signatureUrl}
+                        alt={`${msSig.roleLabel} Signature`}
                         className="max-h-8 max-w-[110px] object-contain mb-0.5"
                       />
-                    ) : principalName ? (
-                      <span className="italic font-serif font-black text-indigo-900 text-xs mb-0.5">{principalName}</span>
+                    ) : msSig.name ? (
+                      <span className="italic font-serif font-black text-indigo-900 text-xs mb-0.5">{msSig.name}</span>
                     ) : null}
                   </div>
                   <p className="font-black text-slate-950 uppercase tracking-wider text-[10.5px]">
-                    {useCustomMsTpl && activeMsTemplate.rightSignatoryLabel ? activeMsTemplate.rightSignatoryLabel : (schoolDetails.principalTitle || "Principal")}
+                    {useCustomMsTpl && activeMsTemplate.rightSignatoryLabel ? activeMsTemplate.rightSignatoryLabel : msSig.roleLabel}
                   </p>
                 </div>
               </div>

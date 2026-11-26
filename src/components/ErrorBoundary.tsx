@@ -1,9 +1,35 @@
 import React, { Component, ErrorInfo, ReactNode } from 'react';
-import { RefreshCcw, Home, WifiOff } from 'lucide-react';
+import { RefreshCcw, Home, WifiOff, Copy, Check } from 'lucide-react';
 import { storage } from '../utils/storage';
-import { logErrorToFirebase } from '../utils/errorLogger';
+import { logErrorToFirebase, extractFunctionName, deriveErrorReason, getErrorLoggerContextSnapshot } from '../utils/errorLogger';
 import { reportCrash } from '../utils/maintenanceManager';
 import { MaintenanceScreen } from './MaintenanceScreen';
+
+export async function copyTextSafely(text: string): Promise<boolean> {
+  try {
+    if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch {}
+  try {
+    if (typeof document !== 'undefined') {
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.setAttribute('readonly', '');
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      ta.style.left = '-9999px';
+      document.body.appendChild(ta);
+      ta.select();
+      ta.setSelectionRange(0, text.length);
+      const ok = document.execCommand('copy');
+      document.body.removeChild(ta);
+      return ok;
+    }
+  } catch {}
+  return false;
+}
 
 interface Props {
   children: ReactNode;
@@ -26,14 +52,18 @@ interface Props {
 interface State {
   hasError: boolean;
   error: Error | null;
+  componentStack?: string;
   retryCount: number;
+  copied: boolean;
 }
 
 export class ErrorBoundary extends Component<Props, State> {
   public state: State = {
     hasError: false,
     error: null,
+    componentStack: undefined,
     retryCount: 0,
+    copied: false,
   };
 
   public static getDerivedStateFromError(error: Error): Partial<State> {
@@ -45,13 +75,15 @@ export class ErrorBoundary extends Component<Props, State> {
       this.state.hasError &&
       prevProps.resetKey !== this.props.resetKey
     ) {
-      this.setState({ hasError: false, error: null, retryCount: 0 });
+      this.setState({ hasError: false, error: null, componentStack: undefined, retryCount: 0, copied: false });
     }
   }
 
   public componentDidCatch(error: Error, errorInfo: ErrorInfo) {
     this.props.onError?.(error, errorInfo);
     const msg = error?.message || error?.toString() || '';
+    const compStack = errorInfo?.componentStack ?? undefined;
+    this.setState({ componentStack: compStack });
 
     const isChunkError =
       msg.includes('ChunkLoadError') ||
@@ -64,7 +96,10 @@ export class ErrorBoundary extends Component<Props, State> {
     if (!isChunkError) {
       logErrorToFirebase(error, {
         type: 'react',
-        componentStack: errorInfo?.componentStack ?? undefined,
+        severity: 'critical',
+        componentStack: compStack,
+        moduleName: this.props.fallbackLabel,
+        functionName: extractFunctionName(error?.stack, compStack),
       }).catch(() => {});
     }
 
@@ -87,6 +122,31 @@ export class ErrorBoundary extends Component<Props, State> {
 
     console.error('[IIC] ErrorBoundary caught:', error, errorInfo);
   }
+
+  private handleCopyCrashReport = () => {
+    const err = this.state.error;
+    const msg = err?.message || String(err || 'Unknown error');
+    const fn = extractFunctionName(err?.stack, this.state.componentStack) || 'Unknown';
+    const ctx = getErrorLoggerContextSnapshot();
+    const lines = [
+      `SCHOOL+ Crash Report`,
+      `Module: ${this.props.fallbackLabel || ctx.activeModule || 'Unknown'}`,
+      `Function: ${fn}`,
+      `Reason: ${deriveErrorReason(msg, 'react')}`,
+      `User: ${ctx.userName || 'Guest'} (${ctx.userRole || 'Unknown'})`,
+      ctx.studentName ? `Student: ${ctx.studentName}${ctx.className ? ` (${ctx.className})` : ''}` : '',
+      ctx.userPhone ? `Phone: ${ctx.userPhone}` : '',
+      `Error: ${msg}`,
+      `Stack: ${(err?.stack || '').slice(0, 600)}`,
+    ].filter(Boolean).join('\n');
+
+    void copyTextSafely(lines).then((ok) => {
+      if (ok) {
+        this.setState({ copied: true });
+        setTimeout(() => this.setState({ copied: false }), 2000);
+      }
+    });
+  };
 
   private handleRetry = () => {
     const errText = this.state.error?.message || this.state.error?.toString() || '';
@@ -141,6 +201,11 @@ export class ErrorBoundary extends Component<Props, State> {
       errText.includes('dynamically imported module') ||
       errText.includes('Importing a module script failed');
 
+    // Custom fallback takes priority over built-in renders
+    if (this.props.fallback) {
+      return this.props.fallback(this.state.error, this.handleRetry) as React.ReactElement;
+    }
+
     if (isChunkError) {
       return (
         <div className="min-h-screen flex flex-col items-center justify-center p-6 bg-slate-900 text-white text-center">
@@ -157,11 +222,6 @@ export class ErrorBoundary extends Component<Props, State> {
           </button>
         </div>
       );
-    }
-
-    // Custom fallback takes priority over built-in renders
-    if (this.props.fallback) {
-      return this.props.fallback(this.state.error, this.handleRetry) as React.ReactElement;
     }
 
     // Smart Crash Protection: show professional maintenance screen instead of React error
@@ -246,6 +306,12 @@ export class ErrorBoundary extends Component<Props, State> {
               aria-label="Go to Home"
               className="w-full bg-slate-100 text-slate-700 font-bold py-3 rounded-xl flex items-center justify-center gap-2 hover:bg-slate-200 transition-colors">
               <Home size={15} aria-hidden /> Go to Home
+            </button>
+            <button onClick={this.handleCopyCrashReport}
+              aria-label="Copy Error Details"
+              className="w-full bg-amber-50 text-amber-800 border border-amber-200 font-bold py-2.5 rounded-xl flex items-center justify-center gap-2 hover:bg-amber-100 transition-colors text-xs">
+              {this.state.copied ? <Check size={14} aria-hidden /> : <Copy size={14} aria-hidden />}
+              {this.state.copied ? 'Copied! Admin/Support ko bhejein' : 'Copy Error Report'}
             </button>
             <button onClick={this.handleReset}
               aria-label="Reset app"

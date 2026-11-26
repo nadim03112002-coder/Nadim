@@ -22,8 +22,6 @@ import {
   resolveGoogleMapsLocationInput,
   type StudentHomePin,
 } from "../../utils/busProximity";
-import { rtdb } from "../../firebase";
-import { ref as dbRef, set as rtdbSet } from "firebase/database";
 import {
   loadTransportData,
   getLocalDrivers,
@@ -32,6 +30,7 @@ import {
   deleteDriverRecord,
   saveRouteRecord,
   deleteRouteRecord,
+  saveStudentStopLocationPin,
 } from "../../utils/schoolTransportStore";
 
 interface Props {
@@ -315,13 +314,23 @@ export const BusTransportModal: React.FC<Props> = ({
   };
 
   const applyStudentHomeCoords = (student: SchoolStudent, lat: number, lng: number, label?: string) => {
+    const curBus = studentBusMap[student.id];
+    const resolvedRouteName = curBus?.busRoute || student.busRoute || routes[0]?.routeName || "";
+    const matchedRoute = findRouteMatch(resolvedRouteName);
+    const resolvedStopName =
+      (curBus?.busStop || (student as any).busStop || "").trim() ||
+      `${(student.name || "Student").split(" ")[0]} Stop`;
+    const resolvedBusNumber = curBus?.busNumber || (student as any).busNumber || matchedRoute?.busNumber || "";
+
     setStudentBusMap((prev) => {
-      const cur = prev[student.id] || { usesBus: true, busRoute: "", busFee: classBusFee };
+      const cur = prev[student.id] || { usesBus: true, busRoute: resolvedRouteName, busFee: classBusFee };
       return {
         ...prev,
         [student.id]: {
           ...cur,
           usesBus: true,
+          busRoute: cur.busRoute || resolvedRouteName,
+          busStop: cur.busStop || resolvedStopName,
           homeLat: lat,
           homeLng: lng,
           homeAddress: label ?? cur.homeAddress ?? student.address ?? "",
@@ -334,26 +343,25 @@ export const BusTransportModal: React.FC<Props> = ({
       studentName: student.name,
       rollNo: student.rollNo,
       className: currentClass?.name || student.className || "",
-      busRoute: studentBusMap[student.id]?.busRoute || student.busRoute || routes[0]?.routeName || "",
+      busRoute: resolvedRouteName,
+      busStop: resolvedStopName,
+      busNumber: resolvedBusNumber,
       homeLat: lat,
       homeLng: lng,
-      homeAddress: label ?? student.address ?? "",
+      homeAddress: label ?? curBus?.homeAddress ?? student.address ?? "",
       updatedAt: new Date().toISOString(),
     };
 
-    try {
-      const key = `nst_student_home_pins_${schoolId}`;
-      const existing = JSON.parse(localStorage.getItem(key) || "{}");
-      existing[student.id] = pinRecord;
-      localStorage.setItem(key, JSON.stringify(existing));
-      if (rtdb && schoolId) {
-        rtdbSet(dbRef(rtdb, `schools/${schoolId}/student_home_pins/${student.id}`), pinRecord).catch(() => {});
-      }
-    } catch {}
+    void saveStudentStopLocationPin(schoolId, pinRecord, {
+      busId: matchedRoute?.busId,
+      overwriteStopCoord: true,
+    }).then(() => {
+      setRoutes(getLocalRoutes(schoolId));
+    });
 
     setEditingPinStudentId(null);
     setPinInputText("");
-    toast.success(`${student.name} ke ghar ka GPS pin (${lat.toFixed(4)}, ${lng.toFixed(4)}) save ho gaya!`);
+    toast.success(`${student.name} ka Stop GPS (${lat.toFixed(4)}, ${lng.toFixed(4)}) save & Bus Stop se link ho gaya!`);
   };
 
   const handleApplyPinLink = async (student: SchoolStudent) => {
@@ -404,13 +412,6 @@ export const BusTransportModal: React.FC<Props> = ({
       }
 
       const promises: Promise<any>[] = [];
-      const cachedPins: Record<string, StudentHomePin> = (() => {
-        try {
-          return JSON.parse(localStorage.getItem(`nst_student_home_pins_${schoolId}`) || "{}") || {};
-        } catch {
-          return {};
-        }
-      })();
 
       for (const st of classStudents) {
         const busState = studentBusMap[st.id];
@@ -438,25 +439,27 @@ export const BusTransportModal: React.FC<Props> = ({
               rollNo: st.rollNo,
               className: currentClass?.name || st.className || "",
               busRoute: updatePayload.busRoute,
+              busStop: updatePayload.busStop || `${(st.name || "Student").split(" ")[0]} Stop`,
+              busNumber: updatePayload.busNumber,
               homeLat: busState.homeLat,
               homeLng: busState.homeLng,
               homeAddress: busState.homeAddress || st.address || "",
               updatedAt: new Date().toISOString(),
             };
-            cachedPins[st.id] = pinRecord;
-            if (rtdb && schoolId) {
-              rtdbSet(dbRef(rtdb, `schools/${schoolId}/student_home_pins/${st.id}`), pinRecord).catch(() => {});
-            }
+            promises.push(
+              saveStudentStopLocationPin(schoolId, pinRecord, {
+                busId: matchedRoute?.busId,
+                overwriteStopCoord: true,
+              })
+            );
           }
           promises.push(updateStudent(schoolId, st.id, updatePayload));
         }
       }
-      try {
-        localStorage.setItem(`nst_student_home_pins_${schoolId}`, JSON.stringify(cachedPins));
-      } catch {}
       await Promise.all(promises);
+      setRoutes(getLocalRoutes(schoolId));
 
-      setSuccessMsg(`Bus Fee (₹${classBusFee}), Bus Roster, Driver Details aur Ghar GPS Pins save ho gaye!`);
+      setSuccessMsg(`Bus Fee (₹${classBusFee}), Bus Roster, Driver Details aur Student Stop GPS Pins save ho gaye!`);
       onUpdated();
       setTimeout(() => {
         setSuccessMsg("");
@@ -1392,7 +1395,7 @@ export const BusTransportModal: React.FC<Props> = ({
                               </span>
                               {hasPin && (
                                 <span className="text-[10px] font-bold text-emerald-700 dark:text-emerald-300 bg-emerald-100 dark:bg-emerald-950/60 px-1.5 py-0.5 rounded">
-                                  Home Pin Saved
+                                  Stop Pin Saved
                                 </span>
                               )}
                             </div>
@@ -1488,39 +1491,46 @@ export const BusTransportModal: React.FC<Props> = ({
                                   ? "bg-emerald-50 dark:bg-emerald-950/50 border-emerald-400/50 text-emerald-700 dark:text-emerald-300"
                                   : "bg-amber-50 dark:bg-amber-950/40 border-amber-400/50 text-amber-700 dark:text-amber-300"
                               }`}
-                              title="Ghar ka GPS Location save karein"
+                              title="Student ka Stop GPS Location save karein (Route Stop se auto-link hoga)"
                             >
                               <MapPin className="w-3 h-3" />
-                              <span>{hasPin ? "Update Pin" : "Set Home Pin"}</span>
+                              <span>{hasPin ? "Update Stop Pin" : "Set Stop Pin"}</span>
                             </button>
                           </div>
                         )}
                       </div>
 
                       {isBusActive && isEditingPin && (
-                        <div className="mt-1 p-2.5 rounded-xl bg-slate-100 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
-                          <input
-                            type="text"
-                            value={pinInputText}
-                            onChange={(e) => setPinInputText(e.target.value)}
-                            placeholder="Google Maps link paste karein ya lat,lng (e.g. 28.4595, 77.0266)"
-                            className="flex-1 px-2.5 py-1.5 rounded-lg bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-600 text-xs text-slate-900 dark:text-white"
-                          />
-                          <div className="flex items-center gap-1.5">
-                            <button
-                              type="button"
-                              onClick={() => handleApplyPinLink(st)}
-                              className="px-2.5 py-1.5 rounded-lg bg-teal-600 hover:bg-teal-500 text-white text-[11px] font-bold flex items-center gap-1 cursor-pointer"
-                            >
-                              <Link2 className="w-3 h-3" /> Save Link
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => handleCaptureCurrentGpsForStudent(st)}
-                              className="px-2.5 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-[11px] font-bold flex items-center gap-1 cursor-pointer"
-                            >
-                              <Crosshair className="w-3 h-3" /> My GPS
-                            </button>
+                        <div className="mt-1 p-2.5 rounded-xl bg-slate-100 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 space-y-1.5">
+                          <p className="text-[10px] font-bold text-teal-700 dark:text-teal-300">
+                            {busInfo.busStop
+                              ? `Stop "${busInfo.busStop}" ka GPS location save hoga (Driver Auto-Checkpoint me use hoga)`
+                              : "Student ka Stop Location add karein — ye auto Route Stop checkpoint ban jayega"}
+                          </p>
+                          <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
+                            <input
+                              type="text"
+                              value={pinInputText}
+                              onChange={(e) => setPinInputText(e.target.value)}
+                              placeholder="Google Maps link paste karein ya lat,lng (e.g. 28.4595, 77.0266)"
+                              className="flex-1 px-2.5 py-1.5 rounded-lg bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-600 text-xs text-slate-900 dark:text-white"
+                            />
+                            <div className="flex items-center gap-1.5">
+                              <button
+                                type="button"
+                                onClick={() => handleApplyPinLink(st)}
+                                className="px-2.5 py-1.5 rounded-lg bg-teal-600 hover:bg-teal-500 text-white text-[11px] font-bold flex items-center gap-1 cursor-pointer"
+                              >
+                                <Link2 className="w-3 h-3" /> Save Link
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleCaptureCurrentGpsForStudent(st)}
+                                className="px-2.5 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-[11px] font-bold flex items-center gap-1 cursor-pointer"
+                              >
+                                <Crosshair className="w-3 h-3" /> My GPS
+                              </button>
+                            </div>
                           </div>
                         </div>
                       )}

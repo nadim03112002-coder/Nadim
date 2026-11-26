@@ -1,7 +1,7 @@
 // @ts-nocheck
 import React, { useState, useEffect } from "react";
 import { getStudents, getExams, getMonthlyAttendance, currentMonthStr, getSchool, getTeachers, getClasses } from "../../school-firebase";
-import type { School, SchoolTeacher, SchoolStudent, ExamEntry } from "../../school-types";
+import { resolveSchoolSignatory, type School, type SchoolTeacher, type SchoolStudent, type ExamEntry } from "../../school-types";
 import { Download, User, Award, Calendar, ChevronLeft } from "lucide-react";
 import { PremiumLoadingState } from "./PremiumLoadingState";
 
@@ -88,8 +88,13 @@ export const ReportCard: React.FC<Props> = ({ schoolId, classId, className, sess
     const examControllerSigHtml = schoolInfo?.examControllerSignatureUrl
       ? `<img src="${schoolInfo.examControllerSignatureUrl}" style="max-height:34px;max-width:120px;object-fit:contain;margin:0 auto 4px;display:block;" />`
       : "";
-    const principalSigHtml = schoolInfo?.principalSignatureUrl
-      ? `<img src="${schoolInfo.principalSignatureUrl}" style="max-height:34px;max-width:120px;object-fit:contain;margin:0 auto 4px;display:block;" />`
+    const msSig = resolveSchoolSignatory(
+      schoolInfo,
+      schoolInfo?.signatureRouting?.marksheet || "principal",
+      "Principal"
+    );
+    const principalSigHtml = msSig.signatureUrl
+      ? `<img src="${msSig.signatureUrl}" style="max-height:34px;max-width:120px;object-fit:contain;margin:0 auto 4px;display:block;" />`
       : "";
 
     const examRows = marks.map(m =>
@@ -162,7 +167,7 @@ tr:last-child td{border:none}
 <div class="signature">
   <div class="sig-wrap">${teacherSigHtml}<div class="sig-line">Class Teacher</div></div>
   <div class="sig-wrap">${examControllerSigHtml}<div class="sig-line">${schoolInfo?.examControllerName || "Exam Controller"}</div></div>
-  <div class="sig-wrap">${principalSigHtml}<div class="sig-line">Principal</div></div>
+  <div class="sig-wrap">${principalSigHtml}<div class="sig-line">${msSig.roleLabel}</div></div>
 </div>
 <div class="footer">
   <span>${schoolInfo?.name || "School ERP"}</span>

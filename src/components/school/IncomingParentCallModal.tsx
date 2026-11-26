@@ -1012,26 +1012,6 @@ export const IncomingParentCallModal: React.FC<IncomingParentCallModalProps> = (
     onCollectFee(sid, primaryClassId);
   };
 
-  const handleTriggerFeeUpdate = () => {
-    if (activeCall.isTestSample) {
-      toast.info("Sample Preview: Real call par yeh button student ka Fee Update & Ledger kholega.");
-      return;
-    }
-    if (onUpdateFee && activeCall.primaryStudentId) {
-      const sid = activeCall.primaryStudentId;
-      setActiveCall(null);
-      onUpdateFee(sid, primaryClassId);
-      return;
-    }
-    if (onCollectFee && activeCall.primaryStudentId) {
-      const sid = activeCall.primaryStudentId;
-      setActiveCall(null);
-      onCollectFee(sid, primaryClassId);
-      return;
-    }
-    setEditingSchedule(true);
-  };
-
   const handleDialBack = () => {
     const clean = activeCall.phone.replace(/\D/g, "");
     if (!clean) return;
@@ -1704,25 +1684,15 @@ export const IncomingParentCallModal: React.FC<IncomingParentCallModalProps> = (
                       />
                     </label>
 
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-0.5">
+                    <div className="pt-0.5">
                       <button
                         type="button"
                         disabled={saving}
                         onClick={handleSaveScheduleForm}
-                        className="min-h-[44px] px-3 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold flex items-center justify-center gap-1.5 cursor-pointer transition disabled:opacity-60"
+                        className="w-full min-h-[44px] px-3 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold flex items-center justify-center gap-1.5 cursor-pointer transition disabled:opacity-60"
                       >
                         <Save className="w-3.5 h-3.5 shrink-0" />
                         <span>{saving ? "Saving..." : "Save Call Update"}</span>
-                      </button>
-
-                      <button
-                        type="button"
-                        onClick={handleTriggerFeeUpdate}
-                        className="min-h-[44px] px-3 rounded-xl border border-amber-500/50 bg-amber-500/15 hover:bg-amber-500/25 text-amber-800 dark:text-amber-300 text-xs font-bold flex items-center justify-center gap-1.5 cursor-pointer transition"
-                      >
-                        <Edit3 className="w-3.5 h-3.5 shrink-0" />
-                        <span>Fee Update Ledger</span>
-                        <ArrowUpRight className="w-3.5 h-3.5 shrink-0" />
                       </button>
                     </div>
                   </div>
@@ -1735,28 +1705,17 @@ export const IncomingParentCallModal: React.FC<IncomingParentCallModalProps> = (
           {!activeCall.isUnknownCaller && (
             <div className="px-4 sm:px-5 py-3.5 border-t border-slate-200 dark:border-slate-800 bg-slate-50/90 dark:bg-[#080f21] space-y-2.5">
               {!isEnquiry && (
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-                  <button
-                    type="button"
-                    onClick={handleTriggerMainFeePay}
-                    className="sm:col-span-2 min-h-[48px] px-4 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white text-sm font-extrabold flex items-center justify-center gap-2 cursor-pointer shadow-sm active:scale-[0.99] transition"
-                  >
-                    <IndianRupee className="w-4 h-4 shrink-0" />
-                    <span>
-                      Fee Pay{activeCall.dueAmount > 0 ? ` (₹${activeCall.dueAmount.toLocaleString("en-IN")})` : " · Collect"}
-                    </span>
-                    <ArrowUpRight className="w-4 h-4 shrink-0 opacity-90" />
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={handleTriggerFeeUpdate}
-                    className="min-h-[48px] px-3 rounded-xl border border-amber-500/40 bg-amber-50 dark:bg-amber-950/40 hover:bg-amber-100 dark:hover:bg-amber-950/70 text-amber-800 dark:text-amber-300 text-xs sm:text-sm font-bold flex items-center justify-center gap-1.5 cursor-pointer transition"
-                  >
-                    <Edit3 className="w-4 h-4 shrink-0" />
-                    <span>Fee Update</span>
-                  </button>
-                </div>
+                <button
+                  type="button"
+                  onClick={handleTriggerMainFeePay}
+                  className="w-full min-h-[48px] px-4 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white text-sm font-extrabold flex items-center justify-center gap-2 cursor-pointer shadow-sm active:scale-[0.99] transition"
+                >
+                  <IndianRupee className="w-4 h-4 shrink-0" />
+                  <span>
+                    Fee Pay{activeCall.dueAmount > 0 ? ` (₹${activeCall.dueAmount.toLocaleString("en-IN")})` : " · Collect"}
+                  </span>
+                  <ArrowUpRight className="w-4 h-4 shrink-0 opacity-90" />
+                </button>
               )}
 
               <div

@@ -16,6 +16,7 @@ import {
   type SchoolDocumentPrintFields,
   type SchoolPrintField,
   type SchoolProfileCustomField,
+  type SchoolSignatureRoutingConfig,
 } from "../../school-types";
 
 export interface SchoolHeaderDetails {
@@ -49,6 +50,7 @@ export interface SchoolHeaderDetails {
   upiId?: string;
   customFields?: SchoolProfileCustomField[];
   documentPrintFields?: SchoolDocumentPrintFields;
+  signatureRouting?: SchoolSignatureRoutingConfig;
 }
 
 interface Props {
@@ -111,6 +113,7 @@ export const SchoolHeaderEditorModal: React.FC<Props> = ({
       upiId: currentDetails?.upiId || initialDetails?.upiId || school?.upiId || "",
       customFields: currentDetails?.customFields || initialDetails?.customFields || school?.customFields || [],
       documentPrintFields: currentDetails?.documentPrintFields || initialDetails?.documentPrintFields || school?.documentPrintFields || {},
+      signatureRouting: currentDetails?.signatureRouting ?? initialDetails?.signatureRouting ?? school?.signatureRouting,
     };
   };
 
@@ -183,6 +186,7 @@ export const SchoolHeaderEditorModal: React.FC<Props> = ({
       upiId: (dataToSave.upiId || "").trim(),
       customFields: dataToSave.customFields || [],
       documentPrintFields: dataToSave.documentPrintFields || {},
+      ...(dataToSave.signatureRouting ? { signatureRouting: dataToSave.signatureRouting } : {}),
       code: (dataToSave.code || "").trim(),
     });
   };
@@ -939,6 +943,7 @@ export const SchoolHeaderEditorModal: React.FC<Props> = ({
               directorSignatureUrl: details.directorSignatureUrl,
               managerSignatureUrl: details.managerSignatureUrl,
               accountantSignatureUrl: details.accountantSignatureUrl,
+              signatureRouting: details.signatureRouting ?? school?.signatureRouting,
             } as School
           }
           schoolId={targetSchoolId}
@@ -952,6 +957,7 @@ export const SchoolHeaderEditorModal: React.FC<Props> = ({
               directorName: updated.directorName !== undefined ? updated.directorName : p.directorName,
               managerName: updated.managerName !== undefined ? updated.managerName : p.managerName,
               accountantName: updated.accountantName !== undefined ? updated.accountantName : p.accountantName,
+              signatureRouting: updated.signatureRouting !== undefined ? updated.signatureRouting : p.signatureRouting,
             }));
           }}
         />

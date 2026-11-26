@@ -6,7 +6,7 @@ import {
   Share2, Check, Copy, QrCode, Route, Download, Loader2
 } from "lucide-react";
 import { toast } from "sonner";
-import type { School } from "../../school-types";
+import { resolveSchoolSignatory, type School } from "../../school-types";
 import { getSavedSchoolLogo, cleanLogoUrl, formatAcademicSession } from "./feeReceiptUtils";
 import { printElementInIframe } from "./AdmissionFormPrintModal";
 import { safeOpenExternalUrl } from "../../utils/safeBrowserActions";
@@ -48,9 +48,16 @@ export const DriverIdCardModal: React.FC<Props> = ({
   const schoolLogo = getSavedSchoolLogo(school?.logoUrl, school?.id);
   const affiliation = school?.affiliation || school?.tagline || "School Transport Department";
   const sessionLabel = formatAcademicSession(school?.session || "2026-27");
-  const principalName = school?.principalName || "Principal / Transport Incharge";
-  const principalTitle = school?.principalTitle || "Authorized Signatory";
-  const signatureUrl = school?.principalSignatureUrl;
+  const idSig = resolveSchoolSignatory(
+    school,
+    school?.signatureRouting?.idCard || "principal",
+    school?.principalTitle || "Authorized Signatory"
+  );
+  const principalName = idSig.name;
+  const principalTitle = idSig.role === "principal"
+    ? (school?.principalTitle || "Authorized Signatory")
+    : idSig.roleLabel;
+  const signatureUrl = idSig.signatureUrl;
 
   const driverName = driver.driverName || "Bus Driver";
   const busId = driver.busId || `bus_${Date.now()}`;

@@ -11,6 +11,12 @@ class BootReceiver : BroadcastReceiver() {
             if (AppPrefs.isVoiceGuardEnabled(context) && AppPrefs.getInboxKeys(context).isNotEmpty()) {
                 VoiceGuardService.startOrUpdate(context)
             }
+            // Safely resume Bus GPS service only if active & OS permits background location FGS
+            try {
+                if (AppPrefs.isBusGpsActive(context) && BusGpsForegroundService.hasLocationPermission(context)) {
+                    BusGpsForegroundService.startOrUpdate(context)
+                }
+            } catch (_: Exception) {}
         }
     }
 }

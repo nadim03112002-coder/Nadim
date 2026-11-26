@@ -289,7 +289,7 @@ export const RazorpaySettingsModal: React.FC<Props> = ({
                       ) : null}
                     </p>
                     <p className="text-[11px] text-slate-500 dark:text-slate-400">
-                      On karne par parents Student Portal se direct UPI / Card fee pay kar sakenge
+                      On karne par Student Portal me <strong>⚡ Fast Pay (+5% Charge · Fixed Full Fee)</strong> dikhega, aur ₹2,000 tak <strong>Free Pay (₹0)</strong> khula rahega (₹2,000 se upar Free Pay lock)
                     </p>
                   </div>
                   <button

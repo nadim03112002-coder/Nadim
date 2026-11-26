@@ -2,7 +2,7 @@
 import React, { useState, useRef, useEffect } from "react";
 import QRCode from "react-qr-code";
 import type { School, SchoolClass, SchoolStudent, StaffEmployee, SchoolTeacher } from "../../school-types";
-import { schoolPrintFieldEnabled } from "../../school-types";
+import { schoolPrintFieldEnabled, resolveSchoolSignatory } from "../../school-types";
 import {
   CreditCard, Printer, Download, Eye, ChevronLeft, User, Phone, MapPin,
   Calendar, Award, Sparkles, Filter, CheckSquare, Square, Layers, RefreshCw,
@@ -155,8 +155,11 @@ export const IdCardManager: React.FC<Props> = ({
     directorPhone: school?.directorPhone || "",
     principalSignatureUrl: school?.principalSignatureUrl || "",
     directorSignatureUrl: school?.directorSignatureUrl || "",
+    managerName: school?.managerName || "",
+    managerSignatureUrl: school?.managerSignatureUrl || "",
     customFields: school?.customFields || [],
     documentPrintFields: school?.documentPrintFields || {},
+    signatureRouting: school?.signatureRouting,
     session: "2026-27",
   });
 
@@ -177,8 +180,11 @@ export const IdCardManager: React.FC<Props> = ({
       directorPhone: school.directorPhone || "",
       principalSignatureUrl: school.principalSignatureUrl || "",
       directorSignatureUrl: school.directorSignatureUrl || "",
+      managerName: school.managerName || "",
+      managerSignatureUrl: school.managerSignatureUrl || "",
       customFields: school.customFields || [],
       documentPrintFields: school.documentPrintFields || {},
+      signatureRouting: school.signatureRouting ?? previous.signatureRouting,
     }));
   }, [school]);
 
@@ -471,15 +477,27 @@ export const IdCardManager: React.FC<Props> = ({
       : schoolDetails.principalTitle && !/auth\.?\s*signatory/i.test(schoolDetails.principalTitle)
         ? schoolDetails.principalTitle
         : "Principal";
+    const idSig = resolveSchoolSignatory(
+      { ...school, ...schoolDetails } as Partial<School>,
+      schoolDetails.signatureRouting?.idCard || school?.signatureRouting?.idCard || "principal",
+      resolvedSignatoryTitle
+    );
+    const idSigDisplayRole = useCustomTpl && activeIdTemplate.rightSignatoryLabel
+      ? activeIdTemplate.rightSignatoryLabel
+      : idSig.roleLabel;
 
     const tplColors = activeIdTemplate.colors;
+    const baseCardBw = activeIdTemplate.borderStyle === "double" ? "3px" : "2px";
     const cardContainerStyle: React.CSSProperties = useCustomTpl
       ? {
           fontFamily: "'Inter', sans-serif",
           boxSizing: "border-box",
           borderColor: tplColors.borderColor,
           borderStyle: activeIdTemplate.borderStyle,
-          borderWidth: activeIdTemplate.borderStyle === "double" ? "3px" : "2px",
+          borderTopWidth: baseCardBw,
+          borderRightWidth: baseCardBw,
+          borderBottomWidth: baseCardBw,
+          borderLeftWidth: baseCardBw,
         }
       : { fontFamily: "'Inter', sans-serif", boxSizing: "border-box" };
 
@@ -599,12 +617,12 @@ export const IdCardManager: React.FC<Props> = ({
             {activeIdTemplate.footerNote && <span className="ml-1 text-slate-500">• {activeIdTemplate.footerNote}</span>}
           </div>
           <div className="text-right shrink-0 flex flex-col items-end">
-            {schoolDetails.principalSignatureUrl ? (
-              <img src={schoolDetails.principalSignatureUrl} alt="Sign" className="h-3.5 max-w-[55px] object-contain" />
-            ) : schoolDetails.principalName ? (
-              <span className="font-serif italic font-bold text-slate-900 text-[6.5px] leading-none">{schoolDetails.principalName}</span>
+            {idSig.signatureUrl ? (
+              <img src={idSig.signatureUrl} alt={`${idSigDisplayRole} Sign`} className="h-3.5 max-w-[55px] object-contain" />
+            ) : idSig.name ? (
+              <span className="font-serif italic font-bold text-slate-900 text-[6.5px] leading-none">{idSig.name}</span>
             ) : null}
-            <span className="text-[5.8px] font-black uppercase text-slate-800">{resolvedSignatoryTitle}</span>
+            <span className="text-[5.8px] font-black uppercase text-slate-800">{idSigDisplayRole}</span>
           </div>
         </div>
       );
@@ -818,9 +836,9 @@ export const IdCardManager: React.FC<Props> = ({
               : undefined,
             backgroundSize: isBlueprint ? "10px 10px" : undefined,
             borderRadius: isBeveled ? "14px 2px 14px 2px" : undefined,
-            borderTopWidth: isHeavyBars ? "6px" : cardContainerStyle.borderWidth,
-            borderBottomWidth: isHeavyBars ? "6px" : cardContainerStyle.borderWidth,
-            borderLeftWidth: isMonoStripe ? "5px" : isSwissCross ? "8px" : cardContainerStyle.borderWidth,
+            borderTopWidth: isHeavyBars ? "6px" : cardContainerStyle.borderTopWidth,
+            borderBottomWidth: isHeavyBars ? "6px" : cardContainerStyle.borderBottomWidth,
+            borderLeftWidth: isMonoStripe ? "5px" : isSwissCross ? "8px" : cardContainerStyle.borderLeftWidth,
             fontFamily: arch.serifFont ? "Georgia, serif" : arch.monoAccent ? "'JetBrains Mono', monospace" : undefined,
           }}
         >
@@ -1183,20 +1201,20 @@ export const IdCardManager: React.FC<Props> = ({
               {useCustomTpl && activeIdTemplate.footerNote && <span className="ml-1 font-semibold text-slate-700">• {activeIdTemplate.footerNote}</span>}
             </div>
             <div className="text-right shrink-0 flex flex-col items-end justify-end">
-              {schoolDetails.principalSignatureUrl ? (
+              {idSig.signatureUrl ? (
                 <img
-                  src={schoolDetails.principalSignatureUrl}
-                  alt="Principal Signature"
+                  src={idSig.signatureUrl}
+                  alt={`${idSigDisplayRole} Signature`}
                   className="h-4 max-w-[65px] object-contain block mb-0.5"
                 />
               ) : (
-                showSchoolDetail("principalName") && schoolDetails.principalName ? (
+                (idSig.role !== "principal" || showSchoolDetail("principalName")) && idSig.name ? (
                   <span className="font-serif italic font-bold text-slate-900 text-[7px] block leading-none mb-0.5">
-                    {schoolDetails.principalName}
+                    {idSig.name}
                   </span>
                 ) : null
               )}
-              <p className="text-[6px] font-black uppercase tracking-wider text-slate-700">{resolvedSignatoryTitle}</p>
+              <p className="text-[6px] font-black uppercase tracking-wider text-slate-700">{idSigDisplayRole}</p>
             </div>
           </div>
         </div>
@@ -1389,18 +1407,18 @@ export const IdCardManager: React.FC<Props> = ({
             {customSchoolDetails && <span className="text-slate-500 text-[6px] block truncate">{customSchoolDetails}</span>}
           </div>
           <div className="text-right shrink-0 flex flex-col items-end justify-end">
-            {schoolDetails.principalSignatureUrl ? (
+            {idSig.signatureUrl ? (
               <img
-                src={schoolDetails.principalSignatureUrl}
-                alt="Principal Signature"
+                src={idSig.signatureUrl}
+                alt={`${idSigDisplayRole} Signature`}
                 className="h-4.5 max-w-[70px] object-contain block mb-0.5"
               />
             ) : (
-              showSchoolDetail("principalName") && schoolDetails.principalName ? (
-                <span className="font-serif italic font-black text-slate-900 text-[7px] block leading-none mb-0.5">{schoolDetails.principalName}</span>
+              (idSig.role !== "principal" || showSchoolDetail("principalName")) && idSig.name ? (
+                <span className="font-serif italic font-black text-slate-900 text-[7px] block leading-none mb-0.5">{idSig.name}</span>
               ) : null
             )}
-            {fieldSettings.showSignatory && <span className="text-[6px] font-black text-slate-700 uppercase tracking-wider">{resolvedSignatoryTitle}</span>}
+            {fieldSettings.showSignatory && <span className="text-[6px] font-black text-slate-700 uppercase tracking-wider">{idSigDisplayRole}</span>}
           </div>
         </div>
       </div>

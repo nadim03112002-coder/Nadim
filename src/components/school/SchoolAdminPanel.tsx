@@ -16,7 +16,7 @@ import {
   permanentDeleteTeacherFromBin, permanentDeleteStudentFromBin,
   subscribeStaffLeaves, autoSendFeeSlipToSchoolDesk, subscribeToFeeCallFollowUps,
   getSchoolPublicInquiries, getPendingFeeFollowUpSyncCount, syncPendingFeeCallFollowUps,
-  subscribeSchoolUpiProofs
+  subscribeSchoolUpiProofs, isUserAuthorizedUpiReceiver
 } from "../../school-firebase";
 import {
   subscribeAttendanceSchedule,
@@ -70,7 +70,9 @@ const loadHostelMessManager = () => import("./HostelMessManager").then(m => ({ d
 const loadDocumentVerificationView = () => import("./DocumentVerificationView").then(m => ({ default: m.DocumentVerificationView }));
 const loadEntranceTestAdminManager = () => import("./EntranceTestAdminManager").then(m => ({ default: m.EntranceTestAdminManager }));
 const loadDocumentTemplateStudioModal = () => import("./DocumentTemplateStudioModal").then(m => ({ default: m.DocumentTemplateStudioModal }));
+const loadErrorNoticeBoard = () => import("../admin/ErrorNoticeBoard").then(m => ({ default: m.ErrorNoticeBoard }));
 
+const ErrorNoticeBoard = lazyWithRetry(loadErrorNoticeBoard, "App Crash Monitor");
 const FaceAttendanceKioskModal = lazyWithRetry(loadFaceAttendanceKiosk, "Face Attendance Kiosk");
 const UniversalFaceIdStudioModal = lazyWithRetry(loadUniversalFaceIdStudio, "Face ID Studio");
 import { FeeManager } from "./FeeManager";
@@ -91,9 +93,10 @@ const SchoolWebsiteCms = lazyWithRetry(loadSchoolWebsiteCms, "School Website CMS
 const OnlineAdmissionManager = lazyWithRetry(loadOnlineAdmissionManager, "Online Admission Manager");
 import { getStaffEmployees, saveStaffEmployee, getAccountants, saveAccountant, subscribeToAccountants, deleteAccountant, unassignTeacherForAccountantRole, saveSchoolGalleryItem, deleteSchoolGalleryItem } from "../../school-firebase";
 import { compressImageFileToDataUrl } from "../../utils/imageCompression";
-import type { MonthlyFee, StaffEmployee, StoreSaleRecord, SchoolAccountant, FeeCallFollowUpRecord, SchoolPublicInquiry, UpiPaymentProofRecord } from "../../school-types";
+import type { MonthlyFee, StaffEmployee, StoreSaleRecord, SchoolAccountant, FeeCallFollowUpRecord, SchoolPublicInquiry, UpiPaymentProofRecord, SchoolSignatureRoutingConfig } from "../../school-types";
 import { SchoolHeaderEditorModal, type SchoolHeaderDetails } from "./SchoolHeaderEditorModal";
 import { DigitalSignatureModal, type DigitalSignatureTab } from "./DigitalSignatureModal";
+import { SignatureRoutingSettingsPanel } from "./SignatureRoutingSettingsPanel";
 import { getSavedSchoolLogo, getVisibleSchoolRegNo, isAppLogo, cleanLogoUrl } from "./feeReceiptUtils";
 import { TimetableManager } from "./TimetableManager";
 import { ClassroomVideoArchive } from "./ClassroomVideoArchive";
@@ -140,7 +143,7 @@ import {
   Youtube, Check, Menu, BarChart3, PieChart, Camera, Share2, Film, CheckCheck, RefreshCw, Upload, ExternalLink, Filter, Send, RotateCw, RotateCcw, Bus, Sliders,
   Sun, Moon, Palette,
   Cake, Gift,
-  Smartphone, Laptop, Monitor, Compass, CalendarClock, PhoneCall, Radio
+  Smartphone, Laptop, Monitor, Compass, CalendarClock, PhoneCall, Radio, Receipt
 } from "lucide-react";
 import { SchoolStore } from "./SchoolStore";
 import { SchoolPlanView } from "./SchoolPlanView";
@@ -189,13 +192,15 @@ import { HomeDailyRoutineWidget } from "./HomeDailyRoutineWidget";
 import { AdminDashboardCharts } from "./AdminDashboardCharts";
 import { LessonTopicManagerPanel } from "./LessonTopicManagerPanel";
 import { RolesPermissionsManager } from "./RolesPermissionsManager";
+import { PendingUpiApprovalsPanel } from "./PendingUpiApprovalsPanel";
+import { UpiProofVerificationPopup } from "./UpiProofVerificationPopup";
+import { OfficialFeeReceiptModal } from "./OfficialFeeReceiptModal";
 const DocumentTemplateStudioModal = lazyWithRetry(loadDocumentTemplateStudioModal, "Template Studio");
 const playAttendanceSuccessChimeLazy = () => {
   void import("../../utils/faceRecognitionEngine")
     .then((m) => m.playAttendanceSuccessChime?.())
     .catch(() => {});
 };
-import { ShieldCheck, Receipt } from "lucide-react";
 import { rotateToLandscape, rotateToPortrait, isDesktopModeOn, setDesktopMode, useDeviceOrientation } from "../../utils/displayPrefs";
 import { toast } from "sonner";
 import { ADMIN_WHATSAPP_NUMBER } from "../../constants";
@@ -203,6 +208,7 @@ import { safeOpenExternalUrl, getDynamicAcademicSessionLabel, resolveWebsiteAdmi
 import { autoSyncSchoolPushIfPermitted, sendSchoolPushNotification } from "../../utils/schoolPushClient";
 import { subscribeUserToPush, syncNativeAndroidIdentity } from "../NotificationManager";
 import { useBackHandler } from "../../utils/backNavigation";
+import { setErrorLoggerContext, setErrorLoggerModule } from "../../utils/errorLogger";
 
 interface Props {
   schoolId: string;
@@ -253,7 +259,8 @@ type AdminView =
   | "digital_paper_library"
   | "roles_permissions"
   | "document_templates"
-  | "accounts_directory";
+  | "accounts_directory"
+  | "crash_reports";
 
 
 export const SchoolAdminPanel: React.FC<Props> = ({
@@ -354,12 +361,26 @@ export const SchoolAdminPanel: React.FC<Props> = ({
 
   const [lang, setLang] = useAppLang();
   const [upiProofs, setUpiProofs] = useState<UpiPaymentProofRecord[]>([]);
+  const [approvedUpiReceiptFee, setApprovedUpiReceiptFee] = useState<MonthlyFee | null>(null);
   const [sendingSmartReminders, setSendingSmartReminders] = useState(false);
   const [pendingStaffLeavesCount, setPendingStaffLeavesCount] = useState(0);
 
   useEffect(() => {
     if (!schoolId) return;
     return subscribeSchoolUpiProofs(schoolId, setUpiProofs);
+  }, [schoolId]);
+
+  useEffect(() => {
+    const onReceiversUpdated = (ev: Event) => {
+      const detail = (ev as CustomEvent)?.detail;
+      if (detail?.schoolId === schoolId && Array.isArray(detail?.upiAlertReceivers)) {
+        setSchool((prev) =>
+          prev ? { ...prev, upiAlertReceivers: detail.upiAlertReceivers } : prev
+        );
+      }
+    };
+    window.addEventListener("school-upi-receivers-updated", onReceiversUpdated);
+    return () => window.removeEventListener("school-upi-receivers-updated", onReceiversUpdated);
   }, [schoolId]);
 
   useEffect(() => {
@@ -488,6 +509,7 @@ export const SchoolAdminPanel: React.FC<Props> = ({
     mobile: "", address: "", tagline: "", bannerColor: ""
   });
   const [savingSchoolInfo, setSavingSchoolInfo] = useState(false);
+  const [savingSignatureRouting, setSavingSignatureRouting] = useState(false);
 
   useEffect(() => {
     if (school && !editingSchoolInfo) {
@@ -1080,6 +1102,14 @@ export const SchoolAdminPanel: React.FC<Props> = ({
   useBackHandler(view !== "dashboard", () => setView("dashboard"), 0);
 
   useEffect(() => {
+    setErrorLoggerModule(`School Admin → ${view}`);
+    setErrorLoggerContext({
+      schoolId: school?.id || schoolId || null,
+      schoolName: school?.name || null,
+    });
+  }, [view, school?.id, school?.name, schoolId]);
+
+  useEffect(() => {
     if (!schoolId) return;
     const unsub = subscribeToRecycleBin(schoolId, ({ teachers: rTeachers, students: rStudents }) => {
       setRecycleTeachers(rTeachers || []);
@@ -1130,6 +1160,29 @@ export const SchoolAdminPanel: React.FC<Props> = ({
     typeof navigator === "undefined" ? true : navigator.onLine !== false
   );
   const [feeSummaryLoading, setFeeSummaryLoading] = useState(false);
+  const loadedFeeSummaryKeyRef = useRef<string>("");
+
+  useEffect(() => {
+    if (view !== "fees" || !schoolId) return;
+    const key = `${schoolId}_${feeMonth}_${activeSession?.id || ""}`;
+    if (loadedFeeSummaryKeyRef.current === key) return;
+    loadedFeeSummaryKeyRef.current = key;
+    let active = true;
+    setFeeSummaryLoading(true);
+    getAllMonthlyFees(schoolId, feeMonth, undefined, activeSession?.id)
+      .then((fees) => {
+        if (active) setAllFees(fees);
+      })
+      .catch((err) => {
+        console.warn("loadFeeSummary error:", err);
+      })
+      .finally(() => {
+        if (active) setFeeSummaryLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [view, schoolId, feeMonth, activeSession?.id]);
 
   useEffect(() => {
     let active = true;
@@ -3365,6 +3418,7 @@ export const SchoolAdminPanel: React.FC<Props> = ({
         { id: "parent_queries" as AdminView, label: "Parent Helpdesk", icon: MessageSquare, desc: "अभिभावक शिकायत व सहायता डेस्क" },
         { id: "multi_branch" as AdminView, label: "Multi-Branch & Franchise Hub", icon: Building2, desc: "मल्टी-कैंपस 1-क्लिक स्विचिंग व इंटर-ब्रांच ट्रांसफर" },
         { id: "backup_recovery" as AdminView, label: "Backup & Disaster Recovery", icon: ShieldCheck, desc: "1-क्लिक सम्पूर्ण स्कूल डेटा ZIP बैकअप व रीस्टोर" },
+        { id: "crash_reports" as AdminView, label: "App Crash & Error Monitor", icon: AlertTriangle, desc: "पैरेंट्स/यूज़र ऐप क्रैश, कारण, मॉड्यूल, फंक्शन व Copy रिपोर्ट" },
         {
           id: "website_cms" as AdminView,
           label: "Website Manager (CMS व फोटो)",
@@ -4130,6 +4184,8 @@ export const SchoolAdminPanel: React.FC<Props> = ({
                 ? "दस्तावेज़ ऑनलाइन सत्यापन पोर्टल (Document Verification)"
                 : view === "accounts_directory"
                 ? "Total Accounts Directory (अकाउंट संख्या)"
+                : view === "crash_reports"
+                ? "App Crash & Error Monitor"
                 : view.replace(/_/g, " ")}
             </h1>
           </div>
@@ -7609,6 +7665,25 @@ export const SchoolAdminPanel: React.FC<Props> = ({
                 <span>📝 Exam Controller Sign</span>
               </button>
             </div>
+            <div className="pt-2">
+              <SignatureRoutingSettingsPanel
+                value={school?.signatureRouting}
+                saving={savingSignatureRouting}
+                onChange={async (nextRouting) => {
+                  setSchool(prev => prev ? { ...prev, signatureRouting: nextRouting } : prev);
+                  setSavingSignatureRouting(true);
+                  try {
+                    await updateSchool(schoolId, { signatureRouting: nextRouting });
+                    toast.success("Signature setting save ho gayi!");
+                  } catch (err) {
+                    console.error("Failed to save signature routing:", err);
+                    toast.error("Signature setting save karne me samasya aayi.");
+                  } finally {
+                    setSavingSignatureRouting(false);
+                  }
+                }}
+              />
+            </div>
           </div>
 
           {/* Box 2: School Security Lock Code */}
@@ -8282,6 +8357,7 @@ export const SchoolAdminPanel: React.FC<Props> = ({
             schoolName={school?.name}
             schoolPinHash={school?.uninstallGuardPinHash}
             schoolLockCode={school?.lockCode}
+            uninstallPinRequired={school?.uninstallPinRequired !== false}
             canEditPin={true}
             onSchoolPinChanged={(nextHash) => {
               setSchool((prev) =>
@@ -8289,6 +8365,17 @@ export const SchoolAdminPanel: React.FC<Props> = ({
                   ? {
                       ...prev,
                       uninstallGuardPinHash: nextHash,
+                      uninstallGuardPinUpdatedAt: new Date().toISOString(),
+                    }
+                  : prev
+              );
+            }}
+            onUninstallPinRequiredChanged={(enabled) => {
+              setSchool((prev) =>
+                prev
+                  ? {
+                      ...prev,
+                      uninstallPinRequired: enabled,
                       uninstallGuardPinUpdatedAt: new Date().toISOString(),
                     }
                   : prev
@@ -8355,6 +8442,7 @@ export const SchoolAdminPanel: React.FC<Props> = ({
               accountantSignatureUrl: school.accountantSignatureUrl || "",
               customFields: school.customFields || [],
               documentPrintFields: school.documentPrintFields || {},
+              signatureRouting: school.signatureRouting,
             }}
             onApply={(details: SchoolHeaderDetails) => {
               setSchool(previous => previous ? {
@@ -8381,6 +8469,7 @@ export const SchoolAdminPanel: React.FC<Props> = ({
                 code: details.code,
                 customFields: details.customFields,
                 documentPrintFields: details.documentPrintFields,
+                signatureRouting: details.signatureRouting !== undefined ? details.signatureRouting : previous.signatureRouting,
               } : previous);
             }}
           />
@@ -8404,6 +8493,7 @@ export const SchoolAdminPanel: React.FC<Props> = ({
                 accountantName: updated.accountantName !== undefined ? updated.accountantName : prev.accountantName,
                 examControllerSignatureUrl: updated.examControllerSignatureUrl !== undefined ? updated.examControllerSignatureUrl : prev.examControllerSignatureUrl,
                 examControllerName: updated.examControllerName !== undefined ? updated.examControllerName : prev.examControllerName,
+                signatureRouting: updated.signatureRouting !== undefined ? updated.signatureRouting : prev.signatureRouting,
               } : prev);
             }}
           />
@@ -9348,6 +9438,38 @@ export const SchoolAdminPanel: React.FC<Props> = ({
           schedule={walkieSchedule}
           onUpgradeToElite={() => setView("subscription")}
         />
+        <UpiProofVerificationPopup
+          schoolId={schoolId}
+          school={school}
+          proofs={upiProofs}
+          authorized={isUserAuthorizedUpiReceiver({
+            school,
+            role: "admin",
+            userId: adminUid,
+          })}
+          approverName={school?.principalName || "School Admin"}
+          approverRole="admin"
+          approverId={adminUid || "STAFF_ADMIN"}
+          onApprovedReceipt={(approvedFee) => {
+            setAllFees((prev) => {
+              const next = prev.filter(
+                (f) => !(f.studentId === approvedFee.studentId && f.month === approvedFee.month)
+              );
+              return [approvedFee, ...next];
+            });
+            setApprovedUpiReceiptFee(approvedFee);
+          }}
+        />
+        {approvedUpiReceiptFee && school && (
+          <OfficialFeeReceiptModal
+            isOpen={Boolean(approvedUpiReceiptFee)}
+            onClose={() => setApprovedUpiReceiptFee(null)}
+            school={school}
+            fee={approvedUpiReceiptFee}
+            className={approvedUpiReceiptFee.className || "Class"}
+            initialFormat="pos"
+          />
+        )}
       </>
     );
   };
@@ -11458,6 +11580,18 @@ export const SchoolAdminPanel: React.FC<Props> = ({
         </div>
         {renderAdminBottomNav()}
       </>
+    );
+  }
+
+  if (view === "crash_reports") {
+    return renderErpShell(
+      <LazyPanelBoundary title="App Crash & Error Monitor">
+        <ErrorNoticeBoard
+          schoolId={school?.id || schoolId}
+          schoolName={school?.name}
+          onBack={() => setView("dashboard")}
+        />
+      </LazyPanelBoundary>
     );
   }
 
@@ -15586,15 +15720,9 @@ export const SchoolAdminPanel: React.FC<Props> = ({
       const changeMonth = (delta: number) => {
         const [y, m] = feeMonth.split("-").map(Number);
         const d = new Date(y, m - 1 + delta, 1);
+        loadedFeeSummaryKeyRef.current = "";
         setFeeMonth(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`);
       };
-      const loadFeeSummary = async () => {
-        setFeeSummaryLoading(true);
-        const fees = await getAllMonthlyFees(schoolId, feeMonth, undefined, activeSession?.id);
-        setAllFees(fees);
-        setFeeSummaryLoading(false);
-      };
-      if (allFees.length === 0 && !feeSummaryLoading) { loadFeeSummary(); }
 
       const schoolTotal = displayedStudents.reduce((sum, s) => sum + (s.monthlyFee || 0), 0);
       const schoolCollected = allFees.filter(f => f.paid).reduce((sum, f) => sum + (f.amount || 0), 0);
@@ -15621,6 +15749,29 @@ export const SchoolAdminPanel: React.FC<Props> = ({
 
       return (
         <div className="p-4 sm:p-5 max-w-3xl mx-auto space-y-4">
+          {upiProofs.some((p) => p.status === "PENDING") && (
+            <PendingUpiApprovalsPanel
+              schoolId={schoolId}
+              proofs={upiProofs}
+              approverName={school?.principalName || "School Admin"}
+              approverRole="admin"
+              approverId={adminUid || "STAFF_ADMIN"}
+              isAdmin={true}
+              school={school}
+              teachers={displayedTeachers}
+              accountants={accountants}
+              onSchoolUpdated={(updated) => setSchool(updated)}
+              onApprovedReceipt={(approvedFee) => {
+                setAllFees((prev) => {
+                  const next = prev.filter(
+                    (f) => !(f.studentId === approvedFee.studentId && f.month === approvedFee.month)
+                  );
+                  return [approvedFee, ...next];
+                });
+                setApprovedUpiReceiptFee(approvedFee);
+              }}
+            />
+          )}
           {/* Unified Executive Fee Overview Card */}
           <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl overflow-hidden shadow-xs">
             {/* Month Navigator Strip */}

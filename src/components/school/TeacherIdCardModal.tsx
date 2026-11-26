@@ -7,7 +7,7 @@ import {
   Download, QrCode, Building2, Loader2
 } from "lucide-react";
 import { toast } from "sonner";
-import type { School, SchoolTeacher, StaffEmployee } from "../../school-types";
+import { resolveSchoolSignatory, type School, type SchoolTeacher, type StaffEmployee } from "../../school-types";
 import { getSavedSchoolLogo, cleanLogoUrl, formatAcademicSession } from "./feeReceiptUtils";
 import { printElementInIframe } from "./AdmissionFormPrintModal";
 import { safeOpenExternalUrl } from "../../utils/safeBrowserActions";
@@ -43,9 +43,16 @@ export const TeacherIdCardModal: React.FC<Props> = ({
   const schoolLogo = getSavedSchoolLogo(school?.logoUrl, school?.id);
   const affiliation = school?.affiliation || school?.tagline || "Affiliated Educational Center";
   const sessionLabel = formatAcademicSession(school?.session || "2026-27");
-  const principalName = school?.principalName || "Principal / Head of Institution";
-  const principalTitle = school?.principalTitle || "Principal / Head of Institution";
-  const signatureUrl = school?.principalSignatureUrl;
+  const idSig = resolveSchoolSignatory(
+    school,
+    school?.signatureRouting?.idCard || "principal",
+    school?.principalTitle || "Principal / Head of Institution"
+  );
+  const principalName = idSig.name;
+  const principalTitle = idSig.role === "principal"
+    ? (school?.principalTitle || "Principal / Head of Institution")
+    : idSig.roleLabel;
+  const signatureUrl = idSig.signatureUrl;
 
   const teacherName = teacher.name || "Teacher";
   const teacherId = teacher.id || `tea_${Date.now()}`;

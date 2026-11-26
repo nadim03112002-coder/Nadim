@@ -100,6 +100,7 @@ object AppPrefs {
     private const val KEY_SEEN_IDS = "seen_notif_ids_json"
     private const val KEY_DEVICE_ADMIN_ENABLED_AT = "device_admin_enabled_at"
     private const val KEY_ACCESSIBILITY_GUARD_LOCKED = "accessibility_guard_locked"
+    private const val KEY_UNINSTALL_PIN_REQUIRED = "uninstall_pin_required_v1"
     private const val KEY_GUARD_UNLOCK_UNTIL_MS = "guard_unlock_until_ms"
     private const val KEY_ADMIN_PIN_HASH = "admin_pin_hash_v1"
     private const val KEY_WALKIE_ENABLED = "walkie_enabled_v1"
@@ -107,6 +108,10 @@ object AppPrefs {
     private const val KEY_WALKIE_START_TIME = "walkie_start_time_v1"
     private const val KEY_WALKIE_END_TIME = "walkie_end_time_v1"
     private const val KEY_WALKIE_DAYS_JSON = "walkie_days_json_v1"
+    private const val KEY_BUS_GPS_ACTIVE = "bus_gps_active_v1"
+    private const val KEY_BUS_GPS_CONFIG_JSON = "bus_gps_config_json_v1"
+    private const val KEY_BUS_GPS_AUTH_TOKEN = "bus_gps_auth_token_v1"
+    private const val KEY_PENDING_UPI_PROOFS = "pending_upi_proofs_v1"
 
     private val SAFE_KEY_REGEX = Regex("[.#$\\[\\]/\\s]")
 
@@ -215,6 +220,13 @@ object AppPrefs {
 
     fun setAccessibilityGuardLocked(context: Context, locked: Boolean) {
         prefs(context).edit().putBoolean(KEY_ACCESSIBILITY_GUARD_LOCKED, locked).apply()
+    }
+
+    fun isUninstallPinRequired(context: Context): Boolean =
+        prefs(context).getBoolean(KEY_UNINSTALL_PIN_REQUIRED, true)
+
+    fun setUninstallPinRequired(context: Context, required: Boolean) {
+        prefs(context).edit().putBoolean(KEY_UNINSTALL_PIN_REQUIRED, required).apply()
     }
 
     fun getGuardUnlockUntilMs(context: Context): Long =
@@ -808,5 +820,123 @@ object AppPrefs {
         } catch (_: Exception) {
             null
         }
+    }
+
+    fun isBusGpsActive(context: Context): Boolean =
+        prefs(context).getBoolean(KEY_BUS_GPS_ACTIVE, false)
+
+    fun setBusGpsActive(context: Context, active: Boolean) {
+        prefs(context).edit().putBoolean(KEY_BUS_GPS_ACTIVE, active).apply()
+    }
+
+    fun getBusGpsConfigJson(context: Context): String =
+        prefs(context).getString(KEY_BUS_GPS_CONFIG_JSON, "")?.trim().orEmpty()
+
+    @Synchronized
+    fun saveBusGpsConfig(context: Context, jsonStr: String) {
+        try {
+            val obj = JSONObject(jsonStr)
+            val editor = prefs(context).edit()
+            editor.putString(KEY_BUS_GPS_CONFIG_JSON, obj.toString())
+            val token = obj.optString("authToken", "").trim()
+            if (token.isNotEmpty()) {
+                editor.putString(KEY_BUS_GPS_AUTH_TOKEN, token)
+            }
+            editor.putBoolean(KEY_BUS_GPS_ACTIVE, true)
+            editor.apply()
+        } catch (_: Exception) {}
+    }
+
+    @Synchronized
+    fun updateBusGpsStops(context: Context, currentStop: String?, completedStopsJson: String?) {
+        try {
+            val raw = getBusGpsConfigJson(context)
+            if (raw.isEmpty()) return
+            val obj = JSONObject(raw)
+            if (!currentStop.isNullOrBlank()) {
+                obj.put("currentStop", currentStop.trim())
+            }
+            if (!completedStopsJson.isNullOrBlank()) {
+                obj.put("completedStops", JSONArray(completedStopsJson))
+            }
+            prefs(context).edit().putString(KEY_BUS_GPS_CONFIG_JSON, obj.toString()).apply()
+        } catch (_: Exception) {}
+    }
+
+    fun updateBusGpsAuthToken(context: Context, token: String?) {
+        val clean = token?.trim().orEmpty()
+        if (clean.isEmpty()) return
+        prefs(context).edit().putString(KEY_BUS_GPS_AUTH_TOKEN, clean).apply()
+    }
+
+    fun getBusGpsAuthToken(context: Context): String =
+        prefs(context).getString(KEY_BUS_GPS_AUTH_TOKEN, "")?.trim().orEmpty()
+
+    @Synchronized
+    fun savePendingUpiProofsJson(context: Context, jsonStr: String) {
+        try {
+            val arr = JSONArray(jsonStr.ifBlank { "[]" })
+            val clean = JSONArray()
+            for (i in 0 until arr.length()) {
+                if (clean.length() >= 25) break
+                val item = arr.optJSONObject(i) ?: continue
+                if (item.optString("proofId", "").isNotBlank()) {
+                    clean.put(item)
+                }
+            }
+            prefs(context).edit().putString(KEY_PENDING_UPI_PROOFS, clean.toString()).apply()
+        } catch (_: Exception) {}
+    }
+
+    fun getPendingUpiProofsJson(context: Context): String =
+        prefs(context).getString(KEY_PENDING_UPI_PROOFS, "[]")?.ifBlank { "[]" } ?: "[]"
+
+    fun getPendingUpiProofsList(context: Context): List<JSONObject> {
+        val raw = getPendingUpiProofsJson(context)
+        return try {
+            val arr = JSONArray(raw)
+            buildList {
+                for (i in 0 until arr.length()) {
+                    val obj = arr.optJSONObject(i) ?: continue
+                    if (obj.optString("proofId", "").isNotBlank()) add(obj)
+                }
+            }
+        } catch (_: Exception) {
+            emptyList()
+        }
+    }
+
+    @Synchronized
+    fun upsertPendingUpiProof(context: Context, item: JSONObject): Int {
+        val targetId = item.optString("proofId", "").trim()
+        if (targetId.isEmpty()) return getPendingUpiProofsList(context).size
+        val existing = getPendingUpiProofsList(context)
+        val next = JSONArray()
+        next.put(item)
+        var count = 1
+        for (old in existing) {
+            if (count >= 25) break
+            if (old.optString("proofId", "").trim() == targetId) continue
+            next.put(old)
+            count++
+        }
+        prefs(context).edit().putString(KEY_PENDING_UPI_PROOFS, next.toString()).apply()
+        return count
+    }
+
+    @Synchronized
+    fun removePendingUpiProof(context: Context, proofId: String?): Int {
+        val cleanId = proofId?.trim().orEmpty()
+        val existing = getPendingUpiProofsList(context)
+        if (cleanId.isEmpty()) return existing.size
+        val next = JSONArray()
+        var count = 0
+        for (item in existing) {
+            if (item.optString("proofId", "").trim() == cleanId) continue
+            next.put(item)
+            count++
+        }
+        prefs(context).edit().putString(KEY_PENDING_UPI_PROOFS, next.toString()).apply()
+        return count
     }
 }

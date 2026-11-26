@@ -8,8 +8,13 @@ import {
   MapPin, TrendingUp, AlertOctagon, Shield
 } from 'lucide-react';
 import { AppError, getLocalErrors, clearLocalErrors, markLocalErrorDismissed, triggerTestError } from '../../utils/errorLogger';
+import { copyTextSafely } from '../ErrorBoundary';
 
-interface Props { onBack: () => void; }
+interface Props {
+  onBack: () => void;
+  schoolId?: string;
+  schoolName?: string;
+}
 
 interface ErrorResolution { resolvedInVersion: string; resolvedAt: number; }
 
@@ -97,33 +102,38 @@ function buildReport(group: ErrorGroup): string {
   const e = group.entries[0] as any;
   const lines = [
     `╔══════════════════════════════════════════╗`,
-    `║          NSTA ERROR REPORT               ║`,
+    `║        SCHOOL+ CRASH REPORT              ║`,
     `╚══════════════════════════════════════════╝`,
     ``,
-    `Error: ${group.message}`,
+    `Error    : ${group.message}`,
+    `Reason   : ${e?.reason || 'Runtime Exception'}`,
     ``,
-    `━━━ App Info ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`,
-    `Version  : ${e?.appVersion || 'unknown'}`,
-    `Build    : ${e?.buildNumber || 'unknown'}`,
+    `━━━ User / Parent / Student Info ━━━━━━━━━`,
+    `User     : ${group.affectedUserNames.join(', ') || e?.userName || 'Anonymous / Guest'}`,
+    `Role     : ${e?.userRole || 'unknown'}`,
+    `Phone    : ${e?.userPhone || 'N/A'}`,
+    `Student  : ${e?.studentName ? `${e.studentName}${e?.className ? ` (${e.className})` : ''}` : 'N/A'}`,
+    `School   : ${e?.schoolName || e?.schoolId || 'Global Platform'}`,
+    `User ID  : ${e?.userId || 'unknown'}`,
     ``,
-    `━━━ Device Info ━━━━━━━━━━━━━━━━━━━━━━━━━━`,
-    `Device   : ${e?.deviceModel || e?.device || 'unknown'}`,
-    `Android  : ${e?.osName || 'unknown'} ${e?.osVersion || ''}`.trim(),
-    `Browser  : ${e?.browserName || 'unknown'} ${e?.browserVersion || ''}`.trim(),
-    ``,
-    `━━━ Error Details ━━━━━━━━━━━━━━━━━━━━━━━━`,
-    `Severity : ${group.severity.toUpperCase()}${group.autoCritical ? ' (AUTO-ESCALATED: 50+ users)' : ''}`,
-    `Type     : ${group.type}`,
+    `━━━ Where It Crashed ━━━━━━━━━━━━━━━━━━━━━`,
+    `Module   : ${e?.activeModule || group.urls.join(', ') || '/'}`,
+    `Function : ${e?.functionName || 'unknown'}`,
     `Component: ${group.component || 'unknown'}`,
     `Route    : ${group.urls.join(', ') || '/'}`,
     ``,
-    `━━━ Frequency ━━━━━━━━━━━━━━━━━━━━━━━━━━━━`,
-    `Occurrences  : ${group.count}`,
-    `Affected Users: ${group.affectedUserIds.size}`,
-    `User(s)      : ${group.affectedUserNames.join(', ') || 'anonymous'}`,
-    `User ID      : ${e?.userId || 'unknown'}`,
-    `First Seen   : ${formatFull(group.firstSeen)}`,
-    `Last Seen    : ${formatFull(group.lastSeen)}`,
+    `━━━ App & Device Info ━━━━━━━━━━━━━━━━━━━━`,
+    `Version  : ${e?.appVersion || 'unknown'} (Build ${e?.buildNumber || 'unknown'})`,
+    `Device   : ${e?.deviceModel || e?.device || 'unknown'}`,
+    `OS       : ${e?.osName || 'unknown'} ${e?.osVersion || ''}`.trim(),
+    `Browser  : ${e?.browserName || 'unknown'} ${e?.browserVersion || ''}`.trim(),
+    ``,
+    `━━━ Frequency & Severity ━━━━━━━━━━━━━━━━━`,
+    `Severity : ${group.severity.toUpperCase()}${group.autoCritical ? ' (AUTO-ESCALATED: 50+ users)' : ''}`,
+    `Type     : ${group.type}`,
+    `Count    : ${group.count}x (${group.affectedUserIds.size} user(s))`,
+    `First    : ${formatFull(group.firstSeen)}`,
+    `Last     : ${formatFull(group.lastSeen)}`,
     ``,
     `━━━ Stack Trace ━━━━━━━━━━━━━━━━━━━━━━━━━━`,
     e?.stack || '(none)',
@@ -140,8 +150,12 @@ function buildReport(group: ErrorGroup): string {
 // ──────────────────────────────────────────────
 // Main component
 // ──────────────────────────────────────────────
-export const ErrorNoticeBoard: React.FC<Props> = ({ onBack }) => {
-  const [errors, setErrors] = useState<Array<AppError & { id: string }>>(() => getLocalErrors());
+export const ErrorNoticeBoard: React.FC<Props> = ({ onBack, schoolId, schoolName }) => {
+  const rtdbBasePath = schoolId ? `schools/${schoolId}/error_logs` : 'error_logs';
+  const [errors, setErrors] = useState<Array<AppError & { id: string }>>(() => {
+    const local = getLocalErrors();
+    return schoolId ? local.filter(e => !e.schoolId || e.schoolId === schoolId) : local;
+  });
   const [resolutions, setResolutions] = useState<Record<string, ErrorResolution>>({});
   const [loading, setLoading] = useState(false);
   const [filter, setFilter] = useState<'all' | 'active' | 'critical' | 'resolved' | 'ignored'>('active');
@@ -173,8 +187,13 @@ export const ErrorNoticeBoard: React.FC<Props> = ({ onBack }) => {
   useEffect(() => {
     let unsubSecondary: (() => void) | null = null;
 
-    const processItems = (rtdbItems: Array<AppError & { id: string }>) => {
+    const getScopedLocal = () => {
       const local = getLocalErrors();
+      return schoolId ? local.filter(e => !e.schoolId || e.schoolId === schoolId) : local;
+    };
+
+    const processItems = (rtdbItems: Array<AppError & { id: string }>) => {
+      const local = getScopedLocal();
       const map = new Map<string, AppError & { id: string }>();
       rtdbItems.forEach(item => {
         if (item && item.id) map.set(item.id, item);
@@ -196,7 +215,7 @@ export const ErrorNoticeBoard: React.FC<Props> = ({ onBack }) => {
       setLoading(false);
     };
 
-    const q = rtdbQuery(ref(rtdb, 'error_logs'), orderByChild('timestamp'), limitToLast(500));
+    const q = rtdbQuery(ref(rtdb, rtdbBasePath), orderByChild('timestamp'), limitToLast(500));
     const unsub = onValue(q, snap => {
       const items: Array<AppError & { id: string }> = [];
       if (snap.exists()) {
@@ -206,7 +225,7 @@ export const ErrorNoticeBoard: React.FC<Props> = ({ onBack }) => {
     }, (err) => {
       console.warn('[ErrorNoticeBoard] Primary RTDB query failed, attempting raw ref:', err);
       try {
-        const rawRef = ref(rtdb, 'error_logs');
+        const rawRef = ref(rtdb, rtdbBasePath);
         unsubSecondary = onValue(rawRef, rawSnap => {
           const items: Array<AppError & { id: string }> = [];
           if (rawSnap.exists()) {
@@ -214,18 +233,18 @@ export const ErrorNoticeBoard: React.FC<Props> = ({ onBack }) => {
           }
           processItems(items);
         }, () => {
-          setErrors(getLocalErrors());
+          setErrors(getScopedLocal());
           setLoading(false);
         });
       } catch {
-        setErrors(getLocalErrors());
+        setErrors(getScopedLocal());
         setLoading(false);
       }
     });
 
     const handleNewError = () => {
       setErrors(prev => {
-        const local = getLocalErrors();
+        const local = getScopedLocal();
         const map = new Map<string, AppError & { id: string }>();
         prev.forEach(item => item && item.id && map.set(item.id, item));
         local.forEach(item => item && item.id && map.set(item.id, item));
@@ -244,7 +263,7 @@ export const ErrorNoticeBoard: React.FC<Props> = ({ onBack }) => {
       window.removeEventListener('nsta-new-error', handleNewError);
       window.removeEventListener('storage', handleNewError);
     };
-  }, []);
+  }, [rtdbBasePath, schoolId]);
 
   useEffect(() => {
     const unsub = onValue(ref(rtdb, 'error_resolutions'), snap => {
@@ -360,7 +379,7 @@ export const ErrorNoticeBoard: React.FC<Props> = ({ onBack }) => {
     });
     setErrors(prev => prev.map(e => g.entries.some(ge => ge.id === e.id) ? { ...e, dismissed: true } : e));
     await Promise.all(g.entries.filter(e => !e.dismissed).map(e =>
-      update(ref(rtdb, `error_logs/${e.id}`), { dismissed: true }).catch(() => {})
+      update(ref(rtdb, `${rtdbBasePath}/${e.id}`), { dismissed: true }).catch(() => {})
     ));
   };
 
@@ -382,13 +401,16 @@ export const ErrorNoticeBoard: React.FC<Props> = ({ onBack }) => {
     if (!window.confirm(`"${g.message.slice(0, 60)}…" — ${g.count} entries delete honge. Confirm?`)) return;
     const ids = new Set(g.entries.map(e => e.id));
     setErrors(prev => prev.filter(e => !ids.has(e.id)));
-    await Promise.all(g.entries.map(e => remove(ref(rtdb, `error_logs/${e.id}`)).catch(() => {})));
+    await Promise.all(g.entries.map(e => remove(ref(rtdb, `${rtdbBasePath}/${e.id}`)).catch(() => {})));
   };
 
   const handleCopyGroup = (group: ErrorGroup) => {
-    navigator.clipboard.writeText(buildReport(group)).catch(() => {});
-    setCopiedKey(group.fingerprint);
-    setTimeout(() => setCopiedKey(null), 2000);
+    void copyTextSafely(buildReport(group)).then((ok) => {
+      if (ok) {
+        setCopiedKey(group.fingerprint);
+        setTimeout(() => setCopiedKey(null), 2000);
+      }
+    });
   };
 
   const handleDownloadGroup = (group: ErrorGroup) => {
@@ -404,17 +426,17 @@ export const ErrorNoticeBoard: React.FC<Props> = ({ onBack }) => {
   const handleClearAll = async () => {
     if (!window.confirm('Sab error logs (Firebase + Local) delete ho jayenge. Confirm?')) return;
     setClearing(true);
-    clearLocalErrors();
+    clearLocalErrors(schoolId);
     const currentErrors = [...errors];
     setErrors([]);
-    await Promise.all(currentErrors.map(e => remove(ref(rtdb, `error_logs/${e.id}`)))).catch(() => {});
+    await Promise.all(currentErrors.map(e => remove(ref(rtdb, `${rtdbBasePath}/${e.id}`)))).catch(() => {});
     setClearing(false);
   };
 
   const handleTriggerTest = async () => {
     setIsTestTriggering(true);
     try {
-      await triggerTestError();
+      await triggerTestError(undefined, schoolId);
     } catch (e) {
       console.error('Failed to trigger test error:', e);
     } finally {
@@ -451,7 +473,9 @@ export const ErrorNoticeBoard: React.FC<Props> = ({ onBack }) => {
             <div>
               <div className="flex items-center gap-2 flex-wrap">
                 <AlertTriangle size={16} className="text-red-500" />
-                <h2 className="font-black text-slate-800">Error Notice Board</h2>
+                <h2 className="font-black text-slate-800">
+                  {schoolName ? `${schoolName} — Crash Monitor` : 'App Crash & Error Notice Board'}
+                </h2>
                 {activeGroups > 0 && (
                   <span className="text-[10px] font-black bg-red-500 text-white px-2 py-0.5 rounded-full animate-pulse">
                     {activeGroups} ACTIVE
@@ -463,7 +487,9 @@ export const ErrorNoticeBoard: React.FC<Props> = ({ onBack }) => {
                   </span>
                 )}
               </div>
-              <p className="text-[10px] text-slate-500 mt-0.5">Professional crash monitoring — frequency, device, version, resolution</p>
+              <p className="text-[10px] text-slate-500 mt-0.5">
+                Parent/Student name, module, function, reason &amp; 1-click copy crash report
+              </p>
             </div>
           </div>
           <div className="flex items-center gap-2">
@@ -650,8 +676,34 @@ export const ErrorNoticeBoard: React.FC<Props> = ({ onBack }) => {
                       )}
                     </div>
 
-                    {/* Error message */}
+                    {/* Error message & human-readable reason */}
                     <p className="text-xs font-bold text-slate-800 line-clamp-2 leading-snug">{group.message}</p>
+                    {latest?.reason && (
+                      <p className="text-[10px] font-semibold text-rose-700 mt-0.5">
+                        Reason: {latest.reason}
+                      </p>
+                    )}
+
+                    {/* Context strip: Parent/User, Student, Module, Function */}
+                    <div className="flex flex-wrap gap-1.5 mt-1.5">
+                      {(latest?.activeModule || group.urls[0]) && (
+                        <span className="text-[9px] font-black bg-amber-100 text-amber-900 border border-amber-200 px-1.5 py-0.5 rounded">
+                          Module: {latest?.activeModule || group.urls[0]}
+                        </span>
+                      )}
+                      {latest?.functionName && (
+                        <span className="text-[9px] font-mono font-bold bg-purple-100 text-purple-800 border border-purple-200 px-1.5 py-0.5 rounded">
+                          fn: {latest.functionName}()
+                        </span>
+                      )}
+                      {(latest?.userName || latest?.studentName) && (
+                        <span className="text-[9px] font-bold bg-blue-100 text-blue-900 border border-blue-200 px-1.5 py-0.5 rounded">
+                          {latest?.userRole ? `${latest.userRole}: ` : ''}{latest?.userName || latest?.studentName}
+                          {latest?.studentName && latest?.userName && latest.studentName !== latest.userName ? ` (${latest.studentName})` : ''}
+                          {latest?.userPhone ? ` • 📞 ${latest.userPhone}` : ''}
+                        </span>
+                      )}
+                    </div>
 
                     {/* Metrics */}
                     <div className="flex items-center gap-2 mt-1.5 flex-wrap">

@@ -1,6 +1,5 @@
 // @ts-nocheck
 import React, { useState, useEffect, useMemo, useRef } from "react";
-import QRCode from "react-qr-code";
 import {
   ChevronLeft,
   ChevronDown,
@@ -34,11 +33,9 @@ import {
   Smartphone,
   BadgeCheck,
   ExternalLink,
-  QrCode,
   Image as ImageIcon,
   CheckCheck,
   Lock,
-  MessageCircle,
   Sliders,
   Save,
   RefreshCw,
@@ -59,6 +56,8 @@ import {
 import { toast } from "sonner";
 import { sendSchoolPushNotification } from "../../utils/schoolPushClient";
 import { toUpperFormText, rememberOccupation } from "../../utils/schoolFormUtils";
+import { computeImageHash } from "../../utils/upiAppLauncher";
+import { UpiAppPickerBox } from "./UpiAppPickerBox";
 import { OccupationAutocomplete } from "./OccupationAutocomplete";
 import {
   fetchSchoolRazorpayConfig,
@@ -139,6 +138,8 @@ import {
   saveSchoolReferralSettings,
   updateClassFeeStructure,
   updateSchool,
+  runAutomatedStudentOnboardingWorkflow,
+  checkDuplicateAdmissionScreenshotHash,
 } from "../../school-firebase";
 import { computeCompleteBackLedger, type BackLedgerSummary } from "../../utils/reAdmissionUtils";
 import { saveUserToLive } from "../../firebase";
@@ -1304,10 +1305,10 @@ export const OnlineAdmissionManager: React.FC<Props> = ({
 
   // Online Payment Screenshot & Next Sequential Roll No state
   const [paymentScreenshot, setPaymentScreenshot] = useState<string | null>(null);
+  const [paymentScreenshotHash, setPaymentScreenshotHash] = useState<string>("");
   const [transactionRef, setTransactionRef] = useState<string>("");
   const [submittingScreenshot, setSubmittingScreenshot] = useState<boolean>(false);
   const [screenshotError, setScreenshotError] = useState<string | null>(null);
-  const [copiedUpi, setCopiedUpi] = useState<boolean>(false);
   const [viewScreenshotUrl, setViewScreenshotUrl] = useState<string | null>(null);
   const [paymentSubmittedNotice, setPaymentSubmittedNotice] = useState<boolean>(false);
 
@@ -1581,15 +1582,60 @@ export const OnlineAdmissionManager: React.FC<Props> = ({
   } | null>(null);
   const screenshotFileInputRef = useRef<HTMLInputElement | null>(null);
   const submitAsPendingRequestRef = useRef<boolean>(false);
+  const [awaitingAdmUpiReturn, setAwaitingAdmUpiReturn] = useState(false);
+  const [highlightAdmScreenshotBox, setHighlightAdmScreenshotBox] = useState(false);
+  const admScreenshotBoxRef = useRef<HTMLDivElement | null>(null);
+  const admHighlightTimerRef = useRef<number | null>(null);
+
+  const handleAdmUpiReturned = () => {
+    setAwaitingAdmUpiReturn(false);
+    setHighlightAdmScreenshotBox(true);
+    if (admHighlightTimerRef.current) {
+      window.clearTimeout(admHighlightTimerRef.current);
+    }
+    admHighlightTimerRef.current = window.setTimeout(() => {
+      setHighlightAdmScreenshotBox(false);
+    }, 6000);
+    window.setTimeout(() => {
+      admScreenshotBoxRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+    }, 180);
+  };
+
+  useEffect(() => {
+    if (!awaitingAdmUpiReturn || admissionStep !== 3) return;
+    const onVisible = () => {
+      if (document.visibilityState === "visible") {
+        handleAdmUpiReturned();
+      }
+    };
+    const onFocus = () => handleAdmUpiReturned();
+    const onNativeResult = () => handleAdmUpiReturned();
+    document.addEventListener("visibilitychange", onVisible);
+    window.addEventListener("focus", onFocus);
+    window.addEventListener("native-upi-result", onNativeResult);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("focus", onFocus);
+      window.removeEventListener("native-upi-result", onNativeResult);
+    };
+  }, [awaitingAdmUpiReturn, admissionStep]);
+
+  useEffect(() => {
+    return () => {
+      if (admHighlightTimerRef.current) {
+        window.clearTimeout(admHighlightTimerRef.current);
+      }
+    };
+  }, []);
 
   // Inline Reject Confirmation State (Replaces window.confirm)
   const [rejectingAppId, setRejectingAppId] = useState<string | null>(null);
   const [rejectReason, setRejectReason] = useState<string>("Criteria / Documents incomplete");
 
-  // Inline Resubmit Rejected Application (Screenshot + UTR) State
+  // Inline Resubmit Rejected Application (Screenshot) State
   const [resubmittingAppId, setResubmittingAppId] = useState<string | null>(null);
   const [resubmitScreenshot, setResubmitScreenshot] = useState<string | null>(null);
-  const [resubmitUtr, setResubmitUtr] = useState<string>("");
+  const [resubmitScreenshotHash, setResubmitScreenshotHash] = useState<string>("");
   const [resubmitNote, setResubmitNote] = useState<string>("");
   const [resubmittingRejected, setResubmittingRejected] = useState<boolean>(false);
   const resubmitFileInputRef = useRef<HTMLInputElement | null>(null);
@@ -2602,7 +2648,14 @@ export const OnlineAdmissionManager: React.FC<Props> = ({
         createdAt: existing?.createdAt || paidIso,
       };
 
-      const saved = await saveStudent(syncedStudent);
+      const onboardingRes = await runAutomatedStudentOnboardingWorkflow(syncedStudent, {
+        school,
+        approvedBy: "Admissions Sync",
+        admissionReceiptNo: syncedStudent.admissionReceiptNo || app.admissionReceiptNo,
+        forceWelcomeDispatch: false,
+        triggerPopup: true,
+      });
+      const saved = onboardingRes.student;
       await updateAdmissionStatus(school.id, app.id, "approved", {
         enrolledStudentId: saved.id,
         classId: targetClassId,
@@ -3682,7 +3735,14 @@ export const OnlineAdmissionManager: React.FC<Props> = ({
           createdAt: paidIso,
         };
 
-        const savedStudent = await saveStudent(newStudent);
+        const onboardingRes = await runAutomatedStudentOnboardingWorkflow(newStudent, {
+          school,
+          approvedBy: "Direct Counter Admission",
+          admissionReceiptNo: receiptNo,
+          forceWelcomeDispatch: false,
+          triggerPopup: true,
+        });
+        const savedStudent = onboardingRes.student;
 
         // Update local student cache immediately
         try {
@@ -3779,6 +3839,7 @@ export const OnlineAdmissionManager: React.FC<Props> = ({
         setSubmittedApp(approvedApp);
         setPaymentSubmittedNotice(false);
         setPaymentScreenshot(null);
+        setPaymentScreenshotHash("");
         setTransactionRef("");
         setScreenshotError(null);
         fetchApplications();
@@ -3824,6 +3885,7 @@ export const OnlineAdmissionManager: React.FC<Props> = ({
         } catch {}
       }
       setPaymentScreenshot(form.paymentScreenshotUrl.trim() || null);
+      setPaymentScreenshotHash("");
       setTransactionRef(form.transactionRef.trim() || "");
       setConfirmedAdmission(null);
       setScreenshotError(null);
@@ -4056,7 +4118,14 @@ export const OnlineAdmissionManager: React.FC<Props> = ({
         createdAt: paidIso,
       };
 
-      const savedStudent = await saveStudent(newStudent);
+      const onboardingRes = await runAutomatedStudentOnboardingWorkflow(newStudent, {
+        school,
+        approvedBy: "Admission Approved",
+        admissionReceiptNo: receiptNo,
+        forceWelcomeDispatch: false,
+        triggerPopup: true,
+      });
+      const savedStudent = onboardingRes.student;
 
       if (isFamilyMarked && resolvedFamilyGroupId && linkedSiblings.length > 0) {
         linkedSiblings.forEach((sib) => {
@@ -4269,31 +4338,64 @@ export const OnlineAdmissionManager: React.FC<Props> = ({
     }
   };
 
-  const handleScreenshotFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleScreenshotFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
     if (file.size > 8 * 1024 * 1024) {
       setScreenshotError("फ़ाइल का साइज़ 8MB से कम होना चाहिए।");
       return;
     }
-    const reader = new FileReader();
-    reader.onload = (event) => {
-      const dataUrl = event.target?.result as string;
-      setPaymentScreenshot(dataUrl);
-      setScreenshotError(null);
-    };
-    reader.onerror = () => {
+    try {
+      const fileHash = await computeImageHash(file);
+      const dupCheck = await checkDuplicateAdmissionScreenshotHash(
+        school.id,
+        fileHash,
+        submittedApp?.id
+      );
+      if (dupCheck.duplicate) {
+        const dupMsg = `यह पेमेंट स्क्रीनशॉट पहले से ${dupCheck.studentName || "किसी अन्य छात्र"} (${dupCheck.applicationNo || ""}) के लिए उपयोग हो चुका है। कृपया नया और सही पेमेंट स्क्रीनशॉट अपलोड करें।`;
+        setScreenshotError(dupMsg);
+        toast.error(dupMsg);
+        e.target.value = "";
+        return;
+      }
+      const reader = new FileReader();
+      reader.onload = (event) => {
+        const dataUrl = event.target?.result as string;
+        setPaymentScreenshot(dataUrl);
+        setPaymentScreenshotHash(fileHash);
+        setScreenshotError(null);
+      };
+      reader.onerror = () => {
+        setScreenshotError("फ़ाइल पढ़ने में त्रुटि हुई, कृपया पुनः प्रयास करें।");
+      };
+      reader.readAsDataURL(file);
+    } catch {
       setScreenshotError("फ़ाइल पढ़ने में त्रुटि हुई, कृपया पुनः प्रयास करें।");
-    };
-    reader.readAsDataURL(file);
+    }
   };
 
   const handleSendPaymentScreenshot = async () => {
     if (!submittedApp) return;
-    if (!paymentScreenshot && !transactionRef.trim()) {
-      setScreenshotError("कृपया भुगतान का स्क्रीनशॉट अपलोड करें या UTR / Transaction No. दर्ज करें।");
+    if (!paymentScreenshot) {
+      setScreenshotError("पेमेंट कन्फर्म करने के लिए कृपया भुगतान का स्क्रीनशॉट अपलोड करें।");
       return;
     }
+    const activeHash =
+      paymentScreenshotHash ||
+      (paymentScreenshot ? await computeImageHash(paymentScreenshot) : "");
+    const dupCheck = await checkDuplicateAdmissionScreenshotHash(
+      school.id,
+      activeHash,
+      submittedApp.id
+    );
+    if (dupCheck.duplicate) {
+      const dupMsg = `यह पेमेंट स्क्रीनशॉट पहले से ${dupCheck.studentName || "किसी अन्य छात्र"} (${dupCheck.applicationNo || ""}) के लिए सबमिट है। कृपया नया पेमेंट स्क्रीनशॉट अपलोड करें।`;
+      setScreenshotError(dupMsg);
+      toast.error(dupMsg);
+      return;
+    }
+
     setSubmittingScreenshot(true);
     setScreenshotError(null);
     try {
@@ -4330,13 +4432,14 @@ export const OnlineAdmissionManager: React.FC<Props> = ({
         entranceDiscount: feesActive.entrancePlanDiscount,
       });
 
-      // 1. Update application with payment proof, status remains PENDING for admin review (also clears previous rejection if resubmitted)
+      const cleanUpiId = String(school?.upiId || (school as any)?.bankUpiId || "").trim();
       const isWasRejected = submittedApp.status === "rejected";
       const nextCount = isWasRejected ? Number(submittedApp.resubmitCount || 0) + 1 : submittedApp.resubmitCount;
       await updateAdmissionStatus(school.id, submittedApp.id, "pending", {
         paymentScreenshotUrl: paymentScreenshot || submittedApp.paymentScreenshotUrl || undefined,
-        transactionRef: transactionRef.trim() || submittedApp.transactionRef || undefined,
-        paymentMode: "WhatsApp UPI",
+        paymentScreenshotHash: activeHash || submittedApp.paymentScreenshotHash || undefined,
+        transactionRef: "",
+        paymentMode: cleanUpiId ? "Direct UPI App" : "UPI Screenshot",
         paymentSubmittedAt: new Date().toISOString(),
         paymentPlan: chosenPlan,
         paymentPlanLabel: planSummary.planTitle,
@@ -4351,7 +4454,7 @@ export const OnlineAdmissionManager: React.FC<Props> = ({
             }
           : {}),
         ...(isWasRejected ? { resubmittedAt: new Date().toISOString(), resubmitCount: nextCount, rejectionReason: "" } : {}),
-        remarks: `${isWasRejected ? "Resubmitted with updated proof. " : "WhatsApp payment submitted. "}[${planSummary.planBadge}: Paid Term 1 ₹${planSummary.term1PayNow}, Term 2 ₹${planSummary.term2Balance}] UTR: ${transactionRef.trim() || "N/A"}. Awaiting Admin Approval.`,
+        remarks: `${isWasRejected ? "Resubmitted with updated payment screenshot. " : "UPI payment screenshot submitted. "}[${planSummary.planBadge}: Paid Term 1 ₹${planSummary.term1PayNow}, Term 2 ₹${planSummary.term2Balance}]. Awaiting Admin Approval.`,
       });
 
       // 2. Send Live Push Notification to School Admin ONLY
@@ -4363,7 +4466,7 @@ export const OnlineAdmissionManager: React.FC<Props> = ({
           title: isWasRejected
             ? `🔄 Rejected Admission Resubmitted: ${submittedApp.studentName}`
             : `📩 New Admission Payment: ${submittedApp.studentName}`,
-          body: `${submittedApp.studentName} (${submittedApp.className}) ne ${planSummary.planBadge} me ₹${planSummary.term1PayNow} ka payment screenshot & UTR submit kiya hai. Kripya verify karke Accept ya Reject karein.`,
+          body: `${submittedApp.studentName} (${submittedApp.className}) ne ${planSummary.planBadge} me ₹${planSummary.term1PayNow} ka payment screenshot submit kiya hai. Kripya verify karke Accept ya Reject karein.`,
           urgent: true,
           type: "FEE_RECEIPT",
         });
@@ -4381,7 +4484,7 @@ export const OnlineAdmissionManager: React.FC<Props> = ({
           applicationNo: submittedApp.applicationNo,
           amount: planSummary.term1PayNow,
           screenshotUrl: paymentScreenshot,
-          transactionRef: transactionRef.trim(),
+          transactionRef: "",
           timestamp: new Date().toISOString(),
         };
         const existing = JSON.parse(localStorage.getItem(`school_admission_alerts_${school.id}`) || "[]");
@@ -4393,7 +4496,8 @@ export const OnlineAdmissionManager: React.FC<Props> = ({
       setSubmittedApp((prev) => (prev ? {
         ...prev,
         paymentScreenshotUrl: paymentScreenshot || prev.paymentScreenshotUrl || undefined,
-        transactionRef: transactionRef.trim() || prev.transactionRef || undefined,
+        paymentScreenshotHash: activeHash || prev.paymentScreenshotHash || undefined,
+        transactionRef: undefined,
         paymentPlan: chosenPlan,
         paymentPlanLabel: planSummary.planTitle,
         includeAdvanceTuition: incTuition,
@@ -4404,6 +4508,7 @@ export const OnlineAdmissionManager: React.FC<Props> = ({
         ...(isWasRejected ? { resubmittedAt: new Date().toISOString(), resubmitCount: nextCount, rejectionReason: undefined } : {}),
       } : null));
 
+      setTransactionRef("");
       setPaymentSubmittedNotice(true);
       fetchApplications();
     } catch (err: any) {
@@ -4601,7 +4706,14 @@ export const OnlineAdmissionManager: React.FC<Props> = ({
       createdAt: paidIso,
     };
 
-    const savedStudent = await saveStudent(newStudent);
+    const onboardingRes = await runAutomatedStudentOnboardingWorkflow(newStudent, {
+      school,
+      approvedBy: "Razorpay Auto-Approval",
+      admissionReceiptNo: paymentMeta.receiptNo,
+      forceWelcomeDispatch: false,
+      triggerPopup: true,
+    });
+    const savedStudent = onboardingRes.student;
 
     try {
       const curLocals = getLocalStudents(school.id);
@@ -5085,31 +5197,63 @@ export const OnlineAdmissionManager: React.FC<Props> = ({
       rejectionReason: reasonText,
     });
     setRejectingAppId(null);
-    toast.success(`${app.studentName} का आवेदन Reject किया गया। अब यह नया स्क्रीनशॉट व UTR नंबर जोड़कर दोबारा भेजा जा सकता है।`);
+    toast.success(`${app.studentName} का आवेदन Reject किया गया। अब यह नया पेमेंट स्क्रीनशॉट जोड़कर दोबारा भेजा जा सकता है।`);
     fetchApplications();
   };
 
-  const handleResubmitScreenshotFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleResubmitScreenshotFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
     if (file.size > 8 * 1024 * 1024) {
       toast.error("स्क्रीनशॉट फ़ाइल 8MB से कम होनी चाहिए।");
       return;
     }
-    const reader = new FileReader();
-    reader.onload = (event) => {
-      const dataUrl = event.target?.result as string;
-      setResubmitScreenshot(dataUrl);
-    };
-    reader.readAsDataURL(file);
+    try {
+      const fileHash = await computeImageHash(file);
+      const dupCheck = await checkDuplicateAdmissionScreenshotHash(
+        school.id,
+        fileHash,
+        resubmittingAppId || undefined
+      );
+      if (dupCheck.duplicate) {
+        toast.error(
+          `यह पेमेंट स्क्रीनशॉट पहले से ${dupCheck.studentName || "किसी अन्य छात्र"} (${dupCheck.applicationNo || ""}) के लिए उपयोग हो चुका है। कृपया नया स्क्रीनशॉट अपलोड करें।`
+        );
+        e.target.value = "";
+        return;
+      }
+      const reader = new FileReader();
+      reader.onload = (event) => {
+        const dataUrl = event.target?.result as string;
+        setResubmitScreenshot(dataUrl);
+        setResubmitScreenshotHash(fileHash);
+      };
+      reader.readAsDataURL(file);
+    } catch {
+      toast.error("स्क्रीनशॉट फ़ाइल पढ़ने में त्रुटि हुई।");
+    }
   };
 
   const handleResubmitRejectedApp = async (app: AdmissionApplication) => {
-    const utrVal = resubmitUtr.trim();
-    if (!resubmitScreenshot && !utrVal) {
-      toast.error("दोबारा भेजने के लिए कृपया Payment Screenshot अपलोड करें और/या UTR नंबर दर्ज करें।");
+    if (!resubmitScreenshot) {
+      toast.error("दोबारा भेजने के लिए कृपया नया Payment Screenshot अपलोड करें।");
       return;
     }
+    const activeHash =
+      resubmitScreenshotHash ||
+      (resubmitScreenshot ? await computeImageHash(resubmitScreenshot) : "");
+    const dupCheck = await checkDuplicateAdmissionScreenshotHash(
+      school.id,
+      activeHash,
+      app.id
+    );
+    if (dupCheck.duplicate) {
+      toast.error(
+        `यह पेमेंट स्क्रीनशॉट पहले से ${dupCheck.studentName || "किसी अन्य छात्र"} (${dupCheck.applicationNo || ""}) के लिए सबमिट है। कृपया नया पेमेंट स्क्रीनशॉट अपलोड करें।`
+      );
+      return;
+    }
+
     setResubmittingRejected(true);
     try {
       const nowIso = new Date().toISOString();
@@ -5120,16 +5264,18 @@ export const OnlineAdmissionManager: React.FC<Props> = ({
         offer: school?.websiteConfig?.admissionOffer,
         entranceDiscount: getAppEntranceDiscountOpt(app),
       });
+      const cleanUpiId = String(school?.upiId || (school as any)?.bankUpiId || "").trim();
 
       await updateAdmissionStatus(school.id, app.id, "pending", {
         paymentScreenshotUrl: resubmitScreenshot || app.paymentScreenshotUrl || undefined,
-        transactionRef: utrVal || app.transactionRef || undefined,
-        paymentMode: "WhatsApp UPI",
+        paymentScreenshotHash: activeHash || app.paymentScreenshotHash || undefined,
+        transactionRef: "",
+        paymentMode: cleanUpiId ? "Direct UPI App" : "UPI Screenshot",
         paymentSubmittedAt: nowIso,
         resubmittedAt: nowIso,
         resubmitCount: nextCount,
         rejectionReason: "",
-        remarks: `Resubmitted (#${nextCount}) with Screenshot & UTR: ${utrVal || "Screenshot attached"}${resubmitNote.trim() ? ` • Note: ${resubmitNote.trim()}` : ""}`,
+        remarks: `Resubmitted (#${nextCount}) with updated payment screenshot${resubmitNote.trim() ? ` • Note: ${resubmitNote.trim()}` : ""}`,
       });
 
       try {
@@ -5138,7 +5284,7 @@ export const OnlineAdmissionManager: React.FC<Props> = ({
           userId: "STAFF_ADMIN",
           senderId: app.applicationNo || app.id || "admission_portal",
           title: `🔄 Admission Request Resubmitted: ${app.studentName}`,
-          body: `${app.studentName} (${app.className}) ne Screenshot aur UTR (${utrVal || "Attached"}) ke saath apna rejected aavedan dubara bheja hai (₹${fees.totalPayable}).`,
+          body: `${app.studentName} (${app.className}) ne naye payment screenshot ke saath apna rejected aavedan dubara bheja hai (₹${fees.totalPayable}).`,
           urgent: true,
           type: "FEE_RECEIPT",
         });
@@ -5153,7 +5299,7 @@ export const OnlineAdmissionManager: React.FC<Props> = ({
           applicationNo: app.applicationNo,
           amount: fees.totalPayable,
           screenshotUrl: resubmitScreenshot || app.paymentScreenshotUrl,
-          transactionRef: utrVal,
+          transactionRef: "",
           timestamp: nowIso,
         };
         const existing = JSON.parse(localStorage.getItem(`school_admission_alerts_${school.id}`) || "[]");
@@ -5163,9 +5309,9 @@ export const OnlineAdmissionManager: React.FC<Props> = ({
 
       setResubmittingAppId(null);
       setResubmitScreenshot(null);
-      setResubmitUtr("");
+      setResubmitScreenshotHash("");
       setResubmitNote("");
-      toast.success(`✅ ${app.studentName} का आवेदन नए Screenshot व UTR के साथ दोबारा (Pending Review में) भेज दिया गया!`);
+      toast.success(`✅ ${app.studentName} का आवेदन नए Payment Screenshot के साथ दोबारा (Pending Review में) भेज दिया गया!`);
       fetchApplications();
     } catch (err: any) {
       toast.error("Resubmit करने में त्रुटि: " + (err?.message || "पुनः प्रयास करें"));
@@ -5341,7 +5487,14 @@ export const OnlineAdmissionManager: React.FC<Props> = ({
         createdAt: paidIso,
       };
 
-      const savedQuickStudent = await saveStudent(newStudent);
+      const onboardingRes = await runAutomatedStudentOnboardingWorkflow(newStudent, {
+        school,
+        approvedBy: "Quick Payment Approval",
+        admissionReceiptNo: receiptNo,
+        forceWelcomeDispatch: false,
+        triggerPopup: true,
+      });
+      const savedQuickStudent = onboardingRes.student;
       const updatedStudents = [savedQuickStudent, ...localStudents.filter((s) => s.id !== studentId)];
       setLocalStudents(school.id, updatedStudents);
 
@@ -7059,15 +7212,15 @@ export const OnlineAdmissionManager: React.FC<Props> = ({
                                 } else {
                                   setResubmittingAppId(app.id);
                                   setResubmitScreenshot(app.paymentScreenshotUrl || null);
-                                  setResubmitUtr(app.transactionRef || "");
+                                  setResubmitScreenshotHash(app.paymentScreenshotHash || "");
                                   setResubmitNote("");
                                 }
                               }}
                               className="px-3.5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-black flex items-center gap-1.5 shadow cursor-pointer"
-                              title="स्क्रीनशॉट व UTR नंबर जोड़कर यह आवेदन दोबारा भेजें"
+                              title="नया पेमेंट स्क्रीनशॉट जोड़कर यह आवेदन दोबारा भेजें"
                             >
                               <RotateCcw className="w-3.5 h-3.5" />
-                              <span>Resubmit (Screenshot + UTR)</span>
+                              <span>Resubmit (Screenshot)</span>
                             </button>
                             <button
                               type="button"
@@ -7237,7 +7390,7 @@ export const OnlineAdmissionManager: React.FC<Props> = ({
                           <strong>Rejection Reason:</strong> {app.rejectionReason || app.remarks}
                         </span>
                         <span className="text-[11px] font-bold text-rose-600 dark:text-rose-300">
-                          Screenshot व UTR जोड़कर दोबारा भेजा जा सकता है
+                          नया पेमेंट Screenshot जोड़कर दोबारा भेजा जा सकता है
                         </span>
                       </div>
                     )}
@@ -7273,13 +7426,13 @@ export const OnlineAdmissionManager: React.FC<Props> = ({
                       </div>
                     )}
 
-                    {/* Inline Resubmit Rejected Application Bar (Screenshot + UTR) */}
+                    {/* Inline Resubmit Rejected Application Bar (Screenshot Only) */}
                     {resubmittingAppId === app.id && (
                       <div className="pt-3 border-t border-indigo-200 dark:border-indigo-800 bg-indigo-50/70 dark:bg-indigo-950/30 p-3.5 rounded-2xl space-y-3">
                         <div className="flex items-center justify-between gap-2">
                           <p className="text-xs font-black text-indigo-900 dark:text-indigo-200 flex items-center gap-1.5">
                             <RotateCcw className="w-3.5 h-3.5 text-indigo-600" />
-                            <span>Rejected आवेदन दोबारा भेजें (Upload Payment Screenshot &amp; UTR Number)</span>
+                            <span>Rejected आवेदन दोबारा भेजें (Upload New Payment Screenshot)</span>
                           </p>
                           <button
                             type="button"
@@ -7298,44 +7451,29 @@ export const OnlineAdmissionManager: React.FC<Props> = ({
                           className="hidden"
                         />
 
-                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                          <div className="flex items-center gap-3 p-2.5 rounded-xl bg-white dark:bg-slate-900 border border-indigo-200 dark:border-indigo-800">
-                            {resubmitScreenshot ? (
-                              <img
-                                src={resubmitScreenshot}
-                                alt="Updated Payment Screenshot"
-                                className="w-12 h-12 rounded-lg object-cover border border-indigo-300 shrink-0"
-                              />
-                            ) : (
-                              <div className="w-12 h-12 rounded-lg bg-slate-100 dark:bg-slate-800 flex items-center justify-center text-slate-400 shrink-0">
-                                <Camera className="w-5 h-5" />
-                              </div>
-                            )}
-                            <div className="flex-1 min-w-0">
-                              <p className="text-[11px] font-bold text-slate-700 dark:text-slate-200 truncate">
-                                {resubmitScreenshot ? "Screenshot Ready" : "Payment Screenshot *"}
-                              </p>
-                              <button
-                                type="button"
-                                onClick={() => resubmitFileInputRef.current?.click()}
-                                className="mt-1 px-2.5 py-1 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-[11px] font-black cursor-pointer"
-                              >
-                                {resubmitScreenshot ? "Change Screenshot" : "Upload Screenshot"}
-                              </button>
-                            </div>
-                          </div>
-
-                          <div className="space-y-1.5">
-                            <label className="text-[11px] font-bold text-slate-700 dark:text-slate-200 block">
-                              UTR / Transaction Ref Number *
-                            </label>
-                            <input
-                              type="text"
-                              value={resubmitUtr}
-                              onChange={(e) => setResubmitUtr(e.target.value)}
-                              placeholder="e.g. 512398471923"
-                              className="w-full px-3 py-2 rounded-xl border border-indigo-300 dark:border-indigo-700 bg-white dark:bg-slate-900 text-xs font-mono font-bold text-slate-900 dark:text-white"
+                        <div className="flex items-center gap-3 p-2.5 rounded-xl bg-white dark:bg-slate-900 border border-indigo-200 dark:border-indigo-800">
+                          {resubmitScreenshot ? (
+                            <img
+                              src={resubmitScreenshot}
+                              alt="Updated Payment Screenshot"
+                              className="w-12 h-12 rounded-lg object-cover border border-indigo-300 shrink-0"
                             />
+                          ) : (
+                            <div className="w-12 h-12 rounded-lg bg-slate-100 dark:bg-slate-800 flex items-center justify-center text-slate-400 shrink-0">
+                              <Camera className="w-5 h-5" />
+                            </div>
+                          )}
+                          <div className="flex-1 min-w-0">
+                            <p className="text-[11px] font-bold text-slate-700 dark:text-slate-200 truncate">
+                              {resubmitScreenshot ? "Screenshot Ready" : "Payment Screenshot *"}
+                            </p>
+                            <button
+                              type="button"
+                              onClick={() => resubmitFileInputRef.current?.click()}
+                              className="mt-1 px-2.5 py-1 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-[11px] font-black cursor-pointer"
+                            >
+                              {resubmitScreenshot ? "Change Screenshot" : "Upload Screenshot"}
+                            </button>
                           </div>
                         </div>
 
@@ -7577,7 +7715,7 @@ export const OnlineAdmissionManager: React.FC<Props> = ({
                         </div>
                       )}
 
-                      {/* Rejection Notice + Resubmit with Screenshot & UTR */}
+                      {/* Rejection Notice + Resubmit with Payment Screenshot */}
                       {app.status === "rejected" && (
                         <div className="p-4 rounded-2xl bg-rose-50 dark:bg-rose-950/30 border border-rose-200 dark:border-rose-800 space-y-3">
                           <div className="flex flex-wrap items-center justify-between gap-2">
@@ -7587,7 +7725,7 @@ export const OnlineAdmissionManager: React.FC<Props> = ({
                                 <span>अस्वीकृत कारण (Rejection Reason): {app.rejectionReason || app.remarks || "Verification pending / incomplete proof"}</span>
                               </p>
                               <p className="text-[11px] mt-0.5 text-rose-700 dark:text-rose-300">
-                                आप नया Payment Screenshot और UTR / Transaction Number जोड़कर इस आवेदन को दोबारा भेज सकते हैं।
+                                आप नया Payment Screenshot जोड़कर इस आवेदन को दोबारा भेज सकते हैं।
                               </p>
                             </div>
                             <button
@@ -7598,14 +7736,14 @@ export const OnlineAdmissionManager: React.FC<Props> = ({
                                 } else {
                                   setResubmittingAppId(app.id);
                                   setResubmitScreenshot(app.paymentScreenshotUrl || null);
-                                  setResubmitUtr(app.transactionRef || "");
+                                  setResubmitScreenshotHash(app.paymentScreenshotHash || "");
                                   setResubmitNote("");
                                 }
                               }}
                               className="px-3.5 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-black flex items-center gap-1.5 shadow-sm cursor-pointer shrink-0"
                             >
                               <RotateCcw className="w-3.5 h-3.5" />
-                              <span>{resubmittingAppId === app.id ? "बंद करें" : "🔄 Screenshot व UTR से दोबारा भेजें"}</span>
+                              <span>{resubmittingAppId === app.id ? "बंद करें" : "🔄 नए Screenshot से दोबारा भेजें"}</span>
                             </button>
                           </div>
 
@@ -7618,43 +7756,29 @@ export const OnlineAdmissionManager: React.FC<Props> = ({
                                 onChange={handleResubmitScreenshotFileChange}
                                 className="hidden"
                               />
-                              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                                <div className="flex items-center gap-3 p-2.5 rounded-xl bg-white dark:bg-slate-900 border border-rose-200 dark:border-rose-800">
-                                  {resubmitScreenshot ? (
-                                    <img
-                                      src={resubmitScreenshot}
-                                      alt="Updated Payment Screenshot"
-                                      className="w-12 h-12 rounded-lg object-cover border border-rose-300 shrink-0"
-                                    />
-                                  ) : (
-                                    <div className="w-12 h-12 rounded-lg bg-slate-100 dark:bg-slate-800 flex items-center justify-center text-slate-400 shrink-0">
-                                      <Camera className="w-5 h-5" />
-                                    </div>
-                                  )}
-                                  <div className="flex-1 min-w-0">
-                                    <p className="text-[11px] font-bold text-slate-700 dark:text-slate-200 truncate">
-                                      {resubmitScreenshot ? "Screenshot Attached" : "Payment Screenshot *"}
-                                    </p>
-                                    <button
-                                      type="button"
-                                      onClick={() => resubmitFileInputRef.current?.click()}
-                                      className="mt-1 px-2.5 py-1 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-[11px] font-black cursor-pointer"
-                                    >
-                                      {resubmitScreenshot ? "Change Photo" : "Upload Screenshot"}
-                                    </button>
-                                  </div>
-                                </div>
-                                <div>
-                                  <label className="text-[11px] font-bold text-slate-700 dark:text-slate-200 block mb-1">
-                                    UTR / Transaction Ref No. *
-                                  </label>
-                                  <input
-                                    type="text"
-                                    value={resubmitUtr}
-                                    onChange={(e) => setResubmitUtr(e.target.value)}
-                                    placeholder="e.g. 512398471923"
-                                    className="w-full px-3 py-2 rounded-xl border border-rose-300 dark:border-rose-700 bg-white dark:bg-slate-900 text-xs font-mono font-bold text-slate-900 dark:text-white"
+                              <div className="flex items-center gap-3 p-2.5 rounded-xl bg-white dark:bg-slate-900 border border-rose-200 dark:border-rose-800">
+                                {resubmitScreenshot ? (
+                                  <img
+                                    src={resubmitScreenshot}
+                                    alt="Updated Payment Screenshot"
+                                    className="w-12 h-12 rounded-lg object-cover border border-rose-300 shrink-0"
                                   />
+                                ) : (
+                                  <div className="w-12 h-12 rounded-lg bg-slate-100 dark:bg-slate-800 flex items-center justify-center text-slate-400 shrink-0">
+                                    <Camera className="w-5 h-5" />
+                                  </div>
+                                )}
+                                <div className="flex-1 min-w-0">
+                                  <p className="text-[11px] font-bold text-slate-700 dark:text-slate-200 truncate">
+                                    {resubmitScreenshot ? "Screenshot Attached" : "Payment Screenshot *"}
+                                  </p>
+                                  <button
+                                    type="button"
+                                    onClick={() => resubmitFileInputRef.current?.click()}
+                                    className="mt-1 px-2.5 py-1 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-[11px] font-black cursor-pointer"
+                                  >
+                                    {resubmitScreenshot ? "Change Photo" : "Upload Screenshot"}
+                                  </button>
                                 </div>
                               </div>
                               <button
@@ -7664,7 +7788,7 @@ export const OnlineAdmissionManager: React.FC<Props> = ({
                                 className="w-full py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white text-xs font-black flex items-center justify-center gap-1.5 cursor-pointer shadow-sm"
                               >
                                 <Send className="w-3.5 h-3.5" />
-                                <span>{resubmittingRejected ? "दोबारा भेजा जा रहा है..." : "✅ Screenshot व UTR के साथ दोबारा आवेदन भेजें (Resubmit)"}</span>
+                                <span>{resubmittingRejected ? "दोबारा भेजा जा रहा है..." : "✅ नए Screenshot के साथ दोबारा आवेदन भेजें (Resubmit)"}</span>
                               </button>
                             </div>
                           )}
@@ -7836,55 +7960,7 @@ export const OnlineAdmissionManager: React.FC<Props> = ({
                   entranceDiscount: fees.entrancePlanDiscount,
                 });
                 const totalPayable = step2PlanSummary.term1PayNow;
-                const rawSchoolWa = (school.whatsappNo || "").replace(/\D/g, "");
-                const targetWaDigits = rawSchoolWa.length >= 10 && rawSchoolWa !== "0000000000" ? rawSchoolWa : "9835763641";
-                const cleanWhatsAppNumber = targetWaDigits.length === 10 ? `91${targetWaDigits}` : targetWaDigits;
-                const displayWhatsAppNumber = targetWaDigits.length >= 10 ? targetWaDigits.slice(-10) : "9835763641";
-
-                const whatsappLines = [
-                  `*🏛️ ${school.name || "School"}*`,
-                  `*📋 ऑनलाइन एडमिशन पेमेंट QR अनुरोध (QR Request)*`,
-                  `----------------------------------`,
-                  `• *आवेदन संख्या (App No):* ${submittedApp.applicationNo}`,
-                  `• *छात्र का नाम (Student Name):* ${submittedApp.studentName}`,
-                  `• *कक्षा (Class):* ${submittedApp.className}`,
-                  `• *पिता का नाम (Father's Name):* ${submittedApp.fatherName}`,
-                  `• *मोबाइल नंबर (Mobile):* ${submittedApp.phone}`,
-                  `• *बस सुविधा:* ${submittedApp.usesBus ? `हाँ (${submittedApp.busRoute || "निर्दिष्ट रूट"})` : "नहीं"}`,
-                  `• *चुना गया प्लान:* ${step2PlanSummary.planTitle}`,
-                  `• *1st Month Tuition:* ${step2IncludeAdvanceTuition ? `Included (₹${step2TuitionAmt})` : `Deferred to 1st Active School Month (₹${step2TuitionAmt} later)`}`,
-                  ``,
-                  `*💰 शुल्क विवरण (Fee Breakdown):*`,
-                  ...fees.enabledHeads.map((h) =>
-                    h.discountAmount > 0
-                      ? `• ${h.label}: ~₹${h.originalAmount}~ → ₹${h.amount} (${fees.offerDiscountPercent}% OFF)`
-                      : `• ${h.label}: ₹${h.amount}`
-                  ),
-                  ...(fees.offerDiscountTotal > 0 || step2PlanSummary.entranceMeritDiscountApplied > 0
-                    ? [
-                        `----------------------------------`,
-                        `• *कुल पैकेज मूल्य (Original Total):* ₹${fees.grossTotalPayable}`,
-                        ...(fees.offerDiscountTotal > 0
-                          ? [`• *🎉 ${fees.offerTitle || "Admission Offer"} (${fees.offerDiscountPercent}% OFF):* -₹${fees.offerDiscountTotal}`]
-                          : []),
-                        ...(step2PlanSummary.entranceMeritDiscountApplied > 0
-                          ? [`• *🎓 Entrance Merit Off (${step2PlanSummary.entranceMeritBadge || step2PlanSummary.entranceMeritLabel} — केवल Current Pay पर लागू, Term 2 पर नहीं):* -₹${step2PlanSummary.entranceMeritDiscountApplied}`]
-                          : []),
-                      ]
-                    : []),
-                  `----------------------------------`,
-                  `• *सक्रिय प्रवेश पैकेज (Active Package):* ₹${step2PlanSummary.activePackageTotal}`,
-                  `*👉 अभी देय राशि (Current Pay / Term 1 Pay Now): ₹${totalPayable}*`,
-                  ...(step2PlanSummary.term2Balance > 0
-                    ? [`• *Term 2 Joining Balance (No Merit Discount — प्रवेश के समय देय):* ₹${step2PlanSummary.term2Balance}`]
-                    : []),
-                  ...(step2PlanSummary.deferredTuitionAmount > 0
-                    ? [`• *प्रथम माह ट्यूशन (No Merit Discount — स्कूल शुरू होने पर):* ₹${step2PlanSummary.deferredTuitionAmount}`]
-                    : []),
-                  `----------------------------------`,
-                  `नमस्ते, मैंने स्कूल पोर्टल पर एडमिशन फॉर्म पूरा भर दिया है (${step2PlanSummary.planBadge})। कृपया *₹${totalPayable}* भुगतान के लिए स्कूल का QR कोड भेजें ताकि मैं पेमेंट करके स्क्रीनशॉट व UTR सबमिट कर सकूँ। धन्यवाद!`,
-                ];
-                const whatsappUrl = `https://wa.me/${cleanWhatsAppNumber}?text=${encodeURIComponent(whatsappLines.join("\n"))}`;
+                const cleanSchoolUpi = String(school?.upiId || (school as any)?.bankUpiId || "").trim();
 
                 const currentStepIdx: 2 | 3 = paymentSubmittedNotice ? 3 : admissionStep === 3 ? 3 : 2;
 
@@ -7922,7 +7998,7 @@ export const OnlineAdmissionManager: React.FC<Props> = ({
                   );
                 }
 
-                // 30-Min Pending Verification Screen after submitting Screenshot + UTR
+                // 30-Min Pending Verification Screen after submitting Screenshot
                 if (paymentSubmittedNotice) {
                   return (
                     <div className="bg-white dark:bg-slate-900 rounded-2xl p-6 sm:p-8 shadow-sm border border-amber-300 dark:border-amber-700 space-y-6 text-center">
@@ -7933,7 +8009,7 @@ export const OnlineAdmissionManager: React.FC<Props> = ({
                         30 मिनट के अंदर कन्फर्मेशन (Confirm Within 30 Minutes)
                       </span>
                       <h2 className="text-2xl sm:text-3xl font-bold tracking-tight text-slate-900 dark:text-white">
-                        पेमेंट स्क्रीनशॉट और UTR सबमिट हो गया!
+                        पेमेंट स्क्रीनशॉट सबमिट हो गया!
                       </h2>
                       <p className="text-xs sm:text-sm text-slate-600 dark:text-slate-300 max-w-lg mx-auto leading-relaxed">
                         आवेदन संख्या: <strong className="font-mono text-indigo-600 dark:text-indigo-400">{submittedApp.applicationNo}</strong> • <strong>{submittedApp.studentName}</strong> ({submittedApp.className})
@@ -8179,6 +8255,7 @@ export const OnlineAdmissionManager: React.FC<Props> = ({
                             setSubmittedApp(null);
                             setConfirmedAdmission(null);
                             setPaymentScreenshot(null);
+                            setPaymentScreenshotHash("");
                             setTransactionRef("");
                             setAdmissionStep(1);
                             setAdminFormStep(1);
@@ -8192,7 +8269,7 @@ export const OnlineAdmissionManager: React.FC<Props> = ({
                   );
                 }
 
-                // CLEAN 3-STEP WIZARD: STEP 2 (Fee Breakdown) & STEP 3 (WhatsApp QR 9835763641 + Screenshot/UTR)
+                // CLEAN 3-STEP WIZARD: STEP 2 (Fee Breakdown) & STEP 3 (Auto-Detected / Dedicated UPI App + Screenshot Upload)
                 return (
                   <div className="bg-white dark:bg-slate-800 rounded-3xl p-5 sm:p-8 shadow-xl border border-slate-200 dark:border-slate-700 space-y-6">
                     {/* 3-Step Visual Stepper */}
@@ -8227,7 +8304,7 @@ export const OnlineAdmissionManager: React.FC<Props> = ({
                             : "text-slate-500 dark:text-slate-400"
                         }`}
                       >
-                        <span>3. पेमेंट व UTR</span>
+                        <span>3. पेमेंट व स्क्रीनशॉट</span>
                       </button>
                     </div>
 
@@ -8235,7 +8312,7 @@ export const OnlineAdmissionManager: React.FC<Props> = ({
                     <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-4 border-b border-slate-200 dark:border-slate-700">
                       <div>
                         <span className="px-2.5 py-0.5 rounded-md bg-indigo-50 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-300 text-[11px] font-black uppercase">
-                          {currentStepIdx === 2 ? "Step 2 / 3 • शुल्क विवरण (Fee Breakdown)" : "Step 3 / 3 • QR पेमेंट व सबमिशन"}
+                          {currentStepIdx === 2 ? "Step 2 / 3 • शुल्क विवरण (Fee Breakdown)" : "Step 3 / 3 • UPI पेमेंट व सबमिशन"}
                         </span>
                         <h2 className="text-lg sm:text-xl font-black text-slate-900 dark:text-white mt-1.5">
                           {submittedApp.studentName} — {submittedApp.className}
@@ -8292,7 +8369,7 @@ export const OnlineAdmissionManager: React.FC<Props> = ({
 
                     {submittedApp.status === "rejected" && (
                       <div className="p-3 rounded-2xl bg-rose-50 dark:bg-rose-950/40 border border-rose-300 dark:border-rose-800 text-xs text-rose-800 dark:text-rose-200">
-                        <strong>Rejection Reason:</strong> {submittedApp.rejectionReason || submittedApp.remarks || "Incomplete payment proof"} — कृपया नया Payment Screenshot और UTR नंबर जोड़कर दोबारा सबमिट करें।
+                        <strong>Rejection Reason:</strong> {submittedApp.rejectionReason || submittedApp.remarks || "Incomplete payment proof"} — कृपया नया Payment Screenshot अपलोड करके दोबारा सबमिट करें।
                       </div>
                     )}
 
@@ -8705,24 +8782,24 @@ export const OnlineAdmissionManager: React.FC<Props> = ({
                       </div>
                     )}
 
-                    {/* STEP 3 VIEW: WHATSAPP QR REQUEST ON 9835763641 + SCREENSHOT & UTR UPLOAD */}
+                    {/* STEP 3 VIEW: AUTO-DETECTED / DEDICATED UPI APP LAUNCH + SCREENSHOT UPLOAD */}
                     {currentStepIdx === 3 && (
                       <div className="space-y-5">
-                        {/* WhatsApp QR Request Card (9835763641) */}
+                        {/* Step 3A: Direct UPI App Pay Launcher */}
                         <div className="bg-white dark:bg-slate-900 rounded-2xl p-5 sm:p-6 border border-emerald-200 dark:border-emerald-800/70 shadow-xs space-y-4">
                           <div className="flex items-start gap-3">
-                            <div className="w-11 h-11 rounded-xl bg-[#25D366] text-white flex items-center justify-center shrink-0 shadow-xs">
-                              <MessageCircle className="w-6 h-6" />
+                            <div className="w-11 h-11 rounded-xl bg-emerald-600 text-white flex items-center justify-center shrink-0 shadow-xs">
+                              <Smartphone className="w-6 h-6" />
                             </div>
                             <div className="flex-1">
                               <span className="text-[11px] font-bold uppercase tracking-wider text-emerald-700 dark:text-emerald-300 block">
-                                Step 3A • पेमेंट QR कोड प्राप्त करें ({step2PlanSummary.planBadge})
+                                Step 3A • डायरेक्ट UPI ऐप पेमेंट ({step2PlanSummary.planBadge})
                               </span>
                               <h3 className="font-bold text-base sm:text-lg text-slate-900 dark:text-white mt-0.5">
-                                WhatsApp ({displayWhatsAppNumber}) पर QR कोड मांगें और ₹{totalPayable.toLocaleString("en-IN")} पेमेंट करें
+                                फ़ोन के UPI ऐप से सीधा ₹{totalPayable.toLocaleString("en-IN")} पेमेंट करें
                               </h3>
                               <p className="text-xs text-slate-600 dark:text-slate-300 mt-1 leading-relaxed">
-                                नीचे दिए गए बटन पर क्लिक करते ही WhatsApp नंबर <strong className="font-mono text-emerald-700 dark:text-emerald-400">+91 {displayWhatsAppNumber}</strong> पर ₹{totalPayable.toLocaleString("en-IN")} ({step2PlanSummary.planTitle}) भुगतान का QR कोड मांगने वाला मैसेज तैयार खुलेगा।
+                                नीचे दिए गए बटन पर क्लिक करते ही आपके फ़ोन में मौजूद UPI पेमेंट ऐप सीधे ₹{totalPayable.toLocaleString("en-IN")} ({step2PlanSummary.planTitle}) की राशि के साथ खुल जाएगा।
                                 {step2PlanSummary.term2Balance > 0 && (
                                   <> शेष Term 2 राशि <strong>₹{step2PlanSummary.term2Balance.toLocaleString("en-IN")}</strong> प्रवेश जुड़ते समय जमा होगी।</>
                                 )}
@@ -8733,34 +8810,52 @@ export const OnlineAdmissionManager: React.FC<Props> = ({
                             </div>
                           </div>
 
-                          <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-950/60 border border-slate-200 dark:border-slate-800 text-[11px] text-slate-700 dark:text-slate-300 font-medium leading-relaxed">
-                            <span className="font-bold text-emerald-700 dark:text-emerald-300 block mb-1">WhatsApp मैसेज प्रीव्यू:</span>
-                            "नमस्ते, मैंने स्कूल पोर्टल पर एडमिशन फॉर्म भर दिया है ({submittedApp.studentName} • {submittedApp.className} • App #{submittedApp.applicationNo} • {step2PlanSummary.planBadge})। कृपया <strong>₹{totalPayable.toLocaleString("en-IN")}</strong> फीस भुगतान के लिए <strong>QR कोड</strong> भेजें।"
-                          </div>
-
-                          <a
-                            href={whatsappUrl}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="w-full py-3 px-5 rounded-xl bg-[#25D366] hover:bg-[#20bd5a] text-white font-bold text-sm sm:text-base flex items-center justify-center gap-2.5 shadow-xs active:scale-95 transition cursor-pointer"
-                          >
-                            <MessageCircle className="w-5 h-5 text-white shrink-0" />
-                            <span>WhatsApp ({displayWhatsAppNumber}) पर QR कोड मांगें</span>
-                          </a>
+                          {cleanSchoolUpi ? (
+                            <UpiAppPickerBox
+                              upiId={cleanSchoolUpi}
+                              schoolName={school?.name || "School"}
+                              amount={totalPayable}
+                              txnNote={`${submittedApp.studentName} ${submittedApp.applicationNo}`}
+                              lang="HI"
+                              onPayTriggered={() => {
+                                setAwaitingAdmUpiReturn(true);
+                                toast.info("पेमेंट पूरा होने के बाद कृपया स्क्रीनशॉट नीचे अपलोड करें।");
+                              }}
+                              onPayReturned={() => handleAdmUpiReturned()}
+                            />
+                          ) : (
+                            <div className="p-3.5 rounded-xl bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-700 text-xs text-amber-900 dark:text-amber-200 font-semibold">
+                              स्कूल का UPI ID अभी प्रोफ़ाइल में दर्ज नहीं है। कृपया स्कूल के खाते में ₹{totalPayable.toLocaleString("en-IN")} भुगतान करके नीचे स्क्रीनशॉट अपलोड करें।
+                            </div>
+                          )}
                         </div>
 
-                        {/* Step 3B: Screenshot + UTR Upload */}
-                        <div className="bg-amber-50/40 dark:bg-amber-950/20 rounded-2xl p-5 border border-dashed border-amber-300 dark:border-amber-700 space-y-4">
+                        {/* Step 3B: Screenshot Upload Only */}
+                        <div
+                          ref={admScreenshotBoxRef}
+                          className={`rounded-2xl p-5 border-2 border-dashed space-y-4 transition-all duration-300 ${
+                            highlightAdmScreenshotBox && !paymentScreenshot
+                              ? "bg-emerald-50/90 dark:bg-emerald-950/35 border-emerald-500 ring-2 ring-emerald-500/70 shadow-md"
+                              : "bg-amber-50/40 dark:bg-amber-950/20 border-amber-300 dark:border-amber-700"
+                          }`}
+                        >
                           <div className="flex items-start gap-2.5">
                             <div className="w-9 h-9 rounded-xl bg-amber-500 text-white flex items-center justify-center shrink-0 mt-0.5">
                               <Upload className="w-4 h-4" />
                             </div>
-                            <div className="text-left">
-                              <span className="text-[11px] font-black uppercase tracking-wider text-amber-800 dark:text-amber-300 block">
-                                Step 3B • भुगतान के बाद प्रूफ सबमिट करें
-                              </span>
+                            <div className="text-left flex-1">
+                              <div className="flex items-center justify-between gap-2 flex-wrap">
+                                <span className="text-[11px] font-black uppercase tracking-wider text-amber-800 dark:text-amber-300 block">
+                                  Step 3B • भुगतान के बाद प्रूफ सबमिट करें
+                                </span>
+                                {highlightAdmScreenshotBox && !paymentScreenshot && (
+                                  <span className="text-[10px] font-black text-emerald-700 dark:text-emerald-300 whitespace-nowrap">
+                                    अब यहाँ स्क्रीनशॉट अपलोड करें ↓
+                                  </span>
+                                )}
+                              </div>
                               <h4 className="font-black text-sm sm:text-base text-slate-900 dark:text-white">
-                                पेमेंट स्क्रीनशॉट व UTR नंबर डालकर सबमिट करें
+                                पेमेंट स्क्रीनशॉट अपलोड करके सबमिट करें
                               </h4>
                               <p className="text-[11px] text-slate-600 dark:text-slate-300 mt-0.5">
                                 सबमिट करते ही <strong>30 मिनट के अंदर</strong> आपका एडमिशन कन्फर्म होगा और अप्रूव होते ही आप सीधे Student Portal पर पहुंच जाएंगे।
@@ -8789,12 +8884,15 @@ export const OnlineAdmissionManager: React.FC<Props> = ({
                                     <CheckCircle2 className="w-3.5 h-3.5" />
                                     <span>स्क्रीनशॉट संलग्न हो गया</span>
                                   </p>
-                                  <p className="text-[11px] text-slate-500">UTR डालकर सबमिट करें</p>
+                                  <p className="text-[11px] text-slate-500">अब नीचे सबमिट बटन दबाएं</p>
                                 </div>
                               </div>
                               <button
                                 type="button"
-                                onClick={() => setPaymentScreenshot(null)}
+                                onClick={() => {
+                                  setPaymentScreenshot(null);
+                                  setPaymentScreenshotHash("");
+                                }}
                                 className="p-1.5 text-rose-600 hover:bg-rose-50 rounded-lg text-xs font-bold cursor-pointer"
                               >
                                 <X className="w-4 h-4" />
@@ -8807,23 +8905,10 @@ export const OnlineAdmissionManager: React.FC<Props> = ({
                               className="w-full py-4 border-2 border-dashed border-amber-400 dark:border-amber-600 rounded-xl bg-white dark:bg-slate-800 hover:bg-amber-50 dark:hover:bg-slate-700/60 transition flex flex-col items-center justify-center gap-1 text-slate-700 dark:text-slate-200 cursor-pointer"
                             >
                               <Camera className="w-6 h-6 text-amber-600" />
-                              <span className="text-xs font-black">पेमेंट स्क्रीनशॉट अपलोड करें (Upload Screenshot)</span>
+                              <span className="text-xs font-black">पेमेंट स्क्रीनशॉट अपलोड करें (Upload Screenshot) *</span>
                               <span className="text-[10px] text-slate-400">JPG, PNG या WebP फ़ाइल (अधिकतम 8MB)</span>
                             </button>
                           )}
-
-                          <div className="text-left">
-                            <label className="text-xs font-bold text-slate-700 dark:text-slate-300 block mb-1">
-                              UPI Ref / Transaction UTR No. *
-                            </label>
-                            <input
-                              type="text"
-                              value={transactionRef}
-                              onChange={(e) => setTransactionRef(e.target.value)}
-                              placeholder="e.g. 512398471923 (12-digit UTR Number)"
-                              className="w-full px-3.5 py-2.5 text-xs font-mono font-bold rounded-xl border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 placeholder:text-slate-400"
-                            />
-                          </div>
 
                           {screenshotError && (
                             <div className="p-2.5 bg-rose-50 dark:bg-rose-950/40 text-rose-700 dark:text-rose-300 text-xs rounded-xl flex items-center gap-1.5 font-bold">
@@ -8836,17 +8921,17 @@ export const OnlineAdmissionManager: React.FC<Props> = ({
                             type="button"
                             onClick={handleSendPaymentScreenshot}
                             disabled={submittingScreenshot}
-                            className="w-full py-3.5 px-4 rounded-2xl bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 text-white font-black text-sm flex items-center justify-center gap-2 shadow-lg shadow-emerald-600/30 active:scale-95 transition cursor-pointer"
+                            className="w-full min-h-[48px] py-3.5 px-4 rounded-2xl bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 text-white font-black text-sm flex items-center justify-center gap-2 shadow-lg shadow-emerald-600/30 active:scale-95 transition cursor-pointer"
                           >
                             {submittingScreenshot ? (
                               <>
                                 <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                                <span>पेमेंट विवरण सबमिट हो रहा है...</span>
+                                <span>पेमेंट स्क्रीनशॉट सबमिट हो रहा है...</span>
                               </>
                             ) : (
                               <>
                                 <Send className="w-4 h-4" />
-                                <span>पेमेंट स्क्रीनशॉट व UTR सबमिट करें</span>
+                                <span>पेमेंट स्क्रीनशॉट सबमिट करें</span>
                               </>
                             )}
                           </button>
@@ -8935,7 +9020,7 @@ export const OnlineAdmissionManager: React.FC<Props> = ({
                     <span>2. शुल्क विवरण</span>
                   </div>
                   <div className="py-2 px-2 rounded-xl text-slate-500 dark:text-slate-400 flex items-center justify-center gap-1">
-                    <span>{isAdmin ? "3. दाखिला व रसीद" : "3. पेमेंट व UTR"}</span>
+                    <span>{isAdmin ? "3. दाखिला व रसीद" : "3. पेमेंट व स्क्रीनशॉट"}</span>
                   </div>
                 </div>
                 {(!isAdmin || adminFormStep === 1) && (

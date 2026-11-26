@@ -57,7 +57,6 @@ export const DraggableNstaLogoFab: React.FC<DraggableNstaLogoFabProps> = ({
   className = '',
   hidden = false,
 }) => {
-  if (hidden) return null;
   const [pos, setPos] = useState<{ x: number; y: number } | null>(() => {
     try {
       const saved = localStorage.getItem(storageKey);
@@ -286,7 +285,7 @@ export const DraggableNstaLogoFab: React.FC<DraggableNstaLogoFabProps> = ({
     ? 'नेविगेशन बार व टॉप बार दिखाएं • Drag to move anywhere'
     : 'नेविगेशन बार व टॉप बार छुपाएं • Drag to move anywhere';
 
-  if (isModalActive) {
+  if (hidden || isModalActive) {
     return null;
   }
 

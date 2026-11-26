@@ -1,17 +1,19 @@
 // @ts-nocheck
 import React, { useState, useEffect, useRef } from "react";
 import {
-  Bus, Play, Square, Navigation, Phone, ShieldAlert,
+  Bus, Play, Square, Navigation, Phone,
   CheckCircle2, Clock, MapPin, Gauge, AlertTriangle,
-  Radio, Volume2, ArrowLeft, RefreshCw, Smartphone, Map as MapIcon,
-  Home, Link2, LogOut
+  Radio, ArrowLeft, RefreshCw, Smartphone, Map as MapIcon,
+  Home, Link2, LogOut, ExternalLink, Sun, Sunset,
+  Satellite, ShieldCheck, Users, ChevronDown, ChevronUp
 } from "lucide-react";
 import type { School, BusLiveLocation } from "../../school-types";
 import { shouldUseDemoForSchool } from "../../school-firebase";
 import { speakNotification } from "../../utils/voiceNotifyEngine";
-import { rtdb } from "../../firebase";
+import { rtdb, auth, ensureFirebaseAuthSession } from "../../firebase";
 import { ref as dbRef, set, onValue } from "firebase/database";
-import { sbRtdbSet, sbRtdbSubscribe } from "../../services/supabaseDbAdapter";
+import { sbRtdbSubscribe } from "../../services/supabaseDbAdapter";
+import { setErrorLoggerContext, setErrorLoggerModule } from "../../utils/errorLogger";
 import { toast } from "sonner";
 import {
   getLocalRoutes,
@@ -33,6 +35,37 @@ import {
 import { sendSchoolPushNotification } from "../../utils/schoolPushClient";
 import { ScreenInfoGuideButton } from "./ScreenInfoGuideButton";
 import { LanguageToggleButton } from "./LanguageToggleButton";
+
+function getNativeAndroidBridge(): any {
+  try {
+    return typeof window !== "undefined" ? (window as any).LifeMakerAndroid : null;
+  } catch {
+    return null;
+  }
+}
+
+function isValidCoordPair(lat: any, lng: any): boolean {
+  const nLat = Number(lat);
+  const nLng = Number(lng);
+  return (
+    Number.isFinite(nLat) &&
+    Number.isFinite(nLng) &&
+    (Math.abs(nLat) > 0.001 || Math.abs(nLng) > 0.001) &&
+    Math.abs(nLat) <= 90 &&
+    Math.abs(nLng) <= 180
+  );
+}
+
+function isSyntheticGurgaonDefault(lat: any, lng: any): boolean {
+  const nLat = Number(lat);
+  const nLng = Number(lng);
+  return (
+    Number.isFinite(nLat) &&
+    Number.isFinite(nLng) &&
+    Math.abs(nLat - 28.4595) < 0.00025 &&
+    Math.abs(nLng - 77.0266) < 0.00025
+  );
+}
 
 export interface DriverBusConfig {
   id: string;
@@ -144,6 +177,7 @@ export const DriverTripConsole: React.FC<Props> = ({
     const sid = school?.id || "";
     const refreshFleet = () => {
       setFleetBuses(loadConfiguredFleetForDriver(sid, initialBusId, initialBusMeta, isDemo));
+      setRoutesVersion((v) => v + 1);
     };
     window.addEventListener("school-transport-updated", refreshFleet);
     return () => window.removeEventListener("school-transport-updated", refreshFleet);
@@ -223,10 +257,67 @@ export const DriverTripConsole: React.FC<Props> = ({
   const [distanceKm, setDistanceKm] = useState(0);
   const [gpsAccuracy, setGpsAccuracy] = useState<number | null>(null);
   const [gpsError, setGpsError] = useState<string | null>(null);
+  const [gpsState, setGpsState] = useState<
+    "idle" | "searching" | "active" | "network_fallback" | "denied" | "error"
+  >("idle");
   const [showLiveMap, setShowLiveMap] = useState<boolean>(true);
+  const [showBackupLinkBox, setShowBackupLinkBox] = useState<boolean>(false);
+  const [routesVersion, setRoutesVersion] = useState<number>(0);
   const [manualLocationText, setManualLocationText] = useState<string>("");
   const [resolvingLocationLink, setResolvingLocationLink] = useState<boolean>(false);
   const [studentHomePins, setStudentHomePins] = useState<StudentHomePin[]>([]);
+  const [nativeBgGpsActive, setNativeBgGpsActive] = useState<boolean>(() => {
+    try {
+      const bridge = getNativeAndroidBridge();
+      return Boolean(bridge?.isBusGpsServiceRunning?.());
+    } catch {
+      return false;
+    }
+  });
+
+  const isEmbeddedIframe = React.useMemo(() => {
+    try {
+      return typeof window !== "undefined" && window.self !== window.top;
+    } catch {
+      return true;
+    }
+  }, []);
+
+  const standaloneDriverTabUrl = React.useMemo(() => {
+    if (typeof window === "undefined") return "/?driverConsole=1";
+    try {
+      const url = new URL(window.location.href);
+      url.searchParams.set("driverConsole", "1");
+      if (school?.id) url.searchParams.set("schoolId", school.id);
+      if (school?.code) url.searchParams.set("schoolCode", school.code);
+      if (school?.name) url.searchParams.set("schoolName", school.name);
+      if (selectedBus?.id) url.searchParams.set("busId", selectedBus.id);
+      if (selectedBus?.busNumber) url.searchParams.set("busNumber", selectedBus.busNumber);
+      if (selectedBus?.route) url.searchParams.set("route", selectedBus.route);
+      if (selectedBus?.driverName) url.searchParams.set("driverName", selectedBus.driverName);
+      if (selectedBus?.driverPhone) url.searchParams.set("driverPhone", selectedBus.driverPhone);
+      return url.toString();
+    } catch {
+      return "/?driverConsole=1";
+    }
+  }, [
+    school?.id,
+    school?.code,
+    school?.name,
+    selectedBus?.id,
+    selectedBus?.busNumber,
+    selectedBus?.route,
+    selectedBus?.driverName,
+    selectedBus?.driverPhone,
+  ]);
+
+  useEffect(() => {
+    setErrorLoggerModule(`Driver GPS Console → ${selectedBus.busNumber}`);
+    setErrorLoggerContext({
+      schoolId: school?.id || null,
+      schoolName: school?.name || null,
+    });
+  }, [school?.id, school?.name, selectedBus.busNumber]);
 
   useEffect(() => {
     const sid = school?.id || "";
@@ -289,11 +380,27 @@ export const DriverTripConsole: React.FC<Props> = ({
   }, [coords, studentHomePins]);
 
   const watchIdRef = useRef<number | null>(null);
+  const fallbackWatchIdRef = useRef<number | null>(null);
   const tripIntervalRef = useRef<any>(null);
   const lastCoordsRef = useRef<{ lat: number; lng: number; time: number } | null>(null);
+  const bestFixRef = useRef<{
+    lat: number;
+    lng: number;
+    accuracy: number;
+    time: number;
+    isCoarse: boolean;
+  } | null>(null);
+  const coordsRef = useRef<{ lat: number; lng: number } | null>(null);
+  const isTripActiveRef = useRef<boolean>(false);
+  const completedStopsRef = useRef<string[]>([]);
+  const autoCompletedStopsRef = useRef<Set<string>>(new Set());
   const notifiedProximityRef = useRef<Map<string, number>>(new Map());
   const wakeLockRef = useRef<any>(null);
   const [wakeLockActive, setWakeLockActive] = useState<boolean>(false);
+
+  coordsRef.current = coords;
+  isTripActiveRef.current = isTripActive;
+  completedStopsRef.current = completedStops;
 
   // Screen Wake Lock: keeps driver's phone screen awake while trip is active so Android doesn't pause GPS
   useEffect(() => {
@@ -353,25 +460,89 @@ export const DriverTripConsole: React.FC<Props> = ({
   // Sync bus live state key
   const storageKey = `nst_live_bus_${school?.id || "default"}_${selectedBus.id}`;
 
-  // Check if there was an active trip saved locally
+  // Sync native Android Background Bus GPS location broadcasts & permission changes
   useEffect(() => {
+    const bridge = getNativeAndroidBridge();
     try {
-      const saved = localStorage.getItem(storageKey);
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        if (parsed.tripStatus === "started") {
-          setIsTripActive(true);
-          setTripType(parsed.tripType || "morning_pickup");
-          if (parsed.latitude && parsed.longitude) {
-            setCoords({ lat: parsed.latitude, lng: parsed.longitude });
-          }
-          if (parsed.completedStops) {
-            setCompletedStops(parsed.completedStops);
-          }
-        }
+      if (bridge?.isBusGpsServiceRunning?.()) {
+        setNativeBgGpsActive(true);
+        setIsTripActive(true);
       }
     } catch {}
-  }, [storageKey]);
+
+    const onNativeLoc = (ev: any) => {
+      try {
+        const data = ev?.detail;
+        if (!data || !Number.isFinite(Number(data.latitude)) || !Number.isFinite(Number(data.longitude))) return;
+        const lat = Number(data.latitude);
+        const lng = Number(data.longitude);
+        const kmh = Number.isFinite(Number(data.speed)) ? Math.round(Number(data.speed)) : 0;
+        const acc = Number.isFinite(Number(data.accuracy)) ? Math.round(Number(data.accuracy)) : 10;
+
+        setCoords({ lat, lng });
+        setCurrentSpeed(kmh > 120 ? 0 : kmh);
+        setGpsAccuracy(acc);
+        setGpsError(null);
+        setNativeBgGpsActive(true);
+
+        if (lastCoordsRef.current) {
+          const R = 6371;
+          const dLat = ((lat - lastCoordsRef.current.lat) * Math.PI) / 180;
+          const dLng = ((lng - lastCoordsRef.current.lng) * Math.PI) / 180;
+          const a =
+            Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+            Math.cos((lastCoordsRef.current.lat * Math.PI) / 180) *
+              Math.cos((lat * Math.PI) / 180) *
+              Math.sin(dLng / 2) *
+              Math.sin(dLng / 2);
+          const stepKm = R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+          if (stepKm > 0.005 && stepKm < 2) {
+            setDistanceKm((prev) => Number((prev + stepKm).toFixed(2)));
+          }
+        }
+        lastCoordsRef.current = { lat, lng, time: Date.now() };
+      } catch {}
+    };
+
+    const onNativePerm = (ev: any) => {
+      const granted = Boolean(ev?.detail?.granted);
+      if (granted) {
+        try {
+          setNativeBgGpsActive(Boolean(getNativeAndroidBridge()?.isBusGpsServiceRunning?.()));
+        } catch {}
+        toast.success("Location permission allow ho gayi — background GPS active!");
+      }
+    };
+
+    window.addEventListener("android-bus-gps-location", onNativeLoc);
+    window.addEventListener("android-location-permission", onNativePerm);
+    return () => {
+      window.removeEventListener("android-bus-gps-location", onNativeLoc);
+      window.removeEventListener("android-location-permission", onNativePerm);
+    };
+  }, []);
+
+  // Keep Firebase Auth token fresh in Android Background Service during long trips
+  useEffect(() => {
+    if (!isTripActive) return;
+    const bridge = getNativeAndroidBridge();
+    if (!bridge?.updateNativeBusGpsAuthToken) return;
+
+    const pushFreshToken = async () => {
+      try {
+        await ensureFirebaseAuthSession();
+        const tok = await auth?.currentUser?.getIdToken?.();
+        if (tok) bridge.updateNativeBusGpsAuthToken(tok);
+      } catch {}
+    };
+    void pushFreshToken();
+    const timer = setInterval(() => {
+      void pushFreshToken();
+    }, 25 * 60 * 1000);
+    return () => clearInterval(timer);
+  }, [isTripActive]);
+
+  // Trip duration timer & active-trip wake-up (saved trip restore moved into GPS tracking section below)
 
   // Trip duration timer
   useEffect(() => {
@@ -389,25 +560,40 @@ export const DriverTripConsole: React.FC<Props> = ({
 
   const lastRtdbWriteRef = useRef<{ time: number; lat: number; lng: number }>({ time: 0, lat: 0, lng: 0 });
 
-  // Broadcast location updates to Realtime Database & LocalStorage
-  const broadcastLocation = (update: Partial<BusLiveLocation>) => {
-    const payload: BusLiveLocation = {
+  // Broadcast location updates to Realtime Database & LocalStorage (never fakes 28.4595/77.0266)
+  const broadcastLocation = (update: Partial<BusLiveLocation> & { gpsFixed?: boolean }) => {
+    const hasExplicitCoords = isValidCoordPair(update.latitude, update.longitude);
+    const activeCoords = coordsRef.current || coords;
+    const resolvedLat = hasExplicitCoords
+      ? Number(update.latitude)
+      : activeCoords
+        ? activeCoords.lat
+        : 0;
+    const resolvedLng = hasExplicitCoords
+      ? Number(update.longitude)
+      : activeCoords
+        ? activeCoords.lng
+        : 0;
+    const hasRealCoords = isValidCoordPair(resolvedLat, resolvedLng);
+
+    const payload: BusLiveLocation & { gpsFixed?: boolean } = {
       busId: selectedBus.id,
       busNumber: selectedBus.busNumber,
       route: selectedBus.route,
       driverName: selectedBus.driverName,
       driverPhone: selectedBus.driverPhone,
-      latitude: update.latitude ?? coords?.lat ?? 28.4595,
-      longitude: update.longitude ?? coords?.lng ?? 77.0266,
+      latitude: resolvedLat,
+      longitude: resolvedLng,
       speed: update.speed ?? currentSpeed,
       heading: update.heading ?? 0,
-      accuracy: update.accuracy ?? gpsAccuracy ?? 10,
-      tripStatus: update.tripStatus ?? (isTripActive ? "started" : "idle"),
+      accuracy: update.accuracy ?? gpsAccuracy ?? (hasRealCoords ? 15 : 0),
+      tripStatus: update.tripStatus ?? (isTripActiveRef.current ? "started" : "idle"),
       tripType: tripType,
       lastUpdated: new Date().toISOString(),
       currentStop: update.currentStop || (completedStops[completedStops.length - 1] || "Starting Depot"),
       totalStops: selectedBus.stops.length,
       completedStops: update.completedStops ?? completedStops,
+      gpsFixed: hasRealCoords,
     };
 
     try {
@@ -415,24 +601,32 @@ export const DriverTripConsole: React.FC<Props> = ({
       localStorage.setItem(`nst_last_active_bus_${school?.id || "default"}`, selectedBus.id);
       window.dispatchEvent(new CustomEvent("nst_bus_location_update", { detail: payload }));
 
-      // Sync to Supabase Realtime & RTDB with 10s throttle (immediate on trip start/end or stop completion)
+      // Sync to RTDB with 10s throttle (immediate on trip start/end or stop completion)
       if (school?.id) {
         const nowMs = Date.now();
         const prevRtdb = lastRtdbWriteRef.current;
         const elapsedMs = nowMs - prevRtdb.time;
-        const movedMeters = prevRtdb.time > 0
-          ? haversineMeters(prevRtdb.lat, prevRtdb.lng, payload.latitude, payload.longitude)
-          : 9999;
+        const movedMeters =
+          prevRtdb.time > 0 && hasRealCoords && isValidCoordPair(prevRtdb.lat, prevRtdb.lng)
+            ? haversineMeters(prevRtdb.lat, prevRtdb.lng, payload.latitude, payload.longitude)
+            : 9999;
         const isCriticalStateChange =
           update.tripStatus === "started" ||
           update.tripStatus === "ended" ||
-          Array.isArray(update.completedStops);
+          Array.isArray(update.completedStops) ||
+          (hasRealCoords && !isValidCoordPair(prevRtdb.lat, prevRtdb.lng));
 
         if (isCriticalStateChange || elapsedMs >= 10_000 || (elapsedMs >= 4_000 && movedMeters >= 120)) {
           lastRtdbWriteRef.current = { time: nowMs, lat: payload.latitude, lng: payload.longitude };
-          void sbRtdbSet(`school_bus_locations/${school.id}/${selectedBus.id}`, payload).catch(() => {});
+          const rtdbPayload = {
+            ...payload,
+            lat: payload.latitude,
+            lng: payload.longitude,
+          };
+          // High-frequency live bus GPS syncs exclusively via Firebase RTDB (avoiding Supabase kv_documents egress)
           if (rtdb) {
-            set(dbRef(rtdb, `school_bus_locations/${school.id}/${selectedBus.id}`), payload).catch(() => {});
+            set(dbRef(rtdb, `school_bus_locations/${school.id}/${selectedBus.id}`), rtdbPayload).catch(() => {});
+            set(dbRef(rtdb, `schools/${school.id}/bus_live_locations/${selectedBus.id}`), rtdbPayload).catch(() => {});
           }
         }
       }
@@ -511,9 +705,285 @@ export const DriverTripConsole: React.FC<Props> = ({
     }
   };
 
-  // Start Trip Handler
-  const handleStartTrip = () => {
+  const clearBrowserGpsWatches = () => {
+    if (watchIdRef.current !== null) {
+      try {
+        navigator.geolocation.clearWatch(watchIdRef.current);
+      } catch {}
+      watchIdRef.current = null;
+    }
+    if (fallbackWatchIdRef.current !== null) {
+      try {
+        navigator.geolocation.clearWatch(fallbackWatchIdRef.current);
+      } catch {}
+      fallbackWatchIdRef.current = null;
+    }
+  };
+
+  const applyIncomingGpsPosition = (
+    pos: GeolocationPosition,
+    opts?: { isCoarse?: boolean; forceBroadcast?: boolean }
+  ) => {
+    const { latitude, longitude, speed, accuracy, heading } = pos.coords;
+    if (!isValidCoordPair(latitude, longitude)) return;
+
+    const nowMs = Date.now();
+    const accMeters = Math.max(1, Math.round(Number(accuracy) || (opts?.isCoarse ? 150 : 12)));
+    const prevBest = bestFixRef.current;
+    // Never overwrite a fresh high-accuracy satellite fix with a coarser network fix
+    if (
+      opts?.isCoarse &&
+      prevBest &&
+      !prevBest.isCoarse &&
+      nowMs - prevBest.time < 15_000 &&
+      prevBest.accuracy < accMeters
+    ) {
+      return;
+    }
+
+    bestFixRef.current = {
+      lat: latitude,
+      lng: longitude,
+      accuracy: accMeters,
+      time: nowMs,
+      isCoarse: Boolean(opts?.isCoarse),
+    };
+    coordsRef.current = { lat: latitude, lng: longitude };
+    setCoords({ lat: latitude, lng: longitude });
+    setGpsAccuracy(accMeters);
+    setGpsError(null);
+    setGpsState(opts?.isCoarse ? "network_fallback" : "active");
+
+    let kmh = speed !== null && speed >= 0 ? Math.round(speed * 3.6) : 0;
+
+    if (lastCoordsRef.current && isTripActiveRef.current) {
+      const dt = (nowMs - lastCoordsRef.current.time) / 1000;
+      const stepKm =
+        haversineMeters(
+          lastCoordsRef.current.lat,
+          lastCoordsRef.current.lng,
+          latitude,
+          longitude
+        ) / 1000;
+
+      if (stepKm > 0.005 && stepKm < 2) {
+        setDistanceKm((prev) => Number((prev + stepKm).toFixed(2)));
+        if (kmh === 0 && dt > 0) {
+          kmh = Math.round(stepKm / (dt / 3600));
+        }
+      }
+    }
+
+    lastCoordsRef.current = { lat: latitude, lng: longitude, time: nowMs };
+    const safeKmh = kmh > 120 ? 0 : kmh;
+    setCurrentSpeed(safeKmh);
+
+    if (opts?.forceBroadcast || isTripActiveRef.current) {
+      broadcastLocation({
+        latitude,
+        longitude,
+        speed: safeKmh,
+        heading: heading || 0,
+        accuracy: accMeters,
+        tripStatus: "started",
+      });
+    }
+  };
+
+  const describeGeoPermissionError = (err: GeolocationPositionError | any): string => {
+    const rawMsg = String(err?.message || "");
+    if (err?.code === 1 || /denied|permissions policy/i.test(rawMsg)) {
+      if (isEmbeddedIframe || /permissions policy/i.test(rawMsg)) {
+        return "Preview frame ne GPS block kiya hai. Chrome me 'Open Fullscreen' dabayein ya browser location allow karein.";
+      }
+      return "Location permission band hai. Chrome address bar me lock icon par click karke Location Allow karein.";
+    }
+    if (err?.code === 2) {
+      return "Phone GPS / Network location unavailable hai. Mobile Location (GPS) ON karein.";
+    }
+    if (err?.code === 3) {
+      return "GPS signal weak hone se timeout hua — Network location se retry kiya ja raha hai.";
+    }
+    return rawMsg || "GPS Signal Weak — Refresh Location dabayein.";
+  };
+
+  // One-shot fast coarse + high-accuracy dual lookup (resolves in ~1-2s on mobile Chrome)
+  const requestQuickLocationFix = (opts?: { activateTrip?: boolean; showToast?: boolean }) => {
     if (!navigator.geolocation) {
+      setGpsState("error");
+      setGpsError("Is browser me GPS geolocation supported nahi hai.");
+      if (opts?.showToast) toast.error("Device me GPS available nahi hai.");
+      return;
+    }
+
+    if (!coordsRef.current) {
+      setGpsState("searching");
+    }
+
+    let gotFix = false;
+    let toastShown = false;
+    let failureCount = 0;
+
+    const onSuccess = (pos: GeolocationPosition, isCoarse: boolean) => {
+      gotFix = true;
+      if (opts?.activateTrip) {
+        isTripActiveRef.current = true;
+        setIsTripActive(true);
+      }
+      applyIncomingGpsPosition(pos, {
+        isCoarse,
+        forceBroadcast: Boolean(opts?.activateTrip || isTripActiveRef.current),
+      });
+      if (opts?.showToast && !toastShown) {
+        toastShown = true;
+        toast.success(
+          `Live GPS (${pos.coords.latitude.toFixed(4)}, ${pos.coords.longitude.toFixed(4)}) update ho gaya!`
+        );
+      }
+    };
+
+    const onFailure = (err: GeolocationPositionError) => {
+      failureCount += 1;
+      const isDenied = err?.code === 1 || /denied|permissions policy/i.test(err?.message || "");
+      if (isDenied) {
+        setGpsState("denied");
+        const msg = describeGeoPermissionError(err);
+        setGpsError(msg);
+        if (opts?.showToast && !toastShown) {
+          toastShown = true;
+          toast.error(msg);
+        }
+        return;
+      }
+      if (!gotFix && failureCount >= 2 && !coordsRef.current) {
+        setGpsState("error");
+        const msg = describeGeoPermissionError(err);
+        setGpsError(msg);
+        if (opts?.showToast && !toastShown) {
+          toastShown = true;
+          toast.error(msg);
+        }
+      }
+    };
+
+    try {
+      // 1) Fast Wi-Fi/Cell-Tower fix so user immediately sees their real city/road
+      navigator.geolocation.getCurrentPosition(
+        (pos) => onSuccess(pos, true),
+        onFailure,
+        { enableHighAccuracy: false, maximumAge: 60_000, timeout: 8_000 }
+      );
+      // 2) Precision GPS satellite fix in parallel
+      navigator.geolocation.getCurrentPosition(
+        (pos) => onSuccess(pos, false),
+        onFailure,
+        { enableHighAccuracy: true, maximumAge: 5_000, timeout: 15_000 }
+      );
+    } catch {}
+  };
+
+  // Continuous GPS watch with automatic low-accuracy network fallback on timeout
+  const startBrowserGpsWatch = (opts?: { skipQuickFix?: boolean }) => {
+    if (!navigator.geolocation) return;
+    clearBrowserGpsWatches();
+    if (!coordsRef.current) {
+      setGpsState("searching");
+    }
+
+    if (!opts?.skipQuickFix) {
+      requestQuickLocationFix({ activateTrip: false, showToast: false });
+    }
+
+    const startNetworkFallbackWatch = () => {
+      if (fallbackWatchIdRef.current !== null || !navigator.geolocation) return;
+      try {
+        fallbackWatchIdRef.current = navigator.geolocation.watchPosition(
+          (pos) => applyIncomingGpsPosition(pos, { isCoarse: true, forceBroadcast: true }),
+          (err) => {
+            if (err?.code === 1) {
+              setGpsState("denied");
+              setGpsError(describeGeoPermissionError(err));
+            }
+          },
+          { enableHighAccuracy: false, maximumAge: 15_000, timeout: 20_000 }
+        );
+      } catch {}
+    };
+
+    try {
+      watchIdRef.current = navigator.geolocation.watchPosition(
+        (pos) => applyIncomingGpsPosition(pos, { isCoarse: false, forceBroadcast: true }),
+        (err) => {
+          console.warn("[DriverTripConsole] GPS Watch warning:", err);
+          if (getNativeAndroidBridge()?.isBusGpsServiceRunning?.()) return;
+          if (err?.code === 1) {
+            setGpsState("denied");
+            setGpsError(describeGeoPermissionError(err));
+          } else {
+            // Timeout or signal unavailable -> activate continuous network/cell fallback instead of stalling
+            startNetworkFallbackWatch();
+            if (!coordsRef.current) {
+              setGpsError(describeGeoPermissionError(err));
+            }
+          }
+        },
+        {
+          enableHighAccuracy: true,
+          maximumAge: 2_000,
+          timeout: 15_000,
+        }
+      );
+    } catch {}
+  };
+
+  // Pre-warm driver's real location on mount + cleanup watches on unmount
+  useEffect(() => {
+    if (!navigator.geolocation) return;
+    if (!coordsRef.current) {
+      requestQuickLocationFix({ activateTrip: false, showToast: false });
+    }
+    return () => {
+      clearBrowserGpsWatches();
+    };
+  }, []);
+
+  // Restore saved active trip and ALWAYS resume live GPS watch after page reload
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem(storageKey);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (parsed.tripStatus === "started") {
+          setIsTripActive(true);
+          isTripActiveRef.current = true;
+          setTripType(parsed.tripType || "morning_pickup");
+          const savedLat = Number(parsed.latitude);
+          const savedLng = Number(parsed.longitude);
+          const isPoisonedOldDefault =
+            isSyntheticGurgaonDefault(savedLat, savedLng) && parsed.gpsFixed !== true;
+          if (isValidCoordPair(savedLat, savedLng) && !isPoisonedOldDefault) {
+            coordsRef.current = { lat: savedLat, lng: savedLng };
+            setCoords({ lat: savedLat, lng: savedLng });
+          } else {
+            coordsRef.current = null;
+            setCoords(null);
+          }
+          if (parsed.completedStops) {
+            setCompletedStops(parsed.completedStops);
+          }
+          if (!getNativeAndroidBridge()?.isBusGpsServiceRunning?.()) {
+            startBrowserGpsWatch();
+          }
+        }
+      }
+    } catch {}
+  }, [storageKey]);
+
+  // Start Trip Handler
+  const handleStartTrip = async () => {
+    const bridge = getNativeAndroidBridge();
+    if (!navigator.geolocation && !bridge?.startNativeBusGps) {
+      setGpsState("error");
       setGpsError("GPS is not supported on this device.");
       toast.error("आपके मोबाइल में GPS उपलब्ध नहीं है।");
       return;
@@ -521,80 +991,64 @@ export const DriverTripConsole: React.FC<Props> = ({
 
     setGpsError(null);
     setIsTripActive(true);
+    isTripActiveRef.current = true;
     setTripDuration(0);
     setDistanceKm(0);
     setCompletedStops([]);
+    completedStopsRef.current = [];
+    autoCompletedStopsRef.current.clear();
     notifiedProximityRef.current.clear();
 
-    speakNotification("यात्रा शुरू", `${selectedBus.busNumber} की लाइव लोकेशन शुरू हो चुकी है।`);
+    speakNotification("यात्रा शुरू", `${selectedBus.busNumber} की लाइव लोकेशन और ऑटो स्टॉप डिटेक्शन शुरू हो चुकी है।`);
 
-    // High accuracy watchPosition
-    watchIdRef.current = navigator.geolocation.watchPosition(
-      (pos) => {
-        const { latitude, longitude, speed, accuracy, heading } = pos.coords;
-        setCoords({ lat: latitude, lng: longitude });
-        setGpsAccuracy(Math.round(accuracy));
+    // Start Native Android Background Foreground GPS Service if running inside APK
+    if (bridge?.startNativeBusGps) {
+      try {
+        let authToken = "";
+        try {
+          await ensureFirebaseAuthSession();
+          authToken = (await auth?.currentUser?.getIdToken?.()) || "";
+        } catch {}
 
-        // Speed conversion (m/s to km/h)
-        let kmh = speed !== null && speed >= 0 ? Math.round(speed * 3.6) : 0;
-
-        // Odometer distance approximation
-        if (lastCoordsRef.current) {
-          const dt = (Date.now() - lastCoordsRef.current.time) / 1000;
-          const R = 6371; // km
-          const dLat = ((latitude - lastCoordsRef.current.lat) * Math.PI) / 180;
-          const dLng = ((longitude - lastCoordsRef.current.lng) * Math.PI) / 180;
-          const a =
-            Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-            Math.cos((lastCoordsRef.current.lat * Math.PI) / 180) *
-              Math.cos((latitude * Math.PI) / 180) *
-              Math.sin(dLng / 2) *
-              Math.sin(dLng / 2);
-          const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-          const stepKm = R * c;
-
-          if (stepKm > 0.005 && stepKm < 2) {
-            setDistanceKm((prev) => Number((prev + stepKm).toFixed(2)));
-            if (kmh === 0 && dt > 0) {
-              kmh = Math.round((stepKm / (dt / 3600)));
-            }
-          }
-        }
-
-        lastCoordsRef.current = { lat: latitude, lng: longitude, time: Date.now() };
-        setCurrentSpeed(kmh > 120 ? 0 : kmh);
-
-        broadcastLocation({
-          latitude,
-          longitude,
-          speed: kmh,
-          heading: heading || 0,
-          accuracy,
-          tripStatus: "started",
-        });
-      },
-      (err) => {
-        console.warn("[DriverTripConsole] GPS Watch error:", err);
-        setGpsError(err.message || "GPS Signal Weak");
-      },
-      {
-        enableHighAccuracy: true,
-        maximumAge: 2000,
-        timeout: 10000,
+        const startedNative = bridge.startNativeBusGps(
+          JSON.stringify({
+            schoolId: school?.id || "",
+            busId: selectedBus.id,
+            busNumber: selectedBus.busNumber,
+            route: selectedBus.route,
+            driverName: selectedBus.driverName,
+            driverPhone: selectedBus.driverPhone,
+            tripType,
+            totalStops: selectedBus.stops.length,
+            currentStop: "Starting Depot",
+            completedStops: [],
+            authToken,
+          })
+        );
+        setNativeBgGpsActive(Boolean(startedNative));
+      } catch (nativeErr) {
+        console.warn("[DriverTripConsole] Native GPS start warning:", nativeErr);
       }
-    );
+    }
 
-    // Initial broadcast
+    // Start Browser continuous GPS + fast network fallback
+    if (navigator.geolocation) {
+      startBrowserGpsWatch();
+    }
+
+    // Initial trip-started broadcast (uses real coords if pre-warmed, or 0/0 pending until first fix arrives)
     broadcastLocation({ tripStatus: "started" });
   };
 
   // End Trip Handler
   const handleEndTrip = () => {
-    if (watchIdRef.current !== null) {
-      navigator.geolocation.clearWatch(watchIdRef.current);
-      watchIdRef.current = null;
-    }
+    clearBrowserGpsWatches();
+    try {
+      getNativeAndroidBridge()?.stopNativeBusGps?.();
+    } catch {}
+    setNativeBgGpsActive(false);
     setIsTripActive(false);
+    isTripActiveRef.current = false;
     setCurrentSpeed(0);
 
     speakNotification("यात्रा समाप्त", `${selectedBus.busNumber} की यात्रा सफलतापूर्वक समाप्त हो गई है।`);
@@ -612,6 +1066,9 @@ export const DriverTripConsole: React.FC<Props> = ({
       ? [...completedStops, stopName]
       : completedStops.filter((s) => s !== stopName);
     setCompletedStops(next);
+    try {
+      getNativeAndroidBridge()?.updateNativeBusGpsStops?.(stopName, JSON.stringify(next));
+    } catch {}
     broadcastLocation({ completedStops: next, currentStop: stopName });
     if (isNowDone && coords && school?.id) {
       const routeObj = getLocalRoutes(school.id).find(
@@ -627,18 +1084,204 @@ export const DriverTripConsole: React.FC<Props> = ({
     speakNotification("स्टॉप पार हुआ", `${stopName} चेकपॉइंट दर्ज किया गया।`);
   };
 
+  // Unified Route Checkpoints: merges Route Stops + Student Stop Locations so adding students builds stops automatically
+  const resolvedCheckpoints = React.useMemo(() => {
+    const sid = school?.id || "";
+    const routeObj = getLocalRoutes(sid).find(
+      (r) => r.busId === selectedBus.id || r.busNumber === selectedBus.busNumber
+    );
+    const busNumLow = (selectedBus.busNumber || "").toLowerCase();
+    const busRouteLow = (selectedBus.route || "").toLowerCase();
+
+    const busStudentPins = studentHomePins.filter((p) => {
+      const pRoute = (p.busRoute || "").trim().toLowerCase();
+      const pBusNum = (p.busNumber || "").trim().toLowerCase();
+      if (!pRoute && !pBusNum) return true;
+      if (fleetBuses.length <= 1) return true;
+      if (pBusNum && busNumLow && (busNumLow.includes(pBusNum) || pBusNum.includes(busNumLow))) {
+        return true;
+      }
+      if (
+        pRoute &&
+        (busRouteLow.includes(pRoute) ||
+          pRoute.includes(busRouteLow) ||
+          busNumLow.includes(pRoute) ||
+          pRoute.includes(busNumLow))
+      ) {
+        return true;
+      }
+      return false;
+    });
+
+    interface ResolvedCp {
+      stopName: string;
+      lat: number | null;
+      lng: number | null;
+      pickupTime?: string;
+      dropTime?: string;
+      studentNames: string[];
+      distanceMeters: number | null;
+      source: "route" | "student" | "unpinned";
+    }
+
+    const list: ResolvedCp[] = [];
+    const seenStopLow = new Set<string>();
+
+    selectedBus.stops.forEach((rawName) => {
+      const stopName = String(rawName || "").trim();
+      if (!stopName) return;
+      const stopLow = stopName.toLowerCase();
+      seenStopLow.add(stopLow);
+
+      const rStop = routeObj?.stops?.find(
+        (s) => s.stopName.trim().toLowerCase() === stopLow
+      );
+      const matchingPins = busStudentPins.filter(
+        (p) => (p.busStop || "").trim().toLowerCase() === stopLow
+      );
+      const hasRouteCoords =
+        rStop && isValidCoordPair(rStop.lat, rStop.lng);
+      const lat = hasRouteCoords
+        ? Number(rStop.lat)
+        : matchingPins[0]
+          ? Number(matchingPins[0].homeLat)
+          : null;
+      const lng = hasRouteCoords
+        ? Number(rStop.lng)
+        : matchingPins[0]
+          ? Number(matchingPins[0].homeLng)
+          : null;
+
+      const distM =
+        coords && isValidCoordPair(lat, lng)
+          ? haversineMeters(coords.lat, coords.lng, Number(lat), Number(lng))
+          : null;
+
+      list.push({
+        stopName,
+        lat,
+        lng,
+        pickupTime: rStop?.pickupTime,
+        dropTime: rStop?.dropTime,
+        studentNames: matchingPins.map((p) => p.studentName),
+        distanceMeters: distM,
+        source: hasRouteCoords ? "route" : matchingPins[0] ? "student" : "unpinned",
+      });
+    });
+
+    // Also include Student Locations that weren't in selectedBus.stops yet (grouped by busStop or student stop)
+    const extraGroups = new Map<string, { stopName: string; pins: StudentHomePin[] }>();
+    busStudentPins.forEach((p) => {
+      const label = (p.busStop || "").trim() || `${p.studentName} Stop`;
+      const key = label.toLowerCase();
+      if (seenStopLow.has(key)) return;
+      const existing = extraGroups.get(key);
+      if (existing) {
+        existing.pins.push(p);
+      } else {
+        extraGroups.set(key, { stopName: label, pins: [p] });
+      }
+    });
+
+    extraGroups.forEach((grp) => {
+      const first = grp.pins[0];
+      const lat = Number(first.homeLat);
+      const lng = Number(first.homeLng);
+      const distM =
+        coords && isValidCoordPair(lat, lng)
+          ? haversineMeters(coords.lat, coords.lng, lat, lng)
+          : null;
+      const insertIdx = list.findIndex((c) =>
+        /school|campus|gate|विद्यालय/i.test(c.stopName)
+      );
+      const item: ResolvedCp = {
+        stopName: grp.stopName,
+        lat,
+        lng,
+        studentNames: grp.pins.map((p) => p.studentName),
+        distanceMeters: distM,
+        source: "student",
+      };
+      if (insertIdx >= 0) {
+        list.splice(insertIdx, 0, item);
+      } else {
+        list.push(item);
+      }
+    });
+
+    return list;
+  }, [
+    school?.id,
+    selectedBus.id,
+    selectedBus.busNumber,
+    selectedBus.route,
+    selectedBus.stops,
+    studentHomePins,
+    fleetBuses.length,
+    coords,
+    routesVersion,
+  ]);
+
+  // AUTOMATIC STOP PASSING ENGINE: Detects when live bus GPS enters 160m of any Stop / Student Stop Pin
+  useEffect(() => {
+    if (!isTripActive || !coords) return;
+    const STOP_ARRIVAL_RADIUS_M = 160;
+    const currentSet = new Set(
+      completedStopsRef.current.map((s) => s.trim().toLowerCase())
+    );
+
+    const newlyPassed = resolvedCheckpoints.filter((cp) => {
+      const key = cp.stopName.trim().toLowerCase();
+      if (currentSet.has(key) || autoCompletedStopsRef.current.has(key)) return false;
+      if (!isValidCoordPair(cp.lat, cp.lng) || cp.distanceMeters === null) return false;
+      return cp.distanceMeters <= STOP_ARRIVAL_RADIUS_M;
+    });
+
+    if (newlyPassed.length === 0) return;
+
+    const nextStops = [...completedStopsRef.current];
+    newlyPassed.forEach((cp) => {
+      autoCompletedStopsRef.current.add(cp.stopName.trim().toLowerCase());
+      if (!nextStops.includes(cp.stopName)) {
+        nextStops.push(cp.stopName);
+      }
+    });
+
+    const latestStop = newlyPassed[newlyPassed.length - 1].stopName;
+    completedStopsRef.current = nextStops;
+    setCompletedStops(nextStops);
+
+    try {
+      getNativeAndroidBridge()?.updateNativeBusGpsStops?.(
+        latestStop,
+        JSON.stringify(nextStops)
+      );
+    } catch {}
+
+    broadcastLocation({
+      completedStops: nextStops,
+      currentStop: latestStop,
+      totalStops: Math.max(selectedBus.stops.length, resolvedCheckpoints.length),
+    });
+
+    speakNotification(
+      "स्टॉप पार हुआ",
+      `${latestStop} पर बस पहुँच गई है — स्टॉप ऑटो अपडेट हो गया।`
+    );
+    toast.success(`🚌 Auto Stop Passed: ${latestStop}`);
+  }, [isTripActive, coords?.lat, coords?.lng, resolvedCheckpoints]);
+
   // Build route overlay & nearest home overlays for Driver's Live Map
   const driverRouteOverlay = React.useMemo<MapRouteOverlay[]>(() => {
     const sid = school?.id || "";
     const routeObj = getLocalRoutes(sid).find(
       (r) => r.busId === selectedBus.id || r.busNumber === selectedBus.busNumber
     );
-    if (!routeObj) return [];
     const completedSet = new Set(completedStops.map((s) => s.trim().toLowerCase()));
-    const stopsWithCoords = routeObj.stops
-      .filter((s) => Number.isFinite(Number(s.lat)) && Number.isFinite(Number(s.lng)))
-      .map((s) => ({
-        id: s.id,
+    const stopsWithCoords = resolvedCheckpoints
+      .filter((s) => isValidCoordPair(s.lat, s.lng))
+      .map((s, idx) => ({
+        id: `cp_${idx}_${s.stopName}`,
         stopName: s.stopName,
         pickupTime: s.pickupTime,
         dropTime: s.dropTime,
@@ -652,16 +1295,16 @@ export const DriverTripConsole: React.FC<Props> = ({
         busId: selectedBus.id,
         busNumber: selectedBus.busNumber,
         routeName: selectedBus.route,
-        color: routeObj.routeColor || "#10b981",
+        color: routeObj?.routeColor || "#10b981",
         stops: stopsWithCoords,
       },
     ];
-  }, [school?.id, selectedBus.id, selectedBus.busNumber, selectedBus.route, completedStops]);
+  }, [school?.id, selectedBus.id, selectedBus.busNumber, selectedBus.route, completedStops, resolvedCheckpoints]);
 
   const driverHomePinOverlays = React.useMemo<MapHomePinOverlay[]>(() => {
     return nearestHomes.map((h) => ({
       id: h.studentId,
-      label: h.studentName.split(" ")[0],
+      label: h.busStop ? `${h.studentName.split(" ")[0]} (${h.busStop})` : h.studentName.split(" ")[0],
       sublabel: h.studentName,
       lat: h.homeLat,
       lng: h.homeLng,
@@ -680,480 +1323,713 @@ export const DriverTripConsole: React.FC<Props> = ({
     return `${m}m ${s}s`;
   };
 
+  // SVG 240-degree speedometer arc calculations (radius 86, circumference ~540.35, 240deg sweep = 360.23)
+  const speedRatio = Math.min(1, Math.max(0, currentSpeed / 100));
+  const totalCheckpoints = resolvedCheckpoints.length || selectedBus.stops.length;
+  const nextPendingStop =
+    resolvedCheckpoints.find((cp) => !completedStops.includes(cp.stopName)) || null;
+  const gpsStatusLabel =
+    gpsState === "denied"
+      ? "Blocked"
+      : gpsAccuracy !== null
+        ? `±${gpsAccuracy}m`
+        : gpsState === "searching"
+          ? "Locating..."
+          : "Standby";
+
+  const rawPrincipalPhone = String(school?.principalPhone || "").trim();
+  const principalHelpline =
+    rawPrincipalPhone && (isDemo || rawPrincipalPhone !== "9811023450")
+      ? rawPrincipalPhone
+      : "";
+
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans select-none pb-12">
-      {/* Top Header */}
-      <header className="sticky top-0 z-30 bg-slate-900/95 backdrop-blur-md border-b border-slate-800 px-4 py-3.5 flex items-center justify-between">
-        <div className="flex items-center gap-3">
+    <div className="min-h-screen bg-[#070B12] text-slate-100 flex flex-col select-none pb-10">
+      {/* Compact Single-Row Cockpit Top Bar (56px, zero wrapping, zero overflow) */}
+      <header className="sticky top-0 z-30 h-14 bg-[#070B12]/92 backdrop-blur-xl border-b border-white/[0.08] px-3 sm:px-6 flex items-center justify-between gap-2">
+        <div className="flex items-center gap-2.5 min-w-0">
           {onBack && (
             <button
+              type="button"
               onClick={onBack}
-              className="p-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 transition-colors"
+              className="min-w-[40px] min-h-[40px] rounded-xl bg-white/[0.06] hover:bg-white/[0.12] border border-white/[0.08] text-slate-200 flex items-center justify-center transition-colors shrink-0 cursor-pointer"
+              aria-label="Back"
             >
               <ArrowLeft size={18} />
             </button>
           )}
-          <div>
-            <div className="flex items-center gap-2">
-              <span className="p-1 rounded-md bg-amber-500/20 text-amber-400">
-                <Bus size={18} />
-              </span>
-              <h1 className="text-base font-black tracking-wide text-white">
-                Driver GPS Dashboard
-              </h1>
-              {standaloneMode && (
-                <span className="px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 text-[10px] font-bold">
-                  Driver Only
-                </span>
-              )}
-            </div>
-            <p className="text-[11px] text-slate-400">
-              {school?.name || "School Bus Fleet"} {school?.code ? `(#${school.code})` : ""} • GPS Live Streaming
-            </p>
+          <div className="w-9 h-9 rounded-xl bg-amber-500/15 border border-amber-400/30 text-amber-400 flex items-center justify-center shrink-0">
+            <Bus size={18} />
+          </div>
+          <div className="min-w-0">
+            <h1 className="text-sm sm:text-base font-bold tracking-tight text-white whitespace-nowrap truncate">
+              Driver Console
+            </h1>
           </div>
         </div>
 
-        {/* Live Pulse Indicator + Guide + Optional Logout */}
-        <div className="flex items-center gap-2 shrink-0">
-          {isTripActive ? (
-            <span className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-emerald-500/20 text-emerald-400 border border-emerald-500/40 text-xs font-bold animate-pulse">
-              <Radio size={14} className="animate-spin" /> LIVE GPS
-            </span>
-          ) : (
-            <span className="px-2.5 py-1 rounded-full bg-slate-800 text-slate-400 border border-slate-700 text-xs font-semibold">
-              Idle in Depot
+        <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
+          {isTripActive && (
+            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-emerald-500/15 border border-emerald-400/30 text-emerald-300 text-[11px] font-semibold whitespace-nowrap">
+              <Radio size={12} className="text-emerald-400 shrink-0" />
+              <span>LIVE</span>
             </span>
           )}
-          <LanguageToggleButton tone="current" compact />
-          <ScreenInfoGuideButton portal="driver" screenKey="driver_console" tone="current" />
+          <LanguageToggleButton tone="black" compact />
+          <ScreenInfoGuideButton portal="driver" screenKey="driver_console" tone="black" />
           {onLogout && (
             <button
               type="button"
               onClick={onLogout}
-              className="px-2.5 py-1.5 rounded-xl bg-rose-500/15 hover:bg-rose-500/25 border border-rose-500/30 text-rose-300 text-xs font-bold flex items-center gap-1 cursor-pointer transition"
-              title="Driver Dashboard se Logout karein"
+              className="min-h-[36px] px-2.5 sm:px-3 py-1.5 rounded-xl bg-rose-500/15 hover:bg-rose-500/25 border border-rose-400/30 text-rose-300 text-xs font-semibold flex items-center gap-1.5 cursor-pointer transition-colors whitespace-nowrap shrink-0"
+              title="Logout"
+              aria-label="Logout"
             >
-              <LogOut size={13} /> Logout
+              <LogOut size={14} className="shrink-0" />
+              <span className="hidden sm:inline">Logout</span>
             </button>
           )}
         </div>
       </header>
 
-      {/* Main Content */}
-      <main className="p-4 max-w-xl mx-auto w-full space-y-4">
-        {/* Bus Selector */}
-        <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 shadow-xl">
-          <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">
-            वाहन व रूट चुनें (Select Bus & Route):
-          </label>
-          {fleetBuses.length === 0 && (
-            <div className="mb-3 p-3 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-200 text-xs">
-              Abhi is school me koi bus add nahi hui hai. School Admin se <strong>Bus Radar → Add Bus &amp; Driver</strong> me bus add karne ko kahein.
-            </div>
-          )}
-          <select
-            value={selectedBusId}
-            disabled={isTripActive || fleetBuses.length === 0}
-            onChange={(e) => setSelectedBusId(e.target.value)}
-            className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-sm font-semibold text-slate-100 focus:outline-none focus:border-indigo-500 disabled:opacity-60"
-          >
-            {fleetBuses.map((b) => (
-              <option key={b.id} value={b.id}>
-                {b.busNumber} — {b.driverName}
-              </option>
-            ))}
-          </select>
-
-          {/* Route Description */}
-          <div className="mt-3 flex items-start gap-2 text-xs text-slate-400 bg-slate-950/60 p-2.5 rounded-xl border border-slate-800/80">
-            <MapPin size={16} className="text-indigo-400 shrink-0 mt-0.5" />
-            <span>{selectedBus.route}</span>
-          </div>
-
-          {/* Trip Type Selector */}
-          <div className="mt-3 grid grid-cols-2 gap-2">
-            <button
-              type="button"
-              disabled={isTripActive}
-              onClick={() => setTripType("morning_pickup")}
-              className={`py-2 px-3 rounded-xl text-xs font-bold border transition-all ${
-                tripType === "morning_pickup"
-                  ? "bg-amber-500/20 border-amber-500/50 text-amber-300 shadow-sm"
-                  : "bg-slate-950 border-slate-800 text-slate-400 hover:text-slate-200"
-              }`}
-            >
-              🌅 सुबह पिकअप (Morning)
-            </button>
-            <button
-              type="button"
-              disabled={isTripActive}
-              onClick={() => setTripType("afternoon_drop")}
-              className={`py-2 px-3 rounded-xl text-xs font-bold border transition-all ${
-                tripType === "afternoon_drop"
-                  ? "bg-indigo-500/20 border-indigo-500/50 text-indigo-300 shadow-sm"
-                  : "bg-slate-950 border-slate-800 text-slate-400 hover:text-slate-200"
-              }`}
-            >
-              🌇 दोपहर ड्रॉप (Afternoon)
-            </button>
-          </div>
-        </div>
-
-        {/* Speedometer & Live Telemetry HUD */}
-        <div className="bg-gradient-to-br from-slate-900 to-slate-950 border border-slate-800 rounded-3xl p-6 shadow-2xl relative overflow-hidden text-center">
-          <div className="absolute top-3 left-4 text-xs font-mono text-slate-400 flex items-center gap-1.5">
-            <Gauge size={14} className="text-amber-400" />
-            <span>SPEEDOMETER</span>
-          </div>
-
-          <div className="absolute top-3 right-4 text-xs font-mono text-slate-400 flex items-center gap-1.5">
-            <Clock size={14} className="text-cyan-400" />
-            <span className="tabular-nums font-bold text-white">{formatTripTime(tripDuration)}</span>
-          </div>
-
-          {/* Large Speed Display */}
-          <div className="my-6">
-            <span className="text-7xl font-black font-mono tracking-tight text-white drop-shadow-[0_0_25px_rgba(251,191,36,0.25)]">
-              {currentSpeed}
+      {/* Main Cockpit Container */}
+      <main className="w-full max-w-6xl mx-auto px-3 sm:px-6 pt-4 space-y-4">
+        {/* Clean Unboxed Fleet Context Strip */}
+        <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1 px-1 text-xs text-slate-400">
+          <div className="flex items-center gap-2 min-w-0 flex-wrap">
+            <span className="font-semibold text-slate-200 truncate">
+              {school?.name || "School Bus Fleet"}
             </span>
-            <span className="text-sm font-bold text-amber-400 block mt-1 uppercase tracking-widest">
-              KM / HOUR
-            </span>
-          </div>
-
-          {/* Metrics Row */}
-          <div className="grid grid-cols-3 gap-2 pt-4 border-t border-slate-800/80 text-center">
-            <div className="bg-slate-950/70 p-2.5 rounded-2xl border border-slate-800">
-              <span className="text-[10px] text-slate-400 block font-semibold">कुल दूरी (Trip)</span>
-              <span className="text-sm font-bold text-slate-100 font-mono tabular-nums">{distanceKm} km</span>
-            </div>
-            <div className="bg-slate-950/70 p-2.5 rounded-2xl border border-slate-800">
-              <span className="text-[10px] text-slate-400 block font-semibold">GPS सटीकता</span>
-              <span className="text-sm font-bold text-emerald-400 font-mono tabular-nums">
-                {gpsAccuracy !== null ? `±${gpsAccuracy}m` : "Checking..."}
-              </span>
-            </div>
-            <div className="bg-slate-950/70 p-2.5 rounded-2xl border border-slate-800">
-              <span className="text-[10px] text-slate-400 block font-semibold">स्टॉप्स पूरे</span>
-              <span className="text-sm font-bold text-indigo-400 font-mono tabular-nums">
-                {completedStops.length} / {selectedBus.stops.length}
-              </span>
-            </div>
-          </div>
-
-          {gpsError && (
-            <div className="mt-4 p-2.5 rounded-xl bg-rose-500/10 border border-rose-500/30 text-rose-300 text-xs flex items-center justify-center gap-2">
-              <AlertTriangle size={15} />
-              <span>{gpsError}</span>
-            </div>
-          )}
-        </div>
-
-        {/* Screen Wake Lock Status Strip when Trip is Active */}
-        {isTripActive && (
-          <div
-            className={`p-3 rounded-2xl border text-xs flex items-center justify-between gap-2 ${
-              wakeLockActive
-                ? "bg-emerald-950/50 border-emerald-500/40 text-emerald-200"
-                : "bg-amber-950/40 border-amber-500/40 text-amber-200"
-            }`}
-          >
-            <div className="flex items-center gap-2">
-              <Smartphone size={16} className="shrink-0" />
-              <div>
-                <p className="font-black">
-                  {wakeLockActive
-                    ? "🔒 Screen Wake Lock: ON (GPS लगातार चलता रहेगा)"
-                    : "⚠️ Screen Awake रखें (GPS रुकने से बचाएं)"}
-                </p>
-                <p className="text-[11px] opacity-85">
-                  ट्रिप के दौरान पावर बटन से फोन लॉक न करें — सिर्फ ब्राइटनेस कम कर दें ताकि लाइव लोकेशन न रुके।
-                </p>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* Live Interactive Map Preview for Driver */}
-        <div className="bg-slate-900 border border-slate-800 rounded-2xl p-3.5 shadow-xl space-y-2.5">
-          <div className="flex items-center justify-between">
-            <h3 className="text-xs font-bold text-slate-300 uppercase tracking-wider flex items-center gap-1.5">
-              <MapIcon size={14} className="text-amber-400" />
-              Live Interactive Map (आपकी लाइव लोकेशन)
-            </h3>
-            <button
-              type="button"
-              onClick={() => setShowLiveMap((prev) => !prev)}
-              className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-[11px] font-bold text-slate-200 cursor-pointer"
-            >
-              {showLiveMap ? "Hide Map" : "Show Map"}
-            </button>
-          </div>
-          {showLiveMap && (
-            <LiveBusGoogleMap
-              buses={[
-                {
-                  busId: selectedBus.id,
-                  busNumber: selectedBus.busNumber,
-                  route: selectedBus.route,
-                  driverName: selectedBus.driverName,
-                  driverPhone: selectedBus.driverPhone,
-                  latitude: coords?.lat ?? 28.4595,
-                  longitude: coords?.lng ?? 77.0266,
-                  speed: currentSpeed,
-                  heading: 0,
-                  accuracy: gpsAccuracy ?? 10,
-                  tripStatus: isTripActive ? "started" : "idle",
-                  tripType,
-                  lastUpdated: new Date().toISOString(),
-                  currentStop: completedStops[completedStops.length - 1] || "Depot",
-                  totalStops: selectedBus.stops.length,
-                  completedStops,
-                },
-              ]}
-              selectedBusId={selectedBus.id}
-              routes={driverRouteOverlay}
-              homePins={driverHomePinOverlays}
-              heightClass="h-[280px] sm:h-[320px]"
-              schoolId={school?.id}
-              schoolCode={school?.code}
-              showOpenInMapsButton={true}
-            />
-          )}
-        </div>
-
-        {/* Big Start / End Trip Button */}
-        <div>
-          {!isTripActive ? (
-            <button
-              type="button"
-              onClick={handleStartTrip}
-              className="w-full py-4 px-6 rounded-2xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white font-black text-lg tracking-wide shadow-xl shadow-emerald-600/30 active:scale-[0.98] transition-all flex items-center justify-center gap-3 cursor-pointer"
-            >
-              <Play size={24} fill="currentColor" />
-              <span>यात्रा शुरू करें (START LIVE TRIP)</span>
-            </button>
-          ) : (
-            <button
-              type="button"
-              onClick={handleEndTrip}
-              className="w-full py-4 px-6 rounded-2xl bg-gradient-to-r from-rose-600 to-red-700 hover:from-rose-500 hover:to-red-600 text-white font-black text-lg tracking-wide shadow-xl shadow-rose-600/30 active:scale-[0.98] transition-all flex items-center justify-center gap-3 cursor-pointer"
-            >
-              <Square size={22} fill="currentColor" />
-              <span>यात्रा समाप्त करें (END TRIP)</span>
-            </button>
-          )}
-        </div>
-
-        {/* Shared Location Link Attachment + 1-Tap GPS (100% Free Backup) */}
-        <div className="bg-slate-900 border border-slate-800 rounded-2xl p-3.5 shadow-xl space-y-2.5">
-          <div className="flex items-center justify-between gap-2 flex-wrap">
-            <p className="text-[11px] font-bold text-slate-300 flex items-center gap-1.5">
-              <Link2 size={13} className="text-indigo-400" />
-              Google Maps Share Link Attach Karein (Optional Backup)
-            </p>
-            <button
-              type="button"
-              onClick={() => {
-                if (!navigator.geolocation) {
-                  toast.error("Device me GPS available nahi hai.");
-                  return;
-                }
-                navigator.geolocation.getCurrentPosition(
-                  (pos) => {
-                    const lat = Number(pos.coords.latitude.toFixed(6));
-                    const lng = Number(pos.coords.longitude.toFixed(6));
-                    setCoords({ lat, lng });
-                    setGpsAccuracy(Math.round(pos.coords.accuracy || 10));
-                    setIsTripActive(true);
-                    setGpsError(null);
-                    broadcastLocation({
-                      latitude: lat,
-                      longitude: lng,
-                      accuracy: pos.coords.accuracy || 10,
-                      tripStatus: "started",
-                    });
-                    toast.success(`Live GPS (${lat.toFixed(4)}, ${lng.toFixed(4)}) share ho gaya!`);
-                  },
-                  (err) => {
-                    toast.error(err?.message || "GPS permission allow karein ya Google Maps link paste karein.");
-                  },
-                  { enableHighAccuracy: true, timeout: 10000 }
-                );
-              }}
-              className="px-2.5 py-1 rounded-lg bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 border border-emerald-500/30 font-bold text-[11px] flex items-center gap-1 cursor-pointer"
-            >
-              <Navigation size={12} /> 1-Tap Live GPS
-            </button>
-          </div>
-          <div className="flex flex-col sm:flex-row gap-2">
-            <input
-              type="text"
-              value={manualLocationText}
-              onChange={(e) => setManualLocationText(e.target.value)}
-              placeholder="maps.app.goo.gl/... ya Google Maps link ya lat, lng"
-              className="flex-1 px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-xs text-white"
-            />
-            <button
-              type="button"
-              disabled={resolvingLocationLink}
-              onClick={async () => {
-                if (!manualLocationText.trim()) {
-                  toast.error("Google Maps share link ya 'lat, lng' daalein.");
-                  return;
-                }
-                setResolvingLocationLink(true);
-                try {
-                  const parsed = await resolveGoogleMapsLocationInput(manualLocationText);
-                  if (!parsed) {
-                    toast.error(
-                      "Link se coordinates nahi mil sake. Google Maps me pin drop karke link share karein ya '1-Tap Live GPS' dabayein."
-                    );
-                    return;
-                  }
-                  setCoords({ lat: parsed.lat, lng: parsed.lng });
-                  setIsTripActive(true);
-                  setGpsError(null);
-                  broadcastLocation({
-                    latitude: parsed.lat,
-                    longitude: parsed.lng,
-                    tripStatus: "started",
-                  });
-                  setManualLocationText("");
-                  toast.success(
-                    `Location (${parsed.lat.toFixed(4)}, ${parsed.lng.toFixed(4)}) attach aur live broadcast ho gayi!`
-                  );
-                } finally {
-                  setResolvingLocationLink(false);
-                }
-              }}
-              className="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 disabled:opacity-60 text-white font-bold text-xs cursor-pointer shrink-0"
-            >
-              {resolvingLocationLink ? "Resolving Link..." : "Attach & Share"}
-            </button>
-          </div>
-        </div>
-
-        {/* Nearest Student Homes Ahead (100% Free Live Proximity) */}
-        {studentHomePins.length > 0 && (
-          <div className="bg-slate-900 border border-emerald-500/30 rounded-2xl p-4 shadow-xl space-y-2.5">
-            <div className="flex items-center justify-between">
-              <h3 className="text-xs font-black text-emerald-300 uppercase tracking-wider flex items-center gap-1.5">
-                <Home size={14} /> आगे आने वाले बच्चों के घर (Live Distance)
-              </h3>
-              <span className="text-[10px] text-slate-400 font-mono">
-                {studentHomePins.length} Homes
-              </span>
-            </div>
-            {nearestHomes.length === 0 ? (
-              <p className="text-xs text-slate-400">
-                यात्रा शुरू करें या लोकेशन लिंक अटैच करें — बच्चों के घर की दूरी यहाँ लाइव दिखेगी।
-              </p>
-            ) : (
-              <div className="space-y-1.5">
-                {nearestHomes.map((h) => (
-                  <div
-                    key={h.studentId}
-                    className="p-2.5 rounded-xl bg-slate-950/80 border border-slate-800 flex items-center justify-between gap-2 text-xs"
-                  >
-                    <div className="min-w-0">
-                      <p className="font-bold text-white truncate">{h.studentName}</p>
-                      <span
-                        className={`inline-block mt-0.5 px-1.5 py-0.5 rounded border text-[10px] font-bold ${h.status.badgeClass}`}
-                      >
-                        {h.status.label}
-                      </span>
-                    </div>
-                    <span className="font-mono font-black text-sm text-amber-300 shrink-0">
-                      {formatDistanceShort(h.distanceMeters)}
-                    </span>
-                  </div>
-                ))}
-              </div>
+            <span aria-hidden="true" className="text-slate-600">·</span>
+            <span className="truncate">{selectedBus.driverName}</span>
+            {standaloneMode && (
+              <>
+                <span aria-hidden="true" className="text-slate-600">·</span>
+                <span className="text-emerald-400 font-medium">Driver Portal</span>
+              </>
             )}
           </div>
-        )}
-
-        {/* Checkpoint Stops Checklist */}
-        <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 shadow-xl">
-          <div className="flex items-center justify-between mb-3">
-            <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider flex items-center gap-2">
-              <MapPin size={14} className="text-amber-400" />
-              रूट स्टॉप्स चेकलिस्ट (Route Checkpoints):
-            </h3>
-            <span className="text-[11px] text-slate-400">टैप करके स्टॉप पार करें</span>
-          </div>
-
-          <div className="space-y-2">
-            {selectedBus.stops.map((stop, idx) => {
-              const isDone = completedStops.includes(stop);
-              return (
-                <div
-                  key={stop}
-                  onClick={() => isTripActive && toggleStop(stop)}
-                  className={`p-3 rounded-xl border flex items-center justify-between transition-all cursor-pointer ${
-                    isDone
-                      ? "bg-emerald-950/30 border-emerald-500/40 text-emerald-200"
-                      : "bg-slate-950/70 border-slate-800/80 text-slate-300 hover:border-slate-700"
-                  } ${!isTripActive ? "opacity-70 cursor-not-allowed" : ""}`}
-                >
-                  <div className="flex items-center gap-3">
-                    <span
-                      className={`w-6 h-6 rounded-full flex items-center justify-center text-xs font-black ${
-                        isDone ? "bg-emerald-500 text-slate-950" : "bg-slate-800 text-slate-400"
-                      }`}
-                    >
-                      {idx + 1}
-                    </span>
-                    <span className="text-sm font-semibold">{stop}</span>
-                  </div>
-
-                  <div>
-                    {isDone ? (
-                      <CheckCircle2 size={18} className="text-emerald-400" />
-                    ) : (
-                      <span className="text-[11px] text-slate-500 font-mono">Pending</span>
-                    )}
-                  </div>
-                </div>
-              );
-            })}
+          <div className="flex items-center gap-2 text-[11px] font-mono tabular-nums shrink-0">
+            <span className={isTripActive ? "text-emerald-400 font-semibold" : "text-slate-400"}>
+              {isTripActive ? "Broadcasting Live" : "Standby in Depot"}
+            </span>
           </div>
         </div>
 
-        {/* Principal Helpline (Never shows dummy 9811023450 for real schools) */}
-        {(() => {
-          const rawPrincipalPhone = String(school?.principalPhone || "").trim();
-          const principalHelpline =
-            rawPrincipalPhone && (isDemo || rawPrincipalPhone !== "9811023450")
-              ? rawPrincipalPhone
-              : "";
-          return (
-            <div className="p-4 rounded-2xl bg-slate-900/60 border border-slate-800 flex items-center justify-between gap-3">
+        {/* 12-Column Responsive Cockpit Split */}
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 lg:gap-6 items-start">
+          {/* LEFT COLUMN: Telemetry HUD, Primary Action, Bus & Shift Selection */}
+          <div className="lg:col-span-5 space-y-4">
+            {/* Precision Speedometer & Telemetry Card */}
+            <section className="bg-[#0E1420] border border-white/[0.08] rounded-3xl overflow-hidden shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
+              <div className="px-5 pt-4 flex items-center justify-between text-xs text-slate-400">
+                <span className="inline-flex items-center gap-1.5 font-semibold text-slate-300">
+                  <Gauge size={14} className="text-amber-400" />
+                  <span>Speedometer</span>
+                </span>
+                <span className="inline-flex items-center gap-1.5 font-mono tabular-nums text-slate-200 font-semibold">
+                  <Clock size={13} className="text-sky-400" />
+                  <span>{formatTripTime(tripDuration)}</span>
+                </span>
+              </div>
+
+              {/* 240-Degree Automotive Arc Speedometer */}
+              <div className="relative flex flex-col items-center justify-center pt-3 pb-4 px-4">
+                <svg
+                  viewBox="0 0 220 175"
+                  className="w-56 h-44 overflow-visible"
+                  aria-hidden="true"
+                >
+                  <defs>
+                    <linearGradient id="driverSpeedArc" x1="0%" y1="100%" x2="100%" y2="0%">
+                      <stop offset="0%" stopColor={isTripActive ? "#10B981" : "#F59E0B"} />
+                      <stop offset="100%" stopColor={currentSpeed > 60 ? "#EF4444" : "#38BDF8"} />
+                    </linearGradient>
+                  </defs>
+                  {/* Background 240-deg track (radius 82 -> circumference = 515.22, 240deg = 343.48) */}
+                  <circle
+                    cx="110"
+                    cy="110"
+                    r="82"
+                    fill="none"
+                    stroke="rgba(255,255,255,0.08)"
+                    strokeWidth="12"
+                    strokeLinecap="round"
+                    strokeDasharray="343.48 515.22"
+                    transform="rotate(150 110 110)"
+                  />
+                  {/* Active speed fill */}
+                  <circle
+                    cx="110"
+                    cy="110"
+                    r="82"
+                    fill="none"
+                    stroke="url(#driverSpeedArc)"
+                    strokeWidth="12"
+                    strokeLinecap="round"
+                    strokeDasharray={`${Math.max(4, speedRatio * 343.48)} 515.22`}
+                    transform="rotate(150 110 110)"
+                    className="transition-all duration-300 ease-out"
+                  />
+                  {/* Inner subtle calibration ring */}
+                  <circle
+                    cx="110"
+                    cy="110"
+                    r="66"
+                    fill="none"
+                    stroke="rgba(255,255,255,0.04)"
+                    strokeWidth="1"
+                    strokeDasharray="2 8"
+                  />
+                </svg>
+
+                {/* Centered Digital Speed Readout */}
+                <div className="absolute inset-0 flex flex-col items-center justify-center pt-4 pointer-events-none">
+                  <span className="text-6xl font-bold font-mono tabular-nums tracking-tight text-white leading-none">
+                    {currentSpeed}
+                  </span>
+                  <span className="text-[11px] font-semibold tracking-[0.2em] text-amber-400 mt-1.5">
+                    KM / H
+                  </span>
+                  <span className="text-[11px] text-slate-400 mt-2 max-w-[170px] truncate">
+                    {nextPendingStop ? `Next: ${nextPendingStop.stopName}` : "All stops completed"}
+                  </span>
+                </div>
+              </div>
+
+              {/* Single-Level Hairline Telemetry Strip (Zero nested bordered boxes) */}
+              <div className="border-t border-white/[0.07] grid grid-cols-3 divide-x divide-white/[0.07] bg-[#0B101A]">
+                <div className="py-3.5 px-2 text-center">
+                  <span className="text-[11px] text-slate-400 block">Trip Distance</span>
+                  <span className="text-sm font-bold text-white font-mono tabular-nums mt-0.5 block">
+                    {distanceKm} km
+                  </span>
+                </div>
+                <div className="py-3.5 px-2 text-center">
+                  <span className="text-[11px] text-slate-400 block">GPS Accuracy</span>
+                  <span
+                    className={`text-sm font-bold font-mono tabular-nums mt-0.5 block ${
+                      gpsState === "denied"
+                        ? "text-rose-400"
+                        : gpsAccuracy !== null
+                          ? "text-emerald-400"
+                          : "text-amber-300"
+                    }`}
+                  >
+                    {gpsStatusLabel}
+                  </span>
+                </div>
+                <div className="py-3.5 px-2 text-center">
+                  <span className="text-[11px] text-slate-400 block">Stops (Auto)</span>
+                  <span className="text-sm font-bold text-sky-400 font-mono tabular-nums mt-0.5 block">
+                    {completedStops.length} / {totalCheckpoints}
+                  </span>
+                </div>
+              </div>
+            </section>
+
+            {/* Primary Start / End Trip Action CTA */}
+            <div className="space-y-2.5">
+              {!isTripActive ? (
+                <button
+                  type="button"
+                  onClick={handleStartTrip}
+                  className="w-full min-h-[54px] py-3.5 px-6 rounded-2xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-base tracking-wide shadow-lg shadow-emerald-950/50 active:scale-[0.985] transition-all flex items-center justify-center gap-3 cursor-pointer"
+                >
+                  <Play size={20} fill="currentColor" />
+                  <span>यात्रा शुरू करें (Start Live Trip)</span>
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={handleEndTrip}
+                  className="w-full min-h-[54px] py-3.5 px-6 rounded-2xl bg-rose-600 hover:bg-rose-500 text-white font-bold text-base tracking-wide shadow-lg shadow-rose-950/50 active:scale-[0.985] transition-all flex items-center justify-center gap-3 cursor-pointer"
+                >
+                  <Square size={18} fill="currentColor" />
+                  <span>यात्रा समाप्त करें (End Trip)</span>
+                </button>
+              )}
+
+              {isTripActive && (
+                <div
+                  className={`px-3.5 py-2.5 rounded-2xl border text-xs flex items-center gap-2.5 ${
+                    nativeBgGpsActive || wakeLockActive
+                      ? "bg-emerald-950/40 border-emerald-500/30 text-emerald-200"
+                      : "bg-amber-950/35 border-amber-500/30 text-amber-200"
+                  }`}
+                >
+                  {nativeBgGpsActive ? (
+                    <Satellite size={16} className="text-emerald-400 shrink-0" />
+                  ) : wakeLockActive ? (
+                    <ShieldCheck size={16} className="text-emerald-400 shrink-0" />
+                  ) : (
+                    <Smartphone size={16} className="text-amber-400 shrink-0" />
+                  )}
+                  <p className="text-[11px] leading-snug">
+                    {nativeBgGpsActive
+                      ? "Android Background GPS सक्रिय है — स्क्रीन लॉक या कॉल पर भी लाइव लोकेशन चलती रहेगी।"
+                      : wakeLockActive
+                        ? "Screen Wake Lock सक्रिय है — कृपया ट्रिप के दौरान स्क्रीन लॉक न करें।"
+                        : "लाइव लोकेशन चालू रखने के लिए ट्रिप के समय स्क्रीन ऑन रखें।"}
+                  </p>
+                </div>
+              )}
+            </div>
+
+            {/* Vehicle & Shift Assignment Card */}
+            <section className="bg-[#0E1420] border border-white/[0.08] rounded-3xl p-4 sm:p-5 space-y-3.5">
+              <div className="flex items-center justify-between gap-2">
+                <label
+                  htmlFor="driver-bus-selector"
+                  className="text-xs font-semibold text-slate-300"
+                >
+                  वाहन व रूट चुनें (Bus &amp; Route)
+                </label>
+                {isTripActive && (
+                  <span className="text-[11px] text-slate-400">Locked during trip</span>
+                )}
+              </div>
+
+              {fleetBuses.length === 0 && (
+                <div className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-200 text-xs">
+                  Abhi is school me koi bus add nahi hui hai. School Admin se <strong>Bus Radar → Add Bus &amp; Driver</strong> me bus add karne ko kahein.
+                </div>
+              )}
+
+              <select
+                id="driver-bus-selector"
+                value={selectedBusId}
+                disabled={isTripActive || fleetBuses.length === 0}
+                onChange={(e) => setSelectedBusId(e.target.value)}
+                style={{ colorScheme: "dark" }}
+                className="w-full min-h-[46px] bg-[#070B12] border border-white/15 rounded-xl px-3.5 py-2.5 text-sm font-semibold text-white focus:outline-none focus:border-emerald-400/60 disabled:opacity-65 cursor-pointer"
+              >
+                {fleetBuses.map((b) => (
+                  <option key={b.id} value={b.id} className="bg-[#0B111E] text-white">
+                    {b.busNumber} — {b.driverName}
+                  </option>
+                ))}
+              </select>
+
+              <div className="flex items-start gap-2.5 text-xs text-slate-300 pt-1">
+                <Navigation size={15} className="text-sky-400 shrink-0 mt-0.5" />
+                <span className="leading-relaxed">{selectedBus.route}</span>
+              </div>
+
+              {/* Clean Segmented Shift Selector */}
+              <div className="grid grid-cols-2 gap-1.5 p-1 rounded-xl bg-[#070B12] border border-white/[0.07]">
+                <button
+                  type="button"
+                  disabled={isTripActive}
+                  onClick={() => setTripType("morning_pickup")}
+                  className={`min-h-[42px] py-2 px-3 rounded-lg text-xs font-semibold transition-all flex items-center justify-center gap-2 cursor-pointer disabled:cursor-not-allowed ${
+                    tripType === "morning_pickup"
+                      ? "bg-amber-500/15 border border-amber-400/35 text-amber-300"
+                      : "text-slate-400 hover:text-slate-200 border border-transparent"
+                  }`}
+                >
+                  <Sun size={15} className="shrink-0" />
+                  <span className="whitespace-nowrap">सुबह पिकअप</span>
+                </button>
+                <button
+                  type="button"
+                  disabled={isTripActive}
+                  onClick={() => setTripType("afternoon_drop")}
+                  className={`min-h-[42px] py-2 px-3 rounded-lg text-xs font-semibold transition-all flex items-center justify-center gap-2 cursor-pointer disabled:cursor-not-allowed ${
+                    tripType === "afternoon_drop"
+                      ? "bg-sky-500/15 border border-sky-400/35 text-sky-300"
+                      : "text-slate-400 hover:text-slate-200 border border-transparent"
+                  }`}
+                >
+                  <Sunset size={15} className="shrink-0" />
+                  <span className="whitespace-nowrap">दोपहर ड्रॉप</span>
+                </button>
+              </div>
+            </section>
+
+            {/* Principal Helpline */}
+            <div className="bg-[#0E1420] border border-white/[0.08] rounded-2xl p-4 flex items-center justify-between gap-3">
               <div className="flex items-center gap-3 min-w-0">
-                <div className="p-2.5 rounded-xl bg-amber-500/10 text-amber-400 shrink-0">
-                  <Phone size={18} />
+                <div className="w-10 h-10 rounded-xl bg-amber-500/10 border border-amber-400/20 text-amber-400 flex items-center justify-center shrink-0">
+                  <Phone size={17} />
                 </div>
                 <div className="min-w-0">
-                  <p className="text-xs font-bold text-white">Principal Helpline</p>
-                  <p className="text-[11px] text-slate-400 truncate">
+                  <p className="text-xs font-semibold text-white">Principal Helpline</p>
+                  <p className="text-[11px] text-slate-400 truncate font-mono tabular-nums">
                     {principalHelpline
-                      ? `प्रिंसिपल संपर्क: ${principalHelpline}`
-                      : "प्रिंसिपल नंबर सेट नहीं है (School Profile से जोड़ें)"}
+                      ? principalHelpline
+                      : "School Profile से नंबर जोड़ें"}
                   </p>
                 </div>
               </div>
               {principalHelpline && (
                 <a
                   href={`tel:${principalHelpline}`}
-                  className="px-3.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-white text-xs font-bold transition-colors shrink-0"
+                  className="min-h-[40px] px-4 py-2 rounded-xl bg-white/[0.08] hover:bg-white/[0.14] border border-white/10 text-white text-xs font-semibold flex items-center justify-center transition-colors shrink-0 whitespace-nowrap"
                 >
                   कॉल करें
                 </a>
               )}
             </div>
-          );
-        })()}
+          </div>
+
+          {/* RIGHT COLUMN: Live Map Viewport, Student Stop Proximity, Auto Route Checkpoints */}
+          <div className="lg:col-span-7 space-y-4">
+            {/* Live Interactive Map Card */}
+            <section className="bg-[#0E1420] border border-white/[0.08] rounded-3xl overflow-hidden">
+              <div className="px-4 py-3 border-b border-white/[0.07] flex items-center justify-between gap-2 flex-wrap">
+                <div className="min-w-0">
+                  <h2 className="text-xs font-semibold text-white flex items-center gap-1.5">
+                    <MapIcon size={14} className="text-amber-400 shrink-0" />
+                    <span>Live Route Map</span>
+                  </h2>
+                  <p className="text-[11px] font-mono tabular-nums text-slate-400 mt-0.5 truncate">
+                    {coords
+                      ? `${coords.lat.toFixed(5)}, ${coords.lng.toFixed(5)} · ${
+                          gpsState === "network_fallback" ? "Network GPS" : "Satellite GPS"
+                        } · ±${gpsAccuracy ?? 15}m`
+                      : gpsState === "denied"
+                        ? "Location permission required"
+                        : "Acquiring live GPS fix..."}
+                  </p>
+                </div>
+
+                <div className="flex items-center gap-1.5 shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      requestQuickLocationFix({
+                        activateTrip: isTripActive,
+                        showToast: true,
+                      });
+                      if (isTripActive) startBrowserGpsWatch({ skipQuickFix: true });
+                    }}
+                    className="min-h-[36px] px-3 py-1.5 rounded-xl bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-400/30 text-xs font-semibold text-emerald-300 flex items-center gap-1.5 cursor-pointer transition-colors whitespace-nowrap"
+                    title="Fetch live GPS coordinates"
+                  >
+                    <RefreshCw size={12} className={gpsState === "searching" ? "animate-spin" : ""} />
+                    <span>लोकेशन अपडेट</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setShowLiveMap((prev) => !prev)}
+                    className="min-h-[36px] px-3 py-1.5 rounded-xl bg-white/[0.06] hover:bg-white/[0.12] border border-white/[0.08] text-xs font-semibold text-slate-200 cursor-pointer transition-colors whitespace-nowrap"
+                  >
+                    {showLiveMap ? "Hide Map" : "Show Map"}
+                  </button>
+                </div>
+              </div>
+
+              {/* Single Consolidated Actionable GPS Notice (shown only when location isn't locked yet) */}
+              {!coords && (gpsState === "denied" || gpsError) && (
+                <div className="m-3 p-3.5 rounded-2xl bg-rose-950/40 border border-rose-500/35 text-xs text-rose-200 space-y-2.5">
+                  <div className="flex items-start gap-2.5">
+                    <AlertTriangle size={16} className="text-rose-400 shrink-0 mt-0.5" />
+                    <div className="space-y-0.5">
+                      <p className="font-semibold text-rose-100">
+                        लाइव GPS लोकेशन अभी प्राप्त नहीं हुई
+                      </p>
+                      <p className="text-[11px] text-rose-200/85 leading-relaxed">
+                        {gpsError ||
+                          "Browser ne location permission block ki hai. GPS Allow karein ya Fullscreen tab me kholein."}
+                      </p>
+                    </div>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        requestQuickLocationFix({ activateTrip: isTripActive, showToast: true });
+                        if (isTripActive) startBrowserGpsWatch({ skipQuickFix: true });
+                      }}
+                      className="min-h-[36px] px-3.5 py-1.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-semibold flex items-center gap-1.5 cursor-pointer transition-colors"
+                    >
+                      <Navigation size={13} /> Retry GPS
+                    </button>
+                    {isEmbeddedIframe && (
+                      <a
+                        href={standaloneDriverTabUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="min-h-[36px] px-3.5 py-1.5 rounded-xl bg-amber-400 hover:bg-amber-300 text-slate-950 text-xs font-bold flex items-center gap-1.5 transition-colors"
+                      >
+                        <ExternalLink size={13} /> Open Fullscreen GPS
+                      </a>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {showLiveMap && (
+                <div className="p-2.5 pt-2">
+                  <LiveBusGoogleMap
+                    buses={[
+                      {
+                        busId: selectedBus.id,
+                        busNumber: selectedBus.busNumber,
+                        route: selectedBus.route,
+                        driverName: selectedBus.driverName,
+                        driverPhone: selectedBus.driverPhone,
+                        latitude: coords?.lat ?? 0,
+                        longitude: coords?.lng ?? 0,
+                        speed: currentSpeed,
+                        heading: 0,
+                        accuracy: gpsAccuracy ?? 0,
+                        tripStatus: isTripActive ? "started" : "idle",
+                        tripType,
+                        lastUpdated: new Date().toISOString(),
+                        currentStop: completedStops[completedStops.length - 1] || "Depot",
+                        totalStops: selectedBus.stops.length,
+                        completedStops,
+                      },
+                    ]}
+                    selectedBusId={selectedBus.id}
+                    routes={driverRouteOverlay}
+                    homePins={driverHomePinOverlays}
+                    schoolPin={
+                      isValidCoordPair(school?.latitude, school?.longitude)
+                        ? {
+                            name: school?.name || "School Campus",
+                            lat: Number(school.latitude),
+                            lng: Number(school.longitude),
+                          }
+                        : null
+                    }
+                    heightClass="h-[280px] sm:h-[330px]"
+                    schoolId={school?.id}
+                    schoolCode={school?.code}
+                    showOpenInMapsButton={true}
+                  />
+                </div>
+              )}
+            </section>
+
+            {/* Collapsed Optional Manual Backup Link */}
+            <div className="bg-[#0E1420] border border-white/[0.08] rounded-2xl px-4 py-3 space-y-2.5">
+              <button
+                type="button"
+                onClick={() => setShowBackupLinkBox((prev) => !prev)}
+                className="w-full flex items-center justify-between gap-2 text-xs text-slate-300 hover:text-white cursor-pointer"
+              >
+                <span className="flex items-center gap-2 font-medium min-w-0 truncate">
+                  <Link2 size={14} className="text-sky-400 shrink-0" />
+                  <span className="truncate">
+                    Optional Backup: Manual Google Maps Link
+                  </span>
+                </span>
+                <span className="flex items-center gap-2 text-[11px] text-emerald-400 font-medium shrink-0">
+                  <span>Auto GPS Active</span>
+                  {showBackupLinkBox || gpsState === "denied" ? (
+                    <ChevronUp size={15} className="text-slate-400" />
+                  ) : (
+                    <ChevronDown size={15} className="text-slate-400" />
+                  )}
+                </span>
+              </button>
+
+              {(showBackupLinkBox || gpsState === "denied") && (
+                <div className="flex flex-col sm:flex-row gap-2 pt-1 border-t border-white/[0.06]">
+                  <input
+                    type="text"
+                    value={manualLocationText}
+                    onChange={(e) => setManualLocationText(e.target.value)}
+                    placeholder="maps.app.goo.gl/... ya Google Maps link ya lat, lng"
+                    className="flex-1 min-h-[42px] px-3.5 py-2 rounded-xl bg-[#070B12] border border-white/15 text-xs text-white placeholder:text-slate-500 focus:outline-none focus:border-sky-400/60"
+                  />
+                  <button
+                    type="button"
+                    disabled={resolvingLocationLink}
+                    onClick={async () => {
+                      if (!manualLocationText.trim()) {
+                        toast.error("Google Maps share link ya 'lat, lng' daalein.");
+                        return;
+                      }
+                      setResolvingLocationLink(true);
+                      try {
+                        const parsed = await resolveGoogleMapsLocationInput(manualLocationText);
+                        if (!parsed) {
+                          toast.error(
+                            "Link se coordinates nahi mil sake. Google Maps me pin drop karke link share karein."
+                          );
+                          return;
+                        }
+                        coordsRef.current = { lat: parsed.lat, lng: parsed.lng };
+                        setCoords({ lat: parsed.lat, lng: parsed.lng });
+                        setIsTripActive(true);
+                        isTripActiveRef.current = true;
+                        setGpsError(null);
+                        broadcastLocation({
+                          latitude: parsed.lat,
+                          longitude: parsed.lng,
+                          tripStatus: "started",
+                        });
+                        setManualLocationText("");
+                        toast.success(
+                          `Location (${parsed.lat.toFixed(4)}, ${parsed.lng.toFixed(4)}) attach aur live broadcast ho gayi!`
+                        );
+                      } finally {
+                        setResolvingLocationLink(false);
+                      }
+                    }}
+                    className="min-h-[42px] px-4 py-2 rounded-xl bg-sky-600 hover:bg-sky-500 disabled:opacity-60 text-white font-semibold text-xs cursor-pointer shrink-0 transition-colors"
+                  >
+                    {resolvingLocationLink ? "Resolving..." : "Attach & Share"}
+                  </button>
+                </div>
+              )}
+            </div>
+
+            {/* Automatic Route Checkpoints Timeline */}
+            <section className="bg-[#0E1420] border border-white/[0.08] rounded-3xl p-4 sm:p-5">
+              <div className="flex items-center justify-between gap-2 pb-3 border-b border-white/[0.07]">
+                <h2 className="text-xs font-semibold text-white flex items-center gap-2">
+                  <MapPin size={14} className="text-amber-400" />
+                  <span>Route Checkpoints</span>
+                </h2>
+                <span className="text-[11px] text-emerald-400 font-medium">
+                  Auto-GPS (160m)
+                </span>
+              </div>
+
+              <div className="mt-3 relative">
+                {resolvedCheckpoints.map((cp, idx) => {
+                  const isDone = completedStops.includes(cp.stopName);
+                  const hasGeo = isValidCoordPair(cp.lat, cp.lng);
+                  const isLast = idx === resolvedCheckpoints.length - 1;
+                  const isNext = !isDone && nextPendingStop?.stopName === cp.stopName;
+
+                  return (
+                    <div
+                      key={`${cp.stopName}_${idx}`}
+                      onClick={() => isTripActive && toggleStop(cp.stopName)}
+                      title={
+                        isTripActive
+                          ? "Auto detect hota hai — zaroorat par tap karke bhi mark kar sakte hain"
+                          : "Trip start hone par auto-detect chalu hoga"
+                      }
+                      className={`relative flex items-center justify-between gap-3 py-3 px-2 rounded-xl transition-colors ${
+                        isTripActive
+                          ? "cursor-pointer hover:bg-white/[0.04]"
+                          : "cursor-default"
+                      }`}
+                    >
+                      {/* Vertical Connecting Rail */}
+                      {!isLast && (
+                        <span
+                          aria-hidden="true"
+                          className={`absolute left-[19px] top-9 bottom-[-12px] w-px ${
+                            isDone ? "bg-emerald-500/50" : "bg-white/10"
+                          }`}
+                        />
+                      )}
+
+                      <div className="flex items-center gap-3.5 min-w-0">
+                        <span
+                          className={`relative z-10 w-6 h-6 rounded-full flex items-center justify-center text-[11px] font-bold font-mono shrink-0 border ${
+                            isDone
+                              ? "bg-emerald-500 border-emerald-400 text-slate-950"
+                              : isNext
+                                ? "bg-amber-500/20 border-amber-400 text-amber-300"
+                                : "bg-[#070B12] border-white/15 text-slate-400"
+                          }`}
+                        >
+                          {isDone ? <CheckCircle2 size={14} /> : idx + 1}
+                        </span>
+
+                        <div className="min-w-0">
+                          <p
+                            className={`text-sm font-semibold truncate ${
+                              isDone ? "text-emerald-300" : "text-white"
+                            }`}
+                          >
+                            {cp.stopName}
+                          </p>
+                          <p className="text-[11px] text-slate-400 truncate flex items-center gap-1.5 mt-0.5">
+                            {cp.studentNames.length > 0 ? (
+                              <>
+                                <Users size={11} className="text-slate-500 shrink-0" />
+                                <span className="truncate">
+                                  {cp.studentNames.slice(0, 2).join(", ")}
+                                  {cp.studentNames.length > 2 ? ` +${cp.studentNames.length - 2}` : ""}
+                                </span>
+                              </>
+                            ) : hasGeo ? (
+                              <span>Stop GPS linked</span>
+                            ) : (
+                              <span className="text-amber-400/85">Location pending</span>
+                            )}
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="text-right shrink-0 flex items-center gap-2.5">
+                        {!isDone && cp.distanceMeters !== null && (
+                          <span className="text-xs font-mono tabular-nums font-semibold text-amber-300">
+                            {formatDistanceShort(cp.distanceMeters)}
+                          </span>
+                        )}
+                        {isDone ? (
+                          <span className="text-[11px] font-semibold text-emerald-400">
+                            Passed
+                          </span>
+                        ) : (
+                          <span className="text-[11px] font-mono text-slate-500">
+                            {hasGeo ? "Auto" : "Manual"}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </section>
+
+            {/* Nearest Student Homes Ahead (Clean Hairline List) */}
+            {studentHomePins.length > 0 && (
+              <section className="bg-[#0E1420] border border-white/[0.08] rounded-3xl p-4 sm:p-5">
+                <div className="flex items-center justify-between gap-2 pb-3 border-b border-white/[0.07]">
+                  <h2 className="text-xs font-semibold text-white flex items-center gap-2">
+                    <Home size={14} className="text-emerald-400" />
+                    <span>Upcoming Student Stops</span>
+                  </h2>
+                  <span className="text-[11px] text-slate-400 font-mono tabular-nums">
+                    {studentHomePins.length} Locations
+                  </span>
+                </div>
+
+                {nearestHomes.length === 0 ? (
+                  <p className="text-xs text-slate-400 pt-3">
+                    यात्रा शुरू होते ही बच्चों के स्टॉप की लाइव दूरी यहाँ दिखेगी।
+                  </p>
+                ) : (
+                  <div className="divide-y divide-white/[0.06] mt-1">
+                    {nearestHomes.map((h) => (
+                      <div
+                        key={h.studentId}
+                        className="py-3 flex items-center justify-between gap-3 text-xs"
+                      >
+                        <div className="min-w-0">
+                          <p className="font-semibold text-white truncate">
+                            {h.studentName}
+                            {h.busStop && (
+                              <span className="text-slate-400 font-normal"> · {h.busStop}</span>
+                            )}
+                          </p>
+                          <p className="text-[11px] text-slate-400 mt-0.5 truncate">
+                            {h.status.label}
+                          </p>
+                        </div>
+                        <span className="font-mono tabular-nums font-bold text-sm text-amber-300 shrink-0">
+                          {formatDistanceShort(h.distanceMeters)}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </section>
+            )}
+          </div>
+        </div>
       </main>
     </div>
   );

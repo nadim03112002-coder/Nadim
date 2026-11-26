@@ -1,5 +1,6 @@
 // @ts-nocheck
 import React, { Suspense, useState, useEffect, useMemo, useRef } from "react";
+import { setErrorLoggerModule, setErrorLoggerContext } from "../../utils/errorLogger";
 import {
   GraduationCap,
   Calendar,
@@ -131,6 +132,7 @@ import {
   getStaffEmployees,
   saveFeeCallFollowUp,
   subscribeSchoolUpiProofs,
+  acknowledgeSchoolWelcomeLetter,
 } from "../../school-firebase";
 import { loadSchoolSettingBlob } from "../../utils/schoolCloudSync";
 import { getSessionMonthCodes } from "../../utils/reAdmissionUtils";
@@ -147,6 +149,7 @@ import { SchoolCommunityFeed } from "./SchoolCommunityFeed";
 import { SchoolClassChannelView } from "./SchoolClassChannelView";
 const NstaMessengerSuite = lazyWithRetry(loadNstaMessengerSuite, "NSTA Messenger");
 import { SchoolWelcomeModal } from "./SchoolWelcomeModal";
+import { StudentIdCardModal } from "./StudentIdCardModal";
 import { SchoolBirthdayModal } from "./SchoolBirthdayModal";
 import { NstaCallPortalHost } from "./NstaCallModal";
 import { ScreenInfoGuideButton } from "./ScreenInfoGuideButton";
@@ -200,7 +203,7 @@ import {
 } from "../../utils/schoolAttendanceSchedule";
 import { useBackHandler } from "../../utils/backNavigation";
 import { LanguageToggleButton } from "./LanguageToggleButton";
-import { StudentUpiPayUploadModal } from "./StudentUpiPayUploadModal";
+import { StudentUpiPayUploadModal, type FamilyPayChildOption } from "./StudentUpiPayUploadModal";
 import { pickLang, useAppLang } from "../../utils/appLang";
 import type { UpiPaymentProofRecord } from "../../school-types";
 
@@ -329,7 +332,13 @@ export const StudentSchoolPanel: React.FC<Props> = ({
     monthLabel: string;
     exactAmount: number;
     feeItem: any;
+    familyMembers?: FamilyPayChildOption[];
+    pendingProof?: UpiPaymentProofRecord | null;
+    rejectedProof?: UpiPaymentProofRecord | null;
+    initialMethod?: "choose" | "free" | "fast";
   } | null>(null);
+  const [preparingFamilyPay, setPreparingFamilyPay] = useState(false);
+  const [upiTimerNowMs, setUpiTimerNowMs] = useState(() => Date.now());
   const [advanceTab, setAdvanceTab] = useState<"classwork" | "academic" | "online_test" | "question_bank" | "videos">("classwork");
   const [classworkDateFilter, setClassworkDateFilter] = useState<string>("ALL");
   const [classworkSubjectFilter, setClassworkSubjectFilter] = useState<string>("ALL");
@@ -339,6 +348,25 @@ export const StudentSchoolPanel: React.FC<Props> = ({
     if (!schoolId) return;
     return subscribeSchoolUpiProofs(schoolId, setUpiProofs);
   }, [schoolId]);
+
+  const hasActivePendingUpiProof = useMemo(
+    () => upiProofs.some((p) => p.status === "PENDING"),
+    [upiProofs]
+  );
+
+  useEffect(() => {
+    if (!hasActivePendingUpiProof) return;
+    const id = setInterval(() => setUpiTimerNowMs(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [hasActivePendingUpiProof]);
+
+  const formatElapsedWait = (iso?: string): string => {
+    if (!iso) return "00:00";
+    const diffSec = Math.max(0, Math.floor((upiTimerNowMs - new Date(iso).getTime()) / 1000));
+    const mins = Math.floor(diffSec / 60);
+    const secs = diffSec % 60;
+    return `${String(mins).padStart(2, "0")}:${String(secs).padStart(2, "0")}`;
+  };
 
   useEffect(() => {
     if (typeof window !== "undefined") {
@@ -368,7 +396,14 @@ export const StudentSchoolPanel: React.FC<Props> = ({
 
   useEffect(() => {
     onTabChange?.(activeTab);
-  }, [activeTab, onTabChange]);
+    setErrorLoggerModule(`Student/Parent → ${activeTab}`);
+    setErrorLoggerContext({
+      schoolId: schoolId || null,
+      studentName: studentName || linkedStudent?.name || null,
+      className: linkedStudent?.className || classId || null,
+      userPhone: linkedStudent?.phone || linkedStudent?.fatherPhone || null,
+    });
+  }, [activeTab, onTabChange, schoolId, studentName, linkedStudent, classId]);
 
   const effectiveUid = useMemo(() => {
     if (uid) return uid;
@@ -457,7 +492,11 @@ export const StudentSchoolPanel: React.FC<Props> = ({
   };
 
   useEffect(() => {
-    if (!rtdb || !schoolId || !studentId) return;
+    const isSafeRtdbKey = (val: unknown): boolean => {
+      const s = String(val ?? "").trim();
+      return Boolean(s) && s !== "http" && s !== "https" && !/[.#$[\]/:\r\n]/.test(s);
+    };
+    if (!rtdb || !isSafeRtdbKey(schoolId) || !isSafeRtdbKey(studentId)) return;
     let homePin: { lat: number; lng: number; label: string } | null = null;
 
     const readCachedPin = () => {
@@ -506,29 +545,33 @@ export const StudentSchoolPanel: React.FC<Props> = ({
       });
     };
 
-    const unsubPin = onValue(
-      dbRef(rtdb, `schools/${schoolId}/student_home_pins/${studentId}`),
-      (snap) => {
-        if (snap.exists()) {
-          const val = snap.val();
-          if (Number.isFinite(Number(val?.homeLat)) && Number.isFinite(Number(val?.homeLng))) {
-            homePin = {
-              lat: Number(val.homeLat),
-              lng: Number(val.homeLng),
-              label: val.homeAddress || "आपके घर/स्टॉप",
-            };
+    let unsubPin: (() => void) | undefined;
+    let unsubLoc2: (() => void) | undefined;
+    try {
+      unsubPin = onValue(
+        dbRef(rtdb, `schools/${schoolId}/student_home_pins/${studentId}`),
+        (snap) => {
+          if (snap.exists()) {
+            const val = snap.val();
+            if (Number.isFinite(Number(val?.homeLat)) && Number.isFinite(Number(val?.homeLng))) {
+              homePin = {
+                lat: Number(val.homeLat),
+                lng: Number(val.homeLng),
+                label: val.homeAddress || "आपके घर/स्टॉप",
+              };
+            }
           }
         }
-      }
-    );
+      );
 
-    const unsubLoc2 = onValue(dbRef(rtdb, `school_bus_locations/${schoolId}`), (snap) => {
-      if (snap.exists()) evaluateBusMap(snap.val());
-    });
+      unsubLoc2 = onValue(dbRef(rtdb, `school_bus_locations/${schoolId}`), (snap) => {
+        if (snap.exists()) evaluateBusMap(snap.val());
+      });
+    } catch {}
 
     return () => {
-      unsubPin();
-      unsubLoc2();
+      if (typeof unsubPin === "function") unsubPin();
+      if (typeof unsubLoc2 === "function") unsubLoc2();
     };
   }, [schoolId, studentId]);
 
@@ -615,6 +658,7 @@ export const StudentSchoolPanel: React.FC<Props> = ({
   );
   const [showStudentSwitcherModal, setShowStudentSwitcherModal] = useState<boolean>(false);
   const [welcomeModalData, setWelcomeModalData] = useState<NstaWelcomeData | null>(null);
+  const [showStudentIdCardModal, setShowStudentIdCardModal] = useState<boolean>(false);
 
   useEffect(() => {
     const refreshMissed = () => setMissedSchoolCalls(getNativeMissedSchoolCalls());
@@ -648,6 +692,8 @@ export const StudentSchoolPanel: React.FC<Props> = ({
   const [showClassSyllabusModal, setShowClassSyllabusModal] = useState<boolean>(false);
   const [selectedSyllabusSubject, setSelectedSyllabusSubject] = useState<string | null>(null);
   const [selectedChapterNotes, setSelectedChapterNotes] = useState<{ title: string; subject: string; classLevel: string; content?: string } | null>(null);
+  const [acknowledgingWelcomeId, setAcknowledgingWelcomeId] = useState<string | null>(null);
+  const [acknowledgedStudentMap, setAcknowledgedStudentMap] = useState<Record<string, { acknowledgedAt: string; acknowledgedBy: string }>>({});
   const [lastFaceUpdate, setLastFaceUpdate] = useState<string | null>(() => {
     try {
       const stId = studentId || "student";
@@ -707,9 +753,39 @@ export const StudentSchoolPanel: React.FC<Props> = ({
         setWelcomeModalData(e.detail);
       }
     };
+    const handleAckEvent = (e: any) => {
+      const detail = e?.detail;
+      if (!detail || (detail.studentId && studentId && detail.studentId !== studentId)) return;
+      setWelcomeModalData((prev) =>
+        prev
+          ? {
+              ...prev,
+              acknowledgedAt: detail.acknowledgedAt,
+              acknowledgedBy: detail.acknowledgedBy,
+              acknowledgedRole: detail.acknowledgedRole,
+              activationHistory: detail.activationHistory || prev.activationHistory,
+            }
+          : prev
+      );
+      setLiveStudentData((prev: any) =>
+        prev
+          ? {
+              ...prev,
+              welcomeAcknowledgedAt: detail.acknowledgedAt,
+              welcomeAcknowledgedBy: detail.acknowledgedBy,
+              welcomeAcknowledgedRole: detail.acknowledgedRole,
+              activationHistory: detail.activationHistory || prev.activationHistory,
+            }
+          : prev
+      );
+    };
     window.addEventListener("nst-school-welcome-received", handleWelcomeEvent);
-    return () => window.removeEventListener("nst-school-welcome-received", handleWelcomeEvent);
-  }, []);
+    window.addEventListener("nst-school-welcome-acknowledged", handleAckEvent as EventListener);
+    return () => {
+      window.removeEventListener("nst-school-welcome-received", handleWelcomeEvent);
+      window.removeEventListener("nst-school-welcome-acknowledged", handleAckEvent as EventListener);
+    };
+  }, [studentId]);
 
 
 
@@ -1068,6 +1144,47 @@ export const StudentSchoolPanel: React.FC<Props> = ({
       ...(liveStudentData || {})
     };
   }, [currentStudent, enrichedData, liveStudentData]);
+
+  const schoolDisplayName = useMemo(() => {
+    // 1. Loaded school profile for THIS schoolId takes highest priority for multi-school accuracy
+    if (school?.name && school.name.trim() && school.name.trim().toLowerCase() !== "delhi public school" && school.name.trim() !== "School") {
+      return school.name.trim();
+    }
+
+    // 2. Explicit student record schoolName
+    const studentRecordSchoolName =
+      (activeStudent as any)?.schoolName ||
+      linkedStudent?.schoolName ||
+      (currentStudent as any)?.schoolName ||
+      enrichedData?.schoolName;
+
+    if (studentRecordSchoolName && studentRecordSchoolName.trim() && studentRecordSchoolName.trim().toLowerCase() !== "delhi public school") {
+      return studentRecordSchoolName.trim();
+    }
+
+    // 3. Logged-in session user schoolName ONLY if it matches this schoolId
+    try {
+      const rawUser = localStorage.getItem("nst_current_user") || localStorage.getItem("nsta_cached_user");
+      if (rawUser) {
+        const parsed = JSON.parse(rawUser);
+        if (
+          (!parsed?.schoolId || parsed.schoolId === schoolId) &&
+          parsed?.schoolName &&
+          typeof parsed.schoolName === "string" &&
+          parsed.schoolName.trim() &&
+          parsed.schoolName.trim().toLowerCase() !== "delhi public school"
+        ) {
+          return parsed.schoolName.trim();
+        }
+      }
+    } catch {}
+
+    // 4. Fallback to school?.name or student's school or Life Maker Public School
+    return (school?.name && school.name.trim()) || (studentRecordSchoolName && studentRecordSchoolName.trim()) || "Life Maker Public School";
+  }, [school?.name, schoolId, activeStudent, linkedStudent, currentStudent, enrichedData]);
+
+  const schoolInitials = (schoolDisplayName || "LM").slice(0, 2).toUpperCase();
+  const resolvedSchoolLogo = getSavedSchoolLogo(school?.logoUrl || (activeStudent as any)?.schoolLogo, schoolId);
 
   const activePhoto = studentPhoto || activeStudent.photoUrl || (activeStudent as any).photoURL || "";
 
@@ -1982,9 +2099,13 @@ export const StudentSchoolPanel: React.FC<Props> = ({
       fee: feeItem,
       payableAmount,
       monthLabel,
-      onSuccess: ({ receiptNo, fee: updatedFee }) => {
+      onSuccess: ({ receiptNo, fee: updatedFee, baseAmount, convenienceFee, totalPayable }) => {
         setPayingFeeKey(null);
-        toast.success(`✅ Fee jama ho gayi! Receipt: ${receiptNo}`);
+        const convText =
+          convenienceFee && convenienceFee > 0
+            ? ` (Fee ₹${Number(baseAmount || payableAmount).toLocaleString("en-IN")} + 5% ₹${convenienceFee.toLocaleString("en-IN")} = ₹${Number(totalPayable || 0).toLocaleString("en-IN")})`
+            : "";
+        toast.success(`✅ Fast Pay सफल${convText}! Receipt: ${receiptNo}`);
         if (updatedFee) {
           setLiveFees((prev) => {
             const next = prev.filter(
@@ -2467,6 +2588,7 @@ export const StudentSchoolPanel: React.FC<Props> = ({
           accountantSignatureUrl: school?.accountantSignatureUrl || "",
           accountantName: school?.accountantName || "",
           principalName: school?.principalName || "",
+          signatureRouting: school?.signatureRouting,
         },
       });
     } catch (err) {
@@ -2499,6 +2621,7 @@ export const StudentSchoolPanel: React.FC<Props> = ({
           accountantSignatureUrl: school?.accountantSignatureUrl || "",
           accountantName: school?.accountantName || "",
           principalName: school?.principalName || "",
+          signatureRouting: school?.signatureRouting,
         },
         isDueDemand: !isPaid,
       });
@@ -2821,48 +2944,81 @@ export const StudentSchoolPanel: React.FC<Props> = ({
     monthlyFee: activeStudent.monthlyFee ?? "",
     className: studentClassLabel,
     schoolName: school?.name || (activeStudent as any)?.schoolName || "",
+    verificationToken: activeStudent.verificationToken,
+    qrIssuedAt: activeStudent.qrIssuedAt,
+    qrExpiresAt: activeStudent.qrExpiresAt,
   });
 
-  const schoolDisplayName = useMemo(() => {
-    // 1. Loaded school profile for THIS schoolId takes highest priority for multi-school accuracy
-    if (school?.name && school.name.trim() && school.name.trim().toLowerCase() !== "delhi public school" && school.name.trim() !== "School") {
-      return school.name.trim();
-    }
+  const buildActiveWelcomeModalData = () => ({
+    studentId: activeStudent.id,
+    studentName: activeStudent.name,
+    admissionNo: activeStudent.admissionNo || "",
+    rollNo: activeStudent.rollNo || "01",
+    classId: activeStudent.classId,
+    className: formatClassLabel(studentClassLabel),
+    session: school?.session || activeStudent.sessionId || "2026-27",
+    schoolId,
+    schoolName: schoolDisplayName,
+    schoolLogo: resolvedSchoolLogo,
+    schoolAddress: school?.address,
+    schoolPhone: school?.phone || school?.mobile,
+    fatherName: activeStudent.fatherName,
+    mobile: activeStudent.phone,
+    principalName: school?.principalName,
+    principalSignatureUrl: school?.principalSignatureUrl,
+    verificationToken: activeStudent.verificationToken,
+    qrIssuedAt: activeStudent.qrIssuedAt,
+    qrExpiresAt: activeStudent.qrExpiresAt,
+    qrStatus: activeStudent.active === false ? "REVOKED" : "ACTIVE",
+    issuedAt: activeStudent.qrIssuedAt || activeStudent.createdAt || new Date().toISOString(),
+    acknowledgedAt:
+      acknowledgedStudentMap[activeStudent.id]?.acknowledgedAt ||
+      (activeStudent as any).welcomeAcknowledgedAt,
+    acknowledgedBy:
+      acknowledgedStudentMap[activeStudent.id]?.acknowledgedBy ||
+      (activeStudent as any).welcomeAcknowledgedBy,
+    acknowledgedRole: (activeStudent as any).welcomeAcknowledgedRole,
+    activationHistory: (activeStudent as any).activationHistory,
+  });
 
-    // 2. Explicit student record schoolName
-    const studentRecordSchoolName =
-      (activeStudent as any)?.schoolName ||
-      linkedStudent?.schoolName ||
-      (currentStudent as any)?.schoolName ||
-      enrichedData?.schoolName;
-
-    if (studentRecordSchoolName && studentRecordSchoolName.trim() && studentRecordSchoolName.trim().toLowerCase() !== "delhi public school") {
-      return studentRecordSchoolName.trim();
-    }
-
-    // 3. Logged-in session user schoolName ONLY if it matches this schoolId
+  const handleParentAcknowledgeWelcome = async () => {
+    if (!activeStudent?.id || !schoolId || acknowledgingWelcomeId) return;
+    setAcknowledgingWelcomeId(activeStudent.id);
     try {
-      const rawUser = localStorage.getItem("nst_current_user") || localStorage.getItem("nsta_cached_user");
-      if (rawUser) {
-        const parsed = JSON.parse(rawUser);
-        if (
-          (!parsed?.schoolId || parsed.schoolId === schoolId) &&
-          parsed?.schoolName &&
-          typeof parsed.schoolName === "string" &&
-          parsed.schoolName.trim() &&
-          parsed.schoolName.trim().toLowerCase() !== "delhi public school"
-        ) {
-          return parsed.schoolName.trim();
-        }
-      }
-    } catch {}
-
-    // 4. Fallback to school?.name or student's school or Life Maker Public School
-    return (school?.name && school.name.trim()) || (studentRecordSchoolName && studentRecordSchoolName.trim()) || "Life Maker Public School";
-  }, [school?.name, schoolId, activeStudent, linkedStudent, currentStudent, enrichedData]);
-
-  const schoolInitials = (schoolDisplayName || "LM").slice(0, 2).toUpperCase();
-  const resolvedSchoolLogo = getSavedSchoolLogo(school?.logoUrl || (activeStudent as any)?.schoolLogo, schoolId);
+      const ackActor = activeStudent.fatherName
+        ? `${activeStudent.fatherName} (Parent)`
+        : `${activeStudent.name || "Parent"} (Parent Portal)`;
+      const res = await acknowledgeSchoolWelcomeLetter({
+        schoolId,
+        studentId: activeStudent.id,
+        acknowledgedBy: ackActor,
+        acknowledgedRole: "PARENT",
+      });
+      setAcknowledgedStudentMap((prev) => ({
+        ...prev,
+        [activeStudent.id]: {
+          acknowledgedAt: res.acknowledgedAt,
+          acknowledgedBy: res.acknowledgedBy,
+        },
+      }));
+      setLiveStudentData((prev: any) =>
+        prev
+          ? {
+              ...prev,
+              welcomeAcknowledgedAt: res.acknowledgedAt,
+              welcomeAcknowledgedBy: res.acknowledgedBy,
+              welcomeAcknowledgedRole: res.acknowledgedRole,
+              activationHistory: res.activationHistory || prev.activationHistory,
+            }
+          : prev
+      );
+      toast.success("धन्यवाद! स्वागत पत्र एवं डिजिटल आईडी अभिभावक स्वीकृति दर्ज हो गई।");
+    } catch {
+      toast.error("स्वीकृति दर्ज करने में त्रुटि आई, कृपया पुनः प्रयास करें।");
+    } finally {
+      setAcknowledgingWelcomeId(null);
+    }
+  };
 
   const [birthdayModalData, setBirthdayModalData] = useState<NstaBirthdayData | null>(null);
 
@@ -3532,6 +3688,113 @@ export const StudentSchoolPanel: React.FC<Props> = ({
                         title="Dismiss"
                       >
                         <X className="w-4 h-4" />
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              );
+            })()}
+
+            {/* ── DIGITAL CAMPUS WELCOME ACKNOWLEDGEMENT & ID ONBOARDING CARD ── */}
+            {(() => {
+              const ackAt =
+                acknowledgedStudentMap[activeStudent.id]?.acknowledgedAt ||
+                (activeStudent as any)?.welcomeAcknowledgedAt;
+              const ackBy =
+                acknowledgedStudentMap[activeStudent.id]?.acknowledgedBy ||
+                (activeStudent as any)?.welcomeAcknowledgedBy;
+              const isBusy = acknowledgingWelcomeId === activeStudent.id;
+              const ackDateDisplay = ackAt
+                ? new Date(ackAt).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" })
+                : "";
+
+              return (
+                <div
+                  className={`rounded-2xl p-4 border shadow-xs ${
+                    ackAt
+                      ? studentTheme === "white"
+                        ? "bg-emerald-50 border-emerald-200"
+                        : "bg-emerald-950/35 border-emerald-500/35"
+                      : studentTheme === "white"
+                      ? "bg-amber-50 border-amber-300"
+                      : "bg-amber-950/35 border-amber-500/40"
+                  }`}
+                >
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                    <div className="flex items-start gap-3 min-w-0">
+                      <div
+                        className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 ${
+                          ackAt
+                            ? "bg-emerald-600 text-white"
+                            : "bg-amber-500 text-slate-950"
+                        }`}
+                      >
+                        {ackAt ? <CheckCircle2 className="w-5 h-5" /> : <FileText className="w-5 h-5" />}
+                      </div>
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <h3
+                            className={`text-xs sm:text-sm font-black ${
+                              studentTheme === "white" ? "text-slate-900" : "text-white"
+                            }`}
+                          >
+                            {ackAt
+                              ? "Official Welcome Letter Accepted (स्वीकृति दर्ज)"
+                              : "Official Welcome Letter • Parent Confirmation Pending"}
+                          </h3>
+                          <span
+                            className={`px-2 py-0.5 rounded-md text-[10px] font-black uppercase tracking-wide ${
+                              ackAt
+                                ? "bg-emerald-600 text-white"
+                                : "bg-amber-400 text-slate-950"
+                            }`}
+                          >
+                            {ackAt ? "Confirmed" : "Action Needed"}
+                          </span>
+                        </div>
+                        <p
+                          className={`text-[11px] mt-0.5 ${
+                            studentTheme === "white" ? "text-slate-700" : "text-slate-300"
+                          }`}
+                        >
+                          {ackAt
+                            ? `Accepted by ${ackBy || "Parent / Guardian"} on ${ackDateDisplay} • Digital ID & Attendance Active`
+                            : "विद्यालय परिवार में स्वागत है! कृपया आधिकारिक स्वागत पत्र व डिजिटल आईडी नियम पढ़कर Accept / Confirm करें।"}
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-2 flex-wrap shrink-0">
+                      {!ackAt && (
+                        <button
+                          type="button"
+                          disabled={isBusy}
+                          onClick={handleParentAcknowledgeWelcome}
+                          className="min-h-[44px] px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-black text-xs flex items-center gap-1.5 shadow transition cursor-pointer whitespace-nowrap disabled:opacity-60"
+                        >
+                          <CheckCircle2 className="w-4 h-4 shrink-0" />
+                          <span>{isBusy ? "Confirming..." : "Accept & Confirm Welcome"}</span>
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => setWelcomeModalData(buildActiveWelcomeModalData())}
+                        className="min-h-[44px] px-3.5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs flex items-center gap-1.5 shadow transition cursor-pointer whitespace-nowrap"
+                      >
+                        <FileText className="w-4 h-4 shrink-0" />
+                        <span>Welcome Letter PDF</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setActiveTab("idcard")}
+                        className={`min-h-[44px] px-3.5 py-2 rounded-xl font-bold text-xs flex items-center gap-1.5 border transition cursor-pointer whitespace-nowrap ${
+                          studentTheme === "white"
+                            ? "bg-white hover:bg-slate-50 text-slate-800 border-slate-300"
+                            : "bg-slate-800 hover:bg-slate-700 text-slate-100 border-slate-700"
+                        }`}
+                      >
+                        <QrCode className="w-4 h-4 shrink-0" />
+                        <span>Digital ID</span>
                       </button>
                     </div>
                   </div>
@@ -4330,6 +4593,185 @@ export const StudentSchoolPanel: React.FC<Props> = ({
                 </div>
               )}
 
+              {/* Combined Family Pay Banner (Shown when account has >1 linked child in this school) */}
+              {(() => {
+                const sameSchoolChildren = (Array.isArray(allLinkedStudents) ? allLinkedStudents : []).filter(
+                  (ls: any) => ls && (!ls.schoolId || ls.schoolId === schoolId)
+                );
+                const myPendingProofs = upiProofs.filter(
+                  (p) =>
+                    p.status === "PENDING" &&
+                    (p.studentId === activeStudent?.id ||
+                      (Array.isArray(p.familyAllocations) &&
+                        p.familyAllocations.some((m) => m.studentId === activeStudent?.id)))
+                );
+
+                const handleOpenFamilyCombinedPay = async () => {
+                  if (preparingFamilyPay || !schoolId) return;
+                  setPreparingFamilyPay(true);
+                  try {
+                    const monthCode = currentMonthStr();
+                    const monthDisp = new Date(`${monthCode}-01T00:00:00`).toLocaleDateString("en-IN", {
+                      month: "long",
+                      year: "numeric",
+                    });
+                    const [schoolStds, localStds, localF] = await Promise.all([
+                      getStudents(schoolId).catch(() => []),
+                      Promise.resolve(getLocalStudents(schoolId)),
+                      Promise.resolve(getLocalFees(schoolId)),
+                    ]);
+                    const stdPool = [...(schoolStds || []), ...(localStds || [])];
+
+                    const memberOptions: FamilyPayChildOption[] = await Promise.all(
+                      sameSchoolChildren.map(async (child: any) => {
+                        const cid = String(child.id || child.studentId || "");
+                        const matchedRec = stdPool.find(
+                          (s: any) =>
+                            s.id === cid ||
+                            (child.admissionNo && s.admissionNo === child.admissionNo)
+                        );
+                        const resolvedChild = { ...(matchedRec || {}), ...child, id: matchedRec?.id || cid };
+                        const remoteFees = await getStudentFees(schoolId, resolvedChild.id).catch(() => []);
+                        const feeList = remoteFees.length > 0
+                          ? remoteFees
+                          : localF.filter((f: any) => f.studentId === resolvedChild.id);
+
+                        const curMonthFee = feeList.find((f: any) => f.month === monthCode);
+                        const firstUnpaid = feeList.find(
+                          (f: any) =>
+                            !f.paid &&
+                            !f.isPreAdmission &&
+                            !f.isUpcoming &&
+                            Number(f.balanceDue ?? f.monthlyAmount ?? f.amount ?? 0) > 0
+                        );
+                        const targetFee = curMonthFee && !curMonthFee.paid ? curMonthFee : firstUnpaid || curMonthFee;
+                        const isFree =
+                          Boolean(resolvedChild.isFreeEducation) ||
+                          Number(resolvedChild.siblingDiscountPct || 0) >= 100;
+                        const isPaid = Boolean(targetFee?.paid);
+                        const rawDue = isFree
+                          ? 0
+                          : isPaid
+                          ? 0
+                          : Number(
+                              targetFee?.balanceDue ??
+                                targetFee?.monthlyAmount ??
+                                targetFee?.amount ??
+                                resolvedChild.monthlyFee ??
+                                0
+                            );
+                        const tMonth = targetFee?.month || monthCode;
+                        const tMonthLabel = /^\d{4}-\d{2}$/.test(tMonth)
+                          ? new Date(`${tMonth}-01T00:00:00`).toLocaleDateString("en-IN", {
+                              month: "long",
+                              year: "numeric",
+                            })
+                          : monthDisp;
+
+                        return {
+                          studentId: resolvedChild.id,
+                          studentName: resolvedChild.name || "Student",
+                          classId: resolvedChild.classId || "",
+                          className: resolvedChild.className || "",
+                          rollNo: resolvedChild.rollNo || "",
+                          month: tMonth,
+                          monthLabel: tMonthLabel,
+                          billedAmount: Math.max(0, Math.round(rawDue)),
+                          isFreeEducation: isFree,
+                          isAlreadyPaid: !isFree && isPaid,
+                        };
+                      })
+                    );
+
+                    const totalCombined = memberOptions.reduce(
+                      (s, m) => (m.isFreeEducation || m.isAlreadyPaid ? s : s + m.billedAmount),
+                      0
+                    );
+                    setUpiPayTarget({
+                      month: monthCode,
+                      monthLabel: `${monthDisp} (Family Combined)`,
+                      exactAmount: totalCombined,
+                      feeItem: null,
+                      familyMembers: memberOptions,
+                    });
+                  } catch {
+                    toast.error("परिवार के बच्चों का शुल्क लोड करने में समस्या आई।");
+                  } finally {
+                    setPreparingFamilyPay(false);
+                  }
+                };
+
+                return (
+                  <>
+                    {myPendingProofs.map((mp) => (
+                      <div
+                        key={`pending-timer-${mp.id}`}
+                        className="p-3.5 rounded-2xl bg-amber-500/15 border border-amber-500/40 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5"
+                      >
+                        <div className="flex items-start gap-2.5 min-w-0">
+                          <Clock className="w-4 h-4 text-amber-400 shrink-0 mt-0.5 animate-pulse" />
+                          <div className="min-w-0">
+                            <p className="text-xs font-extrabold text-amber-200">
+                              {pickLang(
+                                lang,
+                                `UPI पेमेंट सत्यापन प्रतीक्षारत · ₹${Number(mp.amount || 0).toLocaleString("en-IN")}`,
+                                `UPI Payment Verification Waiting · ₹${Number(mp.amount || 0).toLocaleString("en-IN")}`
+                              )}
+                            </p>
+                            <p className="text-[11px] text-amber-300/90 mt-0.5">
+                              UTR: <strong className="font-mono">{mp.utrNumber}</strong>
+                              {mp.paidTime ? ` · समय: ${mp.paidTime}` : ""} · स्कूल BharatPe जांच के बाद तुरंत रसीद मिलेगी।
+                            </p>
+                          </div>
+                        </div>
+                        <span className="self-start sm:self-center px-3 py-1 rounded-xl bg-amber-500 text-slate-950 font-mono text-xs font-black tabular-nums shrink-0">
+                          ⏱ {formatElapsedWait(mp.submittedAt)}
+                        </span>
+                      </div>
+                    ))}
+
+                    {sameSchoolChildren.length > 1 && (
+                      <div className="p-3.5 sm:p-4 rounded-2xl bg-gradient-to-r from-indigo-950/60 via-slate-900 to-emerald-950/50 border border-indigo-500/35 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                        <div className="flex items-start gap-3 min-w-0">
+                          <div className="w-10 h-10 rounded-xl bg-indigo-500/20 border border-indigo-400/30 text-indigo-300 flex items-center justify-center shrink-0">
+                            <Users className="w-5 h-5" />
+                          </div>
+                          <div className="min-w-0">
+                            <h4 className="text-xs sm:text-sm font-black text-white">
+                              {pickLang(
+                                lang,
+                                `परिवार के सभी ${sameSchoolChildren.length} बच्चों की फीस एक साथ जमा करें`,
+                                `Pay Combined Fee for All ${sameSchoolChildren.length} Children`
+                              )}
+                            </h4>
+                            <p className="text-[11px] text-slate-300 mt-0.5">
+                              {pickLang(
+                                lang,
+                                "ऐप खुद चेक कर लेगा कि किस बच्चे की फीस फ्री है और बाकी सबका 1 ही UPI पेमेंट व स्क्रीनशॉट से रसीद बना देगा।",
+                                "Automatically detects any Free child (₹0) and lets you pay all siblings with 1 UPI screenshot."
+                              )}
+                            </p>
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          disabled={preparingFamilyPay}
+                          onClick={() => void handleOpenFamilyCombinedPay()}
+                          className="px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-black inline-flex items-center justify-center gap-1.5 cursor-pointer shrink-0 shadow-md active:scale-95 disabled:opacity-50"
+                        >
+                          <QrCode className="w-4 h-4" />
+                          <span>
+                            {preparingFamilyPay
+                              ? pickLang(lang, "लोड हो रहा है...", "Loading...")
+                              : pickLang(lang, "सबकी फीस एक साथ जमा करें", "Pay All Children Together")}
+                          </span>
+                        </button>
+                      </div>
+                    )}
+                  </>
+                );
+              })()}
+
               {/* School Info Header + View Toggle + Single A4 Passbook Button */}
               <div className="p-3.5 sm:p-4 rounded-2xl bg-slate-900 border border-slate-800 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
                 <div className="flex items-center gap-3">
@@ -4456,7 +4898,12 @@ export const StudentSchoolPanel: React.FC<Props> = ({
                     const rNo = isPreAdmission ? "—" : (isPaid || paid > 0 ? (f.receiptNo || `DPS-26-${String(idx + 1).padStart(4, "0")}`) : "—");
                     const dtInfo = formatPaymentDateTime(f.paidDate || f.paymentDate);
                     const latestProof = upiProofs.find(
-                      (p) => p.studentId === activeStudent?.id && p.month === monthCode
+                      (p) =>
+                        (p.studentId === activeStudent?.id && p.month === monthCode) ||
+                        (Array.isArray(p.familyAllocations) &&
+                          p.familyAllocations.some(
+                            (m) => m.studentId === activeStudent?.id && m.month === monthCode
+                          ))
                     );
 
                     return (
@@ -4705,48 +5152,74 @@ export const StudentSchoolPanel: React.FC<Props> = ({
                             <div className="space-y-2">
                               {latestProof?.status === "PENDING" && (
                                 <div className="px-2.5 py-1.5 rounded-xl bg-amber-500/15 border border-amber-500/35 text-[11px] font-bold text-amber-300 flex items-center justify-between gap-2">
-                                  <span>{pickLang(lang, "UPI सत्यापन लंबित", "UPI Proof Pending")}</span>
-                                  <span className="font-mono text-[10px]">UTR: {latestProof.utrNumber}</span>
+                                  <span>
+                                    {pickLang(lang, "UPI सत्यापन लंबित", "UPI Proof Pending")} · ⏱ {formatElapsedWait(latestProof.submittedAt)}
+                                  </span>
+                                  <span className="font-mono text-[10px]">
+                                    {latestProof.utrNumber
+                                      ? `UTR: ${latestProof.utrNumber}`
+                                      : latestProof.paidTime || pickLang(lang, "स्क्रीनशॉट जाँच में", "Screenshot sent")}
+                                  </span>
                                 </div>
                               )}
                               {latestProof?.status === "REJECTED" && (
-                                <div className="px-2.5 py-1.5 rounded-xl bg-rose-500/15 border border-rose-500/35 text-[11px] font-semibold text-rose-300">
-                                  {pickLang(lang, "अस्वीकृत:", "Rejected:")} {latestProof.rejectionReason}
+                                <div className="px-2.5 py-2 rounded-xl bg-rose-500/15 border border-rose-500/40 text-[11px] text-rose-200 flex items-center justify-between gap-2 flex-wrap">
+                                  <div className="min-w-0 flex-1 font-semibold">
+                                    <span className="font-black text-rose-300">
+                                      {pickLang(lang, "स्क्रीनशॉट अस्वीकृत:", "Screenshot Rejected:")}
+                                    </span>{" "}
+                                    {latestProof.rejectionReason || pickLang(lang, "कृपया नया स्क्रीनशॉट भेजें", "Please submit a new screenshot")}
+                                  </div>
+                                  {remaining > 0 && (
+                                    <button
+                                      type="button"
+                                      onClick={() =>
+                                        setUpiPayTarget({
+                                          month: monthCode,
+                                          monthLabel: monthDisplay,
+                                          exactAmount: remaining,
+                                          feeItem: f,
+                                          pendingProof: null,
+                                          rejectedProof: latestProof,
+                                          initialMethod: remaining <= 2000 ? "free" : "choose",
+                                        })
+                                      }
+                                      className="px-2.5 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-500 text-white text-[10px] font-black cursor-pointer whitespace-nowrap transition"
+                                    >
+                                      {pickLang(lang, "नया स्क्रीनशॉट भेजें", "Re-upload Screenshot")}
+                                    </button>
+                                  )}
                                 </div>
                               )}
                               <div className="flex items-center gap-2 flex-wrap">
-                                {razorpayConfig?.enabled && remaining > 0 && (
+                                {remaining > 0 && (latestProof?.status !== "PENDING" || razorpayConfig?.enabled) && (
                                   <button
                                     type="button"
-                                    onClick={() => handlePayFeeViaRazorpay(f, remaining, monthDisplay)}
                                     disabled={payingFeeKey === (f.id || f.month)}
-                                    className="flex-1 min-w-[120px] py-2 px-2.5 rounded-xl bg-gradient-to-r from-indigo-600 to-blue-600 hover:from-indigo-500 hover:to-blue-500 text-white text-xs font-black transition flex items-center justify-center gap-1.5 active:scale-95 cursor-pointer shadow-sm disabled:opacity-50"
-                                    title="Razorpay UPI / Card se turant online fee jama karein"
-                                  >
-                                    <Zap className="w-3.5 h-3.5 text-amber-300" />
-                                    <span>
-                                      {payingFeeKey === (f.id || f.month)
-                                        ? "Opening..."
-                                        : `Pay ₹${remaining.toLocaleString("en-IN")}`}
-                                    </span>
-                                  </button>
-                                )}
-                                {remaining > 0 && latestProof?.status !== "PENDING" && (
-                                  <button
-                                    type="button"
                                     onClick={() =>
                                       setUpiPayTarget({
                                         month: monthCode,
                                         monthLabel: monthDisplay,
                                         exactAmount: remaining,
                                         feeItem: f,
+                                        pendingProof: latestProof?.status === "PENDING" ? latestProof : null,
+                                        rejectedProof: latestProof?.status === "REJECTED" ? latestProof : null,
+                                        initialMethod: "choose",
                                       })
                                     }
-                                    className="flex-1 min-w-[130px] py-2 px-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-black transition flex items-center justify-center gap-1.5 active:scale-95 cursor-pointer shadow-xs"
-                                    title={pickLang(lang, "UPI QR से भुगतान करें व स्क्रीनशॉट भेजें", "Pay via School UPI QR & Upload Screenshot")}
+                                    className="flex-1 min-w-[140px] py-2 px-3 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white text-xs font-black transition flex items-center justify-center gap-1.5 active:scale-95 cursor-pointer shadow-sm disabled:opacity-50"
+                                    title={pickLang(lang, "Pay Fee दबाकर Fast (+5%) या Free (₹0 · ₹2,000 तक) चुनें", "Click Pay Fee to choose Fast (+5%) or Free (₹0 up to ₹2,000)")}
                                   >
-                                    <QrCode className="w-3.5 h-3.5" />
-                                    <span>{pickLang(lang, "UPI QR / अपलोड", "UPI QR / Upload")}</span>
+                                    <CreditCard className="w-3.5 h-3.5" />
+                                    <span>
+                                      {payingFeeKey === (f.id || f.month)
+                                        ? "Opening..."
+                                        : pickLang(
+                                            lang,
+                                            `Pay Fee ₹${remaining.toLocaleString("en-IN")}`,
+                                            `Pay Fee ₹${remaining.toLocaleString("en-IN")}`
+                                          )}
+                                    </span>
                                   </button>
                                 )}
                                 <button
@@ -4842,6 +5315,14 @@ export const StudentSchoolPanel: React.FC<Props> = ({
                           const isPartial = !isPreAdmission && !isPaid && !isUpcoming && paid > 0 && remaining > 0;
                           const rNo = isPreAdmission ? "—" : (isPaid || paid > 0 ? (f.receiptNo || `DPS-26-${String(idx + 1).padStart(4, "0")}`) : "—");
                           const dtInfo = formatPaymentDateTime(f.paidDate || f.paymentDate);
+                          const tableLatestProof = upiProofs.find(
+                            (p) =>
+                              (p.studentId === activeStudent?.id && p.month === monthCode) ||
+                              (Array.isArray(p.familyAllocations) &&
+                                p.familyAllocations.some(
+                                  (m) => m.studentId === activeStudent?.id && m.month === monthCode
+                                ))
+                          );
 
                           return (
                             <tr key={`f-row-${f.id || f.receiptNo || monthCode || "mo"}-${idx}`} className="hover:bg-slate-800/40 transition">
@@ -4990,19 +5471,38 @@ export const StudentSchoolPanel: React.FC<Props> = ({
                                       </>
                                     ) : (
                                       <>
-                                        {razorpayConfig?.enabled && remaining > 0 && (
+                                        {!isUpcoming && remaining > 0 && (tableLatestProof?.status !== "PENDING" || razorpayConfig?.enabled) && (
                                           <button
                                             type="button"
-                                            onClick={() => handlePayFeeViaRazorpay(f, remaining, monthDisplay)}
                                             disabled={payingFeeKey === (f.id || f.month)}
-                                            className="px-2.5 py-1 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-[11px] font-black transition flex items-center gap-1 cursor-pointer disabled:opacity-50"
-                                            title="Razorpay Online Fee Payment"
+                                            onClick={() =>
+                                              setUpiPayTarget({
+                                                month: monthCode,
+                                                monthLabel: monthDisplay,
+                                                exactAmount: remaining,
+                                                feeItem: f,
+                                                pendingProof: tableLatestProof?.status === "PENDING" ? tableLatestProof : null,
+                                                rejectedProof: tableLatestProof?.status === "REJECTED" ? tableLatestProof : null,
+                                                initialMethod: "choose",
+                                              })
+                                            }
+                                            className="px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-[11px] font-black transition flex items-center gap-1 cursor-pointer disabled:opacity-50"
+                                            title={pickLang(lang, "Pay Fee दबाकर Fast (+5%) या Free (₹0 · ₹2,000 तक) चुनें", "Click Pay Fee to choose Fast (+5%) or Free (₹0 up to ₹2,000)")}
                                           >
-                                            <Zap className="w-3 h-3 text-amber-300" />
-                                            <span>Pay ₹{remaining.toLocaleString("en-IN")}</span>
+                                            <CreditCard className="w-3 h-3" />
+                                            <span>
+                                              {payingFeeKey === (f.id || f.month)
+                                                ? "Opening..."
+                                                : `Pay Fee ₹${remaining.toLocaleString("en-IN")}`}
+                                            </span>
                                           </button>
                                         )}
-                                        {!isUpcoming && remaining > 0 && (
+                                        {!isUpcoming && tableLatestProof?.status === "PENDING" && (
+                                          <span className="px-2 py-1 rounded-lg bg-amber-500/15 text-amber-300 border border-amber-500/35 text-[10px] font-bold">
+                                            ⏱ {pickLang(lang, "UPI सत्यापन लंबित", "UPI Pending")}
+                                          </span>
+                                        )}
+                                        {!isUpcoming && tableLatestProof?.status === "REJECTED" && remaining > 0 && (
                                           <button
                                             type="button"
                                             onClick={() =>
@@ -5011,12 +5511,15 @@ export const StudentSchoolPanel: React.FC<Props> = ({
                                                 monthLabel: monthDisplay,
                                                 exactAmount: remaining,
                                                 feeItem: f,
+                                                pendingProof: null,
+                                                rejectedProof: tableLatestProof,
+                                                initialMethod: remaining <= 2000 ? "free" : "choose",
                                               })
                                             }
-                                            className="px-2 py-1 rounded-lg bg-emerald-600/25 hover:bg-emerald-600 text-emerald-300 hover:text-white border border-emerald-500/40 text-[11px] font-bold transition flex items-center gap-1 cursor-pointer"
+                                            className="px-2 py-1 rounded-lg bg-rose-600/25 hover:bg-rose-600 text-rose-200 hover:text-white border border-rose-500/40 text-[10px] font-black cursor-pointer transition"
+                                            title={tableLatestProof.rejectionReason || ""}
                                           >
-                                            <QrCode className="w-3 h-3" />
-                                            <span>{pickLang(lang, "UPI / अपलोड", "UPI / Upload")}</span>
+                                            {pickLang(lang, "अस्वीकृत · नया स्क्रीनशॉट भेजें", "Rejected · Re-upload")}
                                           </button>
                                         )}
                                         <button
@@ -5527,6 +6030,32 @@ export const StudentSchoolPanel: React.FC<Props> = ({
               </div>
 
               <div className="flex items-center gap-2 flex-wrap">
+                {!(
+                  acknowledgedStudentMap[activeStudent.id]?.acknowledgedAt ||
+                  (activeStudent as any).welcomeAcknowledgedAt
+                ) && (
+                  <button
+                    type="button"
+                    disabled={acknowledgingWelcomeId === activeStudent.id}
+                    onClick={handleParentAcknowledgeWelcome}
+                    className="min-h-[40px] px-3.5 py-2 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-black text-xs flex items-center gap-1.5 shadow transition cursor-pointer whitespace-nowrap disabled:opacity-60"
+                  >
+                    <CheckCircle2 className="w-4 h-4" />
+                    <span>
+                      {acknowledgingWelcomeId === activeStudent.id
+                        ? "Confirming..."
+                        : "Accept Welcome Letter"}
+                    </span>
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => setWelcomeModalData(buildActiveWelcomeModalData())}
+                  className="px-3.5 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-xs flex items-center gap-2 shadow transition cursor-pointer whitespace-nowrap"
+                >
+                  <FileText className="w-4 h-4" />
+                  <span>Welcome Letter &amp; History</span>
+                </button>
                 <button
                   type="button"
                   onClick={async () => {
@@ -5535,11 +6064,14 @@ export const StudentSchoolPanel: React.FC<Props> = ({
                     const tId = toast.loading("Student ID Card PDF taiyar ho raha hai...");
                     try {
                       const { exportElementToPdf } = await import("../../utils/universalPdfExport");
+                      const measuredHeight = Math.max(card.scrollHeight || 0, card.offsetHeight || 0, 236);
                       await exportElementToPdf(card, {
                         filename: `Student_ID_Card_${activeStudent.name || "Student"}_${activeStudent.admissionNo || ""}`,
                         format: "cr80",
                         orientation: "landscape",
-                        widthPx: 360,
+                        widthPx: 372,
+                        heightPx: measuredHeight,
+                        backgroundColor: "#ffffff",
                         scale: 4,
                       });
                       toast.success("ID Card PDF download ho gaya!", { id: tId });
@@ -5573,71 +6105,118 @@ export const StudentSchoolPanel: React.FC<Props> = ({
             <div className="flex justify-center p-4 sm:p-8 bg-slate-900/50 border border-slate-800 rounded-2xl">
               <div
                 id="student-id-card-cr80-element"
-                className="w-[360px] min-h-[225px] bg-white text-slate-900 rounded-2xl shadow-2xl border-2 border-emerald-600 flex flex-col overflow-hidden relative"
-                style={{ fontFamily: "'Inter', sans-serif" }}
+                data-pdf-lock-light="true"
+                className="cr80-id-card nst-isolated-print-light w-[372px] min-h-[236px] bg-white text-slate-900 rounded-2xl shadow-2xl border-2 border-emerald-700 flex flex-col overflow-hidden relative"
+                style={{
+                  backgroundColor: "#ffffff",
+                  color: "#0f172a",
+                  fontFamily: "'Plus Jakarta Sans', 'Noto Sans Devanagari', Arial, sans-serif",
+                  lineHeight: 1.35,
+                }}
               >
                 {/* Header */}
-                <div className="bg-gradient-to-r from-emerald-800 to-teal-800 px-3 py-2 text-white flex items-center justify-between shrink-0">
-                  <div className="flex items-center gap-2">
+                <div
+                  className="px-3 py-2 text-white flex items-center justify-between gap-2 shrink-0"
+                  style={{
+                    background: "linear-gradient(90deg, #065f46 0%, #0f766e 100%)",
+                    color: "#ffffff",
+                  }}
+                >
+                  <div className="flex items-center gap-2 min-w-0">
                     {resolvedSchoolLogo && !isAppLogo(resolvedSchoolLogo) ? (
-                      <img src={resolvedSchoolLogo} alt="Logo" className="w-6 h-6 rounded-full bg-white object-contain p-0.5" />
+                      <img
+                        src={resolvedSchoolLogo}
+                        alt="Logo"
+                        crossOrigin="anonymous"
+                        data-fallback-initials={schoolInitials}
+                        className="w-7 h-7 rounded-full bg-white object-contain p-0.5 shrink-0 border border-amber-300"
+                        style={{ backgroundColor: "#ffffff" }}
+                      />
                     ) : (
-                      <div className="w-6 h-6 rounded-full bg-white text-emerald-900 flex items-center justify-center font-black text-[9px]">
+                      <div
+                        className="w-7 h-7 rounded-full flex items-center justify-center font-black text-[10px] shrink-0"
+                        style={{ backgroundColor: "#0f172a", color: "#ffffff", border: "1.5px solid #fbbf24" }}
+                      >
                         {schoolInitials}
                       </div>
                     )}
-                    <div>
-                      <h3 className="font-black text-[11px] leading-tight text-white">{schoolDisplayName}</h3>
-                      <p className="text-[7px] text-emerald-200">{school?.tagline || school?.affiliation || "Affiliated School Campus"}</p>
+                    <div className="min-w-0" style={{ lineHeight: 1.28 }}>
+                      <h3 className="font-black text-[11px] text-white" style={{ color: "#ffffff", wordBreak: "break-word" }}>
+                        {schoolDisplayName}
+                      </h3>
+                      <p className="text-[7px]" style={{ color: "#a7f3d0", wordBreak: "break-word" }}>
+                        {school?.tagline || school?.affiliation || "Affiliated School Campus"}
+                      </p>
                     </div>
                   </div>
-                  <span className="px-2 py-0.5 rounded bg-amber-400 text-slate-950 text-[7px] font-black uppercase tracking-wider">
-                    STUDENT ID • 2026-27
+                  <span
+                    className="px-2 py-0.5 rounded-full text-[7px] font-black uppercase tracking-wider shrink-0"
+                    style={{ backgroundColor: "#fbbf24", color: "#0f172a" }}
+                  >
+                    STUDENT ID • {school?.session || activeStudent.sessionId || "2026-27"}
                   </span>
                 </div>
 
                 {/* Body: QR on Left, Details Center, Photo Right */}
-                <div className="p-3 flex items-center justify-between gap-2.5 bg-white flex-1">
+                <div
+                  className="p-3 flex items-center justify-between gap-2.5 flex-1"
+                  style={{ backgroundColor: "#ffffff", color: "#0f172a" }}
+                >
                   {/* QR */}
                   <div className="flex flex-col items-center justify-center shrink-0 w-[84px]">
-                    <div className="p-1 bg-white border border-slate-300 rounded-lg shadow-sm flex items-center justify-center">
-                      <QRCode value={qrStudentPayload} size={72} level="L" />
+                    <div
+                      className="p-1.5 rounded-lg flex items-center justify-center"
+                      style={{ backgroundColor: "#ffffff", border: "1px solid #cbd5e1" }}
+                    >
+                      <QRCode value={qrStudentPayload} size={66} level="L" />
                     </div>
-                    <span className="text-[7px] font-black text-slate-600 uppercase tracking-tight mt-1 flex items-center gap-0.5">
-                      <ShieldCheck className="w-2.5 h-2.5 text-emerald-600" /> Verify QR
+                    <span className="text-[7px] font-black uppercase tracking-tight mt-1 flex items-center gap-0.5" style={{ color: "#047857" }}>
+                      <ShieldCheck className="w-2.5 h-2.5" style={{ color: "#059669" }} /> Verify QR
                     </span>
-                    <span className="text-[6.5px] font-mono text-slate-500 font-bold">
-                      {activeStudent.admissionNo}
+                    <span className="text-[6px] font-mono font-bold tabular-nums whitespace-nowrap" style={{ color: "#475569" }}>
+                      {activeStudent.verificationToken || activeStudent.admissionNo}
                     </span>
                   </div>
 
                   {/* Details */}
-                  <div className="flex-1 min-w-0 text-[9.5px] leading-tight space-y-0.5">
-                    <h4 className="font-black text-xs text-slate-900 truncate">{activeStudent.name}</h4>
-                    <p className="text-[8.5px] font-black text-emerald-700">{formatClassLabel(studentClassLabel)}</p>
-                    <div className="pt-1 space-y-0.5 border-t border-slate-100 text-[8px] text-slate-700">
+                  <div className="flex-1 min-w-0 text-[9.5px] space-y-0.5" style={{ lineHeight: 1.35 }}>
+                    <h4 className="font-black text-xs" style={{ color: "#0f172a", wordBreak: "break-word" }}>
+                      {activeStudent.name}
+                    </h4>
+                    <p className="text-[8.5px] font-black" style={{ color: "#047857" }}>
+                      {formatClassLabel(studentClassLabel)}
+                    </p>
+                    <div className="pt-1 space-y-0.5 text-[8px]" style={{ borderTop: "1px solid #e2e8f0", color: "#334155", lineHeight: 1.35 }}>
                       <p><strong>Roll:</strong> #{activeStudent.rollNo} • <strong>Adm:</strong> {activeStudent.admissionNo}</p>
                       <p><strong>Father:</strong> {maskSensitiveData ? maskSensitive2Chars(activeStudent.fatherName, true) : (activeStudent.fatherName || "—")}</p>
                       {activeStudent.motherName && <p><strong>Mother:</strong> {maskSensitiveData ? maskSensitive2Chars(activeStudent.motherName, true) : activeStudent.motherName}</p>}
                       <p><strong>Mobile:</strong> {maskSensitiveData ? maskSensitive2Chars(activeStudent.phone, true) : (activeStudent.phone || "—")}</p>
-                      <p><strong>Blood:</strong> <span className="text-rose-700 font-bold">🩸 {activeStudent.bloodGroup || "O+"}</span>{activeStudent.dateOfBirth ? ` • DOB: ${activeStudent.dateOfBirth}` : ''}</p>
-                      {activeStudent.address && <p><strong>Address:</strong> {activeStudent.address}</p>}
+                      <p><strong>Blood:</strong> <span className="font-bold" style={{ color: "#be123c" }}>🩸 {activeStudent.bloodGroup || "O+"}</span>{activeStudent.dateOfBirth ? ` • DOB: ${activeStudent.dateOfBirth}` : ''}</p>
+                      {activeStudent.address && <p style={{ wordBreak: "break-word" }}><strong>Address:</strong> {activeStudent.address}</p>}
                     </div>
                   </div>
 
                   {/* Photo */}
                   <div className="shrink-0">
-                    <div className="w-[68px] h-[80px] rounded-xl border border-slate-300 overflow-hidden shadow-sm bg-slate-100 flex items-center justify-center">
+                    <div
+                      className="w-[66px] h-[80px] rounded-xl border overflow-hidden flex items-center justify-center"
+                      style={{ backgroundColor: "#f1f5f9", borderColor: "#cbd5e1" }}
+                    >
                       {activePhoto ? (
                         <img
                           src={activePhoto}
                           alt={activeStudent.name}
+                          crossOrigin="anonymous"
+                          data-fallback-initials={studentInitials}
                           className="w-full h-full object-cover"
                         />
                       ) : (
-                        <div className="w-full h-full bg-gradient-to-tr from-emerald-700 via-teal-800 to-indigo-900 flex flex-col items-center justify-center text-white select-none">
-                          <span className="text-sm font-black">{studentInitials}</span>
-                          <span className="text-[6.5px] uppercase font-bold text-emerald-200 mt-0.5">STUDENT</span>
+                        <div
+                          className="w-full h-full flex flex-col items-center justify-center select-none"
+                          style={{ background: "linear-gradient(135deg, #047857 0%, #1e3a8a 100%)", color: "#ffffff" }}
+                        >
+                          <span className="text-sm font-black" style={{ color: "#ffffff" }}>{studentInitials}</span>
+                          <span className="text-[6.5px] uppercase font-bold mt-0.5" style={{ color: "#a7f3d0" }}>STUDENT</span>
                         </div>
                       )}
                     </div>
@@ -5645,9 +6224,12 @@ export const StudentSchoolPanel: React.FC<Props> = ({
                 </div>
 
                 {/* Footer */}
-                <div className="px-3 py-1 bg-slate-50 border-t border-slate-200 flex items-center justify-between text-[7px] text-slate-500 shrink-0">
+                <div
+                  className="px-3 py-1.5 flex items-center justify-between text-[7px] shrink-0"
+                  style={{ backgroundColor: "#f8fafc", borderTop: "1px solid #cbd5e1", color: "#475569", lineHeight: 1.3 }}
+                >
                   <span>Valid for Academic Session {getDynamicAcademicSessionLabel()}</span>
-                  <span className="font-bold text-slate-800">Principal Signature ✓</span>
+                  <span className="font-bold" style={{ color: "#0f172a" }}>Principal Signature ✓</span>
                 </div>
               </div>
             </div>
@@ -7656,6 +8238,7 @@ export const StudentSchoolPanel: React.FC<Props> = ({
           schoolId={schoolId}
           sessionId={activeStudent.sessionId || sessionId || ""}
           schoolName={schoolDisplayName}
+          school={school}
           upiId={school?.upiId || ""}
           student={{
             id: activeStudent.id,
@@ -7669,11 +8252,15 @@ export const StudentSchoolPanel: React.FC<Props> = ({
           month={upiPayTarget.month}
           monthLabel={upiPayTarget.monthLabel}
           exactAmount={upiPayTarget.exactAmount}
+          familyMembers={upiPayTarget.familyMembers}
           razorpayEnabled={Boolean(razorpayConfig?.enabled)}
+          pendingProof={upiPayTarget.pendingProof || null}
+          rejectedProof={upiPayTarget.rejectedProof || null}
+          initialMethod={upiPayTarget.initialMethod || "choose"}
           onSwitchToRazorpay={() => {
             const target = upiPayTarget;
-            if (target) {
-              handlePayFeeViaRazorpay(target.feeItem, target.exactAmount, target.monthLabel);
+            if (target && target.feeItem) {
+              void handlePayFeeViaRazorpay(target.feeItem, target.exactAmount, target.monthLabel);
             }
           }}
         />
@@ -7684,8 +8271,49 @@ export const StudentSchoolPanel: React.FC<Props> = ({
         isOpen={Boolean(welcomeModalData)}
         onClose={() => setWelcomeModalData(null)}
         welcomeData={welcomeModalData}
+        defaultRoleForAck="PARENT"
         onOpenSchoolDesk={() => setActiveTab("channel")}
+        onOpenIdCard={() => {
+          setWelcomeModalData(null);
+          setShowStudentIdCardModal(true);
+        }}
+        onAcknowledged={(ack) => {
+          setWelcomeModalData((prev) =>
+            prev
+              ? {
+                  ...prev,
+                  acknowledgedAt: ack.acknowledgedAt,
+                  acknowledgedBy: ack.acknowledgedBy,
+                  acknowledgedRole: ack.acknowledgedRole,
+                  activationHistory: ack.activationHistory,
+                }
+              : prev
+          );
+          setLiveStudentData((prev: any) =>
+            prev
+              ? {
+                  ...prev,
+                  welcomeAcknowledgedAt: ack.acknowledgedAt,
+                  welcomeAcknowledgedBy: ack.acknowledgedBy,
+                  welcomeAcknowledgedRole: ack.acknowledgedRole,
+                  activationHistory: ack.activationHistory,
+                }
+              : prev
+          );
+        }}
       />
+
+      {/* ── STUDENT DIGITAL ID CARD MODAL (FROM WELCOME / MESSENGER) ── */}
+      {showStudentIdCardModal && activeStudent && (
+        <StudentIdCardModal
+          isOpen={showStudentIdCardModal}
+          onClose={() => setShowStudentIdCardModal(false)}
+          student={activeStudent}
+          school={school}
+          classes={classesList}
+          admissionFee={studentAdmissionFeeRecord}
+        />
+      )}
 
       {/* ── CELEBRATORY SCHOOL BIRTHDAY MODAL ── */}
       <SchoolBirthdayModal
