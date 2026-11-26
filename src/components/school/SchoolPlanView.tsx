@@ -1,18 +1,19 @@
 // @ts-nocheck
-import React, { useState } from "react";
+import React, { useMemo, useState } from "react";
 import {
   ArrowLeft, Crown, Shield, Lock, CheckCircle2, XCircle,
   MessageSquare, ChevronDown, ChevronUp, BookOpen, Users, FileText,
-  IndianRupee, Sparkles, Zap, X, Flame, Clock, Camera, QrCode, Globe,
-  Smartphone, Building2, Star, Check, Layers
+  IndianRupee, Zap, X, Flame, Clock, Camera, QrCode, Globe,
+  Smartphone, Building2, Star, Check, Layers, UserCheck
 } from "lucide-react";
 import { doc, setDoc, serverTimestamp } from "firebase/firestore";
 import { db } from "../../firebase";
 import {
-  ELITE_YEARLY_PRICING,
   LITE_YEARLY_PRICES,
-  SUPREME_YEARLY_PRICING,
+  ULTRA_YEARLY_PRICING,
+  ULTRA_AGENT_SCHEDULE,
   YEARLY_STUDENT_SLABS,
+  getElitePricingForSlab,
   getLitePriceForSlab,
   getSchoolMaxBranches,
   getSchoolMaxStudents,
@@ -31,20 +32,22 @@ interface Props {
   onBack: () => void;
 }
 
+const fmtINR = (amt: number) => `₹${Math.round(amt || 0).toLocaleString("en-IN")}`;
+
 const FEATURES = [
-  { id: "students",       icon: <Users size={14} />,       label: "Student Capacity",                          lite: "Up to 2,000 Students",          elite: "Up to 5,000 Students",            supreme: "5,000+ Students" },
-  { id: "branches",       icon: <Building2 size={14} />,   label: "Multi-Branch Management",                   lite: "1 Branch Only",                 elite: "Up to 3 Branches",                supreme: "Unlimited Branches" },
-  { id: "teachers",       icon: <Users size={14} />,       label: "Staff, Roles & Sub-Admins",               lite: "Included",                      elite: "Unlimited Role Permissions",      supreme: "Unlimited Branch Admins" },
-  { id: "attendance",     icon: <QrCode size={14} />,      label: "QR Code Scan Attendance",                   lite: "⚡ Included",                   elite: "✅ Included",                     supreme: "✅ Included" },
-  { id: "faceattendance", icon: <Camera size={14} />,      label: "AI Face Attendance (0.2s Kiosk)",           lite: false,                           elite: "👑 Included",                     supreme: "👑 Kiosk + On-Site Setup" },
-  { id: "templates",      icon: <FileText size={14} />,    label: "60+ ID/Admit/Marksheet/Certificate/Fee Layouts", lite: "Default Format",     elite: "👑 60 Layouts (10 Classic + 50 New)",    supreme: "👑 Bespoke Custom Design" },
-  { id: "entrance",       icon: <BookOpen size={14} />,    label: "Entrance Exam (17,500+ Qs) & 1–12 Notes",   lite: false,                           elite: "👑 Included",                     supreme: "👑 Full Suite Included" },
-  { id: "customwebsite",  icon: <Globe size={14} />,       label: "Custom Website CMS, Photos & Gallery",      lite: "Default Website Only",          elite: "👑 Full Custom CMS",              supreme: "🌐 Custom .com/.in + CMS" },
-  { id: "fees",           icon: <IndianRupee size={14} />, label: "Fee Collection, POS & WhatsApp Slips",      lite: "Core Register + Slips",         elite: "Full Ledger + Bulk WhatsApp",     supreme: "Multi-Branch Ledger" },
-  { id: "walkie",         icon: <Smartphone size={14} />,  label: "School-Hour Walkie-Talkie & Audio/Video Calls", lite: false,                        elite: "👑 Live Intercom + HD Calls",     supreme: "👑 Full Staff & Class Suite" },
-  { id: "tagada",         icon: <Smartphone size={14} />,  label: "Fee Tagada Caller & Parent Caller ID",      lite: false,                           elite: "👑 Ulta Directory + 1-Tap UPI",   supreme: "👑 Full Campus Tagada Suite" },
-  { id: "playstoreapp",   icon: <Smartphone size={14} />,  label: "Play Store App (Own School Name & Logo)", lite: false,                           elite: false,                             supreme: "💎 White-Label APK/AAB" },
-  { id: "onsite",         icon: <Layers size={14} />,      label: "On-Site Staff Training & Data Migration",   lite: false,                           elite: false,                             supreme: "💎 100% Campus Setup" },
+  { id: "students",       icon: <Users size={14} />,       label: "Student Capacity",                          lite: "100 – 2,000 Students",          elite: "100 – 5,000+ Students",           ultra: "2,000+ Students Only" },
+  { id: "branches",       icon: <Building2 size={14} />,   label: "Multi-Branch Management",                   lite: "1 Branch Only",                 elite: "Up to 3 Branches",                ultra: "Unlimited Branches" },
+  { id: "teachers",       icon: <Users size={14} />,       label: "Staff, Roles & Sub-Admins",               lite: "Included",                      elite: "Full Role Permissions",           ultra: "Unlimited Branch Admins" },
+  { id: "attendance",     icon: <QrCode size={14} />,      label: "QR Code Scan Attendance",                   lite: "Included",                      elite: "Included",                        ultra: "Included" },
+  { id: "faceattendance", icon: <Camera size={14} />,      label: "AI Face Attendance (0.2s Kiosk)",           lite: false,                           elite: "Included",                        ultra: "Kiosk + On-Site Setup" },
+  { id: "templates",      icon: <FileText size={14} />,    label: "60+ ID/Admit/Marksheet/Certificate/Fee Layouts", lite: "Default Format",           elite: "60 Layouts (A4 2-Side & Cards)",  ultra: "Bespoke Custom Design" },
+  { id: "entrance",       icon: <BookOpen size={14} />,    label: "Entrance Exam (17,500+ Qs) & 1–12 Notes",   lite: false,                           elite: "Included",                        ultra: "Full Suite Included" },
+  { id: "customwebsite",  icon: <Globe size={14} />,       label: "Custom Website CMS, Photos & Gallery",      lite: "Default Website Only",          elite: "Full Custom CMS",                 ultra: "Own Domain (.com/.in) + CMS" },
+  { id: "fees",           icon: <IndianRupee size={14} />, label: "Fee Collection, Audit Logs & Approval",     lite: "Core Register + Slips",         elite: "Full Ledger + Principal Approval", ultra: "Multi-Branch Audit Suite" },
+  { id: "walkie",         icon: <Smartphone size={14} />,  label: "NSTA Messenger, Walkie-Talkie & Calls",     lite: false,                           elite: "Audio/Video + Intercom",          ultra: "Full Campus Suite" },
+  { id: "tagada",         icon: <Smartphone size={14} />,  label: "Fee Tagada Caller & Smart Parent Caller ID",lite: false,                           elite: "9 Outcomes + Sibling Detection",  ultra: "Full Tagada + Priority Support" },
+  { id: "playstoreapp",   icon: <Smartphone size={14} />,  label: "Own Brand Play Store APK & App Icon",       lite: false,                           elite: false,                             ultra: "White-Label APK/AAB" },
+  { id: "agent",          icon: <UserCheck size={14} />,   label: "Dedicated ERP Agent (Optional Add-On)",     lite: false,                           elite: false,                             ultra: "₹2L Yr 1 → ₹4L Yr 5 Cap" },
 ];
 
 const daysRemaining = (isoDate?: string): number => {
@@ -58,7 +61,7 @@ const fmtDate = (iso?: string) =>
     ? new Date(iso).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" })
     : "—";
 
-type DecoyEdition = "lite" | "elite" | "supreme";
+type PlanEdition = "lite" | "elite" | "ultra";
 
 export const SchoolPlanView: React.FC<Props> = ({ school, schoolId, adminUid, onBack }) => {
   const [showCompare, setShowCompare] = useState(false);
@@ -66,17 +69,20 @@ export const SchoolPlanView: React.FC<Props> = ({ school, schoolId, adminUid, on
   const [sending, setSending]         = useState(false);
   const [sent, setSent]               = useState(false);
 
-  const [selectedSlab, setSelectedSlab] = useState<number>(100);
+  const [selectedSlab, setSelectedSlab] = useState<number>(500);
   const [eliteMode, setEliteMode] = useState<"new" | "renewal">("new");
+  const [ultraMode, setUltraMode] = useState<"new" | "renewal">("new");
+  const [ultraWithAgent, setUltraWithAgent] = useState<boolean>(false);
 
   const [buyingPlan, setBuyingPlan] = useState<{
-    edition: DecoyEdition;
+    edition: PlanEdition;
     tier: SubscriptionTier;
     isElite: boolean;
     isRenewal: boolean;
     maxStudents: number;
     maxBranches: number;
     amount: number;
+    agentAddOn?: boolean;
     title: string;
   } | null>(null);
 
@@ -87,9 +93,9 @@ export const SchoolPlanView: React.FC<Props> = ({ school, schoolId, adminUid, on
   const isActive = sub?.status === "active";
   const tier = sub?.tier;
   const isSchoolElite = isSchoolEliteCurriculum(school);
-  const isSupreme = tier === "whitelabel_5000";
-  const planLevel: "none" | "lite" | "elite" | "supreme" =
-    !isActive ? "none" : isSupreme ? "supreme" : isSchoolElite ? "elite" : "lite";
+  const isUltra = tier === "whitelabel_5000";
+  const planLevel: "none" | "lite" | "elite" | "ultra" =
+    !isActive ? "none" : isUltra ? "ultra" : isSchoolElite ? "elite" : "lite";
 
   const activeStudentsCap = getSchoolMaxStudents(school);
   const activeBranchesCap = getSchoolMaxBranches(school);
@@ -100,44 +106,48 @@ export const SchoolPlanView: React.FC<Props> = ({ school, schoolId, adminUid, on
   const planCfg = {
     none: {
       label: "No Yearly Plan Active",
-      badge: "INACTIVE",
-      color: "from-slate-400 to-slate-500",
-      bg: "bg-slate-50 dark:bg-slate-800/60 border-slate-200 dark:border-slate-700",
+      statusText: "INACTIVE",
+      color: "from-slate-500 to-slate-600",
+      bg: "bg-slate-50 dark:bg-slate-900 border-slate-200 dark:border-slate-800",
       icon: <Lock size={20} className="text-slate-400" />,
-      desc: "School yearly subscription active nahi hai. Neeche se Lite, Elite ya Supreme plan chunein.",
+      desc: "School yearly subscription active nahi hai. Neeche se Lite, Elite ya ULTRA plan chunein.",
     },
     lite: {
       label: `Lite Yearly Plan (${activeStudentsCap} Students · 1 Branch)`,
-      badge: "⚡ LITE YEARLY",
+      statusText: "LITE YEARLY",
       color: "from-blue-600 to-indigo-600",
-      bg: "bg-blue-50/50 dark:bg-blue-950/20 border-blue-200 dark:border-blue-800",
+      bg: "bg-blue-50/60 dark:bg-blue-950/20 border-blue-200 dark:border-blue-800",
       icon: <Shield size={20} className="text-blue-500" />,
       desc: `Up to ${activeStudentsCap} Students · 1 Branch Max · QR Attendance & Default School Website`,
     },
     elite: {
-      label: `Elite Yearly Suite (${activeStudentsCap >= 5000 ? "5,000" : activeStudentsCap} Students · ${activeBranchesCap} Branches)`,
-      badge: "👑 ELITE YEARLY",
+      label: `Elite Yearly Suite (${activeStudentsCap >= 5000 ? "5,000+" : activeStudentsCap} Students · ${activeBranchesCap} Branches)`,
+      statusText: "ELITE YEARLY",
       color: "from-amber-500 to-orange-500",
-      bg: "bg-amber-50/60 dark:bg-amber-950/25 border-amber-300 dark:border-amber-800",
+      bg: "bg-amber-50/70 dark:bg-amber-950/25 border-amber-300 dark:border-amber-800",
       icon: <Crown size={20} className="text-amber-500" />,
-      desc: "3 Branches · Custom Website CMS + AI Face Attendance + 60 Document Layouts (10 Classic + 50 New) + Entrance Exam & Notes",
+      desc: "3 Branches · AI Face Attendance + Fee Tagada Caller + 60 Document Layouts + Custom CMS",
     },
-    supreme: {
-      label: "Supreme White-Label Yearly (5,000+ Students · Unlimited Branches)",
-      badge: "💎 SUPREME",
-      color: "from-rose-500 via-amber-500 to-orange-500",
-      bg: "bg-gradient-to-r from-amber-50/80 to-rose-50/60 dark:from-amber-950/30 dark:to-rose-950/20 border-amber-400 dark:border-amber-700",
-      icon: <Crown size={20} className="text-rose-500" />,
-      desc: "Unlimited Branches · Play Store App + On-Site Training + 100% Data Migration + Custom .com Website",
+    ultra: {
+      label: "ULTRA White-Label (2,000+ Students · Unlimited Branches)",
+      statusText: "ULTRA 2000+",
+      color: "from-rose-600 to-amber-500",
+      bg: "bg-slate-900 text-white border-rose-500/60",
+      icon: <Crown size={20} className="text-rose-400" />,
+      desc: "Unlimited Branches · Own Domain + Own Brand Play Store APK + On-Site Training + Data Migration",
     },
   }[planLevel];
 
   const liteUnavailable = selectedSlab > 2000;
   const litePrice = liteUnavailable ? LITE_YEARLY_PRICES[2000] : getLitePriceForSlab(selectedSlab);
-  const elitePrice = eliteMode === "renewal" ? ELITE_YEARLY_PRICING.renewal : ELITE_YEARLY_PRICING.firstYear;
-  const supremePrice = SUPREME_YEARLY_PRICING.price;
+  const elitePricing = useMemo(() => getElitePricingForSlab(selectedSlab), [selectedSlab]);
+  const elitePrice = eliteMode === "renewal" ? elitePricing.renewal : elitePricing.firstYear;
 
-  const handleInitiateBuy = (edition: DecoyEdition) => {
+  const ultraBase = ultraMode === "renewal" ? ULTRA_YEARLY_PRICING.renewal : ULTRA_YEARLY_PRICING.firstYear;
+  const ultraAgent = ultraMode === "renewal" ? 250000 : 200000;
+  const ultraTotal = ultraBase + (ultraWithAgent ? ultraAgent : 0);
+
+  const handleInitiateBuy = (edition: PlanEdition) => {
     if (edition === "lite") {
       if (liteUnavailable) return;
       const t: SubscriptionTier =
@@ -150,7 +160,7 @@ export const SchoolPlanView: React.FC<Props> = ({ school, schoolId, adminUid, on
         maxStudents: selectedSlab,
         maxBranches: 1,
         amount: litePrice,
-        title: `⚡ Lite Yearly (${selectedSlab} Students · 1 Branch)`,
+        title: `⚡ LITE Yearly (${selectedSlab} Students · 1 Branch)`,
       });
     } else if (edition === "elite") {
       setBuyingPlan({
@@ -158,21 +168,22 @@ export const SchoolPlanView: React.FC<Props> = ({ school, schoolId, adminUid, on
         tier: "enterprise_2000",
         isElite: true,
         isRenewal: eliteMode === "renewal",
-        maxStudents: 5000,
+        maxStudents: selectedSlab,
         maxBranches: 3,
         amount: elitePrice,
-        title: `👑 Elite Yearly (${eliteMode === "renewal" ? "Annual Renewal" : "1st Year Offer"} · 3 Branches)`,
+        title: `👑 ELITE Yearly (${selectedSlab >= 5000 ? "5,000+" : selectedSlab} Std · ${eliteMode === "renewal" ? "Renewal" : "1st Year Offer"} · 3 Branches)`,
       });
     } else {
       setBuyingPlan({
-        edition: "supreme",
+        edition: "ultra",
         tier: "whitelabel_5000",
         isElite: true,
-        isRenewal: false,
+        isRenewal: ultraMode === "renewal",
         maxStudents: 5000,
         maxBranches: 9999,
-        amount: supremePrice,
-        title: "💎 Supreme White-Label Yearly (Unlimited Branches)",
+        amount: ultraTotal,
+        agentAddOn: ultraWithAgent,
+        title: `💎 ULTRA White-Label (2,000+ Std · ${ultraMode === "renewal" ? "Renewal ₹2L" : "1st Year ₹3L"}${ultraWithAgent ? " + Dedicated Agent" : ""})`,
       });
     }
     setCheckoutDone(false);
@@ -194,10 +205,11 @@ export const SchoolPlanView: React.FC<Props> = ({ school, schoolId, adminUid, on
         isRenewal: buyingPlan.isRenewal,
         maxStudents: buyingPlan.maxStudents,
         maxBranches: buyingPlan.maxBranches,
+        agentAddOn: Boolean(buyingPlan.agentAddOn),
         duration: "1_year",
         amount: buyingPlan.amount,
         planTitle: buyingPlan.title,
-        message: `School: ${school?.name}${visibleReg ? ` (${visibleReg})` : ""} ne ${buyingPlan.title} ₹${buyingPlan.amount.toLocaleString("en-IN")}/Year select kiya hai.`,
+        message: `School: ${school?.name}${visibleReg ? ` (${visibleReg})` : ""} ne ${buyingPlan.title} ${fmtINR(buyingPlan.amount)}/Year select kiya hai.`,
         requestedAt: serverTimestamp(),
         status: "pending",
       });
@@ -218,7 +230,7 @@ export const SchoolPlanView: React.FC<Props> = ({ school, schoolId, adminUid, on
       `📦 *Selected Plan:* ${buyingPlan.title}\n` +
       `🏢 *Branches Allowed:* ${buyingPlan.maxBranches >= 9999 ? "Unlimited" : buyingPlan.maxBranches}\n` +
       `🗓️ *Billing:* Yearly Session (12 Months)\n` +
-      `💰 *Amount:* ₹${buyingPlan.amount.toLocaleString("en-IN")}\n\n` +
+      `💰 *Amount:* ${fmtINR(buyingPlan.amount)}\n\n` +
       `Kripya hamare school ke liye ye yearly plan activate karein.`
     );
     safeOpenExternalUrl(`https://wa.me/${ADMIN_WHATSAPP_NUMBER}?text=${text}`);
@@ -249,10 +261,11 @@ export const SchoolPlanView: React.FC<Props> = ({ school, schoolId, adminUid, on
   return (
     <div className="min-h-screen bg-slate-50 dark:bg-slate-950 pb-16 text-slate-800 dark:text-slate-100">
       {/* Top Bar */}
-      <div className="sticky top-0 z-30 bg-slate-900/95 dark:bg-slate-950/95 backdrop-blur-md border-b border-slate-800 px-4 py-2.5">
-        <div className="max-w-5xl mx-auto flex items-center justify-between gap-3">
+      <div className="sticky top-0 z-30 bg-slate-900/95 dark:bg-black/95 backdrop-blur-md border-b border-slate-800 px-4 py-2.5">
+        <div className="max-w-6xl mx-auto flex items-center justify-between gap-3">
           <div className="flex items-center gap-2.5 min-w-0">
             <button
+              type="button"
               onClick={onBack}
               className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white transition cursor-pointer"
               title="Back"
@@ -260,11 +273,11 @@ export const SchoolPlanView: React.FC<Props> = ({ school, schoolId, adminUid, on
               <ArrowLeft size={16} />
             </button>
             <div className="min-w-0">
-              <h1 className="text-xs font-black text-white tracking-wide truncate flex items-center gap-1.5">
+              <h1 className="text-xs font-black text-white tracking-wide truncate flex items-center gap-2">
                 <span>Yearly Subscription Plans</span>
                 {getVisibleSchoolRegNo(school) && (
-                  <span className="text-[10px] px-1.5 py-0.2 rounded bg-indigo-500/20 text-indigo-300 font-mono font-bold border border-indigo-500/30">
-                    {getVisibleSchoolRegNo(school)}
+                  <span className="text-[10px] text-indigo-300 font-mono font-bold">
+                    · {getVisibleSchoolRegNo(school)}
                   </span>
                 )}
               </h1>
@@ -272,41 +285,35 @@ export const SchoolPlanView: React.FC<Props> = ({ school, schoolId, adminUid, on
             </div>
           </div>
 
-          <span className={`text-[10px] font-black px-2 py-0.5 rounded-full border ${
-            isActive
-              ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/30"
-              : "bg-red-500/10 text-red-400 border-red-500/30"
-          }`}>
-            {isActive ? "Active · Yearly" : "Expired"}
+          <span className={`text-[11px] font-black whitespace-nowrap ${isActive ? "text-emerald-400" : "text-rose-400"}`}>
+            {isActive ? "Active · Yearly" : "Inactive"}
           </span>
         </div>
       </div>
 
-      <div className="px-3.5 py-4 space-y-4 max-w-5xl mx-auto">
-        {/* Current Active Plan Card */}
-        <div className={`rounded-xl border p-3.5 ${planCfg.bg} shadow-xs transition-all`}>
+      <div className="px-3.5 py-4 space-y-4 max-w-6xl mx-auto">
+        {/* Current Active Plan Summary */}
+        <div className={`rounded-xl border p-3.5 ${planCfg.bg}`}>
           <div className="flex items-start justify-between gap-2.5">
             <div className="flex items-center gap-2.5 min-w-0">
-              <div className={`w-9 h-9 rounded-lg bg-gradient-to-br ${planCfg.color} flex items-center justify-center text-white shadow-xs shrink-0`}>
+              <div className={`w-9 h-9 rounded-lg bg-gradient-to-br ${planCfg.color} flex items-center justify-center text-white shrink-0`}>
                 {planCfg.icon}
               </div>
               <div className="min-w-0">
-                <div className="flex items-center gap-1.5 flex-wrap">
-                  <span className="text-xs font-black text-slate-900 dark:text-white truncate">{planCfg.label}</span>
-                  <span className="text-[9px] font-black px-1.5 py-0.2 rounded border bg-white/70 dark:bg-slate-800 text-slate-700 dark:text-slate-200 border-slate-300 dark:border-slate-700">
-                    {planCfg.badge}
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="text-xs font-black truncate">{planCfg.label}</span>
+                  <span className="text-[10px] font-black uppercase tracking-wider opacity-80">
+                    · {planCfg.statusText}
                   </span>
                 </div>
-                <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">{planCfg.desc}</p>
+                <p className="text-[11px] opacity-80 mt-0.5">{planCfg.desc}</p>
               </div>
             </div>
 
             {isActive && expiresAt && (
               <div className="text-right shrink-0">
-                <span className={`text-[10px] font-black tabular-nums px-2 py-0.5 rounded-md inline-flex items-center gap-1 ${
-                  expiringSoon
-                    ? "bg-red-500/15 text-red-600 dark:text-red-400 border border-red-500/30 animate-pulse"
-                    : "bg-slate-200/60 dark:bg-slate-700/60 text-slate-700 dark:text-slate-300"
+                <span className={`text-[10px] font-black tabular-nums inline-flex items-center gap-1 ${
+                  expiringSoon ? "text-rose-500 animate-pulse" : "opacity-80"
                 }`}>
                   <Clock size={11} /> {days}d left
                 </span>
@@ -315,12 +322,12 @@ export const SchoolPlanView: React.FC<Props> = ({ school, schoolId, adminUid, on
           </div>
 
           {isActive && expiresAt && (
-            <div className="mt-2.5 pt-2 border-t border-slate-200/60 dark:border-slate-700/60 flex items-center justify-between text-[10px]">
-              <span className="text-slate-500 dark:text-slate-400 font-medium">
-                Valid till: <strong className="text-slate-700 dark:text-slate-200 tabular-nums">{fmtDate(expiresAt)}</strong>
+            <div className="mt-2.5 pt-2 border-t border-slate-200/40 dark:border-slate-700/60 flex items-center justify-between text-[10px]">
+              <span className="opacity-80">
+                Valid till: <strong className="tabular-nums">{fmtDate(expiresAt)}</strong>
               </span>
               {expiringSoon ? (
-                <span className="font-black text-red-600 dark:text-red-400 flex items-center gap-1">
+                <span className="font-black text-rose-500 flex items-center gap-1">
                   <Flame size={12} /> Jaldi renew karein!
                 </span>
               ) : (
@@ -332,227 +339,271 @@ export const SchoolPlanView: React.FC<Props> = ({ school, schoolId, adminUid, on
           )}
         </div>
 
-        {/* Yearly Student Capacity Selector */}
-        <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200/80 dark:border-slate-800 p-4 shadow-xs space-y-3">
+        {/* Slab Selector + 3-Tier Cards */}
+        <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-4 space-y-4">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
             <div>
               <h2 className="text-xs font-black text-slate-900 dark:text-white flex items-center gap-1.5 uppercase tracking-wide">
-                <Zap size={14} className="text-amber-500" /> Student Capacity Chunein (Yearly Plans Only)
+                <Zap size={14} className="text-amber-500" /> Student Capacity Chunein (100 – 5,000+ Students)
               </h2>
               <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">
-                Lite ₹5,000/yr se shuru (+50% per slab, max 2,000 Std, 1 Branch) · Elite mein 5,000 Std &amp; 3 Branches · Supreme mein Unlimited Branches.
+                Lite ₹20k–₹1L (Max 2,000 Std) · Elite ₹75k–₹2L (Best Value, 3 Branches) · ULTRA ₹3L/yr (2,000+ Only, Own Domain &amp; APK)
               </p>
             </div>
           </div>
 
           <div className="grid grid-cols-3 sm:grid-cols-6 gap-2">
-            {YEARLY_STUDENT_SLABS.map((slab) => (
-              <button
-                key={slab}
-                type="button"
-                onClick={() => setSelectedSlab(slab)}
-                className={`p-2 rounded-xl border-2 text-center transition cursor-pointer ${
-                  selectedSlab === slab
-                    ? "border-amber-500 bg-amber-50 dark:bg-amber-950/30 shadow-xs"
-                    : "border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/50"
-                }`}
-              >
-                <p className="text-xs font-black text-slate-900 dark:text-white">
-                  {slab >= 5000 ? "5,000+" : slab} Std
-                </p>
-                <p className={`text-[10px] font-bold mt-0.5 ${slab > 2000 ? "text-amber-600" : "text-blue-600 dark:text-blue-400"}`}>
-                  {slab > 2000 ? "Elite / Supreme" : `Lite ₹${LITE_YEARLY_PRICES[slab].toLocaleString("en-IN")}`}
-                </p>
-              </button>
-            ))}
+            {YEARLY_STUDENT_SLABS.map((slab) => {
+              const eSlab = getElitePricingForSlab(slab);
+              return (
+                <button
+                  key={slab}
+                  type="button"
+                  onClick={() => setSelectedSlab(slab)}
+                  className={`p-2 rounded-xl border text-center transition cursor-pointer ${
+                    selectedSlab === slab
+                      ? "border-amber-500 bg-amber-50 dark:bg-amber-950/35 ring-2 ring-amber-500/20"
+                      : "border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/50"
+                  }`}
+                >
+                  <p className="text-xs font-black text-slate-900 dark:text-white tabular-nums">
+                    {slab >= 5000 ? "5,000+" : slab.toLocaleString("en-IN")} Std
+                  </p>
+                  <p className="text-[10px] font-bold text-amber-700 dark:text-amber-300 mt-0.5 tabular-nums">
+                    Elite {fmtINR(eSlab.firstYear)}
+                  </p>
+                  <p className="text-[9px] text-slate-400 tabular-nums">
+                    {slab <= 2000 ? `Lite ${fmtINR(LITE_YEARLY_PRICES[slab])}` : "ULTRA Eligible"}
+                  </p>
+                </button>
+              );
+            })}
           </div>
 
-          {/* 3-TIER DECOY GRID */}
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-3.5 pt-2">
+          {/* 3-TIER GRID */}
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 pt-1">
             {/* LITE */}
-            <div className="rounded-2xl border-2 border-slate-200 dark:border-slate-800 p-4 flex flex-col justify-between bg-slate-50/50 dark:bg-slate-900">
+            <div className="rounded-2xl border border-slate-200 dark:border-slate-800 p-4 flex flex-col justify-between bg-slate-50/70 dark:bg-slate-950/40">
               <div className="space-y-3">
-                <div className="flex items-center justify-between">
-                  <span className="text-[10px] font-black px-2 py-0.5 rounded bg-blue-100 dark:bg-blue-950 text-blue-700 dark:text-blue-300">
-                    ⚡ LITE YEARLY
-                  </span>
-                  <span className="text-[10px] font-black text-slate-500">1 Branch Max</span>
+                <div className="flex items-center justify-between text-[10px] font-black uppercase tracking-wider">
+                  <span className="text-blue-600 dark:text-blue-400">⚡ LITE YEARLY</span>
+                  <span className="text-slate-500">1 Branch Max</span>
                 </div>
                 <div>
                   <h3 className="text-sm font-black text-slate-900 dark:text-white">
-                    Lite ({liteUnavailable ? "Max 2,000" : selectedSlab} Students)
+                    Lite ({liteUnavailable ? "Max 2,000" : selectedSlab.toLocaleString("en-IN")} Students)
                   </h3>
                   {liteUnavailable ? (
-                    <p className="text-xs font-black text-rose-600 mt-1">
-                      5,000+ ke liye Elite ya Supreme plan lein
+                    <p className="text-xs font-bold text-rose-600 mt-1">
+                      5,000+ ke liye Elite ya ULTRA plan lein
                     </p>
                   ) : (
-                    <p className="text-2xl font-black text-blue-600 dark:text-blue-400 mt-1">
-                      ₹{litePrice.toLocaleString("en-IN")}
-                      <span className="text-xs font-bold text-slate-500"> / Year</span>
+                    <p className="text-2xl font-black text-slate-900 dark:text-white mt-1 tabular-nums">
+                      {fmtINR(litePrice)}
+                      <span className="text-xs font-semibold text-slate-500"> / Year</span>
                     </p>
                   )}
                 </div>
                 <ul className="space-y-1.5 text-[11px] text-slate-600 dark:text-slate-300">
-                  <li className="flex items-center gap-1.5"><Check size={13} className="text-emerald-500 shrink-0" /> 1 Branch Management</li>
-                  <li className="flex items-center gap-1.5"><Check size={13} className="text-emerald-500 shrink-0" /> QR Scan Attendance &amp; Fees</li>
+                  <li className="flex items-center gap-1.5"><Check size={13} className="text-emerald-500 shrink-0" /> 1 Branch Management Only</li>
+                  <li className="flex items-center gap-1.5"><Check size={13} className="text-emerald-500 shrink-0" /> QR Scan Attendance &amp; Core Fees</li>
                   <li className="flex items-center gap-1.5"><Check size={13} className="text-emerald-500 shrink-0" /> Default School Website Only</li>
-                  <li className="flex items-center gap-1.5 text-slate-400"><Lock size={12} className="shrink-0" /> No Custom CMS / Face ID</li>
+                  <li className="flex items-center gap-1.5 text-slate-400"><Lock size={12} className="shrink-0" /> No Fee Tagada Caller / Face ID / CMS</li>
                 </ul>
               </div>
               <button
                 type="button"
                 disabled={liteUnavailable}
                 onClick={() => handleInitiateBuy("lite")}
-                className="mt-4 w-full py-2.5 rounded-xl bg-blue-600 hover:bg-blue-700 disabled:opacity-40 text-white text-xs font-black transition cursor-pointer"
+                className="mt-4 w-full py-2.5 rounded-xl bg-slate-900 hover:bg-slate-800 dark:bg-blue-600 dark:hover:bg-blue-700 disabled:opacity-40 text-white text-xs font-black transition cursor-pointer whitespace-nowrap"
               >
-                {liteUnavailable ? "Max 2,000 Students Only" : `Select Lite (₹${litePrice.toLocaleString("en-IN")})`}
+                {liteUnavailable ? "Max 2,000 Students Only" : `Select Lite (${fmtINR(litePrice)})`}
               </button>
             </div>
 
             {/* ELITE (HERO) */}
-            <div className="rounded-2xl border-2 border-amber-500 p-4 flex flex-col justify-between bg-gradient-to-b from-amber-50 via-white to-white dark:from-amber-950/35 dark:via-slate-900 dark:to-slate-900 shadow-lg ring-2 ring-amber-500/20">
+            <div className="rounded-2xl border-2 border-amber-500 p-4 flex flex-col justify-between bg-amber-50/40 dark:bg-amber-950/15 shadow-md">
               <div className="space-y-3">
-                <div className="flex items-center justify-between">
-                  <span className="text-[10px] font-black px-2 py-0.5 rounded bg-amber-500 text-slate-950 flex items-center gap-1">
-                    <Star size={11} className="fill-slate-950" /> BEST SELLER · ELITE
+                <div className="flex items-center justify-between text-[10px] font-black uppercase tracking-wider">
+                  <span className="text-amber-600 dark:text-amber-400 flex items-center gap-1">
+                    <Star size={11} className="fill-amber-500 text-amber-500" /> BEST SELLER · ELITE
                   </span>
-                  <span className="text-[10px] font-black text-amber-700 dark:text-amber-300">3 Branches Max</span>
+                  <span className="text-amber-700 dark:text-amber-300">3 Branches Max</span>
                 </div>
 
                 <div>
                   <h3 className="text-base font-black text-slate-900 dark:text-white flex items-center gap-1.5">
-                    <Crown size={16} className="text-amber-500" /> Elite Yearly Suite
+                    <Crown size={16} className="text-amber-500" />
+                    Elite Suite ({selectedSlab >= 5000 ? "5,000+" : selectedSlab.toLocaleString("en-IN")} Std)
                   </h3>
-                  <div className="mt-1.5 bg-amber-500/10 border border-amber-400/50 rounded-xl p-2.5 space-y-1.5">
+
+                  <div className="mt-2 pt-2 border-t border-amber-300/50 dark:border-amber-800/50 space-y-2">
                     <div className="flex items-center justify-between text-[11px] font-bold">
-                      <span className="text-slate-600 dark:text-slate-300">12 Months Price:</span>
-                      <span className="line-through text-rose-600 dark:text-rose-400 font-black">₹1,20,000</span>
+                      <span className="text-slate-600 dark:text-slate-300">Standard MRP:</span>
+                      <span className="line-through text-rose-600 dark:text-rose-400 font-black tabular-nums">
+                        {fmtINR(elitePricing.mrp)}/yr
+                      </span>
                     </div>
                     <div className="grid grid-cols-2 gap-1.5">
                       <button
                         type="button"
                         onClick={() => setEliteMode("new")}
-                        className={`p-1.5 rounded-lg border text-left transition cursor-pointer ${
+                        className={`p-2 rounded-lg border text-left transition cursor-pointer ${
                           eliteMode === "new"
                             ? "bg-amber-500 text-slate-950 border-amber-600 font-black"
                             : "bg-white dark:bg-slate-800 border-amber-200 dark:border-slate-700 text-slate-700 dark:text-slate-300"
                         }`}
                       >
                         <div className="text-[9px] font-black uppercase">1st Year Offer</div>
-                        <div className="text-xs font-black">₹1,00,000 मात्र</div>
+                        <div className="text-xs font-black tabular-nums">{fmtINR(elitePricing.firstYear)}</div>
                       </button>
                       <button
                         type="button"
                         onClick={() => setEliteMode("renewal")}
-                        className={`p-1.5 rounded-lg border text-left transition cursor-pointer ${
+                        className={`p-2 rounded-lg border text-left transition cursor-pointer ${
                           eliteMode === "renewal"
                             ? "bg-emerald-600 text-white border-emerald-700 font-black"
                             : "bg-white dark:bg-slate-800 border-amber-200 dark:border-slate-700 text-slate-700 dark:text-slate-300"
                         }`}
                       >
-                        <div className="text-[9px] font-black uppercase">Renewal Fee</div>
-                        <div className="text-xs font-black">₹80,000 / yr</div>
+                        <div className="text-[9px] font-black uppercase">Yearly Renewal</div>
+                        <div className="text-xs font-black tabular-nums">{fmtINR(elitePricing.renewal)}/yr</div>
                       </button>
                     </div>
                   </div>
                 </div>
 
                 <ul className="space-y-1.5 text-[11px] font-semibold text-slate-700 dark:text-slate-200">
-                  <li className="flex items-center gap-1.5"><Check size={13} className="text-amber-600 shrink-0" /> <strong>Up to 5,000 Students &amp; 3 Branches</strong></li>
+                  <li className="flex items-center gap-1.5"><Check size={13} className="text-amber-600 shrink-0" /> 3 Branches + Full Multi-Role Security</li>
+                  <li className="flex items-center gap-1.5"><Check size={13} className="text-amber-600 shrink-0" /> Fee Tagada Caller + Smart Parent Caller ID</li>
                   <li className="flex items-center gap-1.5"><Check size={13} className="text-amber-600 shrink-0" /> AI Face ID + Custom Website CMS</li>
-                  <li className="flex items-center gap-1.5"><Check size={13} className="text-amber-600 shrink-0" /> 60+ Document Template Studio (10 Classic + 50 New)</li>
-                  <li className="flex items-center gap-1.5"><Check size={13} className="text-amber-600 shrink-0" /> Entrance Exam Bank &amp; Notes</li>
+                  <li className="flex items-center gap-1.5"><Check size={13} className="text-amber-600 shrink-0" /> 60 Document Layouts (A4 2-Side &amp; Slips)</li>
                 </ul>
               </div>
               <button
                 type="button"
                 onClick={() => handleInitiateBuy("elite")}
-                className="mt-4 w-full py-2.5 rounded-xl bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-600 hover:to-orange-600 text-slate-950 text-xs font-black transition cursor-pointer shadow-md"
+                className="mt-4 w-full py-2.5 rounded-xl bg-amber-500 hover:bg-amber-600 text-slate-950 text-xs font-black transition cursor-pointer whitespace-nowrap"
               >
-                Kharidein Elite (₹{elitePrice.toLocaleString("en-IN")}/yr)
+                Kharidein Elite ({fmtINR(elitePrice)}/yr)
               </button>
             </div>
 
-            {/* SUPREME */}
-            <div className="rounded-2xl border-2 border-rose-500/70 p-4 flex flex-col justify-between bg-slate-900 text-white">
+            {/* ULTRA WHITE-LABEL */}
+            <div className="rounded-2xl border border-slate-700 p-4 flex flex-col justify-between bg-slate-900 dark:bg-black text-white">
               <div className="space-y-3">
-                <div className="flex items-center justify-between">
-                  <span className="text-[10px] font-black px-2 py-0.5 rounded bg-rose-600 text-white">
-                    💎 SUPREME 5000+
-                  </span>
-                  <span className="text-[10px] font-black text-rose-300">Unlimited Branches</span>
+                <div className="flex items-center justify-between text-[10px] font-black uppercase tracking-wider">
+                  <span className="text-rose-400">💎 ULTRA · 2,000+ ONLY</span>
+                  <span className="text-slate-300">Unlimited Branches</span>
                 </div>
                 <div>
-                  <h3 className="text-sm font-black text-white">Supreme White-Label</h3>
-                  <p className="text-2xl font-black text-amber-300 mt-1">
-                    ₹2,00,000 <span className="text-xs font-bold text-slate-300">/ Year Fixed</span>
-                  </p>
+                  <h3 className="text-sm font-black text-white">ULTRA White-Label (Domain + APK)</h3>
+                  <div className="grid grid-cols-2 gap-1.5 mt-2">
+                    <button
+                      type="button"
+                      onClick={() => setUltraMode("new")}
+                      className={`p-1.5 rounded-lg border text-left cursor-pointer ${
+                        ultraMode === "new" ? "bg-rose-600 border-rose-500 text-white" : "bg-slate-800 border-slate-700 text-slate-300"
+                      }`}
+                    >
+                      <div className="text-[9px] font-black uppercase">1st Year ERP</div>
+                      <div className="text-xs font-black tabular-nums">₹3,00,000</div>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setUltraMode("renewal")}
+                      className={`p-1.5 rounded-lg border text-left cursor-pointer ${
+                        ultraMode === "renewal" ? "bg-emerald-600 border-emerald-500 text-white" : "bg-slate-800 border-slate-700 text-slate-300"
+                      }`}
+                    >
+                      <div className="text-[9px] font-black uppercase">Yearly Renewal</div>
+                      <div className="text-xs font-black tabular-nums">₹2,00,000</div>
+                    </button>
+                  </div>
+                  <label className="mt-2 flex items-center justify-between gap-2 p-2 rounded-lg bg-slate-800/80 border border-slate-700 text-[11px] cursor-pointer">
+                    <span className="flex items-center gap-1.5 font-bold text-amber-300">
+                      <input
+                        type="checkbox"
+                        checked={ultraWithAgent}
+                        onChange={(e) => setUltraWithAgent(e.target.checked)}
+                        className="accent-amber-500"
+                      />
+                      Dedicated Agent (+{fmtINR(ultraAgent)}/yr)
+                    </span>
+                    <span className="font-black tabular-nums">{fmtINR(ultraTotal)}</span>
+                  </label>
                 </div>
                 <ul className="space-y-1.5 text-[11px] text-slate-200">
-                  <li className="flex items-center gap-1.5"><Check size={13} className="text-amber-400 shrink-0" /> 5,000+ Students &amp; Unlimited Branches</li>
-                  <li className="flex items-center gap-1.5"><Check size={13} className="text-amber-400 shrink-0" /> Play Store App (Own Name &amp; Logo)</li>
-                  <li className="flex items-center gap-1.5"><Check size={13} className="text-amber-400 shrink-0" /> On-Site Training &amp; Data Migration</li>
-                  <li className="flex items-center gap-1.5"><Check size={13} className="text-amber-400 shrink-0" /> Custom .com/.in + All Elite Powers</li>
+                  <li className="flex items-center gap-1.5"><Check size={13} className="text-amber-400 shrink-0" /> 2,000+ Students &amp; Unlimited Branches</li>
+                  <li className="flex items-center gap-1.5"><Check size={13} className="text-amber-400 shrink-0" /> Own Domain + Brand Play Store APK</li>
+                  <li className="flex items-center gap-1.5"><Check size={13} className="text-amber-400 shrink-0" /> On-Site Training &amp; 100% Data Migration</li>
+                  <li className="flex items-center gap-1.5"><Check size={13} className="text-amber-400 shrink-0" /> Agent Scale: ₹2L Yr1 → ₹4L Yr5+ Cap</li>
                 </ul>
               </div>
               <button
                 type="button"
-                onClick={() => handleInitiateBuy("supreme")}
-                className="mt-4 w-full py-2.5 rounded-xl bg-gradient-to-r from-rose-600 to-amber-500 hover:from-rose-700 hover:to-amber-600 text-white text-xs font-black transition cursor-pointer"
+                onClick={() => handleInitiateBuy("ultra")}
+                className="mt-4 w-full py-2.5 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-black transition cursor-pointer whitespace-nowrap"
               >
-                Book Supreme (₹2,00,000/yr)
+                Book ULTRA ({fmtINR(ultraTotal)}/yr)
               </button>
             </div>
           </div>
         </div>
 
         {/* Comparison Table Accordion */}
-        <div className="bg-white dark:bg-slate-900 rounded-xl border border-slate-200/80 dark:border-slate-800 overflow-hidden shadow-xs">
+        <div className="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 overflow-hidden">
           <button
-            onClick={() => setShowCompare(v => !v)}
+            type="button"
+            onClick={() => setShowCompare((v) => !v)}
             className="w-full flex items-center justify-between px-3.5 py-2.5 cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800/40 transition"
           >
             <p className="text-xs font-black text-slate-800 dark:text-slate-200">
-              Full Yearly Comparison: ⚡ Lite vs 👑 Elite vs 💎 Supreme
+              Full Yearly Comparison: ⚡ Lite vs 👑 Elite vs 💎 ULTRA (with Agent Schedule)
             </p>
             {showCompare ? <ChevronUp size={15} className="text-slate-400" /> : <ChevronDown size={15} className="text-slate-400" />}
           </button>
 
           {showCompare && (
             <div className="border-t border-slate-100 dark:border-slate-800 overflow-x-auto">
-              <table className="w-full text-[11px] border-collapse min-w-[500px]">
+              <table className="w-full text-[11px] border-collapse min-w-[560px]">
                 <thead>
                   <tr className="bg-slate-50 dark:bg-slate-800/60 text-slate-600 dark:text-slate-300 border-b border-slate-200 dark:border-slate-800">
-                    <th className="p-2 text-left font-black">Feature / Yearly Plan</th>
-                    <th className="p-2 text-center font-black text-blue-600">⚡ Lite Yearly</th>
-                    <th className="p-2 text-center font-black text-amber-600">👑 Elite (Hero)</th>
-                    <th className="p-2 text-center font-black text-rose-600">💎 Supreme</th>
+                    <th className="p-2.5 text-left font-black">Feature / Yearly Plan</th>
+                    <th className="p-2.5 text-center font-black text-blue-600">⚡ Lite Yearly</th>
+                    <th className="p-2.5 text-center font-black text-amber-600">👑 Elite (Hero)</th>
+                    <th className="p-2.5 text-center font-black text-rose-600">💎 ULTRA (2,000+)</th>
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-slate-100 dark:divide-slate-800/60">
+                <tbody className="divide-y divide-slate-100 dark:divide-slate-800/60 tabular-nums">
                   <tr>
-                    <td className="p-2 font-bold">Annual Price</td>
-                    <td className="p-2 text-center font-black text-blue-600">₹5,000 – ₹25,313</td>
-                    <td className="p-2 text-center font-black text-amber-600">
-                      <span className="line-through text-slate-400 mr-1">₹1,20,000</span>₹1,00,000 (Renew ₹80k)
+                    <td className="p-2.5 font-bold">Annual Tariff</td>
+                    <td className="p-2.5 text-center font-black text-blue-600">₹20,000 – ₹1,00,000</td>
+                    <td className="p-2.5 text-center font-black text-amber-600">
+                      ₹75,000 – ₹2,00,000 (500 Std: ₹1.2L · Renew ₹1L)
                     </td>
-                    <td className="p-2 text-center font-black text-rose-600">₹2,00,000 Fixed</td>
+                    <td className="p-2.5 text-center font-black text-rose-600">₹3,00,000 (Renew ₹2,00,000)</td>
                   </tr>
-                  {FEATURES.map(f => (
+                  {FEATURES.map((f) => (
                     <tr key={f.id}>
-                      <td className="p-2 text-slate-600 dark:text-slate-400 font-medium">{f.label}</td>
-                      <td className="p-2 text-center">
+                      <td className="p-2.5 text-slate-600 dark:text-slate-400 font-medium">{f.label}</td>
+                      <td className="p-2.5 text-center">
                         {typeof f.lite === "string" ? <span className="font-bold">{f.lite}</span> : f.lite ? <CheckCircle2 size={13} className="text-emerald-500 mx-auto" /> : <XCircle size={13} className="text-slate-300 mx-auto" />}
                       </td>
-                      <td className="p-2 text-center bg-amber-50/30 dark:bg-amber-950/10">
+                      <td className="p-2.5 text-center bg-amber-50/30 dark:bg-amber-950/10">
                         {typeof f.elite === "string" ? <span className="font-black text-amber-700 dark:text-amber-300">{f.elite}</span> : f.elite ? <CheckCircle2 size={13} className="text-emerald-500 mx-auto" /> : <XCircle size={13} className="text-slate-300 mx-auto" />}
                       </td>
-                      <td className="p-2 text-center">
-                        {typeof f.supreme === "string" ? <span className="font-black text-rose-600 dark:text-rose-400">{f.supreme}</span> : f.supreme ? <CheckCircle2 size={13} className="text-emerald-500 mx-auto" /> : <XCircle size={13} className="text-slate-300 mx-auto" />}
+                      <td className="p-2.5 text-center">
+                        {typeof f.ultra === "string" ? <span className="font-black text-rose-600 dark:text-rose-400">{f.ultra}</span> : f.ultra ? <CheckCircle2 size={13} className="text-emerald-500 mx-auto" /> : <XCircle size={13} className="text-slate-300 mx-auto" />}
                       </td>
                     </tr>
                   ))}
+                  <tr className="bg-slate-50 dark:bg-slate-800/40">
+                    <td colSpan={4} className="p-2.5 text-[11px] text-slate-600 dark:text-slate-300">
+                      <strong>ULTRA Optional Dedicated Agent Schedule:</strong>{" "}
+                      {ULTRA_AGENT_SCHEDULE.map((r) => `${r.label}: ERP ${fmtINR(r.erp)} + Agent ${fmtINR(r.agent)} (${fmtINR(r.total)})`).join("  ·  ")}
+                    </td>
+                  </tr>
                 </tbody>
               </table>
             </div>
@@ -560,7 +611,7 @@ export const SchoolPlanView: React.FC<Props> = ({ school, schoolId, adminUid, on
         </div>
 
         {/* Custom Message Box */}
-        <div className="bg-white dark:bg-slate-900 rounded-xl border border-slate-200/80 dark:border-slate-800 p-3 shadow-xs">
+        <div className="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 p-3">
           <div className="flex items-center gap-1.5 mb-1.5">
             <MessageSquare size={14} className="text-indigo-600 dark:text-indigo-400" />
             <p className="text-xs font-black text-slate-800 dark:text-slate-100">
@@ -578,12 +629,13 @@ export const SchoolPlanView: React.FC<Props> = ({ school, schoolId, adminUid, on
             <div className="space-y-1.5">
               <textarea
                 value={contactMsg}
-                onChange={e => setContactMsg(e.target.value)}
-                placeholder="Jaise: Hamare 2 branches hain, Elite Yearly plan activate karna hai."
+                onChange={(e) => setContactMsg(e.target.value)}
+                placeholder="Jaise: Hamare 500 students hain, Elite Yearly plan activate karna hai."
                 rows={2}
                 className="w-full px-2.5 py-1.5 text-xs border border-slate-200 dark:border-slate-700 rounded-lg bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-white placeholder:text-slate-400 resize-none focus:outline-none focus:ring-1 focus:ring-indigo-400"
               />
               <button
+                type="button"
                 onClick={sendRequest}
                 disabled={sending || !contactMsg.trim()}
                 className="w-full py-2 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white rounded-lg text-xs font-black transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
@@ -602,10 +654,10 @@ export const SchoolPlanView: React.FC<Props> = ({ school, schoolId, adminUid, on
           <div className="bg-white dark:bg-slate-900 rounded-2xl max-w-sm w-full border border-slate-200 dark:border-slate-800 shadow-2xl overflow-hidden flex flex-col">
             <div className={`p-3.5 text-white flex items-center justify-between ${
               buyingPlan.edition === "elite"
-                ? "bg-gradient-to-r from-amber-600 to-orange-600"
-                : buyingPlan.edition === "supreme"
-                ? "bg-gradient-to-r from-rose-600 to-pink-600"
-                : "bg-gradient-to-r from-blue-700 to-indigo-700"
+                ? "bg-amber-600"
+                : buyingPlan.edition === "ultra"
+                ? "bg-rose-600"
+                : "bg-blue-700"
             }`}>
               <div className="flex items-center gap-2">
                 {buyingPlan.isElite ? <Crown size={18} /> : <Zap size={18} />}
@@ -615,6 +667,7 @@ export const SchoolPlanView: React.FC<Props> = ({ school, schoolId, adminUid, on
                 </div>
               </div>
               <button
+                type="button"
                 onClick={() => setBuyingPlan(null)}
                 className="p-1 rounded-full bg-white/20 hover:bg-white/30 text-white cursor-pointer"
               >
@@ -633,12 +686,14 @@ export const SchoolPlanView: React.FC<Props> = ({ school, schoolId, adminUid, on
                     Request Super Admin ko bhej di gayi hai. Instant activation ke liye WhatsApp par share karein.
                   </p>
                   <button
+                    type="button"
                     onClick={openWhatsAppCheckout}
                     className="w-full py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-black flex items-center justify-center gap-1.5 cursor-pointer"
                   >
                     <MessageSquare size={15} /> WhatsApp for Activation
                   </button>
                   <button
+                    type="button"
                     onClick={() => setBuyingPlan(null)}
                     className="w-full py-1 text-slate-500 text-[11px] font-bold cursor-pointer"
                   >
@@ -647,14 +702,14 @@ export const SchoolPlanView: React.FC<Props> = ({ school, schoolId, adminUid, on
                 </div>
               ) : (
                 <>
-                  <div className="bg-slate-50 dark:bg-slate-800/80 p-3 rounded-xl border border-slate-200 dark:border-slate-700 space-y-1.5 text-xs">
+                  <div className="bg-slate-50 dark:bg-slate-800/80 p-3 rounded-xl border border-slate-200 dark:border-slate-700 space-y-1.5 text-xs tabular-nums">
                     <div className="flex justify-between">
                       <span className="text-slate-500">School:</span>
                       <span className="font-bold truncate max-w-[170px]">{school?.name || "School"}</span>
                     </div>
                     <div className="flex justify-between">
                       <span className="text-slate-500">Students Limit:</span>
-                      <span className="font-bold">{buyingPlan.maxStudents >= 5000 ? "5,000+" : buyingPlan.maxStudents}</span>
+                      <span className="font-bold">{buyingPlan.maxStudents >= 5000 ? "5,000+" : buyingPlan.maxStudents.toLocaleString("en-IN")}</span>
                     </div>
                     <div className="flex justify-between">
                       <span className="text-slate-500">Branches Limit:</span>
@@ -663,7 +718,7 @@ export const SchoolPlanView: React.FC<Props> = ({ school, schoolId, adminUid, on
                     <div className="border-t border-slate-200 dark:border-slate-700 pt-1.5 flex justify-between items-center">
                       <span className="font-black">Yearly Fee:</span>
                       <span className="text-base font-black text-emerald-600 dark:text-emerald-400">
-                        ₹{buyingPlan.amount.toLocaleString("en-IN")}
+                        {fmtINR(buyingPlan.amount)}
                       </span>
                     </div>
                   </div>

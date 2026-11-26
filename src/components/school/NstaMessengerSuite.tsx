@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef } from "react";
+import { createPortal } from "react-dom";
 import { toast } from "sonner";
 import { useBackHandler } from "../../utils/backNavigation";
 import {
@@ -383,6 +384,7 @@ export const NstaMessengerSuite: React.FC<Props> = ({
   const [homeSearchQuery, setHomeSearchQuery] = useState("");
   const [homeFilter, setHomeFilter] = useState<"ALL" | "UNREAD" | "GROUPS" | "TEACHERS" | "FRIENDS" | "MONITOR" | "CALLS">("ALL");
   const [callHistoryFilter, setCallHistoryFilter] = useState<"ALL" | "OUTGOING" | "INCOMING" | "MISSED">("ALL");
+  const [callRoleFilter, setCallRoleFilter] = useState<"ALL" | "PARENT" | "TEACHER" | "STAFF">("ALL");
   const [recentCallSessions, setRecentCallSessions] = useState<StoredCallSessionRecord[]>([]);
   const [isLoadingCallHistory, setIsLoadingCallHistory] = useState<boolean>(false);
   const [allSchoolMsgs, setAllSchoolMsgs] = useState<NstaMessage[]>([]);
@@ -390,6 +392,12 @@ export const NstaMessengerSuite: React.FC<Props> = ({
   const [friendChatEnabled, setFriendChatEnabled] = useState<boolean>(true);
   const [selectedFriendId, setSelectedFriendId] = useState<string>("");
   const [selectedMonitorPairKey, setSelectedMonitorPairKey] = useState<string>("");
+
+  useEffect(() => {
+    if (currentUserRole !== "ADMIN" && homeFilter === "MONITOR") {
+      setHomeFilter("ALL");
+    }
+  }, [currentUserRole, homeFilter]);
 
   useEffect(() => {
     if (isHomeSearchOpen) {
@@ -1045,10 +1053,10 @@ export const NstaMessengerSuite: React.FC<Props> = ({
     }
     const promise = (async () => {
       try {
-        const isSmallPng = (mime === "image/png" || name.endsWith(".png")) && file.size <= 220 * 1024;
-        let blob = await compressImageToBlob(file, 1280, 1280, 0.78, isSmallPng);
-        if (blob.size > 380 * 1024) {
-          blob = await compressImageToBlob(blob, 1024, 1024, 0.68, false);
+        const isSmallPng = (mime === "image/png" || name.endsWith(".png")) && file.size <= 260 * 1024;
+        let blob = await compressImageToBlob(file, 1600, 1600, 0.88, isSmallPng);
+        if (blob.size > 750 * 1024) {
+          blob = await compressImageToBlob(blob, 1440, 1440, 0.82, false);
         }
         if (blob.size > 0 && blob.size < file.size) {
           const outName =
@@ -2547,6 +2555,9 @@ export const NstaMessengerSuite: React.FC<Props> = ({
     peerAvatarBg: string;
     canCallBack: boolean;
     roomKey?: string;
+    isParentCall?: boolean;
+    isTeacherCall?: boolean;
+    isStaffCall?: boolean;
   };
 
   const formatHistoryDuration = (sec?: number): string => {
@@ -2938,6 +2949,23 @@ export const NstaMessengerSuite: React.FC<Props> = ({
       });
       if (!info.visible) continue;
 
+      const roleFlags =
+        m.threadType === "CLASS_GROUP" || cd.mode === "group"
+          ? { isParentCall: false, isTeacherCall: false, isStaffCall: false }
+          : m.threadType === "STUDENT_CHAT"
+          ? { isParentCall: true, isTeacherCall: false, isStaffCall: false }
+          : m.threadType === "SCHOOL_DESK"
+          ? currentUserRole === "STUDENT"
+            ? { isParentCall: false, isTeacherCall: false, isStaffCall: true }
+            : { isParentCall: true, isTeacherCall: false, isStaffCall: false }
+          : currentUserRole === "STUDENT"
+          ? { isParentCall: false, isTeacherCall: true, isStaffCall: false }
+          : currentUserRole === "TEACHER"
+          ? m.studentId === "STAFF_ADMIN"
+            ? { isParentCall: false, isTeacherCall: false, isStaffCall: true }
+            : { isParentCall: true, isTeacherCall: false, isStaffCall: false }
+          : { isParentCall: false, isTeacherCall: true, isStaffCall: true };
+
       byCallId.set(cid, {
         id: m.id,
         callId: cid,
@@ -2961,6 +2989,7 @@ export const NstaMessengerSuite: React.FC<Props> = ({
         peerAvatarBg: info.peerAvatarBg,
         canCallBack: info.canCallBack,
         roomKey: m.threadType === "CLASS_GROUP" ? `class_${m.classId || "general"}` : undefined,
+        ...roleFlags,
       });
     }
 
@@ -3022,6 +3051,23 @@ export const NstaMessengerSuite: React.FC<Props> = ({
       });
       if (!info.visible) continue;
 
+      const recRoleFlags =
+        threadType === "CLASS_GROUP" || rec.mode === "group"
+          ? { isParentCall: false, isTeacherCall: false, isStaffCall: false }
+          : threadType === "STUDENT_CHAT"
+          ? { isParentCall: true, isTeacherCall: false, isStaffCall: false }
+          : threadType === "SCHOOL_DESK"
+          ? currentUserRole === "STUDENT"
+            ? { isParentCall: false, isTeacherCall: false, isStaffCall: true }
+            : { isParentCall: true, isTeacherCall: false, isStaffCall: false }
+          : currentUserRole === "STUDENT"
+          ? { isParentCall: false, isTeacherCall: true, isStaffCall: false }
+          : currentUserRole === "TEACHER"
+          ? resolvedCtxStudentId === "STAFF_ADMIN"
+            ? { isParentCall: false, isTeacherCall: false, isStaffCall: true }
+            : { isParentCall: true, isTeacherCall: false, isStaffCall: false }
+          : { isParentCall: false, isTeacherCall: true, isStaffCall: true };
+
       byCallId.set(rec.callId, {
         id: rec.callId,
         callId: rec.callId,
@@ -3045,6 +3091,7 @@ export const NstaMessengerSuite: React.FC<Props> = ({
         peerAvatarBg: info.peerAvatarBg,
         canCallBack: info.canCallBack,
         roomKey: threadType === "CLASS_GROUP" ? `class_${ctx?.classId || rec.classId || "general"}` : undefined,
+        ...recRoleFlags,
       });
     }
 
@@ -3069,6 +3116,14 @@ export const NstaMessengerSuite: React.FC<Props> = ({
     friendChatEnabled,
   ]);
 
+  const missedCallsCount = useMemo(
+    () =>
+      callHistoryEntries.filter(
+        (entry) => entry.status === "missed" || entry.status === "rejected"
+      ).length,
+    [callHistoryEntries]
+  );
+
   const filteredCallHistory = useMemo(() => {
     const q = homeSearchQuery.trim().toLowerCase();
     return callHistoryEntries.filter((entry) => {
@@ -3087,6 +3142,9 @@ export const NstaMessengerSuite: React.FC<Props> = ({
       ) {
         return false;
       }
+      if (callRoleFilter === "PARENT" && !entry.isParentCall) return false;
+      if (callRoleFilter === "TEACHER" && !entry.isTeacherCall) return false;
+      if (callRoleFilter === "STAFF" && !entry.isStaffCall) return false;
       if (!q) return true;
       return (
         entry.peerName.toLowerCase().includes(q) ||
@@ -3094,7 +3152,7 @@ export const NstaMessengerSuite: React.FC<Props> = ({
         entry.status.toLowerCase().includes(q)
       );
     });
-  }, [callHistoryEntries, callHistoryFilter, homeSearchQuery]);
+  }, [callHistoryEntries, callHistoryFilter, callRoleFilter, homeSearchQuery]);
 
   const handleOpenCallThread = (entry: CallHistoryEntry) => {
     const tab: "school" | "class" | "teacher" | "friend" =
@@ -3769,6 +3827,14 @@ export const NstaMessengerSuite: React.FC<Props> = ({
         throw new Error("Camera shuru nahi ho saka.");
       }
 
+      try {
+        const track = stream.getVideoTracks()[0];
+        const caps: any = track?.getCapabilities?.();
+        if (caps?.focusMode?.includes?.("continuous")) {
+          await track.applyConstraints({ advanced: [{ focusMode: "continuous" } as any] });
+        }
+      } catch {}
+
       inAppCameraStreamRef.current = stream;
       if (inAppCameraVideoRef.current) {
         inAppCameraVideoRef.current.srcObject = stream;
@@ -3791,11 +3857,44 @@ export const NstaMessengerSuite: React.FC<Props> = ({
     startInAppCamera(nextMode);
   };
 
-  const captureInAppPhoto = () => {
+  const finishCapturedCameraFile = (blob: Blob) => {
+    const file = new File([blob], `camera_snap_${Date.now()}.jpg`, { type: blob.type || "image/jpeg" });
+    if (imagePreviewUrl) {
+      try { URL.revokeObjectURL(imagePreviewUrl); } catch {}
+    }
+    const preview = URL.createObjectURL(blob);
+    setSelectedImageFile(file);
+    setImagePreviewUrl(preview);
+    setImageCaption("");
+    preparePrecompressedImage(file);
+    stopInAppCamera();
+  };
+
+  const captureInAppPhoto = async () => {
     const video = inAppCameraVideoRef.current;
     const canvas = inAppCameraCanvasRef.current;
+    const stream = inAppCameraStreamRef.current;
     if (!video || !canvas) return;
 
+    // 1. Prefer hardware ImageCapture.takePhoto() on rear camera for full-sensor sharp output
+    if (cameraFacingMode === "environment" && stream && typeof (window as any).ImageCapture === "function") {
+      try {
+        const track = stream.getVideoTracks()[0];
+        if (track && track.readyState === "live") {
+          const ic = new (window as any).ImageCapture(track);
+          const photoBlob: Blob = await Promise.race([
+            ic.takePhoto(),
+            new Promise<Blob>((_, reject) => setTimeout(() => reject(new Error("takePhoto timeout")), 1800)),
+          ]);
+          if (photoBlob && photoBlob.size > 10000) {
+            finishCapturedCameraFile(photoBlob);
+            return;
+          }
+        }
+      } catch {}
+    }
+
+    // 2. Fallback: high-resolution video frame capture
     const width = video.videoWidth || 1280;
     const height = video.videoHeight || 720;
     canvas.width = width;
@@ -3804,25 +3903,22 @@ export const NstaMessengerSuite: React.FC<Props> = ({
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = "high";
     if (cameraFacingMode === "user") {
+      ctx.save();
       ctx.translate(width, 0);
       ctx.scale(-1, 1);
+      ctx.drawImage(video, 0, 0, width, height);
+      ctx.restore();
+    } else {
+      ctx.drawImage(video, 0, 0, width, height);
     }
-    ctx.drawImage(video, 0, 0, width, height);
 
     canvas.toBlob((blob) => {
       if (!blob) return;
-      const file = new File([blob], `camera_snap_${Date.now()}.jpg`, { type: "image/jpeg" });
-      if (imagePreviewUrl) {
-        try { URL.revokeObjectURL(imagePreviewUrl); } catch {}
-      }
-      const preview = URL.createObjectURL(blob);
-      setSelectedImageFile(file);
-      setImagePreviewUrl(preview);
-      setImageCaption("");
-      preparePrecompressedImage(file);
-      stopInAppCamera();
-    }, "image/jpeg", 0.80);
+      finishCapturedCameraFile(blob);
+    }, "image/jpeg", 0.94);
   };
 
   useEffect(() => {
@@ -4656,14 +4752,17 @@ export const NstaMessengerSuite: React.FC<Props> = ({
                       },
                     ] as const)
                   : []),
-                { id: "CALLS", label: "Call History" },
+                {
+                  id: "CALLS",
+                  label: missedCallsCount > 0 ? `Call History (${missedCallsCount} Missed)` : "Call History",
+                },
               ] as const
             ).map((f) => (
               <button
                 key={f.id}
                 type="button"
                 onClick={() => setHomeFilter(f.id)}
-                className={`px-3 py-1.5 rounded-lg text-xs font-bold whitespace-nowrap shrink-0 cursor-pointer transition inline-flex items-center gap-1.5 ${
+                className={`min-h-[36px] px-3 py-1.5 rounded-lg text-xs font-bold whitespace-nowrap shrink-0 cursor-pointer transition inline-flex items-center gap-1.5 ${
                   homeFilter === f.id
                     ? f.id === "MONITOR"
                       ? "bg-amber-600 text-white"
@@ -4684,33 +4783,64 @@ export const NstaMessengerSuite: React.FC<Props> = ({
         <div className="flex-1 overflow-y-auto divide-y divide-slate-800/70">
           {homeFilter === "CALLS" ? (
             <>
-              <div className="px-3 py-2 bg-slate-900/40 flex items-center justify-between gap-2">
+              <div className="px-3 py-2 bg-slate-900/40 space-y-2">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-1 overflow-x-auto no-scrollbar">
+                    {(
+                      [
+                        { id: "ALL", label: "All" },
+                        { id: "OUTGOING", label: "Outgoing" },
+                        { id: "INCOMING", label: "Incoming" },
+                        {
+                          id: "MISSED",
+                          label: missedCallsCount > 0 ? `Missed (${missedCallsCount})` : "Missed",
+                        },
+                      ] as const
+                    ).map((sub) => (
+                      <button
+                        key={sub.id}
+                        type="button"
+                        onClick={() => setCallHistoryFilter(sub.id)}
+                        className={`min-h-[34px] px-2.5 py-1 rounded-md text-[11px] font-bold whitespace-nowrap cursor-pointer transition ${
+                          callHistoryFilter === sub.id
+                            ? sub.id === "MISSED"
+                              ? "bg-rose-600/20 text-rose-300 border border-rose-500/40"
+                              : "bg-emerald-600/20 text-emerald-400 border border-emerald-500/40"
+                            : "bg-slate-900 text-slate-400 hover:text-white border border-slate-800"
+                        }`}
+                      >
+                        {sub.label}
+                      </button>
+                    ))}
+                  </div>
+                  <span className="text-[11px] font-mono tabular-nums text-slate-500 shrink-0">
+                    {filteredCallHistory.length} {filteredCallHistory.length === 1 ? "Call" : "Calls"}
+                  </span>
+                </div>
+
                 <div className="flex items-center gap-1 overflow-x-auto no-scrollbar">
                   {(
                     [
-                      { id: "ALL", label: "All" },
-                      { id: "OUTGOING", label: "Outgoing" },
-                      { id: "INCOMING", label: "Incoming" },
-                      { id: "MISSED", label: "Missed" },
+                      { id: "ALL", label: "All Roles" },
+                      { id: "PARENT", label: "Parent / Student" },
+                      { id: "TEACHER", label: "Teacher" },
+                      { id: "STAFF", label: "Staff / Office" },
                     ] as const
-                  ).map((sub) => (
+                  ).map((roleSub) => (
                     <button
-                      key={sub.id}
+                      key={roleSub.id}
                       type="button"
-                      onClick={() => setCallHistoryFilter(sub.id)}
-                      className={`px-2.5 py-1 rounded-md text-[11px] font-bold whitespace-nowrap cursor-pointer transition ${
-                        callHistoryFilter === sub.id
-                          ? "bg-emerald-600/20 text-emerald-400 border border-emerald-500/40"
+                      onClick={() => setCallRoleFilter(roleSub.id)}
+                      className={`min-h-[32px] px-2.5 py-1 rounded-md text-[11px] font-bold whitespace-nowrap cursor-pointer transition ${
+                        callRoleFilter === roleSub.id
+                          ? "bg-sky-600/20 text-sky-300 border border-sky-500/40"
                           : "bg-slate-900 text-slate-400 hover:text-white border border-slate-800"
                       }`}
                     >
-                      {sub.label}
+                      {roleSub.label}
                     </button>
                   ))}
                 </div>
-                <span className="text-[11px] font-mono text-slate-500 shrink-0">
-                  {filteredCallHistory.length} {filteredCallHistory.length === 1 ? "Call" : "Calls"}
-                </span>
               </div>
 
               {isLoadingCallHistory && filteredCallHistory.length === 0 ? (
@@ -4798,6 +4928,7 @@ export const NstaMessengerSuite: React.FC<Props> = ({
                       <div className="flex-1 min-w-0 space-y-0.5">
                         <div className="flex items-center justify-between gap-2">
                           <span
+                            title={entry.peerName}
                             className={`text-sm font-bold truncate ${
                               isMissedOrRejected ? "text-rose-400" : "text-white"
                             }`}
@@ -4828,18 +4959,20 @@ export const NstaMessengerSuite: React.FC<Props> = ({
                           </span>
                         </div>
 
-                        <p className="text-[11px] text-slate-500 truncate">{entry.peerSubtitle}</p>
+                        <p title={entry.peerSubtitle} className="text-[11px] text-slate-500 truncate">
+                          {entry.peerSubtitle}
+                        </p>
                       </div>
 
                       {entry.canCallBack && canUseEliteCalls && (
                         <div
-                          className="flex items-center gap-1 shrink-0"
+                          className="flex items-center gap-1.5 shrink-0"
                           onClick={(e) => e.stopPropagation()}
                         >
                           <button
                             type="button"
                             onClick={() => void handleCallFromHistory(entry, "voice")}
-                            className="w-9 h-9 rounded-full bg-slate-900 hover:bg-emerald-600/20 text-emerald-400 border border-slate-800 flex items-center justify-center transition cursor-pointer"
+                            className="min-h-[40px] min-w-[40px] rounded-full bg-slate-900 hover:bg-emerald-600/20 text-emerald-400 border border-slate-800 flex items-center justify-center transition cursor-pointer"
                             title="Voice Call Again"
                           >
                             <Phone className="w-4 h-4" />
@@ -4847,7 +4980,7 @@ export const NstaMessengerSuite: React.FC<Props> = ({
                           <button
                             type="button"
                             onClick={() => void handleCallFromHistory(entry, "video")}
-                            className="w-9 h-9 rounded-full bg-slate-900 hover:bg-emerald-600/20 text-emerald-400 border border-slate-800 flex items-center justify-center transition cursor-pointer"
+                            className="min-h-[40px] min-w-[40px] rounded-full bg-slate-900 hover:bg-emerald-600/20 text-emerald-400 border border-slate-800 flex items-center justify-center transition cursor-pointer"
                             title="Video Call Again"
                           >
                             <Video className="w-4 h-4" />
@@ -4994,7 +5127,7 @@ export const NstaMessengerSuite: React.FC<Props> = ({
 
                       <div className="flex-1 min-w-0 space-y-0.5">
                         <div className="flex items-center justify-between gap-2">
-                          <span className="text-sm font-bold text-white truncate">
+                          <span title={item.title} className="text-sm font-bold text-white truncate">
                             {item.title}
                           </span>
                           <span
@@ -5007,7 +5140,7 @@ export const NstaMessengerSuite: React.FC<Props> = ({
                         </div>
 
                         <div className="flex items-center justify-between gap-2">
-                          <p className="text-xs text-slate-400 truncate">
+                          <p title={item.lastMessageText} className="text-xs text-slate-400 truncate">
                             {item.lastMessageText}
                           </p>
                           {item.unreadCount > 0 && (
@@ -5017,7 +5150,7 @@ export const NstaMessengerSuite: React.FC<Props> = ({
                           )}
                         </div>
 
-                        <p className="text-[11px] text-slate-500 truncate">
+                        <p title={item.subtitle} className="text-[11px] text-slate-500 truncate">
                           {item.subtitle}
                           {item.pinned ? " · Pinned" : ""}
                         </p>
@@ -5219,7 +5352,26 @@ export const NstaMessengerSuite: React.FC<Props> = ({
               }}
               className={`min-w-0 flex-1 ${activeTab === "class" ? "cursor-pointer" : ""}`}
             >
-              <h3 className="text-white font-bold text-sm tracking-tight truncate leading-snug">
+              <h3
+                title={
+                  activeTab === "class"
+                    ? `${activeClass?.name || "Class Group"}${activeClass?.section ? ` (${activeClass.section})` : ""}`
+                    : activeTab === "school"
+                    ? currentUserRole === "ADMIN" && selectedStudentId && selectedStudentId !== "all"
+                      ? activeStudent?.name || "School Desk"
+                      : "School Official Desk"
+                    : activeTab === "friend"
+                    ? currentUserRole === "ADMIN"
+                      ? activeMonitorPairInfo?.title || "Student Chat Monitor"
+                      : activeFriend?.name || "Classmate Chat"
+                    : currentUserRole === "TEACHER"
+                    ? selectedStudentId === "STAFF_ADMIN"
+                      ? "School Administration"
+                      : activeStudent?.name || "Student Doubt"
+                    : activeTeacher?.name || "Teacher"
+                }
+                className="text-white font-bold text-sm tracking-tight truncate leading-snug"
+              >
                 {activeTab === "class"
                   ? `${activeClass?.name || "Class Group"}${activeClass?.section ? ` (${activeClass.section})` : ""}`
                   : activeTab === "school"
@@ -8036,133 +8188,136 @@ export const NstaMessengerSuite: React.FC<Props> = ({
           </div>
         </div>
       )}
-      {/* ── MODAL: IN-APP LIVE CAMERA VIEWFINDER ── */}
-      {showInAppCamera && (
-        <div className="fixed inset-0 z-50 bg-black flex flex-col justify-between select-none animate-in fade-in duration-200">
-          {/* Top Bar */}
-          <div className="relative z-10 flex items-center justify-between p-4 bg-gradient-to-b from-black/80 via-black/40 to-transparent">
-            <button
-              type="button"
-              onClick={stopInAppCamera}
-              className="w-10 h-10 rounded-full bg-black/60 backdrop-blur-md text-white hover:bg-black/80 flex items-center justify-center cursor-pointer transition active:scale-95"
-              title="Camera band karein"
-            >
-              <X className="w-5 h-5" />
-            </button>
+      {/* ── MODAL: IN-APP LIVE CAMERA VIEWFINDER (Portal above all bottom navbars + isolated dark UI) ── */}
+      {showInAppCamera &&
+        typeof document !== "undefined" &&
+        createPortal(
+          <div className="nst-isolated-modal fixed inset-0 z-[99999] bg-black flex flex-col justify-between select-none animate-in fade-in duration-200">
+            {/* Top Bar */}
+            <div className="relative z-10 flex items-center justify-between px-4 pt-[max(1rem,env(safe-area-inset-top))] pb-3 bg-gradient-to-b from-black/85 via-black/45 to-transparent">
+              <button
+                type="button"
+                onClick={stopInAppCamera}
+                className="w-10 h-10 rounded-full bg-slate-900/80 backdrop-blur-md border border-white/20 text-white hover:bg-slate-800 flex items-center justify-center cursor-pointer transition active:scale-95"
+                title="Camera band karein"
+              >
+                <X className="w-5 h-5 text-white" />
+              </button>
 
-            <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-black/60 backdrop-blur-md border border-white/10 text-xs font-bold text-white">
-              <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-              <span>Camera</span>
+              <div className="flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-slate-900/80 backdrop-blur-md border border-white/15 text-xs font-bold text-white">
+                <Camera className="w-3.5 h-3.5 text-emerald-400" />
+                <span>Camera</span>
+              </div>
+
+              <button
+                type="button"
+                onClick={flipInAppCamera}
+                className="w-10 h-10 rounded-full bg-slate-900/80 backdrop-blur-md border border-white/20 text-white hover:bg-slate-800 flex items-center justify-center cursor-pointer transition active:scale-95"
+                title="Camera badlein (Flip)"
+              >
+                <RefreshCw className="w-5 h-5 text-white" />
+              </button>
             </div>
 
-            <button
-              type="button"
-              onClick={flipInAppCamera}
-              className="w-10 h-10 rounded-full bg-black/60 backdrop-blur-md text-white hover:bg-black/80 flex items-center justify-center cursor-pointer transition active:scale-95"
-              title="Camera badlein (Flip)"
-            >
-              <RefreshCw className="w-5 h-5" />
-            </button>
-          </div>
+            {/* Viewfinder Window */}
+            <div className="relative flex-1 w-full min-h-0 flex items-center justify-center bg-black overflow-hidden">
+              <video
+                ref={inAppCameraVideoRef}
+                autoPlay
+                playsInline
+                muted
+                className={`w-full h-full object-contain transition-transform ${
+                  cameraFacingMode === "user" ? "-scale-x-100" : ""
+                }`}
+              />
+              <canvas ref={inAppCameraCanvasRef} className="hidden" />
 
-          {/* Viewfinder Window */}
-          <div className="relative flex-1 w-full h-full flex items-center justify-center bg-black overflow-hidden">
-            <video
-              ref={inAppCameraVideoRef}
-              autoPlay
-              playsInline
-              muted
-              className={`w-full h-full object-cover transition-transform ${
-                cameraFacingMode === "user" ? "-scale-x-100" : ""
-              }`}
-            />
-            <canvas ref={inAppCameraCanvasRef} className="hidden" />
-
-            {/* Loading state */}
-            {isCameraStarting && (
-              <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/70 gap-3 z-10">
-                <div className="w-10 h-10 border-3 border-emerald-500 border-t-transparent rounded-full animate-spin" />
-                <p className="text-sm font-bold text-white">Camera shuru ho raha hai...</p>
-              </div>
-            )}
-
-            {/* Camera Error / Permission Fallback */}
-            {cameraError && (
-              <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/90 p-6 text-center gap-4 z-20">
-                <div className="w-14 h-14 rounded-2xl bg-amber-500/20 text-amber-400 border border-amber-500/30 flex items-center justify-center">
-                  <Camera className="w-7 h-7" />
+              {/* Loading state */}
+              {isCameraStarting && (
+                <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/75 gap-3 z-10">
+                  <div className="w-10 h-10 border-3 border-emerald-500 border-t-transparent rounded-full animate-spin" />
+                  <p className="text-sm font-bold text-white">Camera shuru ho raha hai...</p>
                 </div>
-                <div className="max-w-xs space-y-1">
-                  <h4 className="font-extrabold text-white text-base">Camera Access Blocked</h4>
-                  <p className="text-xs text-slate-300 leading-relaxed">{cameraError}</p>
+              )}
+
+              {/* Camera Error / Permission Fallback */}
+              {cameraError && (
+                <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/90 p-6 text-center gap-4 z-20">
+                  <div className="w-14 h-14 rounded-2xl bg-amber-500/20 text-amber-400 border border-amber-500/30 flex items-center justify-center">
+                    <Camera className="w-7 h-7" />
+                  </div>
+                  <div className="max-w-xs space-y-1">
+                    <h4 className="font-extrabold text-white text-base">Camera Access Blocked</h4>
+                    <p className="text-xs text-slate-300 leading-relaxed">{cameraError}</p>
+                  </div>
+                  <div className="flex flex-col gap-2 w-full max-w-xs">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        stopInAppCamera();
+                        cameraCaptureInputRef.current?.click();
+                      }}
+                      className="w-full py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs transition cursor-pointer active:scale-95"
+                    >
+                      Device Camera Se Photo Lein
+                    </button>
+                    <button
+                      type="button"
+                      onClick={stopInAppCamera}
+                      className="w-full py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold text-xs transition cursor-pointer"
+                    >
+                      Wapas Jayein
+                    </button>
+                  </div>
                 </div>
-                <div className="flex flex-col gap-2 w-full max-w-xs">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      stopInAppCamera();
-                      cameraCaptureInputRef.current?.click();
-                    }}
-                    className="w-full py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs transition cursor-pointer active:scale-95"
-                  >
-                    Device Camera Se Photo Lein 📸
-                  </button>
-                  <button
-                    type="button"
-                    onClick={stopInAppCamera}
-                    className="w-full py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold text-xs transition cursor-pointer"
-                  >
-                    Wapas Jayein
-                  </button>
+              )}
+            </div>
+
+            {/* Bottom Bar: Gallery shortcut + Big Shutter button + Flip button */}
+            <div className="relative z-10 px-6 pt-4 pb-[max(2rem,env(safe-area-inset-bottom))] bg-gradient-to-t from-black via-black/75 to-transparent flex items-center justify-around">
+              {/* Gallery shortcut */}
+              <button
+                type="button"
+                onClick={() => {
+                  stopInAppCamera();
+                  imageInputRef.current?.click();
+                }}
+                className="flex flex-col items-center gap-1.5 text-white hover:text-emerald-300 transition cursor-pointer group active:scale-95"
+                title="Gallery se chunein"
+              >
+                <div className="w-12 h-12 rounded-2xl bg-slate-900/80 group-hover:bg-slate-800 border border-white/20 flex items-center justify-center backdrop-blur-md">
+                  <ImageIcon className="w-6 h-6 text-white" />
                 </div>
-              </div>
-            )}
-          </div>
+                <span className="text-[11px] font-bold text-slate-200">Gallery</span>
+              </button>
 
-          {/* Bottom Bar: Gallery shortcut + Big Shutter button + Flip button */}
-          <div className="relative z-10 p-6 pb-8 bg-gradient-to-t from-black/90 via-black/60 to-transparent flex items-center justify-around">
-            {/* Gallery shortcut */}
-            <button
-              type="button"
-              onClick={() => {
-                stopInAppCamera();
-                imageInputRef.current?.click();
-              }}
-              className="flex flex-col items-center gap-1 text-white/80 hover:text-white transition cursor-pointer group active:scale-95"
-              title="Gallery se chunein"
-            >
-              <div className="w-12 h-12 rounded-2xl bg-white/10 group-hover:bg-white/20 border border-white/20 flex items-center justify-center backdrop-blur-md">
-                <ImageIcon className="w-6 h-6" />
-              </div>
-              <span className="text-[10px] font-bold text-slate-300">Gallery</span>
-            </button>
+              {/* Shutter Capture Button */}
+              <button
+                type="button"
+                onClick={captureInAppPhoto}
+                disabled={isCameraStarting || !!cameraError}
+                className="w-20 h-20 rounded-full border-4 border-white p-1.5 flex items-center justify-center cursor-pointer transition active:scale-90 hover:scale-105 disabled:opacity-40"
+                title="Photo khinchein"
+              >
+                <div className="w-full h-full rounded-full bg-white hover:bg-slate-100 transition shadow-lg shadow-white/30" />
+              </button>
 
-            {/* Shutter Capture Button */}
-            <button
-              type="button"
-              onClick={captureInAppPhoto}
-              disabled={isCameraStarting || !!cameraError}
-              className="w-20 h-20 rounded-full border-4 border-white p-1 flex items-center justify-center cursor-pointer transition active:scale-90 hover:scale-105 disabled:opacity-40"
-              title="Photo khinchein"
-            >
-              <div className="w-full h-full rounded-full bg-white hover:bg-slate-200 transition shadow-lg shadow-white/30" />
-            </button>
-
-            {/* Flip Camera */}
-            <button
-              type="button"
-              onClick={flipInAppCamera}
-              className="flex flex-col items-center gap-1 text-white/80 hover:text-white transition cursor-pointer group active:scale-95"
-              title="Camera switch karein"
-            >
-              <div className="w-12 h-12 rounded-2xl bg-white/10 group-hover:bg-white/20 border border-white/20 flex items-center justify-center backdrop-blur-md">
-                <RefreshCw className="w-6 h-6" />
-              </div>
-              <span className="text-[10px] font-bold text-slate-300">Flip</span>
-            </button>
-          </div>
-        </div>
-      )}
+              {/* Flip Camera */}
+              <button
+                type="button"
+                onClick={flipInAppCamera}
+                className="flex flex-col items-center gap-1.5 text-white hover:text-emerald-300 transition cursor-pointer group active:scale-95"
+                title="Camera switch karein"
+              >
+                <div className="w-12 h-12 rounded-2xl bg-slate-900/80 group-hover:bg-slate-800 border border-white/20 flex items-center justify-center backdrop-blur-md">
+                  <RefreshCw className="w-6 h-6 text-white" />
+                </div>
+                <span className="text-[11px] font-bold text-slate-200">Flip</span>
+              </button>
+            </div>
+          </div>,
+          document.body
+        )}
 
       {/* ── OFFICIAL SCHOOL WELCOME MODAL ── */}
       <SchoolWelcomeModal

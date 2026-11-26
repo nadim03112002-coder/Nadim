@@ -3,7 +3,7 @@ import React, { useState, useEffect } from "react";
 import { getStudents, getExams, getMonthlyAttendance, currentMonthStr, getSchool, getTeachers, getClasses } from "../../school-firebase";
 import type { School, SchoolTeacher, SchoolStudent, ExamEntry } from "../../school-types";
 import { Download, User, Award, Calendar, ChevronLeft } from "lucide-react";
-import { DevelopedByCredit } from "./DevelopedByFooter";
+import { PremiumLoadingState } from "./PremiumLoadingState";
 
 interface Props {
   schoolId: string;
@@ -187,10 +187,14 @@ tr:last-child td{border:none}
   };
 
   if (loading) return (
-    <div className="flex flex-col items-center justify-center h-48 text-slate-400">
-      <p>Loading...</p>
-      <DevelopedByCredit tone="auto" />
-    </div>
+    <PremiumLoadingState
+      title="Preparing Report Card..."
+      subtitle="Compiling exam marks & attendance"
+      tone="auto"
+      variant="section"
+      accent="amber"
+      schoolId={schoolId}
+    />
   );
 
   return (

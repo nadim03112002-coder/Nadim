@@ -15,7 +15,8 @@ import {
 import { auth, logoutUser, getFreshUserData, getUserData, getUserByEmail, getUserByLinkedGoogleUid, saveUserToLive, ensureFirebaseAuthSession } from './firebase';
 import { onAuthStateChanged } from 'firebase/auth';
 import { AppLoadingScreen } from './components/AppLoadingScreen';
-import { DevelopedByCredit } from './components/school/DevelopedByFooter';
+import { PremiumLoadingState } from './components/school/PremiumLoadingState';
+import { persistActiveSchoolBrand } from './utils/activeSchoolBrand';
 import {
   DEFAULT_LIFE_MAKER_SCHOOL,
   DEFAULT_SCHOOL_ID,
@@ -697,9 +698,14 @@ export function App() {
     };
   }, [activePublicSchool?.id, activePublicSchool?.name]);
 
-  // Keep browser document title, manifest link, and PWA meta synced with SCHOOL+ / active school
+  // Keep browser document title, manifest link, cached brand, and PWA meta synced with SCHOOL+ / active school
   useEffect(() => {
     if (!activePublicSchool?.name || typeof document === 'undefined') return;
+    persistActiveSchoolBrand({
+      id: user?.schoolId || activePublicSchool.id,
+      name: user?.schoolName || activePublicSchool.name,
+      tagline: activePublicSchool.tagline || activePublicSchool.websiteConfig?.heroSubheadline || '',
+    });
     const schoolName = activePublicSchool.name.trim();
     const isDefaultAppHome = activePublicSchool.id === DEFAULT_SCHOOL_ID && !urlSchoolParam;
     const brandTitleName = isDefaultAppHome ? 'SCHOOL+' : schoolName;
@@ -1336,20 +1342,13 @@ export function App() {
         <div className="flex-1 flex flex-col">
           <Suspense
             fallback={
-              <div className="flex-1 min-h-full w-full bg-slate-900 flex flex-col items-center justify-center p-8 text-center text-white">
-                <img
-                  src="/branding/schoolplus-splash-logo.png?v=7"
-                  alt="SCHOOL+"
-                  width={512}
-                  height={512}
-                  className="w-[min(86vw,512px)] aspect-square object-contain bg-transparent mb-5 drop-shadow-[0_16px_36px_rgba(0,0,0,0.65)]"
-                />
-                <div className="flex items-center gap-2 text-sm font-bold">
-                  <Loader2 className="w-4 h-4 animate-spin text-emerald-400" />
-                  <span>Verifying Official Document...</span>
-                </div>
-                <DevelopedByCredit tone="dark" />
-              </div>
+              <PremiumLoadingState
+                title="Verifying Official Document..."
+                subtitle="Authenticating certificate & school signature"
+                tone="dark"
+                variant="fullscreen"
+                accent="emerald"
+              />
             }
           >
             <DocumentVerificationView
@@ -1406,20 +1405,15 @@ export function App() {
         )}
         <Suspense
           fallback={
-            <div className="min-h-screen min-h-[100dvh] w-full bg-slate-950 flex flex-col items-center justify-center p-8 text-center text-white">
-              <img
-                src="/branding/schoolplus-splash-logo.png?v=7"
-                alt="SCHOOL+"
-                width={512}
-                height={512}
-                className="w-[min(86vw,512px)] aspect-square object-contain bg-transparent mb-5 drop-shadow-[0_16px_36px_rgba(0,0,0,0.65)]"
-              />
-              <div className="flex items-center gap-2 text-sm font-bold">
-                <Loader2 className="w-4 h-4 animate-spin text-amber-400" />
-                <span>Loading Driver GPS Dashboard...</span>
-              </div>
-              <DevelopedByCredit tone="dark" />
-            </div>
+            <PremiumLoadingState
+              title="Loading Driver GPS Dashboard..."
+              subtitle={driverConsoleParams.route ? `Route: ${driverConsoleParams.route}` : "Connecting live fleet telemetry"}
+              tone="dark"
+              variant="fullscreen"
+              accent="amber"
+              schoolId={driverConsoleParams.schoolId}
+              schoolName={driverConsoleParams.schoolName}
+            />
           }
         >
           <DriverTripConsole
@@ -1481,50 +1475,18 @@ export function App() {
     );
   };
 
-  const renderSchoolLoader = (subtitle: string, lightBg = false) => {
-    const customSchoolLogo = getSavedSchoolLogo(activePublicSchool?.logoUrl, activePublicSchool?.id);
-    const showFullAppLogo = !customSchoolLogo;
-    const fallbackLogo = customSchoolLogo || '/branding/schoolplus-splash-logo.png?v=7';
-    const fallbackName = customSchoolLogo ? (activePublicSchool?.name || 'SCHOOL+') : 'SCHOOL+';
+  const renderSchoolLoader = (subtitle: string, _lightBg = false) => {
     return (
-      <div
-        className={`flex-1 w-full min-h-full flex flex-col items-center justify-center p-6 sm:p-8 text-center ${
-          lightBg ? 'bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-white' : 'bg-slate-950 text-white'
-        }`}
-      >
-        {showFullAppLogo ? (
-          <img
-            src={fallbackLogo}
-            alt="SCHOOL+"
-            width={512}
-            height={512}
-            className="w-[min(86vw,512px)] aspect-square object-contain bg-transparent mb-5 drop-shadow-[0_18px_40px_rgba(0,0,0,0.65)]"
-          />
-        ) : (
-          <div className="w-24 h-24 rounded-2xl p-1.5 bg-white/95 border border-amber-400/40 shadow-[0_0_24px_rgba(245,158,11,0.28)] flex items-center justify-center mb-4">
-            <img
-              src={fallbackLogo}
-              alt={fallbackName}
-              onError={(e) => {
-                const img = e.currentTarget;
-                if (!img.dataset.fallbackApplied) {
-                  img.dataset.fallbackApplied = '1';
-                  img.src = '/branding/schoolplus-splash-logo.png?v=7';
-                }
-              }}
-              className="w-full h-full object-contain rounded-xl"
-            />
-          </div>
-        )}
-        {!showFullAppLogo && (
-          <h3 className="text-base font-black tracking-wide uppercase mb-1">{fallbackName}</h3>
-        )}
-        <div className="flex items-center gap-2 text-xs sm:text-sm font-semibold opacity-80">
-          <Loader2 className="w-4 h-4 animate-spin text-amber-400" />
-          <span>{subtitle}</span>
-        </div>
-        <DevelopedByCredit tone={lightBg ? 'auto' : 'dark'} />
-      </div>
+      <PremiumLoadingState
+        title={subtitle}
+        subtitle="Preparing digital campus workspace"
+        tone="dark"
+        variant="fullscreen"
+        accent="amber"
+        schoolId={user?.schoolId || activePublicSchool?.id}
+        schoolName={user?.schoolName || activePublicSchool?.name}
+        schoolLogoUrl={activePublicSchool?.logoUrl}
+      />
     );
   };
 

@@ -23,7 +23,12 @@ import type {
   FeeCallOutcome,
   SchoolPublicInquiry,
 } from "../../school-types";
-import { saveFeeCallFollowUpBatch } from "../../school-firebase";
+import {
+  saveFeeCallFollowUpBatch,
+  saveSchoolPublicInquiry,
+  updateStudent,
+} from "../../school-firebase";
+import { logAdminAction } from "../../utils/adminAudit";
 import {
   announceIncomingParentCall,
   clearLastNativeIncomingParentCall,
@@ -129,6 +134,9 @@ function addDaysFromTodayYmd(days: number): string {
 const VALID_FEE_CALL_OUTCOMES: readonly FeeCallOutcome[] = [
   "PROMISED_DATE",
   "PAID_CLAIMED",
+  "PARTIAL_PAID",
+  "PAYMENT_REFUSED",
+  "CALLED_TO_SCHOOL",
   "NOT_PICKED",
   "BUSY",
   "SWITCHED_OFF",
@@ -136,6 +144,16 @@ const VALID_FEE_CALL_OUTCOMES: readonly FeeCallOutcome[] = [
   "WRONG_NUMBER",
   "OTHER",
 ];
+
+const FOLLOWUP_REQUIRED_OUTCOMES = new Set<FeeCallOutcome>([
+  "PROMISED_DATE",
+  "PARTIAL_PAID",
+  "NOT_PICKED",
+  "BUSY",
+  "SWITCHED_OFF",
+  "CALLBACK_REQUESTED",
+  "CALLED_TO_SCHOOL",
+]);
 
 function toFeeCallOutcome(value?: string): FeeCallOutcome {
   if (value && (VALID_FEE_CALL_OUTCOMES as readonly string[]).includes(value)) {
@@ -167,10 +185,18 @@ export const IncomingParentCallModal: React.FC<IncomingParentCallModalProps> = (
   const [outcomeInput, setOutcomeInput] = useState<FeeCallOutcome>("PROMISED_DATE");
   const [promiseDateInput, setPromiseDateInput] = useState("");
   const [promisedAmountInput, setPromisedAmountInput] = useState("");
+  const [partialPaidInput, setPartialPaidInput] = useState("");
   const [nextCallDateInput, setNextCallDateInput] = useState("");
   const [noteInput, setNoteInput] = useState("");
   const [saving, setSaving] = useState(false);
   const [showQrModal, setShowQrModal] = useState(false);
+  const [solveConfirmOpen, setSolveConfirmOpen] = useState(false);
+  const [solveReasonInput, setSolveReasonInput] = useState("");
+  const [editingPhone, setEditingPhone] = useState(false);
+  const [phoneInput, setPhoneInput] = useState("");
+  const [unknownEnquiryName, setUnknownEnquiryName] = useState("");
+  const [unknownEnquiryClass, setUnknownEnquiryClass] = useState("");
+  const [savingUnknownEnquiry, setSavingUnknownEnquiry] = useState(false);
 
   const absentSet = useMemo(() => new Set(absentStudentIds), [absentStudentIds]);
 
@@ -214,6 +240,7 @@ export const IncomingParentCallModal: React.FC<IncomingParentCallModalProps> = (
 
         if (matchedStudents.length > 0) {
           const dueMap = new Map<string, { amount: number; months: number }>();
+          const paidMap = new Map<string, number>();
           for (const fee of fees) {
             if (!fee?.studentId) continue;
             if (
@@ -224,10 +251,15 @@ export const IncomingParentCallModal: React.FC<IncomingParentCallModalProps> = (
             ) {
               continue;
             }
+            const isCancelled = String(fee.status || "").toUpperCase() === "CANCELLED" || (fee as { cancelled?: boolean }).cancelled === true;
+            if (isCancelled) continue;
             const isPaid = typeof fee.paid === "boolean" ? fee.paid : fee.status === "paid";
-            if (isPaid) continue;
             const billed = Number(fee.monthlyAmount ?? fee.amount ?? 0);
-            const paidAmt = Number(fee.paidAmount ?? 0);
+            const paidAmt = Number(fee.paidAmount ?? (isPaid ? billed : 0) ?? 0);
+            if (paidAmt > 0) {
+              paidMap.set(fee.studentId, (paidMap.get(fee.studentId) || 0) + paidAmt);
+            }
+            if (isPaid) continue;
             const rem = Number(
               fee.balanceDue !== undefined ? fee.balanceDue : Math.max(0, billed - paidAmt)
             );
@@ -247,11 +279,13 @@ export const IncomingParentCallModal: React.FC<IncomingParentCallModalProps> = (
             const d = stId
               ? dueMap.get(stId) || { amount: 0, months: 0 }
               : { amount: 0, months: 0 };
+            const paidTotal = stId ? paidMap.get(stId) || 0 : 0;
             return {
               id: stId,
               name: String(st.name || "").trim(),
               classLabel: clsLabel,
               dueAmount: d.amount,
+              paidAmount: paidTotal,
               unpaidMonthsCount: d.months,
             };
           });
@@ -314,6 +348,7 @@ export const IncomingParentCallModal: React.FC<IncomingParentCallModalProps> = (
           });
           const relationLabel = onlyMother ? "Mother" : fatherName ? "Father" : "Parent";
           const totalDue = children.reduce((sum, c) => sum + c.dueAmount, 0);
+          const totalPaid = children.reduce((sum, c) => sum + Number(c.paidAmount || 0), 0);
           const totalMonths = children.reduce((sum, c) => sum + c.unpaidMonthsCount, 0);
 
           let studentSummary = "";
@@ -349,6 +384,7 @@ export const IncomingParentCallModal: React.FC<IncomingParentCallModalProps> = (
             studentIds,
             classNames: Array.from(new Set(children.map((c) => c.classLabel).filter(Boolean))),
             dueAmount: totalDue,
+            paidAmount: totalPaid,
             unpaidMonthsCount: totalMonths,
             promiseDate: promiseDate || undefined,
             promisedAmount: promisedAmount || undefined,
@@ -431,7 +467,31 @@ export const IncomingParentCallModal: React.FC<IncomingParentCallModalProps> = (
         };
       }
 
-      // 3. Fallback directly to native Android event payload / test sample
+      // 3. Unknown number OR explicit preview sample fallback
+      if (!payload.name && !payload.studentSummary && !payload.isTestSample && phoneKey) {
+        return {
+          phone: phoneKey,
+          name: "Unknown Number",
+          schoolName: payload.schoolName || schoolName || "School",
+          kind: "ENQUIRY",
+          studentSummary: "School Record Me Nahi Hai",
+          relationLabel: "Unknown Caller",
+          studentIds: [],
+          classNames: [],
+          dueAmount: 0,
+          paidAmount: 0,
+          unpaidMonthsCount: 0,
+          solvedToday: false,
+          settled: false,
+          postCall: incomingPostCall || undefined,
+          direction: payload.direction,
+          durationSec: payload.durationSec,
+          callType: payload.callType,
+          children: [],
+          isUnknownCaller: true,
+        };
+      }
+
       if (payload.name || payload.studentSummary || phoneKey) {
         return {
           phone: phoneKey || String(payload.phone || ""),
@@ -446,6 +506,7 @@ export const IncomingParentCallModal: React.FC<IncomingParentCallModalProps> = (
             payload.studentIds || (payload.primaryStudentId ? [payload.primaryStudentId] : []),
           classNames: payload.classNames || [],
           dueAmount: Number(payload.dueAmount || 0),
+          paidAmount: payload.paidAmount !== undefined ? Number(payload.paidAmount) : undefined,
           unpaidMonthsCount: Number(payload.unpaidMonthsCount || 0),
           promiseDate: payload.promiseDate || undefined,
           promisedAmount: payload.promisedAmount ? Number(payload.promisedAmount) : undefined,
@@ -468,6 +529,7 @@ export const IncomingParentCallModal: React.FC<IncomingParentCallModalProps> = (
           callType: payload.callType,
           children: payload.children || [],
           isTestSample: payload.isTestSample,
+          isUnknownCaller: payload.isUnknownCaller,
         };
       }
 
@@ -497,11 +559,18 @@ export const IncomingParentCallModal: React.FC<IncomingParentCallModalProps> = (
             ? String(resolved.dueAmount)
             : ""
       );
+      setPartialPaidInput("");
       setNextCallDateInput(resolved.nextCallDate || "");
       setNoteInput(resolved.lastNote || "");
       // Auto-open post-call edit workspace when the call has disconnected
-      setEditingSchedule(Boolean(resolved.postCall));
+      setEditingSchedule(Boolean(resolved.postCall && !resolved.isUnknownCaller));
       setShowQrModal(false);
+      setSolveConfirmOpen(false);
+      setSolveReasonInput("");
+      setEditingPhone(false);
+      setPhoneInput(resolved.phone || "");
+      setUnknownEnquiryName("");
+      setUnknownEnquiryClass("");
     },
     [resolveCallerFromLiveOrPayload]
   );
@@ -702,6 +771,7 @@ export const IncomingParentCallModal: React.FC<IncomingParentCallModalProps> = (
           lastCallOutcome: overrides.lastCallOutcome ?? existing?.lastCallOutcome,
           lastCallDurationSec: existing?.lastCallDurationSec,
           lastCallBy: callerUserName || existing?.lastCallBy,
+          lastCallByRole: callerUserRole || existing?.lastCallByRole,
           lastNote: overrides.lastNote !== undefined ? overrides.lastNote : existing?.lastNote,
           promisedAmount:
             overrides.promisedAmount !== undefined
@@ -724,6 +794,12 @@ export const IncomingParentCallModal: React.FC<IncomingParentCallModalProps> = (
               : existing?.resolvedTodayDate,
           resolvedNote:
             overrides.resolvedNote !== undefined ? overrides.resolvedNote : existing?.resolvedNote,
+          resolvedBy:
+            overrides.resolvedBy !== undefined ? overrides.resolvedBy : existing?.resolvedBy,
+          resolvedReason:
+            overrides.resolvedReason !== undefined
+              ? overrides.resolvedReason
+              : existing?.resolvedReason,
           updatedAt: nowIso,
         });
       }
@@ -763,47 +839,161 @@ export const IncomingParentCallModal: React.FC<IncomingParentCallModalProps> = (
   };
 
   const handleToggleSolvedToday = () => {
+    setSolveReasonInput("");
+    setSolveConfirmOpen(true);
+  };
+
+  const handleConfirmToggleSolvedToday = async () => {
+    const cleanReason = solveReasonInput.trim();
+    if (cleanReason.length < 3) {
+      toast.error("Kripya Mark Solve / Reopen ka spasht kaaran (Reason) likhein.");
+      return;
+    }
     const nextSolved = !activeCall.solvedToday;
-    persistFollowUpUpdates(
+    await persistFollowUpUpdates(
       {
         resolvedTodayDate: nextSolved ? todayYmd : "",
-        resolvedNote: nextSolved
-          ? noteInput.trim() || "Aaj sab solve ho gaya (Incoming Call)"
-          : "",
+        resolvedNote: nextSolved ? cleanReason : "",
+        resolvedBy: callerUserName || "Staff",
+        resolvedReason: cleanReason,
       },
       nextSolved
         ? "Marked: Aaj Sab Solve Ho Gaya ✅"
         : "Reopened: Abhi Pending Rakha Gaya"
     );
+    void logAdminAction(
+      nextSolved ? "FEE_TAGADA_MARK_SOLVE" : "FEE_TAGADA_REOPEN",
+      `${nextSolved ? "Marked Solve" : "Reopened"} on Caller ID (${activeCall.phone}) — Reason: ${cleanReason}`,
+      { id: callerUserId || callerUserName || "staff", name: `${callerUserName || "Staff"} (${callerUserRole || "STAFF"})` },
+      { targetId: activeCall.primaryStudentId || activeCall.phone, targetName: activeCall.studentSummary || activeCall.name }
+    );
+    setSolveConfirmOpen(false);
+    setSolveReasonInput("");
+  };
+
+  const handleSaveFixedPhone = async () => {
+    const clean10 = normalizePhoneLast10(phoneInput);
+    if (!clean10 || clean10.length < 10) {
+      toast.error("Kripya sahi 10-digit mobile number darj karein.");
+      return;
+    }
+    if (!activeCall.isTestSample && schoolId && activeCall.studentIds.length > 0) {
+      setSaving(true);
+      try {
+        for (const sid of activeCall.studentIds) {
+          await updateStudent(schoolId, sid, { phone: clean10, fatherPhone: clean10 }).catch(() => {});
+        }
+        await persistFollowUpUpdates(
+          {
+            lastNote: noteInput.trim() || `Number corrected from ${activeCall.phone} to ${clean10}`,
+          },
+          `Parent phone number update ho gaya: ${clean10} ✅`
+        );
+        void logAdminAction(
+          "PARENT_PHONE_FIXED",
+          `Corrected phone from ${activeCall.phone} to ${clean10}`,
+          { id: callerUserId || callerUserName || "staff", name: `${callerUserName || "Staff"} (${callerUserRole || "STAFF"})` },
+          { targetId: activeCall.primaryStudentId || clean10, targetName: activeCall.studentSummary || activeCall.name }
+        );
+      } finally {
+        setSaving(false);
+      }
+    } else {
+      toast.success(`Preview Phone Updated: ${clean10}`);
+    }
+    setActiveCall((prev) => (prev ? { ...prev, phone: clean10 } : null));
+    setEditingPhone(false);
+  };
+
+  const handleSaveUnknownAsEnquiry = async () => {
+    const cleanName = unknownEnquiryName.trim();
+    if (!cleanName) {
+      toast.error("Kripya Caller / Parent ka naam darj karein.");
+      return;
+    }
+    if (!schoolId) {
+      toast.error("School ID nahi mila.");
+      return;
+    }
+    setSavingUnknownEnquiry(true);
+    try {
+      const nowIso = new Date().toISOString();
+      await saveSchoolPublicInquiry(schoolId, {
+        id: `inq_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+        schoolId,
+        name: cleanName,
+        phone: activeCall.phone,
+        studentName: cleanName,
+        studentClass: unknownEnquiryClass.trim() || "New Enquiry",
+        message: `Caller ID se unknown incoming call (${activeCall.phone}) ko enquiry me joda gaya.`,
+        remarks: `Logged by ${callerUserName || "Staff"} (${callerUserRole || "STAFF"})`,
+        status: "new",
+        source: "phone",
+        createdAt: nowIso,
+        updatedAt: nowIso,
+      });
+      toast.success("Unknown caller Admission Enquiry me save ho gaya ✅");
+      setActiveCall(null);
+    } catch {
+      toast.error("Enquiry save karne me dikkat aayi.");
+    } finally {
+      setSavingUnknownEnquiry(false);
+    }
   };
 
   const handleSelectOutcomePreset = (outcome: FeeCallOutcome) => {
     setOutcomeInput(outcome);
     if (outcome === "NOT_PICKED" || outcome === "BUSY" || outcome === "SWITCHED_OFF") {
       if (!nextCallDateInput) setNextCallDateInput(addDaysFromTodayYmd(1));
-    } else if (outcome === "PROMISED_DATE") {
+    } else if (outcome === "PROMISED_DATE" || outcome === "PARTIAL_PAID" || outcome === "CALLED_TO_SCHOOL") {
       if (!promiseDateInput) setPromiseDateInput(addDaysFromTodayYmd(2));
       if (!nextCallDateInput) setNextCallDateInput(addDaysFromTodayYmd(2));
-    } else if (outcome === "PAID_CLAIMED") {
-      setNextCallDateInput("");
+    } else if (outcome === "PAID_CLAIMED" || outcome === "PAYMENT_REFUSED") {
+      setNextCallDateInput(outcome === "PAYMENT_REFUSED" ? addDaysFromTodayYmd(3) : "");
     }
   };
 
   const handleSaveScheduleForm = async () => {
+    const cleanNote = noteInput.trim();
+    if (!cleanNote) {
+      toast.error("Baatcheet ka Remark / Note likhna anivarya hai!");
+      return;
+    }
+    if (FOLLOWUP_REQUIRED_OUTCOMES.has(outcomeInput) && !nextCallDateInput.trim() && !promiseDateInput.trim()) {
+      toast.error("Is call outcome ke liye Next Call Date ya Promise Date darj karna anivarya hai!");
+      return;
+    }
+    const partialAmt = outcomeInput === "PARTIAL_PAID" ? Math.max(0, Number(partialPaidInput) || 0) : 0;
+    if (outcomeInput === "PARTIAL_PAID" && partialAmt <= 0) {
+      toast.error("Partial Fee Jama Ki me jama hui rashi (₹) darj karein!");
+      return;
+    }
     const nowIso = new Date().toISOString();
+    const resolvedNextCall = nextCallDateInput.trim() || promiseDateInput.trim();
+    const enrichedNote =
+      outcomeInput === "PARTIAL_PAID"
+        ? `[Partial ₹${partialAmt.toLocaleString("en-IN")} | Rem ₹${Math.max(0, activeCall.dueAmount - partialAmt).toLocaleString("en-IN")}] ${cleanNote}`
+        : outcomeInput === "PAYMENT_REFUSED"
+          ? `[Principal Alert: Payment Refused] ${cleanNote}`
+          : outcomeInput === "CALLED_TO_SCHOOL"
+            ? `[School Milne Bulaya] ${cleanNote}`
+            : cleanNote;
+
     await persistFollowUpUpdates(
       {
         lastCallAt: nowIso,
         lastCallOutcome: outcomeInput,
         promiseDate: promiseDateInput.trim(),
         promisedAmount: promisedAmountInput ? Number(promisedAmountInput) : 0,
-        nextCallDate: nextCallDateInput.trim(),
-        lastNote: noteInput.trim(),
+        nextCallDate: resolvedNextCall,
+        lastNote: enrichedNote,
         ...(outcomeInput === "PAID_CLAIMED"
-          ? { resolvedTodayDate: todayYmd, resolvedNote: noteInput.trim() || "Parent ne payment bataya" }
+          ? { resolvedTodayDate: todayYmd, resolvedNote: cleanNote }
           : {}),
       },
-      "Call Update, Promise Date aur Schedule save ho gaya ✅"
+      outcomeInput === "PAID_CLAIMED"
+        ? "Recorded: Verification Pending (Receipt katne par ledger settle hoga) ✅"
+        : "Call Update, Remark aur Schedule save ho gaya ✅"
     );
     setEditingSchedule(false);
   };
@@ -1024,7 +1214,57 @@ export const IncomingParentCallModal: React.FC<IncomingParentCallModalProps> = (
               </div>
             )}
 
-            {isEnquiry ? (
+            {activeCall.isUnknownCaller ? (
+              <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-slate-50/80 dark:bg-slate-900/70 p-4 space-y-3">
+                <div>
+                  <span className="text-[11px] font-bold uppercase tracking-wider text-amber-600 dark:text-amber-400">
+                    Unregistered / Unknown Number
+                  </span>
+                  <h4 className="text-sm font-extrabold text-slate-900 dark:text-white mt-0.5">
+                    Yeh number kisi registered student ya parent se match nahi hua ({activeCall.phone})
+                  </h4>
+                  <p className="text-xs text-slate-600 dark:text-slate-400 mt-1">
+                    Naye admission ki jankari ke liye call ho sakti hai. Neeche se seedha Admission Enquiry me save karein ya dismiss karein.
+                  </p>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  <input
+                    type="text"
+                    value={unknownEnquiryName}
+                    onChange={(e) => setUnknownEnquiryName(e.target.value)}
+                    placeholder="Caller / Parent Name *"
+                    className="h-10 px-3 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 text-xs text-slate-900 dark:text-white"
+                  />
+                  <input
+                    type="text"
+                    value={unknownEnquiryClass}
+                    onChange={(e) => setUnknownEnquiryClass(e.target.value)}
+                    placeholder="Class (e.g. Class 5 / Nursery)"
+                    className="h-10 px-3 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 text-xs text-slate-900 dark:text-white"
+                  />
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    disabled={savingUnknownEnquiry}
+                    onClick={() => void handleSaveUnknownAsEnquiry()}
+                    className="min-h-[42px] px-4 rounded-xl bg-sky-600 hover:bg-sky-500 text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer transition disabled:opacity-50"
+                  >
+                    <UserPlus className="w-4 h-4" />
+                    <span>{savingUnknownEnquiry ? "Saving..." : "Save as Admission Enquiry"}</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setActiveCall(null)}
+                    className="min-h-[42px] px-4 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 text-xs font-bold cursor-pointer"
+                  >
+                    Wrong No. / Dismiss
+                  </button>
+                </div>
+              </div>
+            ) : isEnquiry ? (
               <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-900/60 overflow-hidden divide-y divide-slate-200/80 dark:divide-slate-800">
                 <div className="grid grid-cols-2 divide-x divide-slate-200/80 dark:divide-slate-800">
                   <div className="p-3.5">
@@ -1077,24 +1317,31 @@ export const IncomingParentCallModal: React.FC<IncomingParentCallModalProps> = (
               <>
                 {/* Unified Premium Financial & Follow-up Snapshot (Single Elevation, Clean Hairline Grid) */}
                 <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-[#111c38]/75 overflow-hidden divide-y divide-slate-200/80 dark:divide-slate-800">
-                  {/* Top Row: Hero Fee Due + Solved Today Status */}
+                  {/* Top Row: Hero Fee Due + Paid Amount + Solved Today Status */}
                   <div className="p-4 flex items-center justify-between gap-3">
                     <div className="min-w-0">
                       <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400 flex items-center gap-1">
                         <IndianRupee className="w-3 h-3 text-amber-500 shrink-0" />
-                        <span>Kul Baki Fee</span>
+                        <span>Kul Baki vs Jama Fee</span>
                       </span>
-                      <p
-                        className={`text-2xl sm:text-3xl font-black font-mono tabular-nums mt-0.5 ${
-                          activeCall.dueAmount > 0
-                            ? "text-rose-600 dark:text-rose-400"
-                            : "text-emerald-600 dark:text-emerald-400"
-                        }`}
-                      >
-                        {activeCall.dueAmount > 0
-                          ? `₹${activeCall.dueAmount.toLocaleString("en-IN")}`
-                          : "₹0 · Clear"}
-                      </p>
+                      <div className="flex flex-wrap items-baseline gap-3 mt-0.5">
+                        <p
+                          className={`text-2xl sm:text-3xl font-black font-mono tabular-nums ${
+                            activeCall.dueAmount > 0
+                              ? "text-rose-600 dark:text-rose-400"
+                              : "text-emerald-600 dark:text-emerald-400"
+                          }`}
+                        >
+                          {activeCall.dueAmount > 0
+                            ? `₹${activeCall.dueAmount.toLocaleString("en-IN")}`
+                            : "₹0 · Clear"}
+                        </p>
+                        {typeof activeCall.paidAmount === "number" && (
+                          <span className="text-xs font-bold font-mono tabular-nums text-emerald-700 dark:text-emerald-300">
+                            Jama: ₹{activeCall.paidAmount.toLocaleString("en-IN")}
+                          </span>
+                        )}
+                      </div>
                       <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">
                         {activeCall.dueAmount > 0
                           ? `${activeCall.unpaidMonthsCount || 1} unpaid fee entry`
@@ -1102,20 +1349,86 @@ export const IncomingParentCallModal: React.FC<IncomingParentCallModalProps> = (
                       </p>
                     </div>
 
-                    <button
-                      type="button"
-                      disabled={saving}
-                      onClick={handleToggleSolvedToday}
-                      className={`min-h-[42px] px-3.5 py-2 rounded-xl text-xs font-bold cursor-pointer transition shrink-0 flex items-center gap-1.5 ${
-                        activeCall.solvedToday
-                          ? "bg-emerald-600 text-white shadow-xs"
-                          : "border border-emerald-500/40 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-700 dark:text-emerald-300"
-                      }`}
-                    >
-                      <CheckCircle2 className="w-4 h-4 shrink-0" />
-                      <span>{activeCall.solvedToday ? "Aaj Solve ✅" : "Mark Solve"}</span>
-                    </button>
+                    <div className="flex flex-col items-end gap-1.5 shrink-0">
+                      <button
+                        type="button"
+                        disabled={saving}
+                        onClick={handleToggleSolvedToday}
+                        className={`min-h-[42px] px-3.5 py-2 rounded-xl text-xs font-bold cursor-pointer transition shrink-0 flex items-center gap-1.5 ${
+                          activeCall.solvedToday
+                            ? "bg-emerald-600 text-white shadow-xs"
+                            : "border border-emerald-500/40 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-700 dark:text-emerald-300"
+                        }`}
+                      >
+                        <CheckCircle2 className="w-4 h-4 shrink-0" />
+                        <span>{activeCall.solvedToday ? "Aaj Solve ✅" : "Mark Solve"}</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setPhoneInput(activeCall.phone || "");
+                          setEditingPhone((v) => !v);
+                        }}
+                        className="text-[11px] font-semibold text-indigo-600 dark:text-indigo-400 hover:underline cursor-pointer"
+                      >
+                        {editingPhone ? "Cancel Phone Edit" : "Wrong No. / Phone Fix"}
+                      </button>
+                    </div>
                   </div>
+
+                  {editingPhone && (
+                    <div className="p-3.5 bg-amber-50/80 dark:bg-amber-950/30 flex flex-wrap items-center gap-2">
+                      <input
+                        type="tel"
+                        value={phoneInput}
+                        onChange={(e) => setPhoneInput(e.target.value)}
+                        placeholder="Naya 10-digit parent mobile..."
+                        className="flex-1 min-w-[160px] h-10 px-3 rounded-xl border border-amber-300 dark:border-amber-700 bg-white dark:bg-slate-900 text-xs font-mono text-slate-900 dark:text-white"
+                      />
+                      <button
+                        type="button"
+                        disabled={saving}
+                        onClick={() => void handleSaveFixedPhone()}
+                        className="min-h-[40px] px-3.5 rounded-xl bg-amber-600 hover:bg-amber-500 text-white text-xs font-bold cursor-pointer"
+                      >
+                        Save New Phone
+                      </button>
+                    </div>
+                  )}
+
+                  {solveConfirmOpen && (
+                    <div className="p-3.5 bg-emerald-50/90 dark:bg-emerald-950/35 space-y-2">
+                      <p className="text-xs font-bold text-slate-900 dark:text-white">
+                        {activeCall.solvedToday
+                          ? "Case dubara Pending mark karne ka kaaran likhein:"
+                          : "Mark Solve (Aaj Sab Solve Ho Gaya) confirm karne ke liye kaaran likhein:"}
+                      </p>
+                      <input
+                        type="text"
+                        value={solveReasonInput}
+                        onChange={(e) => setSolveReasonInput(e.target.value)}
+                        placeholder="e.g. Parent ne school office me check de diya..."
+                        className="w-full h-10 px-3 rounded-xl border border-emerald-300 dark:border-emerald-700 bg-white dark:bg-slate-900 text-xs text-slate-900 dark:text-white"
+                      />
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          disabled={saving}
+                          onClick={() => void handleConfirmToggleSolvedToday()}
+                          className="min-h-[38px] px-3.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold cursor-pointer"
+                        >
+                          Confirm &amp; Audit Log
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setSolveConfirmOpen(false)}
+                          className="min-h-[38px] px-3 rounded-xl border border-slate-300 dark:border-slate-700 text-xs font-semibold text-slate-700 dark:text-slate-300 cursor-pointer"
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    </div>
+                  )}
 
                   {/* Middle Row: 2-Column Promise Date & Next Call Schedule */}
                   <div className="grid grid-cols-2 divide-x divide-slate-200/80 dark:divide-slate-800">
@@ -1164,11 +1477,11 @@ export const IncomingParentCallModal: React.FC<IncomingParentCallModalProps> = (
                     </div>
                   </div>
 
-                  {/* Sibling Breakdown (if multi-child family) */}
+                  {/* Sibling Breakdown (if multi-child family — shows Paid ₹ + Due ₹ separately per child) */}
                   {activeCall.children.length > 1 && (
                     <div className="p-3.5 space-y-1.5 bg-white/40 dark:bg-slate-950/30">
                       <p className="text-[11px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
-                        Family ke Bacche ({activeCall.children.length})
+                        Family ke Bacche ({activeCall.children.length}) — Alag-Alag Hisab
                       </p>
                       <div className="divide-y divide-slate-200/60 dark:divide-slate-800/80">
                         {activeCall.children.map((ch) => (
@@ -1180,15 +1493,22 @@ export const IncomingParentCallModal: React.FC<IncomingParentCallModalProps> = (
                               {ch.name}
                               {ch.classLabel ? ` · ${ch.classLabel}` : ""}
                             </span>
-                            <span
-                              className={`font-mono tabular-nums font-bold shrink-0 ${
-                                ch.dueAmount > 0
-                                  ? "text-rose-600 dark:text-rose-400"
-                                  : "text-emerald-600 dark:text-emerald-400"
-                              }`}
-                            >
-                              {ch.dueAmount > 0 ? `₹${ch.dueAmount.toLocaleString("en-IN")}` : "Clear"}
-                            </span>
+                            <div className="flex items-center gap-2.5 font-mono tabular-nums shrink-0">
+                              {typeof ch.paidAmount === "number" && ch.paidAmount > 0 && (
+                                <span className="text-[11px] font-semibold text-emerald-600 dark:text-emerald-400">
+                                  Paid ₹{ch.paidAmount.toLocaleString("en-IN")}
+                                </span>
+                              )}
+                              <span
+                                className={`font-bold ${
+                                  ch.dueAmount > 0
+                                    ? "text-rose-600 dark:text-rose-400"
+                                    : "text-emerald-600 dark:text-emerald-400"
+                                }`}
+                              >
+                                {ch.dueAmount > 0 ? `Due ₹${ch.dueAmount.toLocaleString("en-IN")}` : "Clear"}
+                              </span>
+                            </div>
                           </div>
                         ))}
                       </div>
@@ -1241,25 +1561,30 @@ export const IncomingParentCallModal: React.FC<IncomingParentCallModalProps> = (
                       </button>
                     </div>
 
-                    {/* Call Outcome Quick Chips */}
+                    {/* Call Outcome Quick Chips (All 9 Outcomes) */}
                     <div className="space-y-1.5">
                       <span className="block text-[11px] font-semibold text-slate-600 dark:text-slate-300">
                         Call Outcome (Baat Kya Hui?)
                       </span>
-                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5">
+                      <div className="grid grid-cols-2 sm:grid-cols-3 gap-1.5">
                         {(
                           [
                             { id: "PROMISED_DATE", label: "Promise Diya" },
-                            { id: "NOT_PICKED", label: "Nahi Utha" },
-                            { id: "BUSY", label: "Busy / Kal" },
-                            { id: "PAID_CLAIMED", label: "Fee Jama ✅" },
+                            { id: "NOT_PICKED", label: "Phone Nahi Uthaya" },
+                            { id: "BUSY", label: "Busy / Baad Mein" },
+                            { id: "PAID_CLAIMED", label: "Fee Jama Kar Di" },
+                            { id: "PARTIAL_PAID", label: "Partial Fee Jama Ki" },
+                            { id: "PAYMENT_REFUSED", label: "Mana Kiya (Refused)" },
+                            { id: "WRONG_NUMBER", label: "Wrong Number" },
+                            { id: "SWITCHED_OFF", label: "Number Switched Off" },
+                            { id: "CALLED_TO_SCHOOL", label: "School Milne Bulaya" },
                           ] as Array<{ id: FeeCallOutcome; label: string }>
                         ).map((opt) => (
                           <button
                             key={opt.id}
                             type="button"
                             onClick={() => handleSelectOutcomePreset(opt.id)}
-                            className={`min-h-[36px] px-2 py-1.5 rounded-xl text-[11px] font-bold border transition cursor-pointer ${
+                            className={`min-h-[38px] px-2 py-1.5 rounded-xl text-[11px] font-bold border transition cursor-pointer ${
                               outcomeInput === opt.id
                                 ? "bg-indigo-600 text-white border-indigo-500 shadow-xs"
                                 : "bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-300 border-slate-200 dark:border-slate-700 hover:border-indigo-400"
@@ -1270,6 +1595,28 @@ export const IncomingParentCallModal: React.FC<IncomingParentCallModalProps> = (
                         ))}
                       </div>
                     </div>
+
+                    {outcomeInput === "PARTIAL_PAID" && (
+                      <div className="p-3 rounded-xl border border-emerald-400/50 bg-emerald-50/70 dark:bg-emerald-950/30 space-y-1.5">
+                        <div className="flex items-center justify-between gap-2 text-xs">
+                          <span className="font-bold text-emerald-800 dark:text-emerald-300">
+                            Partial Fee Jama Rashi (₹) *
+                          </span>
+                          <span className="font-mono tabular-nums font-bold text-slate-700 dark:text-slate-200">
+                            Naya Balance: ₹
+                            {Math.max(0, activeCall.dueAmount - (Number(partialPaidInput) || 0)).toLocaleString("en-IN")}
+                          </span>
+                        </div>
+                        <input
+                          type="number"
+                          min={0}
+                          value={partialPaidInput}
+                          onChange={(e) => setPartialPaidInput(e.target.value)}
+                          placeholder="Kitni rashi jama hui (e.g. 1200)"
+                          className="w-full h-10 px-3 rounded-xl border border-emerald-300 dark:border-emerald-700 bg-white dark:bg-slate-900 text-xs font-mono text-slate-900 dark:text-white"
+                        />
+                      </div>
+                    )}
 
                     {/* 1-Tap Quick Promise Date Shortcuts */}
                     <div className="flex flex-wrap items-center gap-1.5">
@@ -1333,7 +1680,7 @@ export const IncomingParentCallModal: React.FC<IncomingParentCallModalProps> = (
 
                       <label className="block space-y-1">
                         <span className="text-[11px] font-semibold text-slate-600 dark:text-slate-300">
-                          Next Call Date
+                          Next Call Date {FOLLOWUP_REQUIRED_OUTCOMES.has(outcomeInput) ? "*" : ""}
                         </span>
                         <input
                           type="date"
@@ -1346,13 +1693,13 @@ export const IncomingParentCallModal: React.FC<IncomingParentCallModalProps> = (
 
                     <label className="block space-y-1">
                       <span className="text-[11px] font-semibold text-slate-600 dark:text-slate-300">
-                        Call Note / Remark
+                        Call Note / Remark *
                       </span>
                       <input
                         type="text"
                         value={noteInput}
                         onChange={(e) => setNoteInput(e.target.value)}
-                        placeholder="Parent se kya baat hui..."
+                        placeholder="Parent se kya baat hui (mandatory)..."
                         className="w-full h-10 px-3 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs text-slate-900 dark:text-white"
                       />
                     </label>
@@ -1385,67 +1732,69 @@ export const IncomingParentCallModal: React.FC<IncomingParentCallModalProps> = (
           </div>
 
           {/* Premium Bottom Action Dock: Primary Main Fee Pay CTA + Symmetric Secondary Row */}
-          <div className="px-4 sm:px-5 py-3.5 border-t border-slate-200 dark:border-slate-800 bg-slate-50/90 dark:bg-[#080f21] space-y-2.5">
-            {!isEnquiry && (
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-                <button
-                  type="button"
-                  onClick={handleTriggerMainFeePay}
-                  className="sm:col-span-2 min-h-[48px] px-4 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white text-sm font-extrabold flex items-center justify-center gap-2 cursor-pointer shadow-sm active:scale-[0.99] transition"
-                >
-                  <IndianRupee className="w-4 h-4 shrink-0" />
-                  <span>
-                    Fee Pay{activeCall.dueAmount > 0 ? ` (₹${activeCall.dueAmount.toLocaleString("en-IN")})` : " · Collect"}
-                  </span>
-                  <ArrowUpRight className="w-4 h-4 shrink-0 opacity-90" />
-                </button>
+          {!activeCall.isUnknownCaller && (
+            <div className="px-4 sm:px-5 py-3.5 border-t border-slate-200 dark:border-slate-800 bg-slate-50/90 dark:bg-[#080f21] space-y-2.5">
+              {!isEnquiry && (
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                  <button
+                    type="button"
+                    onClick={handleTriggerMainFeePay}
+                    className="sm:col-span-2 min-h-[48px] px-4 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white text-sm font-extrabold flex items-center justify-center gap-2 cursor-pointer shadow-sm active:scale-[0.99] transition"
+                  >
+                    <IndianRupee className="w-4 h-4 shrink-0" />
+                    <span>
+                      Fee Pay{activeCall.dueAmount > 0 ? ` (₹${activeCall.dueAmount.toLocaleString("en-IN")})` : " · Collect"}
+                    </span>
+                    <ArrowUpRight className="w-4 h-4 shrink-0 opacity-90" />
+                  </button>
 
+                  <button
+                    type="button"
+                    onClick={handleTriggerFeeUpdate}
+                    className="min-h-[48px] px-3 rounded-xl border border-amber-500/40 bg-amber-50 dark:bg-amber-950/40 hover:bg-amber-100 dark:hover:bg-amber-950/70 text-amber-800 dark:text-amber-300 text-xs sm:text-sm font-bold flex items-center justify-center gap-1.5 cursor-pointer transition"
+                  >
+                    <Edit3 className="w-4 h-4 shrink-0" />
+                    <span>Fee Update</span>
+                  </button>
+                </div>
+              )}
+
+              <div
+                className={`grid gap-2 ${
+                  !isEnquiry && activeCall.dueAmount > 0
+                    ? "grid-cols-3"
+                    : "grid-cols-2"
+                }`}
+              >
+                {!isEnquiry && activeCall.dueAmount > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => setShowQrModal(true)}
+                    className="min-h-[44px] px-2.5 rounded-xl border border-indigo-500/35 bg-indigo-50 dark:bg-indigo-950/40 text-indigo-700 dark:text-indigo-300 hover:bg-indigo-100 dark:hover:bg-indigo-900/50 text-xs font-bold flex items-center justify-center gap-1.5 cursor-pointer transition"
+                  >
+                    <QrCode className="w-4 h-4 shrink-0" />
+                    <span>UPI QR</span>
+                  </button>
+                )}
                 <button
                   type="button"
-                  onClick={handleTriggerFeeUpdate}
-                  className="min-h-[48px] px-3 rounded-xl border border-amber-500/40 bg-amber-50 dark:bg-amber-950/40 hover:bg-amber-100 dark:hover:bg-amber-950/70 text-amber-800 dark:text-amber-300 text-xs sm:text-sm font-bold flex items-center justify-center gap-1.5 cursor-pointer transition"
+                  onClick={handleWhatsApp}
+                  className="min-h-[44px] px-2.5 rounded-xl border border-emerald-500/35 bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 hover:bg-emerald-100 dark:hover:bg-emerald-900/50 text-xs font-bold flex items-center justify-center gap-1.5 cursor-pointer transition"
                 >
-                  <Edit3 className="w-4 h-4 shrink-0" />
-                  <span>Fee Update</span>
+                  <MessageCircle className="w-4 h-4 shrink-0" />
+                  <span>WhatsApp</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={handleDialBack}
+                  className="min-h-[44px] px-2.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 hover:bg-slate-100 dark:hover:bg-slate-700 text-xs font-bold flex items-center justify-center gap-1.5 cursor-pointer transition"
+                >
+                  <Phone className="w-4 h-4 shrink-0" />
+                  <span>Call Back</span>
                 </button>
               </div>
-            )}
-
-            <div
-              className={`grid gap-2 ${
-                !isEnquiry && activeCall.dueAmount > 0
-                  ? "grid-cols-3"
-                  : "grid-cols-2"
-              }`}
-            >
-              {!isEnquiry && activeCall.dueAmount > 0 && (
-                <button
-                  type="button"
-                  onClick={() => setShowQrModal(true)}
-                  className="min-h-[44px] px-2.5 rounded-xl border border-indigo-500/35 bg-indigo-50 dark:bg-indigo-950/40 text-indigo-700 dark:text-indigo-300 hover:bg-indigo-100 dark:hover:bg-indigo-900/50 text-xs font-bold flex items-center justify-center gap-1.5 cursor-pointer transition"
-                >
-                  <QrCode className="w-4 h-4 shrink-0" />
-                  <span>UPI QR</span>
-                </button>
-              )}
-              <button
-                type="button"
-                onClick={handleWhatsApp}
-                className="min-h-[44px] px-2.5 rounded-xl border border-emerald-500/35 bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 hover:bg-emerald-100 dark:hover:bg-emerald-900/50 text-xs font-bold flex items-center justify-center gap-1.5 cursor-pointer transition"
-              >
-                <MessageCircle className="w-4 h-4 shrink-0" />
-                <span>WhatsApp</span>
-              </button>
-              <button
-                type="button"
-                onClick={handleDialBack}
-                className="min-h-[44px] px-2.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 hover:bg-slate-100 dark:hover:bg-slate-700 text-xs font-bold flex items-center justify-center gap-1.5 cursor-pointer transition"
-              >
-                <Phone className="w-4 h-4 shrink-0" />
-                <span>Call Back</span>
-              </button>
             </div>
-          </div>
+          )}
         </div>
       </div>
 

@@ -1002,7 +1002,7 @@ export const QrAttendanceScannerModal: React.FC<QrAttendanceScannerModalProps> =
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-[999999] flex items-center justify-center p-3 sm:p-5 bg-black/85 backdrop-blur-md animate-in fade-in duration-200">
+    <div className="nst-isolated-modal fixed inset-0 z-[999999] flex items-center justify-center p-3 sm:p-5 bg-black/85 backdrop-blur-md animate-in fade-in duration-200">
       <div className="relative w-full max-w-md bg-slate-900 border border-slate-700/80 rounded-3xl overflow-hidden shadow-2xl flex flex-col max-h-[92dvh]">
 
         {/* Header */}
@@ -1151,20 +1151,10 @@ export const QrAttendanceScannerModal: React.FC<QrAttendanceScannerModalProps> =
               </div>
             )}
 
-            {/* Camera Floating Controls (Torch, Zoom, Flip, Media Upload) */}
+            {/* Camera Floating Controls (Zoom, Flip, Media Upload) */}
             {cameraActive && !lastScannedResult && (
               <div className="absolute bottom-3 inset-x-4 flex items-center justify-between pointer-events-auto z-10">
                 <div className="flex items-center gap-1.5 bg-black/60 backdrop-blur-md p-1 rounded-2xl border border-white/10">
-                  {hasTorch && (
-                    <button
-                      type="button"
-                      onClick={toggleTorch}
-                      className={`p-2 rounded-xl text-xs font-bold transition flex items-center gap-1 ${torchOn ? "bg-amber-400 text-slate-950 shadow" : "text-white hover:bg-white/10"}`}
-                      title="Torch / Flashlight"
-                    >
-                      {torchOn ? <Zap size={15} /> : <ZapOff size={15} />}
-                    </button>
-                  )}
                   {maxZoom > 1 && (
                     <button
                       type="button"

@@ -42,7 +42,7 @@ import { getDemoSchoolDataset, isDemoDataEnabled, setDemoDataEnabled } from "./d
 import { syncLinkedStudentsToPushSubscription } from "../../utils/schoolPushClient";
 import { speakNotification } from "../../utils/voiceNotifyEngine";
 import { QrScannerModal } from "../QrScannerModal";
-import { DevelopedByCredit } from "./DevelopedByFooter";
+import { PremiumLoadingState } from "./PremiumLoadingState";
 import { useBackHandler } from "../../utils/backNavigation";
 import type { School, SchoolUserProfile } from "../../school-types";
 import {
@@ -260,25 +260,13 @@ const PanelLoadingFallback = ({
     ? "bg-black text-slate-100"
     : "bg-[#08142c] text-slate-100";
   return (
-    <div className={`flex-1 min-h-full w-full flex flex-col items-center justify-center p-6 sm:p-8 text-center ${bgClass}`}>
-      <img
-        src="/branding/schoolplus-splash-logo.png?v=7"
-        alt="SCHOOL+"
-        width={512}
-        height={512}
-        className="w-[min(86vw,512px)] aspect-square object-contain bg-transparent mb-5 drop-shadow-[0_18px_38px_rgba(0,0,0,0.65)]"
-      />
-      <div className="flex items-center justify-center gap-2 mb-1">
-        <Loader2 className={`w-4 h-4 animate-spin ${isWhite ? "text-emerald-600" : "text-emerald-400"}`} />
-        <h3 className={`text-sm sm:text-base font-semibold ${isWhite ? "text-slate-900" : "text-slate-100"}`}>
-          Loading {title}...
-        </h3>
-      </div>
-      <p className={`text-xs ${isWhite ? "text-slate-500" : "text-slate-400"}`}>
-        Synchronizing school data
-      </p>
-      <DevelopedByCredit tone={isWhite ? "light" : "dark"} />
-    </div>
+    <PremiumLoadingState
+      title={`Loading ${title}...`}
+      subtitle="Synchronizing school data"
+      tone={isWhite ? "light" : "dark"}
+      variant="fullscreen"
+      accent="emerald"
+    />
   );
 };
 
@@ -1495,24 +1483,13 @@ export const SchoolEcosystem: React.FC<Props> = ({
       !isAccountantRole)
   ) {
     return (
-      <div className={`min-h-screen min-h-[100dvh] w-full flex items-center justify-center p-6 ${shellThemeClass}`}>
-        <div className="text-center flex flex-col items-center">
-          <img
-            src="/branding/schoolplus-splash-logo.png?v=7"
-            alt="SCHOOL+"
-            width={512}
-            height={512}
-            className="w-[min(86vw,512px)] aspect-square object-contain bg-transparent mb-5 drop-shadow-[0_18px_38px_rgba(0,0,0,0.65)]"
-          />
-          <div className="flex items-center justify-center gap-2">
-            <Loader2 className={`w-4 h-4 animate-spin ${erpTheme === "white" ? "text-emerald-600" : "text-emerald-500"}`} />
-            <p className={`text-sm font-medium ${erpTheme === "white" ? "text-slate-600" : "text-slate-400"}`}>
-              {hydratingLinkedAccount ? "Loading linked school account..." : "Verifying school credentials..."}
-            </p>
-          </div>
-          <DevelopedByCredit tone={erpTheme === "white" ? "light" : "dark"} />
-        </div>
-      </div>
+      <PremiumLoadingState
+        title={hydratingLinkedAccount ? "Loading linked school account..." : "Verifying school credentials..."}
+        subtitle="Securing your school session"
+        tone={erpTheme === "white" ? "light" : "dark"}
+        variant="fullscreen"
+        accent="emerald"
+      />
     );
   }
 

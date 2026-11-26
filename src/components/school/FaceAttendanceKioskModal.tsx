@@ -19,7 +19,6 @@ import {
   UserPlus,
   Eye,
   EyeOff,
-  Lightbulb,
   Sun,
   Moon,
   Trash2,
@@ -530,7 +529,7 @@ export const FaceAttendanceKioskModal: React.FC<FaceAttendanceKioskModalProps> =
           isArcFaceReady() ? Promise.resolve(true) : initArcFaceEngine().catch(() => false),
         ]);
         if (!cancelled) {
-          setAiEngineStatus(faOk && afOk ? "ready" : faOk ? "loading" : "fallback");
+          setAiEngineStatus(faOk && afOk ? "ready" : "fallback");
         }
       } catch {
         if (!cancelled) setAiEngineStatus("fallback");
@@ -1779,10 +1778,10 @@ export const FaceAttendanceKioskModal: React.FC<FaceAttendanceKioskModalProps> =
     : students;
 
   return (
-    <div className="fixed inset-0 z-50 bg-slate-950 flex flex-col select-none overflow-hidden font-sans">
+    <div className="nst-isolated-modal fixed inset-0 z-50 bg-slate-950 flex flex-col select-none overflow-hidden font-sans">
       {/* ── TOP HUD HEADER ── */}
-      <header className="h-14 sm:h-16 bg-slate-900/95 backdrop-blur-md border-b border-slate-800 px-2 sm:px-4 flex items-center justify-between gap-1.5 sm:gap-3 shrink-0 z-20">
-        <div className="flex items-center gap-1.5 sm:gap-2.5 min-w-0 shrink">
+      <header className="h-14 sm:h-16 bg-slate-900/95 backdrop-blur-md border-b border-slate-800 px-2 sm:px-4 flex items-center justify-between gap-2 shrink-0 z-20">
+        <div className="flex items-center gap-1.5 sm:gap-2.5 min-w-0 flex-1">
           <div className={`w-8 h-8 sm:w-9 sm:h-9 rounded-xl flex items-center justify-center text-white shadow-lg shrink-0 transition-all ${
             isFaceTestMode
               ? "bg-gradient-to-br from-amber-500 to-amber-700 shadow-amber-500/20"
@@ -1790,21 +1789,26 @@ export const FaceAttendanceKioskModal: React.FC<FaceAttendanceKioskModalProps> =
           }`}>
             <Sparkles className="w-4 h-4 sm:w-5 sm:h-5" />
           </div>
-          <div className="min-w-0">
-            <div className="flex items-center gap-1 sm:gap-1.5">
-              <h1 className="text-xs sm:text-sm font-black text-white truncate max-w-[85px] sm:max-w-none">
+          <div className="min-w-0 flex flex-col">
+            <div className="flex items-center gap-1.5 min-w-0">
+              <h1 className="text-xs sm:text-sm font-black text-white truncate">
                 {isFaceTestMode ? "Face Test" : "Face Kiosk"}
               </h1>
-              <span className={`px-1.5 py-0.5 rounded-full text-[9px] font-black uppercase tracking-wider shrink-0 border ${
+              <span className={`hidden sm:inline-flex px-1.5 py-0.5 rounded-full text-[9px] font-black uppercase tracking-wider shrink-0 border ${
                 isFaceTestMode
                   ? "bg-amber-400/20 border-amber-400/40 text-amber-300"
                   : aiEngineStatus === "ready"
                   ? "bg-emerald-500/10 border-emerald-500/30 text-emerald-400"
-                  : "bg-cyan-500/10 border-cyan-500/30 text-cyan-300 animate-pulse"
+                  : aiEngineStatus === "fallback"
+                  ? "bg-amber-500/10 border-amber-500/30 text-amber-300"
+                  : "bg-cyan-500/10 border-cyan-500/30 text-cyan-300"
               }`}>
-                {isFaceTestMode ? "🧪 Test" : aiEngineStatus === "ready" ? (isWakeLockActive ? "Live • 24/7" : "Live") : "AI Loading"}
+                {isFaceTestMode ? "🧪 Test" : aiEngineStatus === "ready" ? (isWakeLockActive ? "Live • 24/7" : "Live") : aiEngineStatus === "fallback" ? "Basic AI" : "AI Loading"}
               </span>
             </div>
+            <p className="sm:hidden text-[10px] font-bold text-emerald-300/90 truncate">
+              {isFaceTestMode ? "Test Mode" : aiEngineStatus === "ready" ? "AI Live" : aiEngineStatus === "fallback" ? "Ready" : "AI Loading..."}
+            </p>
             <p className="hidden md:block text-[11px] text-slate-400 truncate">
               {isFaceTestMode
                 ? "1st IN • 2nd OUT • हर बार Student के मोबाइल पर Push अलर्ट जाएगा"
@@ -1913,22 +1917,6 @@ export const FaceAttendanceKioskModal: React.FC<FaceAttendanceKioskModalProps> =
             title={facingMode === "user" ? "Switch to Rear Camera" : "Switch to Front Camera"}
           >
             <RefreshCw className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
-          </button>
-
-          {/* Screen Fill Light / Flash Toggle */}
-          <button
-            type="button"
-            onClick={() => setScreenFlashActive((prev) => !prev)}
-            className={`w-8 h-8 sm:w-9 sm:h-9 rounded-xl flex items-center justify-center transition border cursor-pointer shrink-0 ${
-              screenFlashActive
-                ? "bg-amber-300 text-slate-950 border-amber-400 shadow-md shadow-amber-300/40"
-                : isLowLightWarning
-                ? "bg-amber-500/20 text-amber-300 border-amber-500/50 hover:bg-amber-500/30 animate-pulse"
-                : "bg-slate-800 hover:bg-slate-700 text-slate-300 border-slate-700 hover:text-white"
-            }`}
-            title="स्क्रीन लाइट ऑन/ऑफ"
-          >
-            <Lightbulb className={`w-3.5 h-3.5 sm:w-4 sm:h-4 ${screenFlashActive ? "fill-slate-950 text-slate-950" : "text-amber-400"}`} />
           </button>
 
           {/* 1-Click Auto-Vectorize Whole Class Photos */}
@@ -2233,40 +2221,7 @@ export const FaceAttendanceKioskModal: React.FC<FaceAttendanceKioskModalProps> =
           </div>
         )}
 
-        {/* SCREEN FILL LIGHT / FLASH EFFECT (Casts daylight-white illumination onto user's face from screen) */}
-        {screenFlashActive && (
-          <div className="absolute inset-0 z-20 pointer-events-none border-[36px] sm:border-[64px] border-white/95 shadow-[inset_0_0_120px_rgba(255,255,255,1)] flex items-center justify-center">
-            <div className="absolute top-4 left-1/2 -translate-x-1/2 px-4 py-1.5 rounded-full bg-white text-slate-900 font-black text-xs shadow-xl flex items-center gap-2 border border-slate-300">
-              <span className="w-2.5 h-2.5 rounded-full bg-amber-500 animate-ping" />
-              <span>💡 स्क्रीन फेस लाइट चालू • चेहरे पर पूरी रोशनी पड़ रही है</span>
-            </div>
-          </div>
-        )}
-
-        {/* Floating Low Light Warning Banner */}
-        {isLowLightWarning && !screenFlashActive && (
-          <div className="absolute top-4 left-1/2 -translate-x-1/2 z-25 max-w-md w-[92%] px-4 py-2.5 rounded-2xl bg-amber-950/90 border border-amber-500/70 text-amber-200 text-xs backdrop-blur-md shadow-2xl flex items-center justify-between gap-3 animate-in fade-in slide-in-from-top-2">
-            <div className="flex items-center gap-2 min-w-0">
-              <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0" />
-              <div className="min-w-0">
-                <p className="font-bold text-amber-100 truncate">
-                  {currentLighting?.isTooDark ? "💡 रोशनी बहुत कम है (Dark)" : "⚠️ रोशनी कम है (Low Light)"}
-                </p>
-                <p className="text-[11px] text-amber-300/80 truncate">
-                  सही पहचान के लिए स्क्रीन लाइट ऑन करें या सामने रोशनी लाएं
-                </p>
-              </div>
-            </div>
-            <button
-              type="button"
-              onClick={() => setScreenFlashActive(true)}
-              className="px-3 py-1.5 rounded-xl bg-amber-400 hover:bg-amber-300 text-slate-950 font-black text-xs shrink-0 cursor-pointer shadow flex items-center gap-1"
-            >
-              <Lightbulb className="w-3.5 h-3.5 fill-slate-950" />
-              <span>लाइट ऑन</span>
-            </button>
-          </div>
-        )}
+        {/* Low light warning without intrusive flashlight toggle */}
 
         {/* Ambiguous Match Notice */}
         {isAmbiguousMatchNotice && (

@@ -15,7 +15,7 @@ import {
 } from "lucide-react";
 import { generateAttendanceMatrixPdf, type MatrixPdfSection } from "../../utils/attendanceMatrixPdf";
 import { printElementInIframe } from "./AdmissionFormPrintModal";
-import { DevelopedByCredit } from "./DevelopedByFooter";
+import { PremiumLoadingState } from "./PremiumLoadingState";
 import { toast } from "sonner";
 import { safeOpenExternalUrl } from "../../utils/safeBrowserActions";
 import { speakNotification } from "../../utils/voiceNotifyEngine";
@@ -1002,10 +1002,14 @@ export const AttendanceManager: React.FC<Props> = ({ schoolId, classId, classNam
   };
 
   if (loading) return (
-    <div className="flex flex-col items-center justify-center h-48 text-slate-400">
-      <p>Loading students...</p>
-      <DevelopedByCredit tone="auto" />
-    </div>
+    <PremiumLoadingState
+      title="Loading students & attendance register..."
+      subtitle="Syncing class roster"
+      tone="auto"
+      variant="section"
+      accent="emerald"
+      schoolId={schoolId}
+    />
   );
 
   return (

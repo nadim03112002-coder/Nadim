@@ -26,6 +26,7 @@ import {
 } from "../../school-firebase";
 import {
   announceIncomingVoiceCaller,
+  announceParentHindiReminder,
   findCachedParentCallerByPhone,
   getAllCachedParentCallers,
   getCachedDirectoryMeta,
@@ -285,10 +286,25 @@ export const CallerIdSettingsCard: React.FC<Props> = ({
                   force: true,
                 });
               }}
-              className="col-span-2 sm:col-span-1 min-h-[40px] px-3.5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold flex items-center justify-center gap-1.5 cursor-pointer transition active:scale-[0.98]"
+              className="min-h-[40px] px-3.5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold flex items-center justify-center gap-1.5 cursor-pointer transition active:scale-[0.98]"
             >
               <Play className="w-3 h-3 fill-current shrink-0" />
               <span>Test Staff Voice</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                announceParentHindiReminder({
+                  schoolName: resolvedSchool,
+                  childName: "आरव शर्मा",
+                  dueAmount: 2400,
+                  force: true,
+                });
+              }}
+              className="min-h-[40px] px-3.5 py-2 rounded-xl bg-amber-600 hover:bg-amber-500 text-white text-xs font-bold flex items-center justify-center gap-1.5 cursor-pointer transition active:scale-[0.98]"
+            >
+              <Volume2 className="w-3.5 h-3.5 shrink-0" />
+              <span>Test Parent Hindi</span>
             </button>
           </div>
         </div>
@@ -403,12 +419,29 @@ export const CallerIdSettingsCard: React.FC<Props> = ({
               }
             }}
             className={`${
-              mode === "staff" ? "col-span-2 sm:col-span-1" : "col-span-2 sm:col-span-3"
+              mode === "staff" ? "" : "col-span-2 sm:col-span-3"
             } min-h-[40px] px-3.5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold flex items-center justify-center gap-1.5 cursor-pointer transition active:scale-[0.98]`}
           >
             <Play className="w-3 h-3 fill-current shrink-0" />
             <span>{mode === "staff" ? "Test Staff Voice" : "Test Call Card & Voice"}</span>
           </button>
+          {mode === "staff" && (
+            <button
+              type="button"
+              onClick={() => {
+                announceParentHindiReminder({
+                  schoolName: resolvedSchool,
+                  childName: "आरव शर्मा",
+                  dueAmount: 2400,
+                  force: true,
+                });
+              }}
+              className="min-h-[40px] px-3.5 py-2 rounded-xl bg-amber-600 hover:bg-amber-500 text-white text-xs font-bold flex items-center justify-center gap-1.5 cursor-pointer transition active:scale-[0.98]"
+            >
+              <Volume2 className="w-3.5 h-3.5 shrink-0" />
+              <span>Test Parent Hindi</span>
+            </button>
+          )}
         </div>
       </div>
 
@@ -544,6 +577,30 @@ export const CallerIdSettingsCard: React.FC<Props> = ({
                   )
                 }
                 className="h-4 w-4 accent-emerald-600 cursor-pointer shrink-0 disabled:opacity-40"
+              />
+            </label>
+
+            <label className="sm:col-span-2 flex items-center justify-between gap-3 p-2.5 rounded-xl border border-amber-200/80 dark:border-amber-800/60 bg-amber-50/60 dark:bg-amber-950/25 cursor-pointer min-h-[44px]">
+              <div className="min-w-0">
+                <span className="text-xs font-semibold text-slate-900 dark:text-slate-100 block">
+                  Staff Privacy Mode (Voice me exact ₹ fee na bole)
+                </span>
+                <span className="text-[10px] text-slate-500 dark:text-slate-400">
+                  Shared phone / staff speaker par sensitive fee amount chhupa kar sirf parent ka naam bolega
+                </span>
+              </div>
+              <input
+                type="checkbox"
+                disabled={!parentOpts.parentCallerEnabled}
+                checked={parentOpts.staffPrivacyMode}
+                onChange={(e) =>
+                  handleParentOptChange(
+                    "staffPrivacyMode",
+                    e.target.checked,
+                    "Staff Voice Privacy Mode"
+                  )
+                }
+                className="h-4 w-4 accent-amber-600 cursor-pointer shrink-0 disabled:opacity-40"
               />
             </label>
 

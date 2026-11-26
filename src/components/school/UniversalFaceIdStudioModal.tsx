@@ -21,7 +21,6 @@ import {
   CheckCircle,
   HelpCircle,
   Volume2,
-  Lightbulb,
   ScanFace,
   ImagePlus,
   Loader2,
@@ -688,16 +687,17 @@ export const UniversalFaceIdStudioModal: React.FC<Props> = ({
     return () => cancelAnimationFrame(animId);
   }, [activeTab, isOpen, enrolledMap, schoolId]);
 
-  // 3D Live Head Pose Tracking & Holographic Wireframe Loop
+  // 3D Live Head Pose Tracking & Holographic Wireframe Loop (pauses cleanly during active capture)
   useEffect(() => {
-    if (!targetPerson || !cameraActive || captureSuccess) return;
+    if (!targetPerson || !cameraActive || captureSuccess || isProcessingCapture) return;
 
     let animId: number;
     let lastScan = 0;
     let poseHoldCounter = 0;
 
     const studioPoseLoop = async (time: number) => {
-      if (time - lastScan >= 140 && liveVideoRef.current && studioCanvasRef.current) {
+      if (isProcessingCapture) return;
+      if (time - lastScan >= 160 && liveVideoRef.current && studioCanvasRef.current) {
         lastScan = time;
         const video = liveVideoRef.current;
         const canvas = studioCanvasRef.current;
@@ -926,9 +926,15 @@ export const UniversalFaceIdStudioModal: React.FC<Props> = ({
     }
   };
 
-  // Execute Live Capture and Biometric Feature Extraction (Supports Instant Save & Manual Step Captures)
-  const handleCaptureLiveFace = async (forceInstantSave = false) => {
+  // Execute Live Capture and Biometric Feature Extraction (with strict timeout so UI never hangs)
+  const handleCaptureLiveFace = async (_forceInstantSave = false) => {
     if (!liveVideoRef.current || !targetPerson || isProcessingCapture) return;
+
+    const withStepTimeout = <T,>(promise: Promise<T>, ms: number, msg: string): Promise<T> =>
+      Promise.race([
+        promise,
+        new Promise<T>((_, reject) => setTimeout(() => reject(new Error(msg)), ms)),
+      ]);
 
     setIsProcessingCapture(true);
     setGuidanceMsg("बायोमेट्रिक स्कैन किया जा रहा है...");
@@ -944,26 +950,20 @@ export const UniversalFaceIdStudioModal: React.FC<Props> = ({
       ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
       const photoDataUrl = canvas.toDataURL("image/jpeg", 0.90);
 
-      const box = {
-        x: canvas.width * 0.18,
-        y: canvas.height * 0.15,
-        width: canvas.width * 0.64,
-        height: canvas.height * 0.70
-      };
-
-      const lighting = assessFaceLightingAndQuality(canvas, box);
-      if (lighting.isTooDark && !studioScreenFlash) {
-        setStudioScreenFlash(true);
-        setGuidanceMsg("💡 रोशनी कम है — स्क्रीन फेस लाइट चालू की गई है। 1 सेकंड रुकें और दोबारा टैप करें।");
-        setIsProcessingCapture(false);
-        return;
-      }
-
-      // Strictly extract 512-D ArcFace neural embedding ONLY (zero 128-D)
-      await initArcFaceEngine().catch(() => false);
-      const neural3D = await extractNeuralDescriptorWith3DPose(canvas).catch(() => null);
-      const neuralStd = !neural3D ? await extractNeuralDescriptor(canvas).catch(() => null) : null;
-      const neuralResult = neural3D || neuralStd;
+      // Strictly extract 512-D ArcFace neural embedding with bounded timeout
+      await withStepTimeout(initArcFaceEngine().catch(() => false), 10000, "AI इंजन लोड होने में अधिक समय लगा");
+      const neuralStd = await withStepTimeout(
+        extractNeuralDescriptor(canvas).catch(() => null),
+        9000,
+        "चेहरा स्कैन टाइमआउट हो गया"
+      );
+      const neuralResult =
+        neuralStd ||
+        (await withStepTimeout(
+          extractNeuralDescriptorWith3DPose(canvas).catch(() => null),
+          6000,
+          "चेहरा स्कैन टाइमआउट हो गया"
+        ));
 
       const descriptor =
         neuralResult?.arcfaceDescriptor?.length === 512
@@ -975,7 +975,7 @@ export const UniversalFaceIdStudioModal: React.FC<Props> = ({
         setGuidanceMsg(
           arcErr
             ? `⚠️ ArcFace 512-D इंजन लोड नहीं हो सका: ${arcErr}`
-            : "⚠️ ArcFace 512-D वेक्टर तैयार नहीं हो सका। कृपया चेहरा कैमरे के सामने सीधा रखें या नीचे 'फोटो जोड़ें' से गैलरी फोटो अपलोड करें।"
+            : "⚠️ चेहरा साफ़ नहीं मिला। कृपया चेहरा कैमरे के सामने सीधा रखें या नीचे 'Add Image' से गैलरी फोटो अपलोड करें।"
         );
         setIsProcessingCapture(false);
         return;
@@ -1016,16 +1016,12 @@ export const UniversalFaceIdStudioModal: React.FC<Props> = ({
         preprocessOrder: "RGB",
       };
 
-      await saveFaceDescriptor(record);
+      await withStepTimeout(saveFaceDescriptor(record), 6000, "फेस डेटा सेव टाइमआउट");
 
       if (targetType === "STUDENT" && photoDataUrl) {
-        try {
-          await updateStudentPhoto(schoolId, targetPerson.id, photoDataUrl);
-        } catch {}
+        void updateStudentPhoto(schoolId, targetPerson.id, photoDataUrl).catch(() => {});
       } else if (targetType === "TEACHER" && photoDataUrl) {
-        try {
-          await updateTeacher(schoolId, targetPerson.id, { photoUrl: photoDataUrl });
-        } catch {}
+        void updateTeacher(schoolId, targetPerson.id, { photoUrl: photoDataUrl }).catch(() => {});
       }
 
       setEnrolledMap((prev) => ({ ...prev, [targetPerson.id]: record }));
@@ -1223,7 +1219,7 @@ export const UniversalFaceIdStudioModal: React.FC<Props> = ({
   const enrolledTeacherCount = localTeachersList.filter((t) => enrolledMap[t.id]).length;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-5 bg-black/80 backdrop-blur-md animate-in fade-in duration-200">
+    <div className="nst-isolated-modal fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-5 bg-black/80 backdrop-blur-md animate-in fade-in duration-200">
       <div className="bg-slate-900 border border-slate-700 w-full max-w-5xl rounded-3xl shadow-2xl flex flex-col max-h-[92vh] overflow-hidden text-slate-100">
         {/* Header */}
         <div className="p-4 sm:p-5 bg-gradient-to-r from-emerald-950 via-teal-950 to-slate-900 border-b border-emerald-500/30 flex items-center justify-between shrink-0">
@@ -1689,22 +1685,9 @@ export const UniversalFaceIdStudioModal: React.FC<Props> = ({
                     <span className="text-[11px]">{enrollFacingMode === "user" ? "📱 फ्रंट" : "📷 बैक"}</span>
                   </button>
                   <button
-                    type="button"
-                    onClick={() => setStudioScreenFlash((prev) => !prev)}
-                    className={`px-2.5 py-1 rounded-xl text-xs font-bold transition flex items-center gap-1.5 border cursor-pointer ${
-                      studioScreenFlash
-                        ? "bg-amber-300 text-slate-950 border-amber-400 shadow-md shadow-amber-300/40"
-                        : "bg-slate-800 text-slate-300 border-slate-700 hover:text-white"
-                    }`}
-                    title="स्क्रीन फेस लाइट (कम रोशनी में चेहरे को उजागर करने के लिए)"
-                  >
-                    <Lightbulb className={`w-3.5 h-3.5 ${studioScreenFlash ? "fill-slate-950 text-slate-950" : "text-amber-400"}`} />
-                    <span className="text-[11px]">{studioScreenFlash ? "स्क्रीन लाइट ON" : "स्क्रीन लाइट"}</span>
-                  </button>
-                  <button
                     onClick={() => {
                       setTargetPerson(null);
-                      setStudioScreenFlash(false);
+                      setIsProcessingCapture(false);
                     }}
                     className="p-1.5 rounded-lg bg-slate-800 text-slate-400 hover:text-white cursor-pointer"
                   >

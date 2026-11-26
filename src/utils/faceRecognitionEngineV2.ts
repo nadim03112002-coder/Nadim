@@ -512,7 +512,7 @@ export async function saveFaceDescriptor(
     console.warn("[FaceDB] LocalStorage backup failed:", error);
   }
 
-  // 8. Replace Firestore document, removing stale legacy fields.
+  // 8. Replace Firestore document with bounded timeout so slow networks never stall Face ID enrollment.
   try {
     const { doc, setDoc } = await import("firebase/firestore");
     const { db: firestoreDb, touchSchoolSyncVersion } = await import("../school-firebase");
@@ -524,12 +524,13 @@ export async function saveFaceDescriptor(
         `schools/${schoolKey}/face_descriptors_v2/${studentKey}`
       );
 
-      await setDoc(
-        ref,
-        JSON.parse(JSON.stringify(enriched))
-      );
-      markSchoolCacheFresh(`nst_face_sync_v2_${schoolKey}`);
-      void touchSchoolSyncVersion(schoolKey, "face_descriptors");
+      await Promise.race([
+        setDoc(ref, JSON.parse(JSON.stringify(enriched))).then(() => {
+          markSchoolCacheFresh(`nst_face_sync_v2_${schoolKey}`);
+          void touchSchoolSyncVersion(schoolKey, "face_descriptors");
+        }),
+        new Promise<void>((resolve) => setTimeout(resolve, 4000)),
+      ]);
     }
   } catch (cloudErr) {
     console.warn("[FaceDB] Firestore sync note:", cloudErr);

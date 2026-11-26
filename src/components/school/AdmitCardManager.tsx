@@ -974,8 +974,8 @@ export const AdmitCardManager: React.FC<Props> = ({
         );
       }
 
-      // Remaining Rich Banner Layouts: Classic Ribbon, Modern Floating, Diagonal, Arch, Wave, Chevron, Scallop, Aurora, Prism, Horizon, Tricolor, Scoreboard, Ribbon 3D, Floating Pill, Scroll, Double Decker, Passport MRZ, Ticket Notch, Dual Rails, Stacked Deck, Diamond Crest, Bookmark
-      const isDiagonal = admitArch.headerStyle === "diagonal";
+      // Remaining Rich Banner Layouts: All 60 Header & Frame Architectures
+      const isDiagonal = admitArch.headerStyle === "diagonal" || admitArch.headerStyle === "split_duotone";
       const isFloating = admitArch.pillBadges || admitArch.headerStyle === "floating_pill" || admitArch.frameStyle === "stacked_deck";
       const isArch = admitArch.headerStyle === "arch";
       const isWave = admitArch.headerStyle === "wave";
@@ -992,20 +992,81 @@ export const AdmitCardManager: React.FC<Props> = ({
       const isTicket = admitArch.frameStyle === "ticket_notch";
       const isBookmark = admitArch.frameStyle === "bookmark_ribbon";
       const isBottomDock = admitArch.frameStyle === "bottom_dock";
+      const isLanyard = admitArch.frameStyle === "lanyard_punch";
+      const isBrackets = admitArch.frameStyle === "corner_brackets" || admitArch.frameStyle === "cyber_hud" || admitArch.frameStyle === "museum_plaque";
+      const isDossier = admitArch.frameStyle === "dossier_tab";
+      const isSwissCross = admitArch.frameStyle === "swiss_cross";
+      const isDiamondCrest = admitArch.frameStyle === "diamond_crest";
+      const isHalo = admitArch.frameStyle === "concentric_halo";
+      const isBlueprint = admitArch.frameStyle === "blueprint_grid";
+      const isStacked = admitArch.frameStyle === "stacked_deck";
+      const isBeveled = admitArch.frameStyle === "beveled";
+      const isHeavyBars = admitArch.frameStyle === "heavy_bars";
+      const isMonoStripe = admitArch.frameStyle === "mono_stripe";
+      const isFolio = admitArch.frameStyle === "folio_ledger";
+      const isPostage = admitArch.frameStyle === "postage_stamp" || admitArch.frameStyle === "checkered_rim";
 
       return (
         <div key={student?.id || "single"} className="admitcard-print-page w-full flex justify-center">
           <div
-            className={`admitcard-sheet-box w-full max-w-[780px] shadow-xl overflow-hidden text-slate-900 print:shadow-none print:m-0 print:max-w-none print:rounded-none relative flex ${isDualRails ? "flex-row" : "flex-col"} justify-between ${isFloating ? "rounded-3xl" : "rounded-2xl"}`}
+            className={`admitcard-sheet-box w-full max-w-[780px] shadow-xl overflow-hidden text-slate-900 print:shadow-none print:m-0 print:max-w-none print:rounded-none relative flex ${isDualRails ? "flex-row" : "flex-col"} justify-between ${
+              isBeveled || admitArch.sharpCorners || isBlueprint || isFolio ? "rounded-sm" : isFloating ? "rounded-3xl" : "rounded-2xl"
+            }`}
             style={{
               fontFamily: admitArch.serifFont ? "Georgia, serif" : admitArch.monoAccent ? "'JetBrains Mono', monospace" : "'Inter', sans-serif",
-              backgroundColor: admitArch.creamPaper ? "#fffdf4" : isFloating ? admitColors.surfaceTint : "#ffffff",
+              backgroundColor: admitArch.creamPaper ? "#fffdf4" : isBlueprint ? "#f8fbff" : isFolio ? "#fafdf7" : isFloating ? admitColors.surfaceTint : "#ffffff",
+              backgroundImage: isBlueprint
+                ? `linear-gradient(${admitColors.primaryColor}12 1px, transparent 1px), linear-gradient(90deg, ${admitColors.primaryColor}12 1px, transparent 1px)`
+                : undefined,
+              backgroundSize: isBlueprint ? "16px 16px" : undefined,
               ...customBorderStyle,
+              borderRadius: isBeveled ? "28px 4px 28px 4px" : undefined,
+              borderStyle: isPostage ? "dashed" : customBorderStyle.borderStyle,
+              borderTopWidth: isHeavyBars ? "10px" : undefined,
+              borderBottomWidth: isHeavyBars ? "10px" : undefined,
+              borderLeftWidth: isMonoStripe ? "9px" : isSwissCross ? "14px" : undefined,
+              borderLeftColor: isSwissCross ? admitColors.accentColor : undefined,
+              boxShadow: isStacked
+                ? `6px 6px 0 ${admitColors.accentColor}, 12px 12px 0 ${admitColors.primaryColor}`
+                : admitArch.frameStyle === "museum_plaque"
+                ? `inset 0 0 0 4px ${admitColors.accentColor}40`
+                : undefined,
             }}
           >
             {isDualRails && <div className="w-5 shrink-0" style={{ background: `linear-gradient(180deg, ${admitColors.primaryColor}, ${admitColors.accentColor})` }} />}
             <div className="flex-1 p-5 flex flex-col justify-between relative min-w-0">
             {watermarkOverlay}
+            {isLanyard && (
+              <div className="mx-auto mb-2 w-16 h-3 rounded-full border-2 bg-white shadow-inner relative z-20" style={{ borderColor: admitColors.accentColor }} />
+            )}
+            {isDossier && (
+              <div className="-mx-5 -mt-5 mb-3 px-4 py-1 flex items-center justify-between text-[10px] font-mono font-black relative z-20" style={{ backgroundColor: admitColors.primaryColor, color: admitColors.headerTextColor }}>
+                <span>📁 HALL TICKET DOSSIER • ROLL #{sRoll}</span>
+                <span>{cleanSess}</span>
+              </div>
+            )}
+            {isBrackets && (
+              <>
+                <div className="pointer-events-none absolute top-2 left-2 w-5 h-5 border-t-[3px] border-l-[3px] z-20" style={{ borderColor: admitColors.accentColor }} />
+                <div className="pointer-events-none absolute top-2 right-2 w-5 h-5 border-t-[3px] border-r-[3px] z-20" style={{ borderColor: admitColors.accentColor }} />
+                <div className="pointer-events-none absolute bottom-2 left-2 w-5 h-5 border-b-[3px] border-l-[3px] z-20" style={{ borderColor: admitColors.accentColor }} />
+                <div className="pointer-events-none absolute bottom-2 right-2 w-5 h-5 border-b-[3px] border-r-[3px] z-20" style={{ borderColor: admitColors.accentColor }} />
+              </>
+            )}
+            {isDiamondCrest && (
+              <div className="flex justify-center -mt-2 mb-1 relative z-20">
+                <div className="w-6 h-6 rotate-45 border-2 flex items-center justify-center text-[10px] font-black text-white shadow" style={{ backgroundColor: admitColors.accentColor, borderColor: admitColors.primaryColor }}>
+                  <span className="-rotate-45">❖</span>
+                </div>
+              </div>
+            )}
+            {isHalo && (
+              <div className="pointer-events-none absolute inset-0 flex items-center justify-center opacity-15 z-0">
+                <div className="w-60 h-60 rounded-full border-4 border-dashed flex items-center justify-center" style={{ borderColor: admitColors.accentColor }}>
+                  <div className="w-44 h-44 rounded-full border-2" style={{ borderColor: admitColors.primaryColor }} />
+                </div>
+              </div>
+            )}
             {isTicket && (
               <>
                 <div className="hidden sm:block absolute -left-3.5 top-1/2 -translate-y-1/2 w-7 h-7 rounded-full bg-slate-100 border-r-2 z-20" style={{ borderColor: admitColors.borderColor }} />

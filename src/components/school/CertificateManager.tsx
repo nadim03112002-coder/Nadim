@@ -411,6 +411,8 @@ export const CertificateManager: React.FC<Props> = ({
   const isCheckered = certArch?.frameStyle === "checkered_rim";
   const isHalo = certArch?.frameStyle === "concentric_halo";
   const isBookmark = certArch?.frameStyle === "bookmark_ribbon";
+  const isLanyard = certArch?.frameStyle === "lanyard_punch";
+  const isFolio = certArch?.frameStyle === "folio_ledger";
   const isStacked = certArch?.frameStyle === "stacked_deck";
   const isOrnate =
     certArch?.frameStyle === "ornate_filigree" ||
@@ -446,7 +448,7 @@ export const CertificateManager: React.FC<Props> = ({
   const sheetInlineStyle: React.CSSProperties = useCustomCertTpl
     ? {
         fontFamily: certArch?.serifFont ? "'Georgia', serif" : certArch?.monoAccent ? "'JetBrains Mono', monospace" : "'Plus Jakarta Sans', 'Georgia', serif",
-        backgroundColor: certArch?.creamPaper ? "#fffdf4" : isBlueprint ? "#f8fbff" : "#ffffff",
+        backgroundColor: certArch?.creamPaper ? "#fffdf4" : isBlueprint ? "#f8fbff" : isFolio ? "#fafdf7" : "#ffffff",
         backgroundImage: isBlueprint
           ? `linear-gradient(${certColors.primaryColor}10 1px, transparent 1px), linear-gradient(90deg, ${certColors.primaryColor}10 1px, transparent 1px)`
           : isCheckered
@@ -1317,6 +1319,9 @@ export const CertificateManager: React.FC<Props> = ({
 
               {/* Main Sheet Container */}
               <div className={`flex-1 flex flex-col justify-between relative ${isLeftSpine || isRightSpine ? "p-6 sm:p-8" : ""}`}>
+                {useCustomCertTpl && isLanyard && (
+                  <div className="mx-auto mt-3 -mb-2 w-16 h-3 rounded-full border-2 bg-white shadow-inner relative z-20" style={{ borderColor: certColors.accentColor }} />
+                )}
                 {/* Dossier File Header Bar */}
                 {useCustomCertTpl && isDossier && (
                   <div className="px-6 pt-3 flex justify-between items-center border-b-2 text-[10px] font-mono font-black" style={{ borderColor: certColors.borderColor, backgroundColor: certColors.surfaceTint }}>

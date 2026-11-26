@@ -8,8 +8,10 @@ import {
   isSchoolEliteCurriculum,
   LITE_YEARLY_PRICES,
   ELITE_YEARLY_PRICING,
-  SUPREME_YEARLY_PRICING,
+  ULTRA_YEARLY_PRICING,
+  ULTRA_AGENT_SCHEDULE,
   YEARLY_STUDENT_SLABS,
+  getElitePricingForSlab,
   getLitePriceForSlab,
   type School,
   type SchoolSubscription,
@@ -23,7 +25,7 @@ import {
   School as SchoolIcon, Plus, Pause, Play,
   Users, IndianRupee, Settings, X, Zap, Tag, Lock, Eye, EyeOff, Shield, Trash2, Unlock, ArrowLeft,
   CreditCard, CheckCircle, AlertCircle, Clock, ChevronRight, FileText, StickyNote, Calendar, Crown,
-  Bell, Sliders, Smartphone, Check, Sparkles, Camera, Upload, Code2, Globe, Loader2, LogOut
+  Bell, Sliders, Smartphone, Check, Sparkles, Camera, Upload, Code2, Globe, Loader2, LogOut, ClipboardCheck
 } from "lucide-react";
 import { toast } from "sonner";
 import { compressImageFileToDataUrl } from "../../utils/imageCompression";
@@ -36,6 +38,7 @@ import {
 import { useBackHandler } from "../../utils/backNavigation";
 import { ScreenInfoGuideButton } from "./ScreenInfoGuideButton";
 import { LanguageToggleButton } from "./LanguageToggleButton";
+import { QualityTestingChecklistModal, getQaChecklistCompletedCount } from "./QualityTestingChecklistModal";
 
 interface Props {
   adminUid: string;
@@ -43,10 +46,8 @@ interface Props {
   onLogout?: () => void;
 }
 
-// ── YEARLY-ONLY DECOY PRICING CONFIG ──────────────────────────────────────────
-type SuperEdition = "lite" | "elite" | "supreme";
-
-const LITE_SLABS = [100, 300, 500, 1000, 2000] as const;
+// ── YEARLY-ONLY PRICING CONFIG (LITE · ELITE · ULTRA) ─────────────────────────
+type SuperEdition = "lite" | "elite" | "ultra";
 
 const isCombo = (s: SchoolSubscription) =>
   Boolean(s.isElite || s.customCurriculumEnabled || s.tier === "whitelabel_5000");
@@ -54,9 +55,13 @@ const isCombo = (s: SchoolSubscription) =>
 const calcAmount = (s: SchoolSubscription): number => {
   if (typeof s.yearlyAmount === "number" && s.yearlyAmount > 0) return s.yearlyAmount;
   if (typeof s.monthlyAmount === "number" && s.monthlyAmount > 0) return s.monthlyAmount;
-  if (s.tier === "whitelabel_5000") return SUPREME_YEARLY_PRICING.price;
+  if (s.tier === "whitelabel_5000") {
+    const base = s.isRenewal ? ULTRA_YEARLY_PRICING.renewal : ULTRA_YEARLY_PRICING.firstYear;
+    return base + (s.agentAddOn ? (s.agentAnnualFee || (s.isRenewal ? 250000 : 200000)) : 0);
+  }
   if (s.isElite || s.customCurriculumEnabled || s.tier === "enterprise_2000" || s.tier === "full") {
-    return s.isRenewal ? ELITE_YEARLY_PRICING.renewal : ELITE_YEARLY_PRICING.firstYear;
+    const slab = getElitePricingForSlab(s.maxStudents || 500);
+    return s.isRenewal ? slab.renewal : slab.firstYear;
   }
   return getLitePriceForSlab(s.maxStudents || 100);
 };
@@ -67,7 +72,7 @@ const defaultSub: SchoolSubscription = {
   pdf: true,
   mcq: true,
   tier: "enterprise_2000",
-  maxStudents: 5000,
+  maxStudents: 500,
   maxTeachers: 9999,
   maxBranches: 3,
   isElite: true,
@@ -84,7 +89,7 @@ const defaultSub: SchoolSubscription = {
 // ── REUSABLE YEARLY 3-TIER SUBSCRIPTION EDITOR ───────────────────────────────
 const resolveSuperEdition = (sub?: SchoolSubscription | null): SuperEdition => {
   if (!sub) return "elite";
-  if (sub.tier === "whitelabel_5000") return "supreme";
+  if (sub.tier === "whitelabel_5000") return "ultra";
   if (sub.isElite || sub.customCurriculumEnabled || sub.tier === "enterprise_2000" || sub.tier === "full") return "elite";
   return "lite";
 };
@@ -99,11 +104,19 @@ const SubEditor = ({
   label?: string;
 }) => {
   const edition = resolveSuperEdition(value);
-  const currentSlab = value.maxStudents || (edition === "lite" ? 100 : 5000);
+  const currentSlab = value.maxStudents || (edition === "lite" ? 100 : edition === "ultra" ? 5000 : 500);
   const isRenewal = Boolean(value.isRenewal);
+  const agentAddOn = Boolean(value.agentAddOn);
+  const agentYear = Math.min(5, Math.max(1, Number(value.agentYear || (isRenewal ? 2 : 1))));
   const displayedAmount = calcAmount(value);
 
-  const applyConfig = (nextEdition: SuperEdition, slab: number, nextRenewal: boolean) => {
+  const applyConfig = (
+    nextEdition: SuperEdition,
+    slab: number,
+    nextRenewal: boolean,
+    nextAgent = agentAddOn,
+    nextAgentYr = agentYear
+  ) => {
     if (nextEdition === "lite") {
       const clampedSlab = slab > 2000 ? 2000 : slab;
       const amt = getLitePriceForSlab(clampedSlab);
@@ -116,6 +129,7 @@ const SubEditor = ({
         isElite: false,
         customCurriculumEnabled: false,
         isRenewal: false,
+        agentAddOn: false,
         monthlyAmount: amt,
         yearlyAmount: amt,
         planDuration: "1_year",
@@ -125,8 +139,11 @@ const SubEditor = ({
         mcq: true,
         status: "active",
       });
-    } else if (nextEdition === "supreme") {
-      const amt = SUPREME_YEARLY_PRICING.price;
+    } else if (nextEdition === "ultra") {
+      const schedRow = ULTRA_AGENT_SCHEDULE.find((r) => r.year === nextAgentYr) || ULTRA_AGENT_SCHEDULE[0];
+      const baseAmt = nextRenewal ? ULTRA_YEARLY_PRICING.renewal : ULTRA_YEARLY_PRICING.firstYear;
+      const agentAmt = nextAgent ? schedRow.agent : 0;
+      const totalAmt = baseAmt + agentAmt;
       onChange({
         ...value,
         tier: "whitelabel_5000",
@@ -135,9 +152,13 @@ const SubEditor = ({
         maxBranches: 9999,
         isElite: true,
         customCurriculumEnabled: true,
-        isRenewal: false,
-        monthlyAmount: amt,
-        yearlyAmount: amt,
+        isRenewal: nextRenewal,
+        agentAddOn: nextAgent,
+        agentYear: nextAgentYr,
+        agentAnnualFee: agentAmt,
+        renewalAmount: ULTRA_YEARLY_PRICING.renewal,
+        monthlyAmount: totalAmt,
+        yearlyAmount: totalAmt,
         planDuration: "1_year",
         reading: true,
         writing: true,
@@ -146,7 +167,8 @@ const SubEditor = ({
         status: "active",
       });
     } else {
-      const amt = nextRenewal ? ELITE_YEARLY_PRICING.renewal : ELITE_YEARLY_PRICING.firstYear;
+      const eSlab = getElitePricingForSlab(slab);
+      const amt = nextRenewal ? eSlab.renewal : eSlab.firstYear;
       onChange({
         ...value,
         tier: "enterprise_2000",
@@ -156,8 +178,9 @@ const SubEditor = ({
         isElite: true,
         customCurriculumEnabled: true,
         isRenewal: nextRenewal,
-        mrpAmount: ELITE_YEARLY_PRICING.mrp,
-        renewalAmount: ELITE_YEARLY_PRICING.renewal,
+        agentAddOn: false,
+        mrpAmount: eSlab.mrp,
+        renewalAmount: eSlab.renewal,
         monthlyAmount: amt,
         yearlyAmount: amt,
         planDuration: "1_year",
@@ -170,11 +193,13 @@ const SubEditor = ({
     }
   };
 
+  const eliteSlab = getElitePricingForSlab(currentSlab);
+
   return (
     <div className="bg-white dark:bg-slate-800 rounded-xl p-4 shadow-sm space-y-3.5 border border-slate-200 dark:border-slate-700">
       <div className="flex items-center justify-between gap-2">
         <h3 className="font-bold text-slate-800 dark:text-slate-100 text-sm">{label}</h3>
-        <span className="text-[11px] font-black px-2.5 py-0.5 rounded-full bg-emerald-100 dark:bg-emerald-950/60 text-emerald-800 dark:text-emerald-300">
+        <span className="text-[11px] font-black text-emerald-700 dark:text-emerald-300 tabular-nums">
           ₹{displayedAmount.toLocaleString("en-IN")}/year
         </span>
       </div>
@@ -183,7 +208,7 @@ const SubEditor = ({
       <div className="grid grid-cols-3 gap-1.5 p-1 bg-slate-100 dark:bg-slate-700/60 rounded-xl">
         <button
           type="button"
-          onClick={() => applyConfig("lite", currentSlab > 2000 ? 100 : currentSlab, false)}
+          onClick={() => applyConfig("lite", currentSlab > 2000 ? 100 : currentSlab, false, false)}
           className={`py-2 px-1.5 rounded-lg text-xs font-black transition cursor-pointer text-center ${
             edition === "lite"
               ? "bg-blue-600 text-white shadow-sm"
@@ -191,38 +216,38 @@ const SubEditor = ({
           }`}
         >
           <p className="leading-tight">⚡ Lite Yearly</p>
-          <span className="text-[10px] opacity-90">1 Branch · ₹5k–25.3k</span>
+          <span className="text-[10px] opacity-90">1 Branch · ₹20k–₹1L</span>
         </button>
 
         <button
           type="button"
-          onClick={() => applyConfig("elite", currentSlab || 5000, isRenewal)}
+          onClick={() => applyConfig("elite", currentSlab || 500, isRenewal, false)}
           className={`py-2 px-1.5 rounded-lg text-xs font-black transition cursor-pointer text-center ${
             edition === "elite"
-              ? "bg-gradient-to-r from-amber-500 to-orange-500 text-slate-950 shadow-sm"
+              ? "bg-amber-500 text-slate-950 shadow-sm"
               : "text-slate-600 dark:text-slate-300 hover:text-slate-900"
           }`}
         >
           <p className="leading-tight">👑 Elite Yearly</p>
-          <span className="text-[10px] opacity-90">3 Branches · ₹1L / 80k</span>
+          <span className="text-[10px] opacity-90">3 Branches · ₹75k–₹2L</span>
         </button>
 
         <button
           type="button"
-          onClick={() => applyConfig("supreme", 5000, false)}
+          onClick={() => applyConfig("ultra", 5000, isRenewal, agentAddOn, agentYear)}
           className={`py-2 px-1.5 rounded-lg text-xs font-black transition cursor-pointer text-center ${
-            edition === "supreme"
+            edition === "ultra"
               ? "bg-rose-600 text-white shadow-sm"
               : "text-slate-600 dark:text-slate-300 hover:text-slate-900"
           }`}
         >
-          <p className="leading-tight">💎 Supreme</p>
-          <span className="text-[10px] opacity-90">Unlim · ₹2,00,000</span>
+          <p className="leading-tight">💎 ULTRA 2000+</p>
+          <span className="text-[10px] opacity-90">Unlim · ₹3L / Renew ₹2L</span>
         </button>
       </div>
 
       {/* Student Capacity Slabs */}
-      {edition !== "supreme" && (
+      {edition !== "ultra" && (
         <div>
           <p className="text-[11px] font-bold text-slate-500 dark:text-slate-400 mb-1.5">
             Student Capacity Slab (Yearly):
@@ -233,7 +258,7 @@ const SubEditor = ({
                 key={slab}
                 type="button"
                 onClick={() => applyConfig(edition, slab, isRenewal)}
-                className={`py-1.5 px-2 rounded-lg border text-[11px] font-black transition cursor-pointer ${
+                className={`py-1.5 px-2 rounded-lg border text-[11px] font-black transition cursor-pointer tabular-nums ${
                   currentSlab === slab
                     ? edition === "elite"
                       ? "bg-amber-500 text-slate-950 border-amber-500"
@@ -242,11 +267,11 @@ const SubEditor = ({
                 }`}
               >
                 {slab >= 5000 ? "5000+" : slab}
-                {edition === "lite" && (
-                  <span className="block text-[9px] font-bold opacity-85">
-                    ₹{(LITE_YEARLY_PRICES[slab] || 5000).toLocaleString("en-IN")}
-                  </span>
-                )}
+                <span className="block text-[9px] font-bold opacity-85">
+                  {edition === "lite"
+                    ? `₹${(LITE_YEARLY_PRICES[slab] || 20000).toLocaleString("en-IN")}`
+                    : `₹${(isRenewal ? getElitePricingForSlab(slab).renewal : getElitePricingForSlab(slab).firstYear).toLocaleString("en-IN")}`}
+                </span>
               </button>
             ))}
           </div>
@@ -255,7 +280,7 @@ const SubEditor = ({
 
       {/* Elite 1st Year Offer vs Renewal Fee Toggle */}
       {edition === "elite" && (
-        <div className="grid grid-cols-2 gap-2">
+        <div className="grid grid-cols-2 gap-2 tabular-nums">
           <button
             type="button"
             onClick={() => applyConfig("elite", currentSlab, false)}
@@ -267,8 +292,10 @@ const SubEditor = ({
           >
             <p className="text-[11px] font-black text-amber-800 dark:text-amber-300">✨ New 1st Year Offer</p>
             <p className="text-xs font-black text-slate-900 dark:text-white mt-0.5">
-              <span className="line-through text-slate-400 mr-1.5 font-normal">₹1,20,000</span>
-              ₹1,00,000 मात्र
+              <span className="line-through text-slate-400 mr-1.5 font-normal">
+                ₹{eliteSlab.mrp.toLocaleString("en-IN")}
+              </span>
+              ₹{eliteSlab.firstYear.toLocaleString("en-IN")}
             </p>
           </button>
           <button
@@ -281,8 +308,62 @@ const SubEditor = ({
             }`}
           >
             <p className="text-[11px] font-black text-emerald-700 dark:text-emerald-300">🔄 Yearly Renewal Fee</p>
-            <p className="text-xs font-black text-slate-900 dark:text-white mt-0.5">₹80,000 / Year</p>
+            <p className="text-xs font-black text-slate-900 dark:text-white mt-0.5">
+              ₹{eliteSlab.renewal.toLocaleString("en-IN")} / Year
+            </p>
           </button>
+        </div>
+      )}
+
+      {/* ULTRA ERP + Optional Dedicated Agent */}
+      {edition === "ultra" && (
+        <div className="space-y-2">
+          <div className="grid grid-cols-2 gap-2 tabular-nums">
+            <button
+              type="button"
+              onClick={() => applyConfig("ultra", 5000, false, agentAddOn, 1)}
+              className={`p-2.5 rounded-xl border-2 text-left cursor-pointer ${
+                !isRenewal ? "border-rose-500 bg-rose-50 dark:bg-rose-950/30" : "border-slate-200 dark:border-slate-600"
+              }`}
+            >
+              <p className="text-[11px] font-black text-rose-700 dark:text-rose-300">💎 1st Year ULTRA</p>
+              <p className="text-xs font-black text-slate-900 dark:text-white mt-0.5">₹3,00,000 / Year</p>
+            </button>
+            <button
+              type="button"
+              onClick={() => applyConfig("ultra", 5000, true, agentAddOn, Math.max(2, agentYear))}
+              className={`p-2.5 rounded-xl border-2 text-left cursor-pointer ${
+                isRenewal ? "border-emerald-500 bg-emerald-50 dark:bg-emerald-950/30" : "border-slate-200 dark:border-slate-600"
+              }`}
+            >
+              <p className="text-[11px] font-black text-emerald-700 dark:text-emerald-300">🔄 ULTRA Renewal</p>
+              <p className="text-xs font-black text-slate-900 dark:text-white mt-0.5">₹2,00,000 / Year</p>
+            </button>
+          </div>
+          <div className="flex flex-wrap items-center justify-between gap-2 p-2.5 rounded-xl border border-slate-200 dark:border-slate-600 bg-slate-50 dark:bg-slate-700/40 text-xs">
+            <label className="flex items-center gap-2 font-bold cursor-pointer">
+              <input
+                type="checkbox"
+                checked={agentAddOn}
+                onChange={(e) => applyConfig("ultra", 5000, isRenewal, e.target.checked, agentYear)}
+                className="accent-rose-600"
+              />
+              <span>Dedicated Agent Add-On (Yr {agentYear}{agentYear >= 5 ? "+ Max Cap" : ""})</span>
+            </label>
+            {agentAddOn && (
+              <select
+                value={agentYear}
+                onChange={(e) => applyConfig("ultra", 5000, Number(e.target.value) > 1, true, Number(e.target.value))}
+                className="px-2 py-1 rounded border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-xs font-bold"
+              >
+                {ULTRA_AGENT_SCHEDULE.map((r) => (
+                  <option key={r.year} value={r.year}>
+                    {r.label}: +₹{r.agent.toLocaleString("en-IN")}
+                  </option>
+                ))}
+              </select>
+            )}
+          </div>
         </div>
       )}
 
@@ -290,18 +371,18 @@ const SubEditor = ({
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 items-center bg-slate-50 dark:bg-slate-700/40 p-3 rounded-xl border border-slate-200 dark:border-slate-600">
         <div className="text-xs space-y-0.5">
           <p className="font-black text-slate-800 dark:text-white">
-            {edition === "supreme"
-              ? "💎 Supreme (5,000+ · Unlimited Branches)"
+            {edition === "ultra"
+              ? "💎 ULTRA (2,000+ · Unlimited Branches)"
               : edition === "elite"
-              ? `👑 Elite (${currentSlab >= 5000 ? "5,000" : currentSlab} Std · 3 Branches)`
+              ? `👑 Elite (${currentSlab >= 5000 ? "5,000+" : currentSlab} Std · 3 Branches)`
               : `⚡ Lite (${currentSlab} Std · 1 Branch Max)`}
           </p>
           <p className="text-[11px] text-slate-500 dark:text-slate-300">
             {edition === "lite"
-              ? "Default Website + QR Attendance (No Face ID / Custom CMS)"
+              ? "Default Website + QR Attendance (No Face ID / Tagada Caller)"
               : edition === "elite"
-              ? "Custom Website CMS + Face ID + Entrance Exam + Templates"
-              : "Play Store App + On-Site Training + 100% Data Migration"}
+              ? "Fee Tagada Caller + Face ID + Custom CMS + 60 Templates"
+              : "Own Domain + Brand Play Store APK + On-Site Training + Agent Option"}
           </p>
         </div>
         <div>
@@ -320,7 +401,7 @@ const SubEditor = ({
                 yearlyAmount: num,
               });
             }}
-            className="w-full px-3 py-1.5 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-sm font-black text-slate-900 dark:text-white"
+            className="w-full px-3 py-1.5 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-sm font-black text-slate-900 dark:text-white tabular-nums"
           />
         </div>
       </div>
@@ -350,21 +431,27 @@ const PlanAssigner: React.FC<{
   const [studentSlab, setStudentSlab] = useState<number>(() => {
     const ms = school?.subscription?.maxStudents;
     if (ms && YEARLY_STUDENT_SLABS.includes(ms as any)) return ms;
-    return edition === "lite" ? 100 : 5000;
+    return edition === "lite" ? 100 : edition === "ultra" ? 5000 : 500;
   });
   const [isRenewal, setIsRenewal] = useState<boolean>(() => Boolean(school?.subscription?.isRenewal));
+  const [agentAddOn, setAgentAddOn] = useState<boolean>(() => Boolean(school?.subscription?.agentAddOn));
+  const [agentYear, setAgentYear] = useState<number>(() => school?.subscription?.agentYear || 1);
   const [duration, setDur] = useState<PlanDur>("1_year");
   const [customFinalFee, setCustomFinalFee] = useState<string>("");
   const [saving, setSaving] = useState(false);
   const [success, setSuccess] = useState(false);
 
+  const eliteSlabPricing = getElitePricingForSlab(studentSlab);
+  const ultraAgentRow = ULTRA_AGENT_SCHEDULE.find((r) => r.year === agentYear) || ULTRA_AGENT_SCHEDULE[0];
+
   const computedBaseYearly =
-    edition === "supreme"
-      ? SUPREME_YEARLY_PRICING.price
+    edition === "ultra"
+      ? (isRenewal ? ULTRA_YEARLY_PRICING.renewal : ULTRA_YEARLY_PRICING.firstYear) +
+        (agentAddOn ? ultraAgentRow.agent : 0)
       : edition === "elite"
       ? isRenewal
-        ? ELITE_YEARLY_PRICING.renewal
-        : ELITE_YEARLY_PRICING.firstYear
+        ? eliteSlabPricing.renewal
+        : eliteSlabPricing.firstYear
       : getLitePriceForSlab(studentSlab > 2000 ? 2000 : studentSlab);
 
   const durationMultiplier = duration === "2_years" ? 2 : duration === "lifetime" ? 4 : 1;
@@ -385,10 +472,10 @@ const PlanAssigner: React.FC<{
     setSaving(true);
     setSuccess(false);
     const expiresAt = computeExpiry(duration);
-    const effectiveSlab = edition === "lite" ? Math.min(2000, studentSlab) : edition === "supreme" ? 5000 : studentSlab;
-    const maxBranches = edition === "supreme" ? 9999 : edition === "elite" ? 3 : 1;
+    const effectiveSlab = edition === "lite" ? Math.min(2000, studentSlab) : edition === "ultra" ? 5000 : studentSlab;
+    const maxBranches = edition === "ultra" ? 9999 : edition === "elite" ? 3 : 1;
     const tier =
-      edition === "supreme"
+      edition === "ultra"
         ? "whitelabel_5000"
         : edition === "elite"
         ? "enterprise_2000"
@@ -408,9 +495,17 @@ const PlanAssigner: React.FC<{
       status: "active",
       isElite: effectiveElite,
       customCurriculumEnabled: effectiveElite,
-      isRenewal: edition === "elite" ? isRenewal : false,
-      mrpAmount: edition === "elite" ? ELITE_YEARLY_PRICING.mrp : undefined,
-      renewalAmount: edition === "elite" ? ELITE_YEARLY_PRICING.renewal : undefined,
+      isRenewal: edition === "lite" ? false : isRenewal,
+      agentAddOn: edition === "ultra" ? agentAddOn : false,
+      agentYear: edition === "ultra" && agentAddOn ? agentYear : undefined,
+      agentAnnualFee: edition === "ultra" && agentAddOn ? ultraAgentRow.agent : undefined,
+      mrpAmount: edition === "elite" ? eliteSlabPricing.mrp : undefined,
+      renewalAmount:
+        edition === "elite"
+          ? eliteSlabPricing.renewal
+          : edition === "ultra"
+          ? ULTRA_YEARLY_PRICING.renewal
+          : undefined,
       expiresAt,
       paidUntil: expiresAt,
       reading: true,
@@ -424,10 +519,10 @@ const PlanAssigner: React.FC<{
       lastPaidDate: new Date().toISOString(),
       lastPaidAmount: price,
       paymentNotes:
-        edition === "supreme"
-          ? "💎 Supreme White-Label Yearly Active (5000+ Std, Unlimited Branches, Play Store App, On-Site Training)"
+        edition === "ultra"
+          ? `💎 ULTRA White-Label (2,000+ Std, Unlimited Branches, Own Domain + APK${agentAddOn ? ` + Dedicated Agent Yr ${agentYear}` : ""})`
           : edition === "elite"
-          ? `👑 Elite Yearly ${isRenewal ? "Renewal (₹80,000)" : "1st Year Offer (₹1,00,000)"} (${effectiveSlab} Std, 3 Branches)`
+          ? `👑 Elite Yearly ${isRenewal ? `Renewal (₹${eliteSlabPricing.renewal.toLocaleString("en-IN")})` : `1st Year (₹${eliteSlabPricing.firstYear.toLocaleString("en-IN")})`} (${effectiveSlab} Std, 3 Branches)`
           : `⚡ Lite Yearly Active (${effectiveSlab} Std, 1 Branch Max, Default Website + QR Scan)`,
     };
     await updateSchool(school.id, {
@@ -455,7 +550,7 @@ const PlanAssigner: React.FC<{
         )}
       </div>
 
-      {/* 3 Decoy Plan Selector */}
+      {/* 3 Plan Selector */}
       <div className="grid grid-cols-3 gap-1.5 p-1 bg-slate-100 dark:bg-slate-700 rounded-xl">
         <button
           type="button"
@@ -476,42 +571,42 @@ const PlanAssigner: React.FC<{
           type="button"
           onClick={() => {
             setEdition("elite");
-            setStudentSlab(5000);
+            if (!YEARLY_STUDENT_SLABS.includes(studentSlab as any)) setStudentSlab(500);
             setCustomFinalFee("");
           }}
           className={`py-2 px-1.5 rounded-lg text-xs font-black transition-all cursor-pointer text-center ${
             edition === "elite"
-              ? "bg-gradient-to-r from-amber-500 to-orange-500 text-slate-950 shadow"
+              ? "bg-amber-500 text-slate-950 shadow"
               : "text-amber-600 dark:text-amber-400"
           }`}
         >
           👑 Elite (Hero)
-          <span className="block text-[9px] opacity-85">3 Branches · ₹1L/80k</span>
+          <span className="block text-[9px] opacity-85">3 Branches · ₹75k–₹2L</span>
         </button>
 
         <button
           type="button"
           onClick={() => {
-            setEdition("supreme");
+            setEdition("ultra");
             setStudentSlab(5000);
             setCustomFinalFee("");
           }}
           className={`py-2 px-1.5 rounded-lg text-xs font-black transition-all cursor-pointer text-center ${
-            edition === "supreme" ? "bg-rose-600 text-white shadow" : "text-slate-500 dark:text-slate-300"
+            edition === "ultra" ? "bg-rose-600 text-white shadow" : "text-slate-500 dark:text-slate-300"
           }`}
         >
-          💎 Supreme
-          <span className="block text-[9px] opacity-85">Unlimited · ₹2L</span>
+          💎 ULTRA 2000+
+          <span className="block text-[9px] opacity-85">Unlim · ₹3L / Renew ₹2L</span>
         </button>
       </div>
 
       {/* Student Slabs */}
-      {edition !== "supreme" && (
+      {edition !== "ultra" && (
         <div>
           <p className="text-[11px] font-bold text-slate-500 dark:text-slate-400 mb-1.5">
-            Student Capacity Chunein ({edition === "lite" ? "Lite: +50% per slab up to 2000" : "Elite: up to 5000 Students"}):
+            Student Capacity Chunein ({edition === "lite" ? "Lite: ₹20k–₹1L up to 2,000 Std" : "Elite: Slab-based up to 5,000+ Std"}):
           </p>
-          <div className="grid grid-cols-3 sm:grid-cols-6 gap-1.5">
+          <div className="grid grid-cols-3 sm:grid-cols-6 gap-1.5 tabular-nums">
             {YEARLY_STUDENT_SLABS.filter((s) => (edition === "lite" ? s <= 2000 : true)).map((slab) => (
               <button
                 key={slab}
@@ -529,9 +624,11 @@ const PlanAssigner: React.FC<{
                 }`}
               >
                 {slab >= 5000 ? "5000+" : slab}
-                {edition === "lite" && (
-                  <span className="block text-[9px] opacity-85">₹{LITE_YEARLY_PRICES[slab].toLocaleString("en-IN")}</span>
-                )}
+                <span className="block text-[9px] opacity-85">
+                  {edition === "lite"
+                    ? `₹${LITE_YEARLY_PRICES[slab].toLocaleString("en-IN")}`
+                    : `₹${(isRenewal ? getElitePricingForSlab(slab).renewal : getElitePricingForSlab(slab).firstYear).toLocaleString("en-IN")}`}
+                </span>
               </button>
             ))}
           </div>
@@ -540,7 +637,7 @@ const PlanAssigner: React.FC<{
 
       {/* Elite Offer vs Renewal Toggle */}
       {edition === "elite" && (
-        <div className="grid grid-cols-2 gap-2">
+        <div className="grid grid-cols-2 gap-2 tabular-nums">
           <button
             type="button"
             onClick={() => {
@@ -555,8 +652,10 @@ const PlanAssigner: React.FC<{
           >
             <p className="text-[11px] font-black text-amber-800 dark:text-amber-300">✨ 1st Year Offer</p>
             <p className="text-xs font-black text-slate-900 dark:text-white mt-0.5">
-              <span className="line-through text-slate-400 mr-1.5 font-normal">₹1,20,000</span>
-              ₹1,00,000 मात्र
+              <span className="line-through text-slate-400 mr-1.5 font-normal">
+                ₹{eliteSlabPricing.mrp.toLocaleString("en-IN")}
+              </span>
+              ₹{eliteSlabPricing.firstYear.toLocaleString("en-IN")}
             </p>
           </button>
           <button
@@ -572,8 +671,78 @@ const PlanAssigner: React.FC<{
             }`}
           >
             <p className="text-[11px] font-black text-emerald-700 dark:text-emerald-300">🔄 Annual Renewal Fee</p>
-            <p className="text-xs font-black text-slate-900 dark:text-white mt-0.5">₹80,000 / Year</p>
+            <p className="text-xs font-black text-slate-900 dark:text-white mt-0.5">
+              ₹{eliteSlabPricing.renewal.toLocaleString("en-IN")} / Year
+            </p>
           </button>
+        </div>
+      )}
+
+      {/* ULTRA 1st Yr vs Renewal + Optional Agent */}
+      {edition === "ultra" && (
+        <div className="space-y-2 tabular-nums">
+          <div className="grid grid-cols-2 gap-2">
+            <button
+              type="button"
+              onClick={() => {
+                setIsRenewal(false);
+                setAgentYear(1);
+                setCustomFinalFee("");
+              }}
+              className={`p-2.5 rounded-xl border-2 text-left cursor-pointer ${
+                !isRenewal ? "border-rose-500 bg-rose-50 dark:bg-rose-950/30" : "border-slate-200 dark:border-slate-600"
+              }`}
+            >
+              <p className="text-[11px] font-black text-rose-700 dark:text-rose-300">💎 1st Year ULTRA</p>
+              <p className="text-xs font-black text-slate-900 dark:text-white mt-0.5">₹3,00,000</p>
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setIsRenewal(true);
+                if (agentYear < 2) setAgentYear(2);
+                setCustomFinalFee("");
+              }}
+              className={`p-2.5 rounded-xl border-2 text-left cursor-pointer ${
+                isRenewal ? "border-emerald-500 bg-emerald-50 dark:bg-emerald-950/30" : "border-slate-200 dark:border-slate-600"
+              }`}
+            >
+              <p className="text-[11px] font-black text-emerald-700 dark:text-emerald-300">🔄 Yearly Renewal</p>
+              <p className="text-xs font-black text-slate-900 dark:text-white mt-0.5">₹2,00,000</p>
+            </button>
+          </div>
+          <div className="flex flex-wrap items-center justify-between gap-2 p-2.5 rounded-xl border border-slate-200 dark:border-slate-600 bg-slate-50 dark:bg-slate-700/40 text-xs">
+            <label className="flex items-center gap-2 font-bold cursor-pointer">
+              <input
+                type="checkbox"
+                checked={agentAddOn}
+                onChange={(e) => {
+                  setAgentAddOn(e.target.checked);
+                  setCustomFinalFee("");
+                }}
+                className="accent-rose-600"
+              />
+              <span>Dedicated Agent Add-On</span>
+            </label>
+            {agentAddOn && (
+              <select
+                value={agentYear}
+                onChange={(e) => {
+                  const yr = Number(e.target.value);
+                  setAgentYear(yr);
+                  setIsRenewal(yr > 1);
+                  setCustomFinalFee("");
+                }}
+                className="px-2 py-1 rounded border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-xs font-bold"
+              >
+                {ULTRA_AGENT_SCHEDULE.map((r) => (
+                  <option key={r.year} value={r.year}>
+                    {r.label}: +₹{r.agent.toLocaleString("en-IN")}
+                  </option>
+                ))}
+              </select>
+            )}
+          </div>
         </div>
       )}
 
@@ -594,7 +763,7 @@ const PlanAssigner: React.FC<{
                 duration === d
                   ? edition === "elite"
                     ? "border-amber-500 bg-amber-50/70 dark:bg-amber-950/30"
-                    : edition === "supreme"
+                    : edition === "ultra"
                     ? "border-rose-500 bg-rose-50/70 dark:bg-rose-950/30"
                     : "border-blue-500 bg-blue-50 dark:bg-blue-900/30"
                   : "border-slate-200 dark:border-slate-600"
@@ -603,7 +772,7 @@ const PlanAssigner: React.FC<{
               <span className="text-[10px] font-black uppercase text-slate-700 dark:text-slate-200">
                 {DURATION_LABEL[d].split(" (")[0]}
               </span>
-              <span className="text-xs font-black text-indigo-600 dark:text-indigo-400">
+              <span className="text-xs font-black text-indigo-600 dark:text-indigo-400 tabular-nums">
                 ₹{p.toLocaleString("en-IN")}
               </span>
             </button>
@@ -617,20 +786,20 @@ const PlanAssigner: React.FC<{
           <div>
             <p className="text-xs text-slate-400">Yearly Plan Summary</p>
             <p className="text-sm font-black text-slate-800 dark:text-white">
-              {edition === "supreme"
-                ? "💎 Supreme White-Label · Unlimited Branches"
+              {edition === "ultra"
+                ? `💎 ULTRA White-Label · Unlimited Branches${agentAddOn ? ` · +Agent Yr ${agentYear}` : ""}`
                 : edition === "elite"
                 ? `👑 Elite ${isRenewal ? "Renewal" : "1st Year"} · ${studentSlab >= 5000 ? "5000+" : studentSlab} Std · 3 Branches`
                 : `⚡ Lite Yearly · ${studentSlab} Std · 1 Branch Max`}
             </p>
             <p className="text-[10px] text-slate-400">Valid till: {computeExpiry(duration)}</p>
           </div>
-          <div className="text-right">
-            <p className={`text-xl font-black ${edition === "elite" ? "text-amber-600 dark:text-amber-400" : edition === "supreme" ? "text-rose-600 dark:text-rose-400" : "text-blue-600 dark:text-blue-400"}`}>
+          <div className="text-right tabular-nums">
+            <p className={`text-xl font-black ${edition === "elite" ? "text-amber-600 dark:text-amber-400" : edition === "ultra" ? "text-rose-600 dark:text-rose-400" : "text-blue-600 dark:text-blue-400"}`}>
               ₹{price.toLocaleString("en-IN")}
             </p>
             {edition === "elite" && !isRenewal && (
-              <p className="text-[10px] text-slate-400 line-through">MRP ₹1,20,000</p>
+              <p className="text-[10px] text-slate-400 line-through">MRP ₹{eliteSlabPricing.mrp.toLocaleString("en-IN")}</p>
             )}
           </div>
         </div>
@@ -645,7 +814,7 @@ const PlanAssigner: React.FC<{
             placeholder={String(recommendedTotal)}
             value={customFinalFee}
             onChange={(e) => setCustomFinalFee(e.target.value)}
-            className="w-full px-3 py-1.5 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-xs font-black text-slate-900 dark:text-white"
+            className="w-full px-3 py-1.5 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-xs font-black text-slate-900 dark:text-white tabular-nums"
           />
         </div>
       </div>
@@ -661,10 +830,10 @@ const PlanAssigner: React.FC<{
         disabled={saving}
         className={`w-full py-3.5 disabled:opacity-60 text-white rounded-xl text-sm font-black flex items-center justify-center gap-2 active:scale-[0.98] transition-all cursor-pointer shadow-md ${
           edition === "elite"
-            ? "bg-gradient-to-r from-amber-600 to-orange-600 hover:from-amber-700 hover:to-orange-700 shadow-amber-500/20"
-            : edition === "supreme"
-            ? "bg-gradient-to-r from-rose-600 to-pink-600 hover:from-rose-700 hover:to-pink-700 shadow-rose-500/20"
-            : "bg-blue-600 hover:bg-blue-700 shadow-blue-500/20"
+            ? "bg-amber-600 hover:bg-amber-700"
+            : edition === "ultra"
+            ? "bg-rose-600 hover:bg-rose-700"
+            : "bg-blue-600 hover:bg-blue-700"
         }`}
       >
         {saving ? (
@@ -674,7 +843,7 @@ const PlanAssigner: React.FC<{
         )}
         {saving
           ? "Assigning Yearly Plan..."
-          : `Assign ${edition === "supreme" ? "💎 Supreme" : edition === "elite" ? "👑 Elite" : "⚡ Lite"} Yearly (₹${price.toLocaleString("en-IN")})`}
+          : `Assign ${edition === "ultra" ? "💎 ULTRA" : edition === "elite" ? "👑 Elite" : "⚡ Lite"} Yearly (₹${price.toLocaleString("en-IN")})`}
       </button>
     </div>
   );
@@ -990,6 +1159,14 @@ export const SuperAdminPanel: React.FC<Props> = ({ adminUid, onBack, onLogout })
   const [directManageSchool, setDirectManageSchool] = useState<School | null>(null);
   const [saving, setSaving]             = useState(false);
   const [dashTab, setDashTab]           = useState<"schools" | "subscriptions" | "accounts" | "policies" | "developer">("schools");
+  const [showQaChecklist, setShowQaChecklist] = useState(false);
+  const [qaCompletedCount, setQaCompletedCount] = useState<number>(() => getQaChecklistCompletedCount("global"));
+
+  useEffect(() => {
+    const syncQa = () => setQaCompletedCount(getQaChecklistCompletedCount("global"));
+    window.addEventListener("nst-qa-checklist-updated", syncQa);
+    return () => window.removeEventListener("nst-qa-checklist-updated", syncQa);
+  }, []);
 
   // Global Website Developer Config (Managed strictly by Life Maker Super Admin across ALL schools)
   const [devForm, setDevForm] = useState<GlobalWebsiteDeveloperConfig>(() => ({ ...DEFAULT_GLOBAL_DEVELOPER }));
@@ -1617,7 +1794,16 @@ export const SuperAdminPanel: React.FC<Props> = ({ adminUid, onBack, onLogout })
             <h1 className="text-2xl font-black text-slate-900 dark:text-white">IIC×NSTA Control Panel</h1>
             <p className="text-slate-700 dark:text-slate-400 text-sm font-medium mt-1">Manage all schools in the ecosystem</p>
           </div>
-          <div className="flex items-center gap-2 shrink-0">
+          <div className="flex flex-wrap items-center justify-end gap-2 shrink-0">
+            <button
+              type="button"
+              onClick={() => setShowQaChecklist(true)}
+              className="shrink-0 inline-flex items-center gap-1.5 px-3 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-black shadow-sm active:scale-95 transition-all cursor-pointer tabular-nums whitespace-nowrap"
+              title="Phase 3 Quality Testing Checklist (15-Point Verification)"
+            >
+              <ClipboardCheck className="w-4 h-4" />
+              <span>QA Checklist ({qaCompletedCount}/15)</span>
+            </button>
             <LanguageToggleButton tone="auto" compact />
             <ScreenInfoGuideButton portal="super_admin" screenKey={dashTab || "super_admin"} tone="auto" />
             <button
@@ -1648,7 +1834,7 @@ export const SuperAdminPanel: React.FC<Props> = ({ adminUid, onBack, onLogout })
             <div className="text-right">
               <div className="flex items-center gap-1 justify-end mb-1">
                 <Zap className="w-3.5 h-3.5 text-amber-500" />
-                <span className="text-xs text-amber-600 font-medium">Elite / Supreme schools</span>
+                <span className="text-xs text-amber-600 font-medium">Elite / ULTRA schools</span>
               </div>
               <p className="text-2xl font-bold text-amber-500">{comboSchools.length}</p>
               <p className="text-xs text-slate-400">₹{comboRevenue.toLocaleString("en-IN")}/yr</p>
@@ -1676,13 +1862,13 @@ export const SuperAdminPanel: React.FC<Props> = ({ adminUid, onBack, onLogout })
         {/* Elite Yearly offer info strip */}
         <div className="flex items-center gap-3 px-4 py-3 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-700 rounded-xl">
           <Tag className="w-5 h-5 text-amber-500 flex-shrink-0" />
-          <div className="flex-1 text-sm">
-            <span className="font-bold text-amber-700 dark:text-amber-300">Elite Yearly Offer: </span>
-            <span className="text-amber-600 dark:text-amber-400">
-              All features @ ₹{ELITE_YEARLY_PRICING.firstYear.toLocaleString("en-IN")}/yr
+          <div className="flex-1 text-sm tabular-nums">
+            <span className="font-bold text-amber-700 dark:text-amber-300">Elite Yearly (500 Std Flagship): </span>
+            <span className="text-amber-600 dark:text-amber-400 font-semibold">
+              ₹{ELITE_YEARLY_PRICING.firstYear.toLocaleString("en-IN")}/yr
             </span>
-            <span className="text-xs text-slate-400 ml-2">
-              (Save ₹{(ELITE_YEARLY_PRICING.mrp - ELITE_YEARLY_PRICING.firstYear).toLocaleString("en-IN")} vs MRP ₹{ELITE_YEARLY_PRICING.mrp.toLocaleString("en-IN")})
+            <span className="text-xs text-slate-500 dark:text-slate-400 ml-2">
+              (MRP ₹{ELITE_YEARLY_PRICING.mrp.toLocaleString("en-IN")} · Renewal ₹{ELITE_YEARLY_PRICING.renewal.toLocaleString("en-IN")}/yr · ULTRA 2000+ ₹3,00,000/yr)
             </span>
           </div>
         </div>
@@ -2095,6 +2281,16 @@ export const SuperAdminPanel: React.FC<Props> = ({ adminUid, onBack, onLogout })
         })}
         </>}
       </div>
+
+      <QualityTestingChecklistModal
+        isOpen={showQaChecklist}
+        onClose={() => {
+          setShowQaChecklist(false);
+          setQaCompletedCount(getQaChecklistCompletedCount("global"));
+        }}
+        schoolId="global"
+        schoolName="SCHOOL+ Platform QA"
+      />
     </div>
   );
 };

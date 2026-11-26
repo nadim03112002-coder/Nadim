@@ -26,6 +26,7 @@ import {
   X,
   Zap,
   AlertTriangle,
+  ClipboardCheck,
 } from "lucide-react";
 import { toast } from "sonner";
 import type {
@@ -43,6 +44,7 @@ import {
   saveFeeCallFollowUpBatch,
   subscribeToFeeCallFollowUps,
   syncPendingFeeCallFollowUps,
+  updateStudent,
 } from "../../school-firebase";
 import { sendSchoolPushNotification } from "../../utils/schoolPushClient";
 import { CallerIdSettingsCard } from "./CallerIdSettingsCard";
@@ -51,8 +53,12 @@ import { ScreenInfoGuideButton } from "./ScreenInfoGuideButton";
 import { LanguageToggleButton } from "./LanguageToggleButton";
 import {
   announceIncomingVoiceCaller,
+  announceParentHindiReminder,
+  normalizePhoneLast10,
   triggerTestParentCallerPreview,
 } from "../../utils/schoolCallerId";
+import { logAdminAction } from "../../utils/adminAudit";
+import { QualityTestingChecklistModal, getQaChecklistCompletedCount } from "./QualityTestingChecklistModal";
 
 export const ACTIVE_TAGADA_CALL_STORAGE_KEY = "nsta_active_tagada_call_v1";
 const ACTIVE_CALL_MAX_AGE_MS = 2 * 60 * 60 * 1000; // 2 hours safety window
@@ -417,9 +423,24 @@ const OUTCOME_META: Record<
     colorCls: "bg-indigo-100 text-indigo-800 dark:bg-indigo-950/60 dark:text-indigo-300 border-indigo-300 dark:border-indigo-700",
   },
   PAID_CLAIMED: {
-    label: "Bole Fee Jama Kar Diya",
-    shortLabel: "Paid Claimed",
+    label: "Fee Jama Kar Di (Verify Pending)",
+    shortLabel: "Fee Jama ✅",
     colorCls: "bg-emerald-100 text-emerald-800 dark:bg-emerald-950/60 dark:text-emerald-300 border-emerald-300 dark:border-emerald-700",
+  },
+  PARTIAL_PAID: {
+    label: "Partial Fee Jama Ki",
+    shortLabel: "Partial Paid",
+    colorCls: "bg-teal-100 text-teal-800 dark:bg-teal-950/60 dark:text-teal-300 border-teal-300 dark:border-teal-700",
+  },
+  PAYMENT_REFUSED: {
+    label: "Payment Karne Se Mana Kiya",
+    shortLabel: "Payment Refused",
+    colorCls: "bg-rose-100 text-rose-800 dark:bg-rose-950/60 dark:text-rose-300 border-rose-300 dark:border-rose-700",
+  },
+  CALLED_TO_SCHOOL: {
+    label: "School Mein Milne Bulaya",
+    shortLabel: "Milne Bulaya",
+    colorCls: "bg-violet-100 text-violet-800 dark:bg-violet-950/60 dark:text-violet-300 border-violet-300 dark:border-violet-700",
   },
   WRONG_NUMBER: {
     label: "Wrong / Invalid Number",
@@ -447,12 +468,15 @@ interface Props {
   schoolName?: string;
   schoolUpiId?: string;
   actorName?: string;
+  actorId?: string;
+  actorRole?: string;
   classes: SchoolClass[];
   rows: TagadaStudentFeeRow[];
   onBack?: () => void;
   onCollectFee?: (row: TagadaStudentFeeRow) => void;
   onCollectFamily?: (selectedRows: TagadaStudentFeeRow[]) => void;
   onOpenWhatsApp?: (row: TagadaStudentFeeRow) => void;
+  onFixStudentPhone?: (studentId: string, newPhone: string) => Promise<void>;
   asPage?: boolean;
 }
 
@@ -463,12 +487,15 @@ export const FeeTagadaCallerPage: React.FC<Props> = ({
   schoolName = "School",
   schoolUpiId,
   actorName = "Admin / Accounts",
+  actorId,
+  actorRole = "STAFF",
   classes,
   rows,
   onBack,
   onCollectFee,
   onCollectFamily,
   onOpenWhatsApp,
+  onFixStudentPhone,
   asPage = true,
 }) => {
   const [followUps, setFollowUps] = useState<FeeCallFollowUpRecord[]>([]);
@@ -504,10 +531,19 @@ export const FeeTagadaCallerPage: React.FC<Props> = ({
   const [callModeUsed, setCallModeUsed] = useState<"NATIVE_SIM" | "WEB_DIALER" | "MANUAL_LOG">("MANUAL_LOG");
   const [autoLogInfo, setAutoLogInfo] = useState<{ verified: boolean; picked: boolean; callType?: string } | null>(null);
   const [editablePhone, setEditablePhone] = useState<string>("");
+  const [partialPaidInput, setPartialPaidInput] = useState<string>("");
+  const [fixPhoneWithSave, setFixPhoneWithSave] = useState<boolean>(false);
   const [noteText, setNoteText] = useState<string>("");
   const [resolvedTodayInModal, setResolvedTodayInModal] = useState<boolean>(false);
   const [isSavingCall, setIsSavingCall] = useState(false);
   const [showCallerIdSettings, setShowCallerIdSettings] = useState(false);
+  const [showQaChecklist, setShowQaChecklist] = useState(false);
+  const [qaCompletedCount, setQaCompletedCount] = useState<number>(() =>
+    getQaChecklistCompletedCount(schoolId)
+  );
+  const [solveTargetGroup, setSolveTargetGroup] = useState<TagadaFamilyGroup | null>(null);
+  const [solveReasonText, setSolveReasonText] = useState<string>("");
+  const [isSavingSolve, setIsSavingSolve] = useState(false);
   const [qrGroup, setQrGroup] = useState<TagadaFamilyGroup | null>(null);
   const resolvedUpiId = useMemo(() => {
     if (schoolUpiId?.trim()) return schoolUpiId.trim();
@@ -578,13 +614,16 @@ export const FeeTagadaCallerPage: React.FC<Props> = ({
         }
       }
     };
+    const onQaUpdate = () => setQaCompletedCount(getQaChecklistCompletedCount(schoolId));
     window.addEventListener("online", onNetChange);
     window.addEventListener("offline", onNetChange);
     window.addEventListener("android-call-log-permission", onPermEvent);
+    window.addEventListener("nst-qa-checklist-updated", onQaUpdate);
     return () => {
       window.removeEventListener("online", onNetChange);
       window.removeEventListener("offline", onNetChange);
       window.removeEventListener("android-call-log-permission", onPermEvent);
+      window.removeEventListener("nst-qa-checklist-updated", onQaUpdate);
     };
   }, [schoolId]);
 
@@ -632,58 +671,89 @@ export const FeeTagadaCallerPage: React.FC<Props> = ({
     setCallNextDayAfterPromise(true);
     setDirectNextCallDate(addDaysYmd(todayYmd, 1));
     setPromisedAmount(String(group.combinedDue || group.record?.promisedAmount || ""));
+    setPartialPaidInput("");
+    setFixPhoneWithSave(false);
     setNoteText("");
     setResolvedTodayInModal(group.record?.resolvedTodayDate === todayYmd);
     setSendMissedCallReminder(true);
   };
 
-  const handleToggleSolvedTodayForGroup = async (group: TagadaFamilyGroup) => {
+  const handleToggleSolvedTodayForGroup = (group: TagadaFamilyGroup) => {
+    setSolveTargetGroup(group);
+    setSolveReasonText("");
+  };
+
+  const handleConfirmSolvedTodayForGroup = async () => {
+    if (!solveTargetGroup || isSavingSolve) return;
+    const cleanReason = solveReasonText.trim();
+    if (cleanReason.length < 3) {
+      toast.error("Kripya Mark Solve / Reopen ka spasht kaaran (Reason) likhein.");
+      return;
+    }
+
+    const group = solveTargetGroup;
     const currentlySolved = group.record?.resolvedTodayDate === todayYmd;
     const nextResolvedDate = currentlySolved ? "" : todayYmd;
     const nowIso = new Date().toISOString();
     const targetMembers = group.unpaidMembers.length > 0 ? group.unpaidMembers : [group.primaryRow];
 
-    const recordsToSave: FeeCallFollowUpRecord[] = targetMembers.map((member) => {
-      const existing = followUpMap.get(member.student.id);
-      return {
-        id: member.student.id,
-        schoolId,
-        studentId: member.student.id,
-        studentName: member.student.name,
-        fatherName: member.student.fatherName || existing?.fatherName || "",
-        classId: member.student.classId,
-        className: member.className,
-        rollNo: member.student.rollNo || "",
-        phone: group.phone || existing?.phone || "",
-        familyGroupId: group.familyKey,
-        siblingStudentIds: group.members.map((m) => m.student.id).filter((id) => id !== member.student.id),
-        lastCallAt: existing?.lastCallAt,
-        lastCallOutcome: existing?.lastCallOutcome,
-        lastCallDurationSec: existing?.lastCallDurationSec,
-        lastCallBy: existing?.lastCallBy || actorName,
-        lastNote: existing?.lastNote,
-        promisedAmount: existing?.promisedAmount,
-        promiseDate: existing?.promiseDate,
-        nextCallDate: existing?.nextCallDate,
-        totalCallsCount: existing?.totalCallsCount,
-        callHistory: existing?.callHistory,
-        settled: existing?.settled,
-        settledAt: existing?.settledAt,
-        settledReceiptNo: existing?.settledReceiptNo,
-        settledAmount: existing?.settledAmount,
-        settledBy: existing?.settledBy,
-        resolvedTodayDate: nextResolvedDate,
-        resolvedNote: nextResolvedDate ? "Aaj sab solve ho gaya" : "",
-        updatedAt: nowIso,
-      };
-    });
+    setIsSavingSolve(true);
+    try {
+      const recordsToSave: FeeCallFollowUpRecord[] = targetMembers.map((member) => {
+        const existing = followUpMap.get(member.student.id);
+        return {
+          id: member.student.id,
+          schoolId,
+          studentId: member.student.id,
+          studentName: member.student.name,
+          fatherName: member.student.fatherName || existing?.fatherName || "",
+          classId: member.student.classId,
+          className: member.className,
+          rollNo: member.student.rollNo || "",
+          phone: group.phone || existing?.phone || "",
+          familyGroupId: group.familyKey,
+          siblingStudentIds: group.members.map((m) => m.student.id).filter((id) => id !== member.student.id),
+          lastCallAt: existing?.lastCallAt,
+          lastCallOutcome: existing?.lastCallOutcome,
+          lastCallDurationSec: existing?.lastCallDurationSec,
+          lastCallBy: existing?.lastCallBy || actorName,
+          lastCallByRole: actorRole || existing?.lastCallByRole,
+          lastNote: existing?.lastNote,
+          promisedAmount: existing?.promisedAmount,
+          promiseDate: existing?.promiseDate,
+          nextCallDate: existing?.nextCallDate,
+          totalCallsCount: existing?.totalCallsCount,
+          callHistory: existing?.callHistory,
+          settled: existing?.settled,
+          settledAt: existing?.settledAt,
+          settledReceiptNo: existing?.settledReceiptNo,
+          settledAmount: existing?.settledAmount,
+          settledBy: existing?.settledBy,
+          resolvedTodayDate: nextResolvedDate,
+          resolvedNote: nextResolvedDate ? cleanReason : "",
+          resolvedBy: actorName,
+          resolvedReason: cleanReason,
+          updatedAt: nowIso,
+        };
+      });
 
-    await saveFeeCallFollowUpBatch(recordsToSave);
-    toast.success(
-      nextResolvedDate
-        ? `Marked: ${group.primaryRow.student.name} — Aaj Sab Solve Ho Gaya ✅`
-        : `Reopened: ${group.primaryRow.student.name} — Abhi Pending`
-    );
+      await saveFeeCallFollowUpBatch(recordsToSave);
+      void logAdminAction(
+        nextResolvedDate ? "FEE_TAGADA_MARK_SOLVE" : "FEE_TAGADA_REOPEN",
+        `${nextResolvedDate ? "Marked Solve" : "Reopened"} for ${group.displayTitle} (Due ₹${group.combinedDue.toLocaleString("en-IN")}) — Reason: ${cleanReason}`,
+        { id: actorId || actorName, name: `${actorName} (${actorRole})` },
+        { targetId: group.primaryRow.student.id, targetName: group.primaryRow.student.name }
+      );
+      toast.success(
+        nextResolvedDate
+          ? `Marked: ${group.primaryRow.student.name} — Aaj Sab Solve Ho Gaya ✅`
+          : `Reopened: ${group.primaryRow.student.name} — Abhi Pending`
+      );
+      setSolveTargetGroup(null);
+      setSolveReasonText("");
+    } finally {
+      setIsSavingSolve(false);
+    }
   };
 
   // Query native READ_CALL_LOG safely if WebView reloaded during a SIM call
@@ -1056,11 +1126,78 @@ export const FeeTagadaCallerPage: React.FC<Props> = ({
     return pool.find((g) => g.familyKey !== modalGroup.familyKey && g.combinedDue > 0) || null;
   }, [modalGroup, activeTab, callTodayList, neverCalledList]);
 
+  const dashboardKpis = useMemo(() => {
+    const dueTodayCalls = callTodayList.length;
+    const promiseMilaCount = allFamilyGroups.filter(
+      (g) => g.combinedDue > 0 && Boolean(g.record?.promiseDate)
+    ).length;
+    const promiseDueTodayCount = allFamilyGroups.filter(
+      (g) => g.combinedDue > 0 && g.record?.promiseDate === todayYmd
+    ).length;
+    const notPickedCount = allFamilyGroups.filter(
+      (g) =>
+        g.combinedDue > 0 &&
+        (g.record?.lastCallOutcome === "NOT_PICKED" ||
+          g.record?.lastCallOutcome === "SWITCHED_OFF")
+    ).length;
+    const paidClearedCount = allFamilyGroups.filter((g) => g.bucket === "PAID_SETTLED").length;
+    const dobaraOverdueCount = allFamilyGroups.filter(
+      (g) =>
+        g.combinedDue > 0 &&
+        (g.bucket === "BROKEN_PROMISE" ||
+          Boolean(g.record?.nextCallDate && g.record.nextCallDate <= todayYmd))
+    ).length;
+    return {
+      dueTodayCalls,
+      promiseMilaCount,
+      promiseDueTodayCount,
+      notPickedCount,
+      paidClearedCount,
+      dobaraOverdueCount,
+    };
+  }, [allFamilyGroups, callTodayList.length, todayYmd]);
+
   const handleSaveCallOutcome = async (e?: React.FormEvent, callNextAfterSave = false) => {
     if (e) e.preventDefault();
     if (!modalGroup || isSavingCall) return;
 
+    const cleanNote = noteText.trim();
+    if (!cleanNote) {
+      toast.error("Baatcheet ka Remark / Note darj karna anivarya hai!");
+      return;
+    }
+
+    const requiresFollowUpDate =
+      outcome === "PROMISED_DATE" ||
+      outcome === "PARTIAL_PAID" ||
+      outcome === "NOT_PICKED" ||
+      outcome === "BUSY" ||
+      outcome === "SWITCHED_OFF" ||
+      outcome === "CALLBACK_REQUESTED" ||
+      outcome === "CALLED_TO_SCHOOL";
+
+    if (outcome === "PROMISED_DATE" && !promiseDate.trim()) {
+      toast.error("Promise Date darj karein!");
+      return;
+    }
+    if (requiresFollowUpDate && outcome !== "PROMISED_DATE" && !directNextCallDate.trim()) {
+      toast.error("Agli Call ki Date (Next Call Date) darj karna anivarya hai!");
+      return;
+    }
+
+    const partialAmt = outcome === "PARTIAL_PAID" ? Math.max(0, Number(partialPaidInput) || 0) : 0;
+    if (outcome === "PARTIAL_PAID" && partialAmt <= 0) {
+      toast.error("Partial Fee Jama Ki me jama hui rashi (₹) darj karein!");
+      return;
+    }
+
     const cleanPhone = editablePhone.replace(/[^+0-9]/g, "") || modalGroup.phone || "";
+    const normalized10 = normalizePhoneLast10(cleanPhone);
+    if (outcome === "WRONG_NUMBER" && fixPhoneWithSave && (!normalized10 || normalized10.length < 10)) {
+      toast.error("Naya phone update karne ke liye sahi 10-digit mobile number likhein.");
+      return;
+    }
+
     const nowIso = new Date().toISOString();
 
     let finalPromiseDate: string | undefined = undefined;
@@ -1074,9 +1211,12 @@ export const FeeTagadaCallerPage: React.FC<Props> = ({
     } else if (outcome === "PAID_CLAIMED") {
       finalNextCallDate = addDaysYmd(todayYmd, 1);
     } else if (outcome === "WRONG_NUMBER") {
-      finalNextCallDate = addDaysYmd(todayYmd, 7);
+      finalNextCallDate = fixPhoneWithSave ? todayYmd : addDaysYmd(todayYmd, 7);
     } else {
       finalNextCallDate = directNextCallDate || addDaysYmd(todayYmd, 1);
+      if (outcome === "PARTIAL_PAID" || outcome === "CALLED_TO_SCHOOL") {
+        finalPromiseDate = directNextCallDate || promiseDate || undefined;
+      }
     }
 
     const parsedDur = Math.max(0, Number(durationSec) || 0);
@@ -1084,9 +1224,38 @@ export const FeeTagadaCallerPage: React.FC<Props> = ({
       outcome === "PROMISED_DATE" && promisedAmount.trim() !== ""
         ? Math.max(0, Number(promisedAmount) || 0)
         : modalGroup.record?.promisedAmount;
+    const remainingAfterPartial =
+      outcome === "PARTIAL_PAID" ? Math.max(0, modalGroup.combinedDue - partialAmt) : undefined;
+    const finalDisplayNote =
+      outcome === "PARTIAL_PAID"
+        ? `[Partial Paid ₹${partialAmt.toLocaleString("en-IN")} | Rem ₹${(remainingAfterPartial ?? 0).toLocaleString("en-IN")}] ${cleanNote}`
+        : outcome === "PAYMENT_REFUSED"
+          ? `[Principal Alert: Payment Refused] ${cleanNote}`
+          : outcome === "CALLED_TO_SCHOOL"
+            ? `[School Milne Bulaya] ${cleanNote}`
+            : cleanNote;
 
     const targetMembers =
       modalGroup.unpaidMembers.length > 0 ? modalGroup.unpaidMembers : [modalGroup.primaryRow];
+
+    if (outcome === "WRONG_NUMBER" && fixPhoneWithSave && normalized10) {
+      for (const m of modalGroup.members) {
+        if (onFixStudentPhone) {
+          await onFixStudentPhone(m.student.id, normalized10).catch(() => {});
+        } else {
+          await updateStudent(schoolId, m.student.id, {
+            phone: normalized10,
+            fatherPhone: normalized10,
+          }).catch(() => {});
+        }
+      }
+      void logAdminAction(
+        "PARENT_PHONE_FIXED",
+        `Fixed wrong phone from ${modalGroup.phone} to ${normalized10} for ${modalGroup.displayTitle}`,
+        { id: actorId || actorName, name: `${actorName} (${actorRole})` },
+        { targetId: modalGroup.primaryRow.student.id, targetName: modalGroup.primaryRow.student.name }
+      );
+    }
 
     const recordsToSave: FeeCallFollowUpRecord[] = targetMembers.map((member) => {
       const existing = followUpMap.get(member.student.id);
@@ -1097,16 +1266,26 @@ export const FeeTagadaCallerPage: React.FC<Props> = ({
         outcome,
         durationSec: parsedDur,
         promisedAmount: parsedPromAmt,
+        paidAmount: outcome === "PARTIAL_PAID" ? partialAmt : undefined,
+        remainingAfterCall: remainingAfterPartial,
         promiseDate: finalPromiseDate,
         nextCallDate: finalNextCallDate,
         dueAtCallTime: modalGroup.combinedDue,
-        note: noteText.trim() || OUTCOME_META[outcome].label,
+        note: finalDisplayNote,
         calledBy: actorName,
+        calledById: actorId,
+        calledByRole: actorRole,
         callMode: callModeUsed,
         offlineSaved: !isOnline,
         autoLogVerified: Boolean(autoLogInfo?.verified),
-        callPicked: autoLogInfo ? autoLogInfo.picked : outcome !== "NOT_PICKED" && outcome !== "SWITCHED_OFF",
+        callPicked: autoLogInfo
+          ? autoLogInfo.picked
+          : outcome !== "NOT_PICKED" && outcome !== "SWITCHED_OFF",
         callType: autoLogInfo?.callType,
+        wrongNumberCorrectedTo:
+          outcome === "WRONG_NUMBER" && fixPhoneWithSave && normalized10
+            ? normalized10
+            : undefined,
       };
       const nextHistory = [entry, ...(existing?.callHistory || [])].slice(0, 25);
       return {
@@ -1118,13 +1297,14 @@ export const FeeTagadaCallerPage: React.FC<Props> = ({
         classId: member.student.classId,
         className: member.className,
         rollNo: member.student.rollNo || "",
-        phone: cleanPhone,
+        phone: fixPhoneWithSave && normalized10 ? normalized10 : cleanPhone,
         familyGroupId: modalGroup.familyKey,
         siblingStudentIds: modalGroup.members.map((m) => m.student.id).filter((id) => id !== member.student.id),
         lastCallAt: nowIso,
         lastCallOutcome: outcome,
         lastCallDurationSec: parsedDur,
         lastCallBy: actorName,
+        lastCallByRole: actorRole,
         lastNote: entry.note,
         promisedAmount: parsedPromAmt,
         promiseDate: finalPromiseDate,
@@ -1133,7 +1313,9 @@ export const FeeTagadaCallerPage: React.FC<Props> = ({
         callHistory: nextHistory,
         settled: false,
         resolvedTodayDate: resolvedTodayInModal ? todayYmd : "",
-        resolvedNote: resolvedTodayInModal ? noteText.trim() || "Aaj sab solve ho gaya" : "",
+        resolvedNote: resolvedTodayInModal ? cleanNote : "",
+        resolvedBy: resolvedTodayInModal ? actorName : existing?.resolvedBy,
+        resolvedReason: resolvedTodayInModal ? cleanNote : existing?.resolvedReason,
         updatedAt: nowIso,
       };
     });
@@ -1360,9 +1542,14 @@ export const FeeTagadaCallerPage: React.FC<Props> = ({
                   <span key={m.student.id} className="inline-flex items-center gap-1 text-slate-700 dark:text-slate-300">
                     <span className="font-semibold">{m.student.name}</span>
                     <span className="text-slate-400">({m.className}):</span>
+                    {Number(m.fee?.paidAmount || 0) > 0 && (
+                      <span className="font-mono tabular-nums text-[11px] font-semibold text-emerald-600 dark:text-emerald-400">
+                        Jama ₹{Number(m.fee?.paidAmount || 0).toLocaleString("en-IN")} ·
+                      </span>
+                    )}
                     {m.dueAmount > 0 ? (
                       <span className="font-mono tabular-nums font-bold text-rose-600 dark:text-rose-400">
-                        {m.fee && !m.fee.paid && Number(m.fee.paidAmount || 0) > 0 ? "आंशिक " : ""}₹{m.dueAmount.toLocaleString("en-IN")}
+                        Due ₹{m.dueAmount.toLocaleString("en-IN")}
                       </span>
                     ) : m.fee?.advanceCoveredMonths?.length ? (
                       <span className="font-semibold text-emerald-600 dark:text-emerald-400">
@@ -1718,6 +1905,81 @@ export const FeeTagadaCallerPage: React.FC<Props> = ({
               <Volume2 className="w-3.5 h-3.5 shrink-0" />
               <span>Test Staff Voice</span>
             </button>
+            <button
+              type="button"
+              onClick={() =>
+                announceParentHindiReminder({
+                  schoolName: schoolName || "LIFE MAKER PUBLIC SCHOOL",
+                  childName: "आरव शर्मा",
+                  dueAmount: 2400,
+                  force: true,
+                })
+              }
+              className="min-h-[38px] px-3 py-1.5 rounded-xl bg-amber-600 hover:bg-amber-500 text-white text-xs font-bold inline-flex items-center gap-1.5 cursor-pointer transition active:scale-95"
+            >
+              <Volume2 className="w-3.5 h-3.5 shrink-0" />
+              <span>Test Parent Hindi</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setShowQaChecklist(true)}
+              className="min-h-[38px] px-3 py-1.5 rounded-xl border border-indigo-300 dark:border-indigo-700 bg-indigo-50 dark:bg-indigo-950/40 text-indigo-700 dark:text-indigo-300 text-xs font-bold inline-flex items-center gap-1.5 cursor-pointer transition tabular-nums whitespace-nowrap"
+            >
+              <ClipboardCheck className="w-3.5 h-3.5 shrink-0" />
+              <span>QA ({qaCompletedCount}/15)</span>
+            </button>
+          </div>
+        </div>
+
+        {/* 6 Fee Tagada Dashboard KPI Cards (Crisp Hairline Grid) */}
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2.5">
+          <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-3">
+            <span className="block text-[11px] font-semibold text-slate-500 dark:text-slate-400">
+              Aaj Calls Karne Hain
+            </span>
+            <span className="block text-xl font-black font-mono tabular-nums text-rose-600 dark:text-rose-400 mt-1">
+              {dashboardKpis.dueTodayCalls}
+            </span>
+          </div>
+          <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-3">
+            <span className="block text-[11px] font-semibold text-slate-500 dark:text-slate-400">
+              Promise Mila
+            </span>
+            <span className="block text-xl font-black font-mono tabular-nums text-indigo-600 dark:text-indigo-400 mt-1">
+              {dashboardKpis.promiseMilaCount}
+            </span>
+          </div>
+          <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-3">
+            <span className="block text-[11px] font-semibold text-slate-500 dark:text-slate-400">
+              Aaj Promise Due
+            </span>
+            <span className="block text-xl font-black font-mono tabular-nums text-amber-600 dark:text-amber-400 mt-1">
+              {dashboardKpis.promiseDueTodayCount}
+            </span>
+          </div>
+          <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-3">
+            <span className="block text-[11px] font-semibold text-slate-500 dark:text-slate-400">
+              Phone Nahi Uthaya
+            </span>
+            <span className="block text-xl font-black font-mono tabular-nums text-slate-900 dark:text-white mt-1">
+              {dashboardKpis.notPickedCount}
+            </span>
+          </div>
+          <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-3">
+            <span className="block text-[11px] font-semibold text-slate-500 dark:text-slate-400">
+              Fee Jama Ho Gayi
+            </span>
+            <span className="block text-xl font-black font-mono tabular-nums text-emerald-600 dark:text-emerald-400 mt-1">
+              {dashboardKpis.paidClearedCount}
+            </span>
+          </div>
+          <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-3">
+            <span className="block text-[11px] font-semibold text-slate-500 dark:text-slate-400">
+              Dobara Call / Overdue
+            </span>
+            <span className="block text-xl font-black font-mono tabular-nums text-rose-700 dark:text-rose-300 mt-1">
+              {dashboardKpis.dobaraOverdueCount}
+            </span>
           </div>
         </div>
 
@@ -2398,20 +2660,23 @@ export const FeeTagadaCallerPage: React.FC<Props> = ({
                 </div>
               </div>
 
-              {/* Outcome Selection */}
+              {/* Outcome Selection (All 9 Outcomes) */}
               <div>
                 <label className="block text-[11px] font-bold text-slate-400 mb-1.5">
-                  Call par kya baat hui?
+                  Call par kya baat hui? (9 Outcomes)
                 </label>
-                <div className="grid grid-cols-2 gap-1.5">
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-1.5">
                   {(
                     [
                       "PROMISED_DATE",
                       "NOT_PICKED",
                       "BUSY",
-                      "SWITCHED_OFF",
                       "PAID_CLAIMED",
+                      "PARTIAL_PAID",
+                      "PAYMENT_REFUSED",
                       "WRONG_NUMBER",
+                      "SWITCHED_OFF",
+                      "CALLED_TO_SCHOOL",
                     ] as FeeCallOutcome[]
                   ).map((key) => {
                     const active = outcome === key;
@@ -2420,7 +2685,7 @@ export const FeeTagadaCallerPage: React.FC<Props> = ({
                         key={key}
                         type="button"
                         onClick={() => setOutcome(key)}
-                        className={`px-2.5 py-2 rounded-xl border text-xs font-bold text-left transition cursor-pointer ${
+                        className={`min-h-[38px] px-2.5 py-2 rounded-xl border text-xs font-bold text-left transition cursor-pointer ${
                           active
                             ? "bg-emerald-600 border-emerald-500 text-white"
                             : "bg-slate-950 border-slate-800 text-slate-300 hover:border-slate-700"
@@ -2432,6 +2697,51 @@ export const FeeTagadaCallerPage: React.FC<Props> = ({
                   })}
                 </div>
               </div>
+
+              {outcome === "PARTIAL_PAID" && (
+                <div className="p-3.5 rounded-2xl bg-emerald-950/40 border border-emerald-500/40 space-y-2">
+                  <div className="flex items-center justify-between gap-2 text-xs">
+                    <span className="font-bold text-emerald-300">
+                      Partial Fee Jama Rashi (₹) *
+                    </span>
+                    <span className="font-mono tabular-nums font-bold text-white">
+                      Naya Balance: ₹
+                      {Math.max(0, modalGroup.combinedDue - (Number(partialPaidInput) || 0)).toLocaleString("en-IN")}
+                    </span>
+                  </div>
+                  <input
+                    type="number"
+                    min={1}
+                    value={partialPaidInput}
+                    onChange={(e) => setPartialPaidInput(e.target.value)}
+                    placeholder="Kitni rashi jama hui (e.g. 1500)"
+                    className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-emerald-700 text-xs text-white font-mono focus:outline-none focus:border-emerald-400"
+                  />
+                </div>
+              )}
+
+              {outcome === "WRONG_NUMBER" && (
+                <label className="flex items-center gap-2.5 p-3 rounded-xl bg-amber-950/35 border border-amber-700/60 text-xs text-amber-200 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={fixPhoneWithSave}
+                    onChange={(e) => setFixPhoneWithSave(e.target.checked)}
+                    className="h-4 w-4 accent-amber-500 rounded cursor-pointer shrink-0"
+                  />
+                  <span>
+                    Upar likha naya 10-digit number student profile me bhi permanent update karein (Audit Logged)
+                  </span>
+                </label>
+              )}
+
+              {outcome === "PAYMENT_REFUSED" && (
+                <div className="p-3 rounded-xl bg-rose-950/40 border border-rose-700/60 text-xs text-rose-200 flex items-center gap-2">
+                  <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0" />
+                  <span>
+                    Payment Refused case Principal review aur priority follow-up ke liye highlight kiya jayega.
+                  </span>
+                </div>
+              )}
 
               {/* Promise Date Picker & Auto Next-Day Call Rule */}
               {outcome === "PROMISED_DATE" ? (
@@ -2568,7 +2878,7 @@ export const FeeTagadaCallerPage: React.FC<Props> = ({
               {/* Quick Notes */}
               <div className="space-y-1.5">
                 <label className="block text-[11px] font-bold text-slate-400">
-                  Baatcheet ka Note / Remark
+                  Baatcheet ka Note / Remark * (Anivarya)
                 </label>
                 <div className="flex flex-wrap gap-1">
                   {QUICK_REMARKS.map((r) => (
@@ -2584,9 +2894,10 @@ export const FeeTagadaCallerPage: React.FC<Props> = ({
                 </div>
                 <textarea
                   rows={2}
+                  required
                   value={noteText}
                   onChange={(e) => setNoteText(e.target.value)}
-                  placeholder="Parent ne kya kaha (e.g. 20 tarikh ko shaam 5 baje denge)..."
+                  placeholder="Parent ne kya kaha (mandatory)..."
                   className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-800 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500 resize-none"
                 />
               </div>
@@ -2648,6 +2959,74 @@ export const FeeTagadaCallerPage: React.FC<Props> = ({
           phone={qrGroup.phone}
         />
       )}
+
+      {/* Guarded Mark Solve Confirmation + Reason Modal */}
+      {solveTargetGroup && (
+        <div className="nst-isolated-modal fixed inset-0 z-[9995] bg-black/75 backdrop-blur-xs flex items-end sm:items-center justify-center sm:p-4">
+          <div className="w-full max-w-md bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-t-3xl sm:rounded-3xl shadow-2xl overflow-hidden p-5 space-y-4">
+            <div className="flex items-start justify-between gap-2">
+              <div>
+                <h3 className="text-base font-extrabold text-slate-900 dark:text-white">
+                  {solveTargetGroup.record?.resolvedTodayDate === todayYmd
+                    ? "Case Pending Reopen Karein?"
+                    : "Mark Solve (Aaj Sab Solve Ho Gaya)?"}
+                </h3>
+                <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                  {solveTargetGroup.displayTitle} · Due ₹{solveTargetGroup.combinedDue.toLocaleString("en-IN")}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setSolveTargetGroup(null)}
+                className="min-h-[36px] min-w-[36px] rounded-xl hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-500 flex items-center justify-center cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="space-y-1.5">
+              <label className="block text-xs font-bold text-slate-700 dark:text-slate-200">
+                Reason / Verification Note * (Audit Log me save hoga)
+              </label>
+              <input
+                type="text"
+                value={solveReasonText}
+                onChange={(e) => setSolveReasonText(e.target.value)}
+                placeholder="e.g. Parent ne school counter par check de diya..."
+                className="w-full h-11 px-3 rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 text-xs text-slate-900 dark:text-white"
+              />
+            </div>
+
+            <div className="flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setSolveTargetGroup(null)}
+                className="min-h-[42px] px-4 rounded-xl border border-slate-200 dark:border-slate-700 text-xs font-bold text-slate-700 dark:text-slate-300 cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={isSavingSolve}
+                onClick={() => void handleConfirmSolvedTodayForGroup()}
+                className="min-h-[42px] px-4 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold cursor-pointer disabled:opacity-50"
+              >
+                {isSavingSolve ? "Saving..." : "Confirm & Save Audit"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <QualityTestingChecklistModal
+        isOpen={showQaChecklist}
+        onClose={() => {
+          setShowQaChecklist(false);
+          setQaCompletedCount(getQaChecklistCompletedCount(schoolId));
+        }}
+        schoolId={schoolId}
+        schoolName={schoolName}
+      />
     </div>
   );
 };

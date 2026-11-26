@@ -11,7 +11,7 @@ import {
   Bell, ChevronLeft, Plus, Trash2, Calendar, Tag, AlertTriangle,
   Pin, Sparkles, CheckCircle2, Megaphone, Clock, Filter, Sun, PartyPopper
 } from "lucide-react";
-import { DevelopedByCredit } from "./DevelopedByFooter";
+import { PremiumLoadingState } from "./PremiumLoadingState";
 
 interface Props {
   schoolId: string;
@@ -472,9 +472,15 @@ export const NoticeBoardManager: React.FC<Props> = ({
 
             {/* Notices List */}
             {loading ? (
-              <div className="text-center py-12 text-slate-400">
-                <p>Notices load ho rahe hain...</p>
-                <DevelopedByCredit tone="auto" />
+              <div className="bg-white dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700/70 rounded-2xl overflow-hidden">
+                <PremiumLoadingState
+                  title="Notices load ho rahe hain..."
+                  subtitle="Fetching school circulars & announcements"
+                  tone="auto"
+                  variant="card"
+                  accent="sky"
+                  schoolId={schoolId}
+                />
               </div>
             ) : filteredNotices.length === 0 ? (
               <div className="bg-white dark:bg-slate-800 rounded-2xl p-12 text-center text-slate-400 space-y-2">

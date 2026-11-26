@@ -46,7 +46,7 @@ import { ContentManager } from "./ContentManager";
 import { SmartClass } from "./SmartClass";
 import { AttendanceManager } from "./AttendanceManager";
 import { lazyWithRetry, LazyPanelBoundary, scheduleIdlePreload } from "../../utils/lazyWithRetry";
-import { DevelopedByCredit } from "./DevelopedByFooter";
+import { PremiumLoadingState } from "./PremiumLoadingState";
 import { ScreenInfoGuideButton } from "./ScreenInfoGuideButton";
 import { LanguageToggleButton } from "./LanguageToggleButton";
 import { pickLang, useAppLang } from "../../utils/appLang";
@@ -352,7 +352,7 @@ export const SchoolAdminPanel: React.FC<Props> = ({
     schoolId ? getStaffDailyAttendance(schoolId, todayStr()) : { schoolId: "", date: todayStr(), records: {} }
   );
 
-  const [lang] = useAppLang();
+  const [lang, setLang] = useAppLang();
   const [upiProofs, setUpiProofs] = useState<UpiPaymentProofRecord[]>([]);
   const [sendingSmartReminders, setSendingSmartReminders] = useState(false);
   const [pendingStaffLeavesCount, setPendingStaffLeavesCount] = useState(0);
@@ -4002,12 +4002,12 @@ export const SchoolAdminPanel: React.FC<Props> = ({
             : "bg-[#0b1b3a] border-[#1c3566] text-white"
         }`}>
           {/* Left: Mobile Menu Trigger, Back Home & Academic Session (Overflow-Safe) */}
-          <div className="flex items-center gap-1.5 sm:gap-2 min-w-0 flex-1 overflow-hidden">
+          <div className="flex items-center gap-1.5 sm:gap-2 min-w-0 shrink-0 sm:flex-1">
             {!isEffectiveLandscape && (
               <button
                 type="button"
                 onClick={() => setIsSidebarOpen(true)}
-                className={`md:hidden inline-flex items-center justify-center min-w-[38px] min-h-[38px] p-1.5 rounded-xl border transition cursor-pointer shrink-0 ${
+                className={`md:hidden inline-flex items-center justify-center min-w-[36px] min-h-[36px] p-1.5 rounded-xl border transition cursor-pointer shrink-0 ${
                   isWhite
                     ? "bg-slate-100 hover:bg-slate-200 border-slate-200 text-slate-700"
                     : "bg-white/10 hover:bg-white/15 border-white/15 text-slate-200"
@@ -4023,7 +4023,7 @@ export const SchoolAdminPanel: React.FC<Props> = ({
               <button
                 type="button"
                 onClick={() => setView("dashboard")}
-                className={`inline-flex items-center justify-center gap-1 min-w-[36px] min-h-[36px] px-2 sm:px-2.5 py-1.5 rounded-xl text-xs font-bold transition cursor-pointer shrink-0 ${
+                className={`inline-flex items-center justify-center gap-1 min-w-[34px] min-h-[34px] sm:min-w-[36px] sm:min-h-[36px] px-2 sm:px-2.5 py-1.5 rounded-xl text-xs font-bold transition cursor-pointer shrink-0 ${
                   isWhite
                     ? "bg-slate-100 hover:bg-slate-200 text-slate-700"
                     : "bg-slate-800 hover:bg-slate-700 text-slate-200"
@@ -4204,7 +4204,7 @@ export const SchoolAdminPanel: React.FC<Props> = ({
               <button
                 type="button"
                 onClick={() => setShowLeaveConfirmModal(true)}
-                className={`inline-flex items-center justify-center gap-1 min-w-[38px] min-h-[38px] px-2 sm:px-2.5 py-1 rounded-xl text-xs font-semibold transition cursor-pointer active:scale-95 ${
+                className={`hidden sm:inline-flex items-center justify-center gap-1 min-w-[38px] min-h-[38px] px-2 sm:px-2.5 py-1 rounded-xl text-xs font-semibold transition cursor-pointer active:scale-95 ${
                   isWhite
                     ? "bg-amber-50 hover:bg-amber-100 text-amber-800"
                     : "bg-amber-500/15 hover:bg-amber-500/25 text-amber-300"
@@ -4216,11 +4216,11 @@ export const SchoolAdminPanel: React.FC<Props> = ({
               </button>
             )}
 
-            {/* School-Hour Live Walkie-Talkie Button (Elite Only) */}
+            {/* School-Hour Live Walkie-Talkie Button (Desktop/Tablet header; inside Settings on <640px mobile) */}
             <button
               type="button"
               onClick={() => setShowWalkieModal(true)}
-              className={`relative shrink-0 inline-flex items-center justify-center gap-1 min-w-[38px] min-h-[38px] px-2 sm:px-2.5 py-1.5 rounded-xl text-xs font-semibold transition cursor-pointer active:scale-95 ${
+              className={`relative shrink-0 hidden sm:inline-flex items-center justify-center gap-1 min-w-[38px] min-h-[38px] px-2 sm:px-2.5 py-1.5 rounded-xl text-xs font-semibold transition cursor-pointer active:scale-95 ${
                 !hasEliteWalkieAccess(school)
                   ? isWhite
                     ? "bg-amber-50 hover:bg-amber-100 text-amber-800"
@@ -4276,8 +4276,8 @@ export const SchoolAdminPanel: React.FC<Props> = ({
               )}
             </button>
 
-            <LanguageToggleButton tone={appTheme} compact />
-            <ScreenInfoGuideButton portal="admin" screenKey={view} tone={appTheme} />
+            <LanguageToggleButton tone={appTheme} compact className="hidden sm:block" />
+            <ScreenInfoGuideButton portal="admin" screenKey={view} tone={appTheme} className="hidden sm:inline-flex" />
 
             {/* Unified Settings Icon Button (2 Options: School Profile & Settings + Theme Change) */}
             <div className="relative shrink-0">
@@ -4339,6 +4339,50 @@ export const SchoolAdminPanel: React.FC<Props> = ({
 
                     {/* Quick Utility Tools on Mobile (Prevents Top-Bar Icon Crowding) */}
                     <div className="grid grid-cols-2 gap-1.5 sm:hidden">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setLang(lang === "HI" ? "EN" : "HI");
+                        }}
+                        className={`min-h-[40px] px-2.5 py-2 rounded-xl border text-left flex items-center gap-2 text-xs font-bold cursor-pointer ${
+                          isWhite
+                            ? "bg-slate-50 border-slate-200 text-slate-800"
+                            : "bg-white/5 border-white/10 text-slate-100"
+                        }`}
+                      >
+                        <Globe className="w-3.5 h-3.5 text-indigo-500 shrink-0" />
+                        <span className="truncate">{lang === "HI" ? "भाषा: हिंदी" : "Lang: EN"}</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setShowHeaderSettingsMenu(false);
+                          window.dispatchEvent(new CustomEvent("nst-open-screen-guide"));
+                        }}
+                        className={`min-h-[40px] px-2.5 py-2 rounded-xl border text-left flex items-center gap-2 text-xs font-bold cursor-pointer ${
+                          isWhite
+                            ? "bg-slate-50 border-slate-200 text-slate-800"
+                            : "bg-white/5 border-white/10 text-slate-100"
+                        }`}
+                      >
+                        <AlertCircle className="w-3.5 h-3.5 text-sky-500 shrink-0" />
+                        <span className="truncate">Page Guide</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setShowHeaderSettingsMenu(false);
+                          setShowWalkieModal(true);
+                        }}
+                        className={`min-h-[40px] px-2.5 py-2 rounded-xl border text-left flex items-center gap-2 text-xs font-bold cursor-pointer ${
+                          isWhite
+                            ? "bg-slate-50 border-slate-200 text-slate-800"
+                            : "bg-white/5 border-white/10 text-slate-100"
+                        }`}
+                      >
+                        <Radio className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
+                        <span className="truncate">Walkie-Talkie</span>
+                      </button>
                       <button
                         type="button"
                         onClick={() => {
@@ -4405,6 +4449,23 @@ export const SchoolAdminPanel: React.FC<Props> = ({
                           {isEffectiveLandscape ? "Mobile View" : "Laptop View"}
                         </span>
                       </button>
+                      {canExitSchool && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setShowHeaderSettingsMenu(false);
+                            setShowLeaveConfirmModal(true);
+                          }}
+                          className={`min-h-[40px] px-2.5 py-2 rounded-xl border text-left flex items-center gap-2 text-xs font-bold cursor-pointer ${
+                            isWhite
+                              ? "bg-amber-50 border-amber-200 text-amber-800"
+                              : "bg-amber-500/15 border-amber-500/30 text-amber-300"
+                          }`}
+                        >
+                          <LogOut className="w-3.5 h-3.5 shrink-0" />
+                          <span className="truncate">Leave School</span>
+                        </button>
+                      )}
                     </div>
 
                     {/* Option 1: School Profile & Settings */}
@@ -9319,20 +9380,16 @@ export const SchoolAdminPanel: React.FC<Props> = ({
           }`}>
             <Suspense
               fallback={
-                <div className="min-h-[55vh] flex flex-col items-center justify-center gap-3 text-slate-400">
-                  <img
-                    src="/branding/schoolplus-splash-logo.png?v=7"
-                    alt="SCHOOL+"
-                    width={512}
-                    height={512}
-                    className="w-[min(78vw,512px)] aspect-square object-contain bg-transparent drop-shadow-[0_14px_30px_rgba(0,0,0,0.5)]"
-                  />
-                  <div className="flex items-center gap-2">
-                    <Loader2 className="w-4 h-4 animate-spin text-emerald-500" />
-                    <span className="text-xs font-semibold">Loading module...</span>
-                  </div>
-                  <DevelopedByCredit tone="auto" />
-                </div>
+                <PremiumLoadingState
+                  title="Loading module..."
+                  subtitle="Preparing school workspace"
+                  tone="auto"
+                  variant="section"
+                  accent="emerald"
+                  schoolId={school?.id || schoolId}
+                  schoolName={school?.name}
+                  schoolLogoUrl={school?.logoUrl}
+                />
               }
             >
               {content}
@@ -9360,20 +9417,14 @@ export const SchoolAdminPanel: React.FC<Props> = ({
     return (
       <div className="min-h-screen min-h-[100dvh] w-full bg-slate-50 dark:bg-slate-900 flex flex-col items-center justify-center gap-3 p-6 text-center">
         {schoolLoading ? (
-          <>
-            <img
-              src="/branding/schoolplus-splash-logo.png?v=7"
-              alt="SCHOOL+"
-              width={512}
-              height={512}
-              className="w-[min(86vw,512px)] aspect-square object-contain bg-transparent mb-2 drop-shadow-[0_16px_36px_rgba(0,0,0,0.5)]"
-            />
-            <div className="flex items-center gap-2">
-              <Loader2 className="w-4 h-4 animate-spin text-blue-500" />
-              <p className="text-sm text-slate-500">Loading school details...</p>
-            </div>
-            <DevelopedByCredit tone="auto" />
-          </>
+          <PremiumLoadingState
+            title="Loading school details..."
+            subtitle="Fetching campus configuration"
+            tone="auto"
+            variant="section"
+            accent="sky"
+            schoolId={schoolId}
+          />
         ) : (
           <>
             <AlertCircle className="w-8 h-8 text-amber-500" />

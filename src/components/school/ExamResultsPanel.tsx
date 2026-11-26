@@ -11,7 +11,7 @@ import {
 } from "lucide-react";
 import { printHtmlInIframe } from "./AdmissionFormPrintModal";
 import { formatAcademicSession } from "./feeReceiptUtils";
-import { DevelopedByCredit } from "./DevelopedByFooter";
+import { PremiumLoadingState } from "./PremiumLoadingState";
 
 interface Props {
   schoolId: string;
@@ -435,12 +435,16 @@ export const ExamResultsPanel: React.FC<Props> = ({
       )}
 
       {loading ? (
-        <div className="flex items-center justify-center py-20 text-slate-400">
-          <div className="text-center">
-            <BookOpen className="w-10 h-10 mx-auto mb-3 opacity-30 animate-pulse" />
-            <p className="font-bold text-sm">Exam data load ho raha hai...</p>
-            <DevelopedByCredit tone="auto" />
-          </div>
+        <div className="bg-white dark:bg-slate-900/70 border border-slate-200 dark:border-slate-800 rounded-2xl overflow-hidden">
+          <PremiumLoadingState
+            title="Exam data load ho raha hai..."
+            subtitle="Fetching subject marks & schedules"
+            tone="auto"
+            variant="card"
+            accent="emerald"
+            schoolId={schoolId}
+            icon={<BookOpen className="w-6 h-6 text-emerald-500" />}
+          />
         </div>
       ) : (
         <>

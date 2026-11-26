@@ -1,6 +1,6 @@
 import React, { Suspense, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import AndroidBatteryIndicator from "../AndroidBatteryIndicator";
-import { DevelopedByCredit } from "./DevelopedByFooter";
+import { PremiumLoadingState } from "./PremiumLoadingState";
 import { useBackHandler } from "../../utils/backNavigation";
 import type {
   AdmissionApplication,
@@ -1039,26 +1039,24 @@ export const PublicSchoolWebsite: React.FC<Props> = ({
 
   if (!school) {
     return (
-      <div className="min-h-screen min-h-[100dvh] w-full bg-[#070D19] flex flex-col items-center justify-center p-6 text-white text-center">
-        <img
-          src="/branding/schoolplus-splash-logo.png?v=7"
-          alt="SCHOOL+"
-          width={512}
-          height={512}
-          className="w-[min(86vw,512px)] aspect-square object-contain bg-transparent mb-5 drop-shadow-[0_18px_38px_rgba(0,0,0,0.65)]"
-        />
-        <p className="text-sm font-semibold text-slate-300">Loading School Website...</p>
-        <DevelopedByCredit tone="dark" />
-        {onBack && (
-          <button
-            type="button"
-            onClick={onBack}
-            className="mt-4 px-4 py-2 rounded-lg bg-white/10 text-xs font-semibold hover:bg-white/20 cursor-pointer"
-          >
-            Back
-          </button>
-        )}
-      </div>
+      <PremiumLoadingState
+        title="Loading School Website..."
+        subtitle="Preparing official digital campus"
+        tone="dark"
+        variant="fullscreen"
+        accent="amber"
+        actions={
+          onBack ? (
+            <button
+              type="button"
+              onClick={onBack}
+              className="px-4 py-2 rounded-lg bg-white/10 text-xs font-semibold text-white hover:bg-white/20 cursor-pointer"
+            >
+              Back
+            </button>
+          ) : undefined
+        }
+      />
     );
   }
 

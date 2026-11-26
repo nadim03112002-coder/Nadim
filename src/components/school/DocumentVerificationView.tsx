@@ -20,7 +20,7 @@ import {
   Sparkles,
 } from "lucide-react";
 import { printElementInIframe } from "./AdmissionFormPrintModal";
-import { DevelopedByCredit } from "./DevelopedByFooter";
+import { PremiumLoadingState } from "./PremiumLoadingState";
 import { exportElementToPdf } from "../../utils/universalPdfExport";
 import {
   getAllSchools,
@@ -772,15 +772,14 @@ export const DocumentVerificationView: React.FC<Props> = ({
 
   if (loading) {
     return (
-      <div className="min-h-screen bg-slate-950 text-slate-100 flex items-center justify-center p-6">
-        <div className="text-center space-y-3">
-          <div className="w-12 h-12 rounded-2xl bg-emerald-500/20 border border-emerald-400/50 flex items-center justify-center mx-auto animate-pulse">
-            <ShieldCheck className="w-7 h-7 text-emerald-400" />
-          </div>
-          <p className="text-sm font-bold text-slate-300">Verifying Official Document...</p>
-          <DevelopedByCredit tone="dark" />
-        </div>
-      </div>
+      <PremiumLoadingState
+        title="Verifying Official Document..."
+        subtitle="Checking authenticity & school registry"
+        tone="dark"
+        variant="fullscreen"
+        accent="emerald"
+        icon={<ShieldCheck className="w-7 h-7 text-emerald-400" />}
+      />
     );
   }
 

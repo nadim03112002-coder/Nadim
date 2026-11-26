@@ -97,8 +97,8 @@
         color: #e2e8f0;
         font-family: 'Plus Jakarta Sans', Inter, system-ui, sans-serif;
         user-select: none;
-        background: radial-gradient(circle at 50% 28%, #172554 0%, #090d26 50%, #020617 100%);
-        background-color: #020617;
+        background: radial-gradient(circle at 50% 30%, #162244 0%, #0B1120 55%, #070C18 100%);
+        background-color: #0B1120;
       }
       #pre-react-splash::before {
         content: "";
@@ -164,89 +164,97 @@
         opacity: 0;
         animation: preReactPlusPop 0.45s cubic-bezier(0.34, 1.56, 0.64, 1) 310ms forwards;
       }
-      .pre-react-splash-subtitle {
-        margin: .9rem 0 0;
-        color: #7dd3fc;
-        font-size: .75rem;
+      .pre-react-logo-wrap {
+        position: relative;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+      }
+      .pre-react-school-name {
+        margin: 1.5rem 0 0;
+        min-height: 2.5rem;
+        max-width: 24rem;
+        color: #f8fafc;
+        font-size: clamp(1.2rem, 4.6vw, 1.75rem);
         font-weight: 800;
-        letter-spacing: .2em;
-        text-transform: uppercase;
+        letter-spacing: 0.04em;
+        line-height: 1.25;
+        text-shadow: 0 4px 20px rgba(0, 0, 0, 0.45);
+        transition: opacity 0.3s ease, transform 0.3s ease;
+      }
+      .pre-react-caret {
+        display: inline-block;
+        width: 2px;
+        height: 0.95em;
+        margin-left: 4px;
+        border-radius: 999px;
+        background: #fbbf24;
+        vertical-align: middle;
+        animation: preReactCaretBlink 0.8s ease-in-out infinite;
       }
       .pre-react-splash-footer {
-        gap: .65rem;
+        gap: .9rem;
         width: 100%;
         max-width: 14rem;
       }
       .pre-react-bar-track {
         width: 100%;
-        height: 4px;
+        height: 2.5px;
         border-radius: 999px;
-        background: rgba(255, 255, 255, 0.08);
+        background: rgba(255, 255, 255, 0.09);
         overflow: hidden;
       }
       .pre-react-bar-fill {
-        width: 45%;
+        width: 42%;
         height: 100%;
         border-radius: 999px;
-        background: linear-gradient(90deg, #38bdf8, #fde047, #f59e0b);
+        background: linear-gradient(90deg, #38bdf8, #fcd34d, #f59e0b);
         animation: preReactSlideBar 1.05s ease-in-out infinite;
-      }
-      .pre-react-splash-starting {
-        display: flex;
-        align-items: center;
-        gap: .5rem;
-        color: #94a3b8;
-        font-size: .75rem;
-        font-weight: 600;
-      }
-      .pre-react-splash-dot {
-        width: .5rem;
-        height: .5rem;
-        border-radius: 999px;
-        background: #fbbf24;
-        animation: pre-react-splash-pulse 1.5s infinite;
       }
       .pre-react-splash-version {
         color: #64748b;
-        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-        font-size: .625rem;
+        font-family: 'Plus Jakarta Sans', system-ui, sans-serif;
+        font-size: .68rem;
+        font-weight: 500;
+        letter-spacing: .16em;
+        text-transform: uppercase;
       }
-      @keyframes pre-react-splash-pulse {
-        0%, 100% { opacity: 1; transform: scale(1); }
-        50% { opacity: .45; transform: scale(.75); }
-      }
-      @keyframes preReactCharIn {
-        0% { opacity: 0; transform: translateY(22px) scale(0.8); }
-        100% { opacity: 1; transform: translateY(0) scale(1); }
-      }
-      @keyframes preReactPlusPop {
-        0% { opacity: 0; transform: scale(0.3) rotate(-60deg); }
-        100% { opacity: 1; transform: scale(1) rotate(0deg); }
+      @keyframes preReactCaretBlink {
+        0%, 100% { opacity: 1; }
+        50% { opacity: 0.25; }
       }
       @keyframes preReactSlideBar {
         0% { transform: translateX(-100%); }
         100% { transform: translateX(260%); }
       }
+      @media (prefers-reduced-motion: reduce) {
+        .pre-react-caret,
+        .pre-react-bar-fill {
+          animation: none !important;
+        }
+      }
     </style>
   </head>
-  <body style="margin:0;background-color:#020617;">
+  <body style="margin:0;background-color:#0B1120;">
     <div id="root">
     </div>
     <div id="pre-react-splash" aria-hidden="true">
+      <div style="height:1rem;"></div>
       <div class="pre-react-splash-brand">
-        <img
-          class="pre-react-splash-logo"
-          src="/branding/schoolplus-splash-logo.png?v=7"
-          alt="SCHOOL+"
-          width="512"
-          height="512"
-          style="width:min(78vw,46dvh,512px);height:min(78vw,46dvh,512px);object-fit:contain;background:transparent;filter:drop-shadow(0 20px 48px rgba(56,189,248,0.26));"
-        />
-        <p class="pre-react-splash-subtitle" style="margin-top:16px;color:#7dd3fc;">Smart School ERP · Learn · Grow</p>
+        <div class="pre-react-logo-wrap">
+          <img
+            class="pre-react-splash-logo"
+            src="/branding/schoolplus-splash-logo.png?v=7"
+            alt="SCHOOL+"
+            width="512"
+            height="512"
+            style="position:relative;width:min(48vw,210px);height:min(48vw,210px);border-radius:22%;object-fit:contain;background:transparent;filter:drop-shadow(0 28px 58px rgba(0,0,0,0.62));"
+          />
+        </div>
+        <div class="pre-react-bar-track" style="margin-top:2rem;max-width:13.5rem;"><div class="pre-react-bar-fill"></div></div>
       </div>
       <div class="pre-react-splash-footer">
-        <div class="pre-react-bar-track"><div class="pre-react-bar-fill"></div></div>
-        <span class="pre-react-splash-version" style="letter-spacing:0.26em;color:#94a3b8;text-transform:uppercase;animation:preReactCharIn 0.45s cubic-bezier(0.22,1,0.36,1) both;">DEVELOPED BY <strong style="color:#fcd34d;font-weight:900;letter-spacing:0.2em;">NADIM ANWAR</strong></span>
+        <span class="pre-react-splash-version">Developed by <strong style="color:#cbd5e1;font-weight:600;">Nadim Anwar</strong></span>
       </div>
     </div>
     <script>

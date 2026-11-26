@@ -25,6 +25,7 @@ import {
 } from "../../school-firebase";
 import { getDynamicAcademicSessionLabel } from "../../utils/safeBrowserActions";
 import { printElementInIframe } from "./AdmissionFormPrintModal";
+import { logAdminAction } from "../../utils/adminAudit";
 
 export interface RefundVoucher {
   id: string;
@@ -533,6 +534,10 @@ export const ReceiptCancellationModal: React.FC<Props> = ({
       toast.error("कृपया कैंसिलेशन व रिफंड का विस्तृत कारण (Remarks) दर्ज करें!");
       return;
     }
+    if (!String(authorizedBy || "").trim()) {
+      toast.error("रसीद रद्द करने के लिए Principal / Authorized Person का नाम दर्ज करना अनिवार्य है!");
+      return;
+    }
 
     const receiptKey = selectedReceipt.receiptNo || selectedReceipt.id;
     if (confirmCancelReceiptId !== receiptKey) {
@@ -586,6 +591,13 @@ export const ReceiptCancellationModal: React.FC<Props> = ({
             ? { ...r, status: "CANCELLED", cancelled: true, refundVoucherNo: voucherNum }
             : r
         )
+      );
+
+      void logAdminAction(
+        "RECEIPT_CANCEL_REFUND",
+        `Receipt #${newVoucher.originalReceiptNo} cancelled (Voucher ${voucherNum}, Refund ₹${targetAmt.toLocaleString("en-IN")}, Mode: ${refundMode}, Reason: ${cancellationReason}, Remark: ${newVoucher.remarks})`,
+        { id: authorizedBy, name: authorizedBy },
+        { targetId: newVoucher.studentId || newVoucher.originalReceiptNo, targetName: newVoucher.studentName }
       );
 
       setConfirmCancelReceiptId(null);

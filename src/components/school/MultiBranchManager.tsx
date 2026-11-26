@@ -163,8 +163,8 @@ export const MultiBranchManager: React.FC<Props> = ({
     if (isAtBranchLimit) {
       toast.error(
         maxBranches <= 1
-          ? "Lite Plan mein sirf 1 Branch allowed hai! 3 Branches ke liye Elite Plan (₹1,00,000/yr) ya Unlimited ke liye Supreme (₹2,00,000/yr) upgrade karein."
-          : `Elite Plan mein maximum ${maxBranches} Branches allowed hain! Unlimited Branches ke liye Supreme Plan (₹2,00,000/yr) upgrade karein.`
+          ? "Lite Plan mein sirf 1 Branch allowed hai! 3 Branches ke liye Elite Plan (₹75k–₹2L/yr) ya Unlimited ke liye ULTRA (₹3,00,000/yr) upgrade karein."
+          : `Elite Plan mein maximum ${maxBranches} Branches allowed hain! Unlimited Branches ke liye ULTRA Plan (₹3,00,000/yr) upgrade karein.`
       );
       return;
     }
@@ -176,8 +176,8 @@ export const MultiBranchManager: React.FC<Props> = ({
     if (isAtBranchLimit) {
       toast.error(
         maxBranches <= 1
-          ? "Lite Plan branch limit (1 Branch) poori ho chuki hai! Elite (3 Branches) ya Supreme (Unlimited) upgrade karein."
-          : `Elite Plan branch limit (${maxBranches} Branches) poori ho chuki hai! Unlimited Branches ke liye Supreme Plan upgrade karein.`
+          ? "Lite Plan branch limit (1 Branch) poori ho chuki hai! Elite (3 Branches) ya ULTRA (Unlimited) upgrade karein."
+          : `Elite Plan branch limit (${maxBranches} Branches) poori ho chuki hai! Unlimited Branches ke liye ULTRA Plan upgrade karein.`
       );
       return;
     }

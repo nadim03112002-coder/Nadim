@@ -21,6 +21,7 @@ export const PARENT_CALLER_CARD_POPUP_KEY = "nst_parent_caller_card_popup_v1";
 export const PARENT_CALLER_OVERLAY_KEY = "nst_parent_caller_overlay_v1";
 export const PARENT_OUTGOING_CALL_ID_KEY = "nst_parent_outgoing_call_id_v1";
 export const PARENT_AUTO_CALL_LOG_SYNC_KEY = "nst_parent_auto_call_log_sync_v1";
+export const PARENT_CALLER_STAFF_PRIVACY_KEY = "nst_parent_caller_staff_privacy_v1";
 export const CACHED_PARENT_CALLER_DIR_KEY = "nst_cached_parent_caller_dir_v1";
 export const CACHED_ENQUIRY_CALLER_DIR_KEY = "nst_cached_enquiry_caller_dir_v1";
 
@@ -32,6 +33,7 @@ export interface ParentCallerIdOptions {
   overlayEnabled: boolean;
   outgoingCallEnabled: boolean;
   autoCallLogSyncEnabled: boolean;
+  staffPrivacyMode: boolean;
 }
 
 export interface ParentCallerChildSummary {
@@ -39,6 +41,7 @@ export interface ParentCallerChildSummary {
   name: string;
   classLabel: string;
   dueAmount: number;
+  paidAmount?: number;
   unpaidMonthsCount: number;
 }
 
@@ -55,6 +58,7 @@ export interface CallerDirectoryEntry {
   studentIds?: string[];
   classNames?: string[];
   dueAmount?: number;
+  paidAmount?: number;
   unpaidMonthsCount?: number;
   promiseDate?: string;
   promisedAmount?: number;
@@ -86,6 +90,7 @@ export interface CachedParentCallerInfo {
   studentIds: string[];
   classNames: string[];
   dueAmount: number;
+  paidAmount?: number;
   unpaidMonthsCount: number;
   promiseDate?: string;
   promisedAmount?: number;
@@ -111,6 +116,7 @@ export interface CachedParentCallerInfo {
   callType?: "INCOMING" | "OUTGOING" | "MISSED" | "REJECTED";
   children: ParentCallerChildSummary[];
   isTestSample?: boolean;
+  isUnknownCaller?: boolean;
 }
 
 export interface NativeCallerIdStatus {
@@ -234,6 +240,7 @@ export function getParentCallerIdOptions(): ParentCallerIdOptions {
     overlayEnabled: readBoolPref(PARENT_CALLER_OVERLAY_KEY, true),
     outgoingCallEnabled: readBoolPref(PARENT_OUTGOING_CALL_ID_KEY, true),
     autoCallLogSyncEnabled: readBoolPref(PARENT_AUTO_CALL_LOG_SYNC_KEY, true),
+    staffPrivacyMode: readBoolPref(PARENT_CALLER_STAFF_PRIVACY_KEY, false),
   };
 }
 
@@ -281,6 +288,10 @@ export function setParentCallerIdOptions(
       typeof partial.autoCallLogSyncEnabled === "boolean"
         ? partial.autoCallLogSyncEnabled
         : current.autoCallLogSyncEnabled,
+    staffPrivacyMode:
+      typeof partial.staffPrivacyMode === "boolean"
+        ? partial.staffPrivacyMode
+        : current.staffPrivacyMode,
   };
 
   if (typeof window !== "undefined") {
@@ -312,6 +323,10 @@ export function setParentCallerIdOptions(
       localStorage.setItem(
         PARENT_AUTO_CALL_LOG_SYNC_KEY,
         next.autoCallLogSyncEnabled ? "true" : "false"
+      );
+      localStorage.setItem(
+        PARENT_CALLER_STAFF_PRIVACY_KEY,
+        next.staffPrivacyMode ? "true" : "false"
       );
     } catch {}
     syncParentCallerOptionsToAndroid(next);
@@ -874,6 +889,7 @@ export function syncSchoolDirectoryToAndroid(params: {
     balanceDue?: number;
     isPreAdmission?: boolean;
     isUpcoming?: boolean;
+    cancelled?: boolean;
   }>;
   feeCallFollowUps?: FeeCallFollowUpRecord[];
   absentStudentIds?: string[];
@@ -974,6 +990,7 @@ export function syncSchoolDirectoryToAndroid(params: {
     }
 
     const dueByStudentId = new Map<string, { amount: number; months: number }>();
+    const paidByStudentId = new Map<string, number>();
     for (const fee of params.fees || []) {
       if (!fee?.studentId) continue;
       if (
@@ -984,10 +1001,15 @@ export function syncSchoolDirectoryToAndroid(params: {
       ) {
         continue;
       }
+      const isCancelled = String(fee.status || "").toUpperCase() === "CANCELLED" || fee.cancelled === true;
+      if (isCancelled) continue;
       const isPaid = typeof fee.paid === "boolean" ? fee.paid : fee.status === "paid";
-      if (isPaid) continue;
       const billed = Number(fee.monthlyAmount ?? fee.amount ?? 0);
-      const paidAmt = Number(fee.paidAmount ?? 0);
+      const paidAmt = Number(fee.paidAmount ?? (isPaid ? billed : 0) ?? 0);
+      if (paidAmt > 0) {
+        paidByStudentId.set(fee.studentId, (paidByStudentId.get(fee.studentId) || 0) + paidAmt);
+      }
+      if (isPaid) continue;
       const rem = Number(
         fee.balanceDue !== undefined ? fee.balanceDue : Math.max(0, billed - paidAmt)
       );
@@ -1035,6 +1057,7 @@ export function syncSchoolDirectoryToAndroid(params: {
       const dueStats = st.id
         ? dueByStudentId.get(st.id) || { amount: 0, months: 0 }
         : { amount: 0, months: 0 };
+      const paidTotal = st.id ? paidByStudentId.get(st.id) || 0 : 0;
       const stId = String(st.id || `${stName}_${clsLabel}`).trim();
 
       const phoneCandidates: Array<{ raw?: string; isMother: boolean }> = [
@@ -1076,6 +1099,7 @@ export function syncSchoolDirectoryToAndroid(params: {
             name: stName,
             classLabel: clsLabel,
             dueAmount: dueStats.amount,
+            paidAmount: paidTotal,
             unpaidMonthsCount: dueStats.months,
           });
         }
@@ -1116,6 +1140,7 @@ export function syncSchoolDirectoryToAndroid(params: {
       }
 
       const totalDue = grp.children.reduce((sum, c) => sum + c.dueAmount, 0);
+      const totalPaid = grp.children.reduce((sum, c) => sum + Number(c.paidAmount || 0), 0);
       const totalUnpaidMonths = grp.children.reduce((sum, c) => sum + c.unpaidMonthsCount, 0);
       const classNames = Array.from(
         new Set(grp.children.map((c) => c.classLabel).filter(Boolean))
@@ -1198,6 +1223,7 @@ export function syncSchoolDirectoryToAndroid(params: {
         studentIds: grp.studentIds,
         classNames,
         dueAmount: totalDue,
+        paidAmount: totalPaid,
         unpaidMonthsCount: totalUnpaidMonths,
         promiseDate: promiseDate || undefined,
         promisedAmount: promisedAmount || undefined,
@@ -1223,6 +1249,7 @@ export function syncSchoolDirectoryToAndroid(params: {
         studentIds: grp.studentIds,
         classNames,
         dueAmount: totalDue,
+        paidAmount: totalPaid,
         unpaidMonthsCount: totalUnpaidMonths,
         promiseDate: promiseDate || undefined,
         promisedAmount: promisedAmount || undefined,
@@ -1483,14 +1510,16 @@ export function buildIncomingParentCallerSpeechText(
     : `${String(info.name || "Parent").trim()} call kar rahe hain`;
 
   const due = Number(info.dueAmount || 0);
-  const dueClause = resolvedOpts.dueVoiceEnabled
-    ? due > 0
-      ? `, ₹${due.toLocaleString("en-IN")} fee baki hai`
-      : ", sab fee clear hai"
-    : "";
+  const dueClause = resolvedOpts.staffPrivacyMode
+    ? ", fee vivaran screen par dekhein"
+    : resolvedOpts.dueVoiceEnabled
+      ? due > 0
+        ? `, ₹${due.toLocaleString("en-IN")} fee baki hai`
+        : ", sab fee clear hai"
+      : "";
 
   const extraParts: string[] = [];
-  if (resolvedOpts.scheduleVoiceEnabled) {
+  if (resolvedOpts.scheduleVoiceEnabled && !resolvedOpts.staffPrivacyMode) {
     if (info.promiseDate) {
       extraParts.push(`promise date ${formatShortSpokenDate(info.promiseDate)}`);
     }
@@ -1504,6 +1533,41 @@ export function buildIncomingParentCallerSpeechText(
   const extraClause = extraParts.length > 0 ? `. ${extraParts.join(", ")}` : "";
   return `${absentPrefix}${callerPhrase}${dueClause}${extraClause}.`;
 }
+
+export function buildFormalParentFeeReminderSpeech(params: {
+  schoolName?: string;
+  childName?: string;
+  dueAmount?: number;
+  promiseDate?: string;
+}): string {
+  const school = String(params.schoolName || "").trim() || "LIFE MAKER PUBLIC SCHOOL";
+  const child = String(params.childName || "").trim() || "आरव शर्मा";
+  const amt = Math.max(0, Number(params.dueAmount ?? 2400));
+  const todayYmd = getTodayLocalYmd();
+  const pDate = String(params.promiseDate || "").trim();
+  let datePhrase = "आज निर्धारित है";
+  if (pDate && pDate !== todayYmd) {
+    datePhrase = `${formatShortSpokenDate(pDate)} निर्धारित है`;
+  }
+  return `नमस्कार, ${school} से सूचना है। आपके बच्चे ${child} की ₹${amt.toLocaleString("en-IN")} फीस बाकी है। आपकी पिछली बातचीत के अनुसार फीस जमा करने की तारीख ${datePhrase}।`;
+}
+
+export function announceParentHindiReminder(params: {
+  schoolName?: string;
+  childName?: string;
+  dueAmount?: number;
+  promiseDate?: string;
+  force?: boolean;
+}): boolean {
+  const speechText = buildFormalParentFeeReminderSpeech(params);
+  return speakRawTextWithNativeOrBrowser(
+    speechText,
+    `parent_hindi_reminder_${Date.now()}`,
+    params.force ?? true
+  );
+}
+
+const recentParentAnnouncementMap = new Map<string, number>();
 
 export function speakRawTextWithNativeOrBrowser(
   speechText: string,
@@ -1569,10 +1633,19 @@ export function announceIncomingParentCall(params: {
   if (!params.force && (!isCallerVoiceAnnounceEnabled() || !opts.parentCallerEnabled)) {
     return false;
   }
+  const phoneKey = normalizePhoneLast10(params.info.phone) || params.info.phone;
+  const now = Date.now();
+  if (!params.force && phoneKey) {
+    const lastTs = recentParentAnnouncementMap.get(phoneKey) || 0;
+    if (now - lastTs < 4000) {
+      return false;
+    }
+    recentParentAnnouncementMap.set(phoneKey, now);
+  }
   const speechText = buildIncomingParentCallerSpeechText(params.info, opts);
   return speakRawTextWithNativeOrBrowser(
     speechText,
-    params.dedupeKey || `parent_call_${params.info.phone}_${Date.now()}`,
+    params.dedupeKey || `parent_call_${params.info.phone}_${now}`,
     params.force
   );
 }
@@ -1597,6 +1670,7 @@ export function triggerTestParentCallerPreview(
         studentIds: sampleOverride.studentIds || [],
         classNames: sampleOverride.classNames || ["Class 5"],
         dueAmount: sampleOverride.dueAmount ?? 2400,
+        paidAmount: sampleOverride.paidAmount ?? 4800,
         unpaidMonthsCount: sampleOverride.unpaidMonthsCount ?? 2,
         promiseDate: sampleOverride.promiseDate,
         promisedAmount: sampleOverride.promisedAmount,
@@ -1623,10 +1697,12 @@ export function triggerTestParentCallerPreview(
             name: "Aarav Sharma",
             classLabel: "Class 5",
             dueAmount: sampleOverride.dueAmount ?? 2400,
+            paidAmount: sampleOverride.paidAmount ?? 4800,
             unpaidMonthsCount: sampleOverride.unpaidMonthsCount ?? 2,
           },
         ],
         isTestSample: sampleOverride.isTestSample,
+        isUnknownCaller: sampleOverride.isUnknownCaller,
       }
     : realCandidate
       ? {
@@ -1647,6 +1723,7 @@ export function triggerTestParentCallerPreview(
           studentIds: [],
           classNames: ["Class 5"],
           dueAmount: 2400,
+          paidAmount: 4800,
           unpaidMonthsCount: 2,
           promiseDate: getTodayLocalYmd(),
           promisedAmount: 2400,
@@ -1664,13 +1741,14 @@ export function triggerTestParentCallerPreview(
               name: "Aarav Sharma",
               classLabel: "Class 5",
               dueAmount: 2400,
+              paidAmount: 4800,
               unpaidMonthsCount: 2,
             },
           ],
           isTestSample: true,
         };
 
-  if (baseSample.direction !== "OUTGOING") {
+  if (baseSample.direction !== "OUTGOING" && !baseSample.isUnknownCaller) {
     announceIncomingParentCall({
       info: baseSample,
       dedupeKey: `test_parent_call_${Date.now()}`,

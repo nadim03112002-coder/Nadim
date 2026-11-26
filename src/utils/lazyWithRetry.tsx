@@ -1,6 +1,6 @@
 import React, { Component, Suspense, useEffect, useState } from "react";
 import { RefreshCw, WifiOff } from "lucide-react";
-import { DevelopedByCredit } from "../components/school/DevelopedByFooter";
+import { PremiumLoadingState } from "../components/school/PremiumLoadingState";
 
 const PRELOADED_IMPORTERS = new WeakSet<() => Promise<unknown>>();
 
@@ -110,41 +110,40 @@ const DelayedLoadingFallback: React.FC<{
   }, []);
 
   return (
-    <div className="min-h-[260px] w-full flex flex-col items-center justify-center p-6 text-center gap-3">
-      <div className="w-9 h-9 border-2 border-emerald-600 border-t-transparent rounded-full animate-spin" />
-      <div className="space-y-1">
-        <p className="text-xs font-bold text-slate-700 dark:text-slate-200">
-          {title} khul raha hai...
-        </p>
-        {slow && (
-          <p className="text-[11px] text-amber-600 dark:text-amber-400 font-medium max-w-xs">
-            Internet slow lag raha hai. Agar ruka rahe toh Retry ya Reload dabayein.
-          </p>
-        )}
-      </div>
-      {slow && (
-        <div className="flex items-center gap-2 mt-1">
-          {onRetry && (
+    <PremiumLoadingState
+      title={`${title} khul raha hai...`}
+      subtitle={
+        slow
+          ? "Internet slow lag raha hai. Agar ruka rahe toh Retry ya Reload dabayein."
+          : "Synchronizing module components"
+      }
+      tone="auto"
+      variant="section"
+      accent="emerald"
+      actions={
+        slow ? (
+          <>
+            {onRetry && (
+              <button
+                type="button"
+                onClick={onRetry}
+                className="px-3.5 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold inline-flex items-center gap-1.5 cursor-pointer"
+              >
+                <RefreshCw className="w-3.5 h-3.5" />
+                Retry
+              </button>
+            )}
             <button
               type="button"
-              onClick={onRetry}
-              className="px-3.5 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold inline-flex items-center gap-1.5 cursor-pointer"
+              onClick={() => window.location.reload()}
+              className="px-3.5 py-1.5 rounded-xl bg-slate-200 dark:bg-slate-800 text-slate-800 dark:text-slate-100 text-xs font-bold cursor-pointer"
             >
-              <RefreshCw className="w-3.5 h-3.5" />
-              Retry
+              Reload App
             </button>
-          )}
-          <button
-            type="button"
-            onClick={() => window.location.reload()}
-            className="px-3.5 py-1.5 rounded-xl bg-slate-200 dark:bg-slate-800 text-slate-800 dark:text-slate-100 text-xs font-bold cursor-pointer"
-          >
-            Reload App
-          </button>
-        </div>
-      )}
-      <DevelopedByCredit tone="auto" />
-    </div>
+          </>
+        ) : undefined
+      }
+    />
   );
 };
 

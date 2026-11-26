@@ -8,6 +8,11 @@ import type { School, SchoolStudent } from "../../school-types";
 import type { SchoolHeaderDetails } from "./SchoolHeaderEditorModal";
 import { cleanLogoUrl, getSavedSchoolLogo } from "./feeReceiptUtils";
 import {
+  getLayoutArchitecture,
+  type DocumentTemplateConfig,
+  type LayoutArchitectureSpec,
+} from "../../utils/schoolDocumentTemplates";
+import {
   DEFAULT_POSTER_CONFIG,
   ENGLISH_THOUGHTS_BANK,
   PRESET_ENGLISH_CBSE_HIGHLIGHTS,
@@ -21,12 +26,158 @@ import {
   type StudentCutoutSettings,
 } from "./marksheetBacksideUtils";
 
+function computeBackHeaderCss(
+  arch: LayoutArchitectureSpec,
+  c: DocumentTemplateConfig["colors"]
+): React.CSSProperties {
+  switch (arch.headerStyle) {
+    case "diagonal":
+      return { background: `linear-gradient(122deg, ${c.primaryColor} 60%, ${c.accentColor} 60.4%)`, color: c.headerTextColor };
+    case "split_duotone":
+      return { background: `linear-gradient(115deg, ${c.primaryColor} 54%, ${c.accentColor} 54.4%)`, color: c.headerTextColor };
+    case "aurora":
+      return { background: `linear-gradient(125deg, ${c.primaryColor}, ${c.accentColor}, #ec4899)`, color: c.headerTextColor };
+    case "prism":
+      return { background: `linear-gradient(135deg, ${c.primaryColor} 0%, ${c.accentColor} 45%, ${c.primaryColor} 46%, #0f172a 100%)`, color: c.headerTextColor };
+    case "horizon":
+      return { background: `radial-gradient(circle at 50% 125%, ${c.accentColor}, ${c.primaryColor} 72%)`, color: c.headerTextColor, borderBottomLeftRadius: "44% 16px", borderBottomRightRadius: "44% 16px" };
+    case "arch":
+      return { background: `linear-gradient(135deg, ${c.primaryColor}, ${c.accentColor})`, color: c.headerTextColor, borderBottomLeftRadius: "44% 18px", borderBottomRightRadius: "44% 18px", paddingBottom: "14px" };
+    case "wave":
+      return { background: `linear-gradient(135deg, ${c.primaryColor}, ${c.accentColor})`, color: c.headerTextColor, borderBottomLeftRadius: "60% 18px", borderBottomRightRadius: "18% 6px", paddingBottom: "13px" };
+    case "scallop":
+      return { background: `linear-gradient(135deg, ${c.primaryColor}, ${c.accentColor})`, color: c.headerTextColor, borderBottom: `4px dotted ${c.badgeBg}` };
+    case "chevron":
+      return { background: `linear-gradient(135deg, ${c.primaryColor}, ${c.accentColor})`, color: c.headerTextColor, clipPath: "polygon(0 0, 100% 0, 100% 82%, 50% 100%, 0 82%)", paddingBottom: "16px" };
+    case "obsidian":
+      return { background: `linear-gradient(135deg, #09090b, ${c.primaryColor})`, color: c.headerTextColor, borderBottom: `3px solid ${c.accentColor}` };
+    case "scoreboard":
+      return { background: "#0f172a", color: "#ffffff", borderBottom: `4px solid ${c.accentColor}` };
+    case "ribbon_3d":
+      return { background: `linear-gradient(90deg, ${c.primaryColor}, ${c.accentColor}, ${c.primaryColor})`, color: c.headerTextColor, boxShadow: `0 4px 0 ${c.borderColor}` };
+    case "floating_pill":
+      return { background: `linear-gradient(135deg, ${c.primaryColor}, ${c.accentColor})`, color: c.headerTextColor, borderRadius: "9999px", margin: "5px 6px 2px" };
+    case "scroll_header":
+      return { background: `linear-gradient(180deg, ${c.primaryColor}, ${c.accentColor})`, color: c.headerTextColor, borderRadius: "20px 20px 6px 6px", border: `2px double ${c.badgeBg}` };
+    case "double_decker":
+      return { background: c.primaryColor, color: c.headerTextColor, borderBottom: `5px solid ${c.accentColor}` };
+    case "gazette_double":
+      return { background: "#ffffff", color: c.primaryColor, borderTop: `3px double ${c.primaryColor}`, borderBottom: `3px double ${c.primaryColor}` };
+    case "editorial_split":
+      return { background: c.surfaceTint, color: c.primaryColor, borderLeft: `6px solid ${c.accentColor}`, borderBottom: `2px solid ${c.primaryColor}` };
+    case "light_bar":
+      return { background: arch.creamPaper ? "#fffdf4" : "#ffffff", color: c.primaryColor, borderBottom: `2px solid ${c.borderColor}` };
+    default:
+      return { background: `linear-gradient(135deg, ${c.primaryColor}, ${c.accentColor})`, color: c.headerTextColor };
+  }
+}
+
+function getBackFrameProps(
+  template?: DocumentTemplateConfig
+): {
+  useTpl: boolean;
+  arch: LayoutArchitectureSpec;
+  c: DocumentTemplateConfig["colors"];
+  isLightHdr: boolean;
+  paperBg: string;
+  outerStyle: React.CSSProperties;
+} {
+  const useTpl = Boolean(template && template.id !== "default");
+  const c: DocumentTemplateConfig["colors"] = template?.colors || {
+    primaryColor: "#0f172a",
+    accentColor: "#d97706",
+    headerTextColor: "#ffffff",
+    borderColor: "#0f172a",
+    badgeBg: "#fef3c7",
+    badgeText: "#92400e",
+    surfaceTint: "#f8fafc",
+  };
+  const arch: LayoutArchitectureSpec = useTpl
+    ? getLayoutArchitecture(template!.layoutVariant)
+    : { headerStyle: "solid_gradient", frameStyle: "standard" };
+  const f = arch.frameStyle;
+  const h = arch.headerStyle;
+  const isLightHdr = h === "light_bar" || h === "gazette_double" || h === "editorial_split";
+  const isOrnate =
+    f === "ornate_filigree" ||
+    f === "diploma_parchment" ||
+    f === "seal_center" ||
+    f === "laurel_wreath" ||
+    f === "art_deco" ||
+    f === "guilloche";
+  const isBlueprint = f === "blueprint_grid";
+  const isFolio = f === "folio_ledger";
+  const isPostage = f === "postage_stamp" || f === "ink_dashed";
+  const isHeavyBars = f === "heavy_bars";
+  const isBeveled = f === "beveled";
+  const paperBg = arch.creamPaper ? "#fffdf4" : isBlueprint ? "#f8fbff" : isFolio ? "#fafdf7" : "#ffffff";
+
+  const outerStyle: React.CSSProperties = useTpl
+    ? {
+        fontFamily: arch.serifFont
+          ? "Georgia, 'Times New Roman', serif"
+          : arch.monoAccent
+          ? "'JetBrains Mono', monospace"
+          : "'Inter', sans-serif",
+        backgroundColor: paperBg,
+        borderColor: c.borderColor,
+        borderStyle: isPostage ? "dashed" : isOrnate ? "double" : template!.borderStyle,
+        borderWidth: isHeavyBars ? "0px" : isOrnate || template!.borderStyle === "double" ? "4px" : "2px",
+        borderTopWidth: isHeavyBars ? "8px" : f === "tricolor" ? "5px" : undefined,
+        borderBottomWidth: isHeavyBars ? "8px" : f === "tricolor" ? "5px" : undefined,
+        borderLeftWidth:
+          f === "left_spine"
+            ? "10px"
+            : f === "left_wide"
+            ? "16px"
+            : f === "dual_rails"
+            ? "8px"
+            : f === "mono_stripe"
+            ? "7px"
+            : f === "swiss_cross"
+            ? "12px"
+            : undefined,
+        borderRightWidth:
+          f === "right_spine"
+            ? "10px"
+            : f === "right_wide"
+            ? "16px"
+            : f === "dual_rails"
+            ? "8px"
+            : undefined,
+        borderTopColor: f === "tricolor" ? "#f97316" : c.borderColor,
+        borderBottomColor: f === "tricolor" ? "#16a34a" : c.borderColor,
+        borderLeftColor: f === "swiss_cross" ? c.accentColor : c.primaryColor,
+        borderRightColor: f === "dual_rails" ? c.accentColor : c.primaryColor,
+        borderRadius: isBeveled
+          ? "20px 3px 20px 3px"
+          : arch.sharpCorners || isOrnate || isBlueprint || f === "matrix_boxed"
+          ? "2px"
+          : arch.pillBadges || h === "floating_pill"
+          ? "14px"
+          : "8px",
+        backgroundImage: isBlueprint
+          ? `linear-gradient(${c.primaryColor}12 1px, transparent 1px), linear-gradient(90deg, ${c.primaryColor}12 1px, transparent 1px)`
+          : undefined,
+        backgroundSize: isBlueprint ? "14px 14px" : undefined,
+        boxShadow: isOrnate
+          ? `inset 0 0 0 3px ${paperBg}, inset 0 0 0 5px ${c.accentColor}`
+          : f === "museum_plaque"
+          ? `inset 0 0 0 4px ${c.accentColor}40`
+          : undefined,
+      }
+    : { fontFamily: "'Inter', sans-serif" };
+
+  return { useTpl, arch, c, isLightHdr, paperBg, outerStyle };
+}
+
 interface SchoolPosterHalfCardProps {
   school: School;
   schoolDetails: SchoolHeaderDetails;
   posterConfig: SchoolPosterConfig;
   sessionText: string;
   compactPaSize?: boolean;
+  template?: DocumentTemplateConfig;
 }
 
 export const SchoolPosterHalfCard: React.FC<SchoolPosterHalfCardProps> = ({
@@ -35,8 +186,10 @@ export const SchoolPosterHalfCard: React.FC<SchoolPosterHalfCardProps> = ({
   posterConfig,
   sessionText,
   compactPaSize = false,
+  template,
 }) => {
   const logoUrl = getSavedSchoolLogo(schoolDetails.logoUrl, school?.id);
+  const { useTpl, arch, c, isLightHdr, paperBg, outerStyle } = getBackFrameProps(template);
 
   const themePalette =
     posterConfig.theme === "vibrant_campus"
@@ -99,6 +252,7 @@ export const SchoolPosterHalfCard: React.FC<SchoolPosterHalfCardProps> = ({
     return (
       <div
         className={`marksheet-poster-card w-full h-full ${compactPaSize ? "min-h-[168mm] print:min-h-0" : "min-h-[164mm] print:min-h-0"} bg-white border-2 border-slate-900 rounded-lg overflow-hidden flex flex-col justify-between box-border`}
+        style={useTpl ? { borderColor: c.borderColor } : undefined}
       >
         <div className="flex-1 w-full h-full flex items-center justify-center bg-white overflow-hidden">
           <img
@@ -107,9 +261,12 @@ export const SchoolPosterHalfCard: React.FC<SchoolPosterHalfCardProps> = ({
             className={`w-full h-full ${posterConfig.imageFit === "contain" ? "object-contain" : "object-cover"}`}
           />
         </div>
-        <div className="bg-slate-900 text-white px-2.5 py-1 flex items-center justify-between text-[8px] font-bold shrink-0">
+        <div
+          className="bg-slate-900 text-white px-2.5 py-1 flex items-center justify-between text-[8px] font-bold shrink-0"
+          style={useTpl ? { backgroundColor: c.primaryColor, color: c.headerTextColor } : undefined}
+        >
           <span className="uppercase tracking-wider truncate">{schoolDetails.schoolName}</span>
-          <span className="text-amber-300 truncate">
+          <span className="text-amber-300 truncate" style={useTpl ? { color: c.badgeBg } : undefined}>
             {schoolDetails.phone ? `Helpline: ${schoolDetails.phone}` : sessionText}
           </span>
         </div>
@@ -121,19 +278,58 @@ export const SchoolPosterHalfCard: React.FC<SchoolPosterHalfCardProps> = ({
   const highlightsList = (posterConfig.highlights || DEFAULT_POSTER_CONFIG.highlights).slice(0, 14);
   const useTwoColFeatures = highlightsList.length > 7;
   const leaders = (posterConfig.leadershipStrip || DEFAULT_POSTER_CONFIG.leadershipStrip).slice(0, 3);
+  const f = arch.frameStyle;
+  const tplHeaderStyle = useTpl ? computeBackHeaderCss(arch, c) : undefined;
+  const subTextClr = isLightHdr ? "#475569" : c.badgeBg;
 
   return (
     <div
-      className={`marksheet-poster-card w-full h-full ${compactPaSize ? "min-h-[168mm] print:min-h-0" : "min-h-[164mm] print:min-h-0"} bg-white border-2 ${themePalette.borderColor} rounded-lg overflow-hidden flex flex-col justify-between box-border`}
-      style={{ fontFamily: "'Inter', sans-serif" }}
+      className={`marksheet-poster-card w-full h-full ${compactPaSize ? "min-h-[168mm] print:min-h-0" : "min-h-[164mm] print:min-h-0"} bg-white border-2 ${useTpl ? "" : themePalette.borderColor} rounded-lg overflow-hidden flex flex-col justify-between relative box-border`}
+      style={outerStyle}
     >
+      {/* Structural Decorators (Corners, Bookmarks, Dossier Tab, Lanyard) */}
+      {useTpl && (f === "corner_brackets" || f === "cyber_hud" || f === "museum_plaque") && (
+        <>
+          <div className="pointer-events-none absolute top-1.5 left-1.5 w-3.5 h-3.5 border-t-[3px] border-l-[3px] z-20" style={{ borderColor: c.accentColor }} />
+          <div className="pointer-events-none absolute top-1.5 right-1.5 w-3.5 h-3.5 border-t-[3px] border-r-[3px] z-20" style={{ borderColor: c.accentColor }} />
+          <div className="pointer-events-none absolute bottom-1.5 left-1.5 w-3.5 h-3.5 border-b-[3px] border-l-[3px] z-20" style={{ borderColor: c.accentColor }} />
+          <div className="pointer-events-none absolute bottom-1.5 right-1.5 w-3.5 h-3.5 border-b-[3px] border-r-[3px] z-20" style={{ borderColor: c.accentColor }} />
+        </>
+      )}
+      {useTpl && f === "bookmark_ribbon" && (
+        <div
+          className="pointer-events-none absolute top-0 right-4 w-5 h-8 z-20 flex items-start justify-center pt-1 text-[8px] font-black shadow-xs"
+          style={{ backgroundColor: c.accentColor, color: "#ffffff", clipPath: "polygon(0 0, 100% 0, 100% 100%, 50% 76%, 0 100%)" }}
+        >
+          ★
+        </div>
+      )}
+      {useTpl && f === "dossier_tab" && (
+        <div
+          className="px-2.5 py-0.5 text-[7px] font-black uppercase tracking-widest flex items-center justify-between shrink-0"
+          style={{ backgroundColor: c.primaryColor, color: c.headerTextColor }}
+        >
+          <span>📁 CAMPUS PROSPECTUS DOSSIER</span>
+          <span>{sessionText}</span>
+        </div>
+      )}
+
       {/* Top School Tagline + Header Banner */}
-      <div className={`${themePalette.headerBg} text-white px-2.5 pt-1.5 pb-2 text-center relative shrink-0`}>
+      <div
+        className={`${useTpl ? "" : `${themePalette.headerBg} text-white`} px-2.5 pt-1.5 pb-2 text-center relative shrink-0`}
+        style={tplHeaderStyle}
+      >
         <div className="flex items-center justify-between gap-1.5 mb-1">
-          <span className={`px-2 py-0.5 rounded-full ${themePalette.taglineBar} font-black text-[7.5px] uppercase tracking-wider truncate`}>
+          <span
+            className={`px-2 py-0.5 rounded-full ${useTpl ? "" : themePalette.taglineBar} font-black text-[7.5px] uppercase tracking-wider truncate`}
+            style={useTpl ? { backgroundColor: c.badgeBg, color: c.badgeText } : undefined}
+          >
             ✨ {posterConfig.tagline || "Discipline, Devotion, Dedication"}
           </span>
-          <span className={`px-2 py-0.5 rounded-full ${themePalette.accentBg} font-black text-[7px] uppercase tracking-wider shrink-0 shadow-xs`}>
+          <span
+            className={`px-2 py-0.5 rounded-full ${useTpl ? "" : themePalette.accentBg} font-black text-[7px] uppercase tracking-wider shrink-0 shadow-xs`}
+            style={useTpl ? { backgroundColor: isLightHdr ? c.primaryColor : c.accentColor, color: isLightHdr ? c.headerTextColor : "#ffffff" } : undefined}
+          >
             {posterConfig.admissionBadge || `ADMISSIONS OPEN • ${sessionText}`}
           </span>
         </div>
@@ -144,27 +340,43 @@ export const SchoolPosterHalfCard: React.FC<SchoolPosterHalfCardProps> = ({
               src={cleanLogoUrl(logoUrl)}
               alt="Logo"
               className="w-10 h-10 object-contain rounded-xl bg-white p-0.5 border border-amber-300/80 shrink-0"
+              style={useTpl ? { borderColor: c.borderColor } : undefined}
             />
           ) : (
-            <div className="w-10 h-10 rounded-xl bg-amber-400 text-slate-950 font-black text-sm flex items-center justify-center shrink-0">
+            <div
+              className="w-10 h-10 rounded-xl bg-amber-400 text-slate-950 font-black text-sm flex items-center justify-center shrink-0"
+              style={useTpl ? { backgroundColor: isLightHdr ? c.primaryColor : "#ffffff", color: isLightHdr ? "#ffffff" : c.primaryColor } : undefined}
+            >
               {(schoolDetails.schoolName || "SC").slice(0, 2).toUpperCase()}
             </div>
           )}
           <div className="text-left min-w-0 flex-1">
-            <h2 className="text-[13.5px] font-black uppercase tracking-tight text-white leading-none truncate">
+            <h2
+              className={`text-[13.5px] font-black uppercase tracking-tight ${useTpl ? "" : "text-white"} leading-none truncate`}
+              style={useTpl ? { color: isLightHdr ? c.primaryColor : c.headerTextColor } : undefined}
+            >
               {schoolDetails.schoolName || "SCHOOL ACADEMY"}
             </h2>
             {schoolDetails.address && (
-              <p className="text-[7.5px] text-amber-200 font-bold truncate mt-0.5">
+              <p
+                className={`text-[7.5px] ${useTpl ? "" : "text-amber-200"} font-bold truncate mt-0.5`}
+                style={useTpl ? { color: subTextClr } : undefined}
+              >
                 📍 {schoolDetails.address}
               </p>
             )}
             <div className="flex flex-wrap items-center gap-1 mt-1">
-              <span className={`px-1.5 py-0.5 rounded text-[7px] font-black uppercase tracking-wide ${themePalette.curriculumBg}`}>
+              <span
+                className={`px-1.5 py-0.5 rounded text-[7px] font-black uppercase tracking-wide ${useTpl ? "" : themePalette.curriculumBg}`}
+                style={useTpl ? { backgroundColor: isLightHdr ? c.primaryColor : c.accentColor, color: "#ffffff" } : undefined}
+              >
                 {posterConfig.curriculumLine || schoolDetails.affiliation || "CBSE Curriculum"}
               </span>
               {posterConfig.classRangeBadge && (
-                <span className={`px-1.5 py-0.5 rounded text-[7px] font-black ${themePalette.classPillBg}`}>
+                <span
+                  className={`px-1.5 py-0.5 rounded text-[7px] font-black ${useTpl ? "" : themePalette.classPillBg}`}
+                  style={useTpl ? { backgroundColor: c.badgeBg, color: c.badgeText } : undefined}
+                >
                   {posterConfig.classRangeBadge}
                 </span>
               )}
@@ -174,9 +386,15 @@ export const SchoolPosterHalfCard: React.FC<SchoolPosterHalfCardProps> = ({
       </div>
 
       {/* Main Editable Features Body */}
-      <div className="px-2.5 py-1.5 flex-1 min-h-0 flex flex-col justify-between gap-1.5 bg-gradient-to-b from-white to-slate-50/70">
+      <div
+        className={`px-2.5 py-1.5 flex-1 min-h-0 flex flex-col justify-between gap-1.5 ${useTpl ? "" : "bg-gradient-to-b from-white to-slate-50/70"}`}
+        style={useTpl ? { backgroundColor: paperBg } : undefined}
+      >
         {/* Features Title Ribbon */}
-        <div className={`px-2.5 py-1 rounded-md text-center font-black text-[9px] uppercase tracking-wider shadow-2xs shrink-0 ${themePalette.sectionTitleBg}`}>
+        <div
+          className={`px-2.5 py-1 rounded-md text-center font-black text-[9px] uppercase tracking-wider shadow-2xs shrink-0 ${useTpl ? "" : themePalette.sectionTitleBg}`}
+          style={useTpl ? { backgroundColor: c.primaryColor, color: c.headerTextColor } : undefined}
+        >
           {posterConfig.featuresTitle || "हमारी विशेषताएँ • KEY SCHOOL HIGHLIGHTS"}
         </div>
 
@@ -185,9 +403,13 @@ export const SchoolPosterHalfCard: React.FC<SchoolPosterHalfCardProps> = ({
           {highlightsList.map((item, idx) => (
             <div
               key={idx}
-              className={`flex items-center gap-1.5 px-1.5 py-1 rounded-md border ${themePalette.highlightBg}`}
+              className={`flex items-center gap-1.5 px-1.5 py-1 rounded-md border ${useTpl ? "" : themePalette.highlightBg}`}
+              style={useTpl ? { backgroundColor: c.surfaceTint, borderColor: c.borderColor } : undefined}
             >
-              <span className={`w-4 h-4 rounded-full ${themePalette.badgeDot} text-[7.5px] font-black flex items-center justify-center shrink-0`}>
+              <span
+                className={`w-4 h-4 rounded-full ${useTpl ? "" : themePalette.badgeDot} text-[7.5px] font-black flex items-center justify-center shrink-0`}
+                style={useTpl ? { backgroundColor: c.primaryColor, color: c.headerTextColor } : undefined}
+              >
                 {idx + 1}
               </span>
               <span className={`${useTwoColFeatures ? "text-[7.5px]" : "text-[8.5px]"} font-bold text-slate-900 leading-tight`}>
@@ -214,7 +436,8 @@ export const SchoolPosterHalfCard: React.FC<SchoolPosterHalfCardProps> = ({
               return (
                 <div
                   key={idx}
-                  className={`rounded-lg border px-1.5 py-1 text-center flex flex-col items-center justify-center ${themePalette.leaderBg}`}
+                  className={`rounded-lg border px-1.5 py-1 text-center flex flex-col items-center justify-center ${useTpl ? "" : themePalette.leaderBg}`}
+                  style={useTpl ? { backgroundColor: c.primaryColor, color: c.headerTextColor, borderColor: c.accentColor } : undefined}
                 >
                   <div className="flex items-center justify-center gap-1 mb-0.5">
                     {fallbackPhoto ? (
@@ -222,17 +445,27 @@ export const SchoolPosterHalfCard: React.FC<SchoolPosterHalfCardProps> = ({
                         src={fallbackPhoto}
                         alt={resolvedName}
                         className="w-5 h-5 rounded-full object-cover object-top border border-amber-300 bg-white shrink-0"
+                        style={useTpl ? { borderColor: c.badgeBg } : undefined}
                       />
                     ) : null}
-                    <span className="px-1.5 py-0.2 rounded-full bg-amber-400 text-slate-950 text-[6.5px] font-black uppercase tracking-wider">
+                    <span
+                      className="px-1.5 py-0.2 rounded-full bg-amber-400 text-slate-950 text-[6.5px] font-black uppercase tracking-wider"
+                      style={useTpl ? { backgroundColor: c.badgeBg, color: c.badgeText } : undefined}
+                    >
                       {leader.role}
                     </span>
                   </div>
-                  <p className="text-[8px] font-black text-white leading-tight truncate w-full">
+                  <p
+                    className="text-[8px] font-black text-white leading-tight truncate w-full"
+                    style={useTpl ? { color: c.headerTextColor } : undefined}
+                  >
                     {resolvedName}
                   </p>
                   {leader.qualification && (
-                    <p className="text-[6.2px] font-semibold text-amber-200/90 leading-tight line-clamp-2 mt-0.5">
+                    <p
+                      className="text-[6.2px] font-semibold text-amber-200/90 leading-tight line-clamp-2 mt-0.5"
+                      style={useTpl ? { color: c.badgeBg } : undefined}
+                    >
                       {leader.qualification}
                     </p>
                   )}
@@ -243,11 +476,17 @@ export const SchoolPosterHalfCard: React.FC<SchoolPosterHalfCardProps> = ({
         )}
 
         {/* Bottom Motto + Contact + App/Portal QR Footer */}
-        <div className="border-t-2 border-slate-900 pt-1.5 flex items-center justify-between gap-2 shrink-0">
+        <div
+          className="border-t-2 border-slate-900 pt-1.5 flex items-center justify-between gap-2 shrink-0"
+          style={useTpl ? { borderTopColor: c.borderColor } : undefined}
+        >
           <div className="min-w-0 flex-1 space-y-0.5 text-[7.5px]">
             <div className="flex items-center gap-1.5">
               {posterConfig.bottomMotto && (
-                <span className={`px-2 py-0.5 rounded font-black text-[7.5px] italic shrink-0 ${themePalette.mottoBg}`}>
+                <span
+                  className={`px-2 py-0.5 rounded font-black text-[7.5px] italic shrink-0 ${useTpl ? "" : themePalette.mottoBg}`}
+                  style={useTpl ? { backgroundColor: c.badgeBg, color: c.badgeText } : undefined}
+                >
                   {posterConfig.bottomMotto}
                 </span>
               )}
@@ -255,7 +494,7 @@ export const SchoolPosterHalfCard: React.FC<SchoolPosterHalfCardProps> = ({
                 {posterConfig.footerNote}
               </p>
             </div>
-            <p className="text-indigo-950 font-black truncate">
+            <p className="text-indigo-950 font-black truncate" style={useTpl ? { color: c.primaryColor } : undefined}>
               {schoolDetails.phone ? `📞 Helpline: ${schoolDetails.phone}` : ""}
               {schoolDetails.phone && schoolDetails.email ? " • " : ""}
               {schoolDetails.email ? `✉️ ${schoolDetails.email}` : ""}
@@ -264,14 +503,23 @@ export const SchoolPosterHalfCard: React.FC<SchoolPosterHalfCardProps> = ({
           <div className="flex items-center gap-1 shrink-0">
             <div className="text-right leading-none">
               <span className="text-[6.5px] font-bold text-slate-500 uppercase block">School</span>
-              <span className="text-[7px] font-black text-indigo-900">Portal QR</span>
+              <span className="text-[7px] font-black text-indigo-900" style={useTpl ? { color: c.primaryColor } : undefined}>Portal QR</span>
             </div>
-            <div className="p-0.5 bg-white border border-slate-400 rounded">
+            <div className="p-0.5 bg-white border border-slate-400 rounded" style={useTpl ? { borderColor: c.borderColor } : undefined}>
               <QRCode value={verifyUrl} size={28} level="M" />
             </div>
           </div>
         </div>
       </div>
+
+      {useTpl && f === "passport_mrz" && (
+        <div
+          className="px-2 py-0.5 text-[6px] font-mono tracking-[0.14em] truncate shrink-0"
+          style={{ backgroundColor: "#0f172a", color: "#cbd5e1" }}
+        >
+          P&lt;IND{(schoolDetails.schoolName || "ACADEMY").replace(/\s+/g, "").slice(0, 12).toUpperCase()}&lt;&lt;{sessionText}&lt;&lt;CAMPUSPOSTER
+        </div>
+      )}
     </div>
   );
 };
@@ -294,6 +542,7 @@ interface StudentThoughtBackHalfCardProps {
   schoolId?: string;
   schoolDetails?: SchoolHeaderDetails;
   posterConfig?: SchoolPosterConfig;
+  template?: DocumentTemplateConfig;
 }
 
 export const StudentThoughtBackHalfCard: React.FC<StudentThoughtBackHalfCardProps> = ({
@@ -314,6 +563,7 @@ export const StudentThoughtBackHalfCard: React.FC<StudentThoughtBackHalfCardProp
   schoolId,
   schoolDetails,
   posterConfig,
+  template,
 }) => {
   const numericRank = parseInt(classRankText || "99", 10);
   const { tierLabel, top10, defaultSelectedIds } = getTop10ThoughtsForStudent({
@@ -395,53 +645,115 @@ export const StudentThoughtBackHalfCard: React.FC<StudentThoughtBackHalfCardProp
     };
   });
 
+  const { useTpl, arch, c, isLightHdr, paperBg, outerStyle } = getBackFrameProps(template);
+  const f = arch.frameStyle;
+  const tplHdrCss = useTpl ? computeBackHeaderCss(arch, c) : undefined;
+  const hdrTitleClr = useTpl ? (isLightHdr ? c.primaryColor : c.badgeBg) : undefined;
+  const hdrSubClr = useTpl ? (isLightHdr ? c.accentColor : c.headerTextColor) : undefined;
+  const hdrMutedClr = useTpl ? (isLightHdr ? "#475569" : c.badgeBg) : undefined;
+  const quoteBoxStyle: React.CSSProperties | undefined = useTpl
+    ? {
+        backgroundColor: c.surfaceTint,
+        borderColor: c.borderColor,
+        borderRadius: arch.sharpCorners ? "2px" : undefined,
+      }
+    : undefined;
+  const quoteAltStyle: React.CSSProperties | undefined = useTpl
+    ? {
+        backgroundColor: c.badgeBg,
+        borderColor: c.accentColor,
+        borderRadius: arch.sharpCorners ? "2px" : undefined,
+      }
+    : undefined;
+  const photoFrameStyle: React.CSSProperties | undefined = useTpl
+    ? {
+        borderColor: c.primaryColor,
+        borderRadius: f === "ornate_filigree" || f === "diploma_parchment" ? "9999px" : arch.sharpCorners ? "2px" : undefined,
+      }
+    : undefined;
+
   return (
     <div
-      className="marksheet-thought-card w-full h-full min-h-[164mm] print:min-h-0 bg-white border-2 border-slate-900 rounded-lg overflow-hidden flex flex-col justify-between p-2 box-border"
-      style={{ fontFamily: "'Inter', sans-serif" }}
+      className="marksheet-thought-card w-full h-full min-h-[164mm] print:min-h-0 bg-white border-2 border-slate-900 rounded-lg overflow-hidden flex flex-col justify-between p-2 relative box-border"
+      style={outerStyle}
     >
-      {/* Top Dark Navy Celebration Header */}
-      <div className="bg-[#1a253c] text-white rounded-md px-3 py-1 text-center shadow-xs shrink-0">
-        <span className="text-[7px] font-extrabold uppercase tracking-[0.2em] text-amber-300 block leading-none">
+      {useTpl && (f === "corner_brackets" || f === "cyber_hud" || f === "museum_plaque") && (
+        <>
+          <div className="pointer-events-none absolute top-1.5 left-1.5 w-3.5 h-3.5 border-t-[3px] border-l-[3px] z-20" style={{ borderColor: c.accentColor }} />
+          <div className="pointer-events-none absolute top-1.5 right-1.5 w-3.5 h-3.5 border-t-[3px] border-r-[3px] z-20" style={{ borderColor: c.accentColor }} />
+          <div className="pointer-events-none absolute bottom-1.5 left-1.5 w-3.5 h-3.5 border-b-[3px] border-l-[3px] z-20" style={{ borderColor: c.accentColor }} />
+          <div className="pointer-events-none absolute bottom-1.5 right-1.5 w-3.5 h-3.5 border-b-[3px] border-r-[3px] z-20" style={{ borderColor: c.accentColor }} />
+        </>
+      )}
+      {useTpl && f === "bookmark_ribbon" && (
+        <div
+          className="pointer-events-none absolute top-0 right-4 w-5 h-8 z-20 flex items-start justify-center pt-1 text-[8px] font-black shadow-xs"
+          style={{ backgroundColor: c.accentColor, color: "#ffffff", clipPath: "polygon(0 0, 100% 0, 100% 100%, 50% 76%, 0 100%)" }}
+        >
+          ★
+        </div>
+      )}
+
+      {/* Top Celebration Header */}
+      <div
+        className="bg-[#1a253c] text-white rounded-md px-3 py-1 text-center shadow-xs shrink-0"
+        style={tplHdrCss}
+      >
+        <span
+          className="text-[7px] font-extrabold uppercase tracking-[0.2em] text-amber-300 block leading-none"
+          style={{ color: hdrTitleClr }}
+        >
           Student Profile
         </span>
-        <h3 className="text-[11.5px] font-black uppercase tracking-wide text-amber-400 leading-tight mt-0.5 truncate">
+        <h3
+          className="text-[11.5px] font-black uppercase tracking-wide text-amber-400 leading-tight mt-0.5 truncate"
+          style={{ color: hdrSubClr }}
+        >
           {tierLabel}
         </h3>
 
-        <div className="grid grid-cols-3 border-t border-slate-500/50 pt-1 mt-1 items-center">
+        <div
+          className="grid grid-cols-3 border-t border-slate-500/50 pt-1 mt-1 items-center"
+          style={useTpl ? { borderTopColor: isLightHdr ? c.borderColor : "rgba(255,255,255,0.28)" } : undefined}
+        >
           <div className="px-1 min-w-0">
-            <span className="text-[6px] font-bold uppercase tracking-wider text-slate-300 block truncate">
+            <span className="text-[6px] font-bold uppercase tracking-wider text-slate-300 block truncate" style={{ color: hdrMutedClr }}>
               {studentName || "STUDENT CANDIDATE"}
             </span>
-            <span className="text-[11px] font-black text-amber-400 leading-tight block">
+            <span className="text-[11px] font-black text-amber-400 leading-tight block" style={{ color: hdrTitleClr }}>
               Roll #{rollNo || "01"}
             </span>
           </div>
-          <div className="px-1 border-x border-slate-500/60 min-w-0">
-            <span className="text-[6px] font-bold uppercase tracking-wider text-slate-300 block">
+          <div
+            className="px-1 border-x border-slate-500/60 min-w-0"
+            style={useTpl ? { borderColor: isLightHdr ? c.borderColor : "rgba(255,255,255,0.28)" } : undefined}
+          >
+            <span className="text-[6px] font-bold uppercase tracking-wider text-slate-300 block" style={{ color: hdrMutedClr }}>
               CLASS RANK
             </span>
-            <span className="text-[11px] font-black text-white leading-tight block">
+            <span className="text-[11px] font-black text-white leading-tight block" style={{ color: hdrSubClr }}>
               #{classRankText || "01"}
             </span>
           </div>
           <div className="px-1 min-w-0">
-            <span className="text-[6px] font-bold uppercase tracking-wider text-slate-300 block">
+            <span className="text-[6px] font-bold uppercase tracking-wider text-slate-300 block" style={{ color: hdrMutedClr }}>
               OVERALL
             </span>
-            <span className="text-[11px] font-black text-white leading-tight block">
+            <span className="text-[11px] font-black text-white leading-tight block" style={{ color: hdrSubClr }}>
               {overallPct.toFixed(1)}%
             </span>
           </div>
         </div>
-        <p className="text-[6px] font-semibold text-slate-300/90 mt-0.5 truncate">
+        <p className="text-[6px] font-semibold text-slate-300/90 mt-0.5 truncate" style={{ color: hdrMutedClr }}>
           Class: {classNameText} ({sectionName}) &bull; Session {sessionText}
         </p>
       </div>
 
       {/* Main Showcase: TOP 70% Equal Portrait Frames & 6 Quotes + BOTTOM 30% Spacious ERP App Card */}
-      <div className="flex-1 min-h-0 flex flex-col justify-between gap-1.5 pt-1.5 pb-1 bg-white">
+      <div
+        className="flex-1 min-h-0 flex flex-col justify-between gap-1.5 pt-1.5 pb-1 bg-white"
+        style={useTpl ? { backgroundColor: paperBg } : undefined}
+      >
         <div className="flex-1 min-h-0 flex flex-col justify-evenly gap-1.5">
           {/* ROW 1: Thoughts #1-#2 Left | Student Large Equal Photo Center | Thoughts #3-#4 Right */}
           <div className="grid grid-cols-[1fr_124px_1fr] gap-1.5 items-center min-h-0">
@@ -451,13 +763,14 @@ export const StudentThoughtBackHalfCard: React.FC<StudentThoughtBackHalfCardProp
                 <div
                   key={thought.id}
                   className="flex-1 min-h-0 rounded-xl border border-sky-200/90 bg-[#eef5fc] px-2 py-1 flex flex-col justify-center gap-0.5 shadow-2xs overflow-hidden"
+                  style={quoteBoxStyle}
                 >
                   <p className="text-[7px] font-semibold text-slate-800 leading-snug italic line-clamp-3">
-                    <span className="font-black text-slate-600 not-italic mr-0.5">&ldquo;</span>
+                    <span className="font-black text-slate-600 not-italic mr-0.5" style={useTpl ? { color: c.primaryColor } : undefined}>&ldquo;</span>
                     {thought.text}
-                    <span className="font-black text-slate-600 not-italic ml-0.5">&rdquo;</span>
+                    <span className="font-black text-slate-600 not-italic ml-0.5" style={useTpl ? { color: c.primaryColor } : undefined}>&rdquo;</span>
                   </p>
-                  <span className="text-[5.8px] font-black uppercase tracking-wider text-slate-600 text-right block truncate">
+                  <span className="text-[5.8px] font-black uppercase tracking-wider text-slate-600 text-right block truncate" style={useTpl ? { color: c.primaryColor } : undefined}>
                     &mdash; {thought.author}
                   </span>
                 </div>
@@ -466,7 +779,10 @@ export const StudentThoughtBackHalfCard: React.FC<StudentThoughtBackHalfCardProp
 
             {/* Center: Student Hero Photo (Large Equal Portrait Frame) */}
             <div className="flex flex-col items-center justify-center text-center">
-              <div className="w-[114px] h-[130px] p-1 bg-white border-2 border-slate-300 shadow-sm rounded-md overflow-hidden flex items-center justify-center shrink-0">
+              <div
+                className="w-[114px] h-[130px] p-1 bg-white border-2 border-slate-300 shadow-sm rounded-md overflow-hidden flex items-center justify-center shrink-0"
+                style={photoFrameStyle}
+              >
                 {displayImage ? (
                   hasCutout ? (
                     <img
@@ -497,7 +813,7 @@ export const StudentThoughtBackHalfCard: React.FC<StudentThoughtBackHalfCardProp
               <p className="text-[7.5px] font-black uppercase tracking-tight text-slate-950 leading-tight truncate w-full mt-0.5">
                 {studentName || "STUDENT CANDIDATE"}
               </p>
-              <span className="text-[5.8px] font-extrabold uppercase tracking-wider text-slate-600 leading-none">
+              <span className="text-[5.8px] font-extrabold uppercase tracking-wider text-slate-600 leading-none" style={useTpl ? { color: c.primaryColor } : undefined}>
                 &ndash; STUDENT (ROLL #{rollNo})
               </span>
             </div>
@@ -508,13 +824,14 @@ export const StudentThoughtBackHalfCard: React.FC<StudentThoughtBackHalfCardProp
                 <div
                   key={thought.id}
                   className="flex-1 min-h-0 rounded-xl border border-emerald-200/90 bg-[#edf7f0] px-2 py-1 flex flex-col justify-center gap-0.5 shadow-2xs overflow-hidden"
+                  style={quoteAltStyle}
                 >
                   <p className="text-[7px] font-semibold text-slate-800 leading-snug italic line-clamp-3">
-                    <span className="font-black text-slate-600 not-italic mr-0.5">&ldquo;</span>
+                    <span className="font-black text-slate-600 not-italic mr-0.5" style={useTpl ? { color: c.primaryColor } : undefined}>&ldquo;</span>
                     {thought.text}
-                    <span className="font-black text-slate-600 not-italic ml-0.5">&rdquo;</span>
+                    <span className="font-black text-slate-600 not-italic ml-0.5" style={useTpl ? { color: c.primaryColor } : undefined}>&rdquo;</span>
                   </p>
-                  <span className="text-[5.8px] font-black uppercase tracking-wider text-slate-600 text-right block truncate">
+                  <span className="text-[5.8px] font-black uppercase tracking-wider text-slate-600 text-right block truncate" style={useTpl ? { color: c.badgeText } : undefined}>
                     &mdash; {thought.author}
                   </span>
                 </div>
@@ -528,7 +845,10 @@ export const StudentThoughtBackHalfCard: React.FC<StudentThoughtBackHalfCardProp
             <div className="flex flex-col items-center justify-center text-center">
               {showLeadership ? (
                 <>
-                  <div className="w-[114px] h-[130px] p-1 bg-white border-2 border-slate-300 shadow-sm rounded-md overflow-hidden flex items-center justify-center shrink-0">
+                  <div
+                    className="w-[114px] h-[130px] p-1 bg-white border-2 border-slate-300 shadow-sm rounded-md overflow-hidden flex items-center justify-center shrink-0"
+                    style={photoFrameStyle}
+                  >
                     {resolvedPrincipalPhoto ? (
                       <img
                         src={resolvedPrincipalPhoto}
@@ -547,7 +867,7 @@ export const StudentThoughtBackHalfCard: React.FC<StudentThoughtBackHalfCardProp
                   <p className="text-[7.2px] font-black uppercase tracking-tight text-slate-950 leading-tight truncate w-full mt-0.5">
                     {resolvedPrincipalName}
                   </p>
-                  <span className="text-[5.8px] font-extrabold uppercase tracking-wider text-slate-600 leading-none">
+                  <span className="text-[5.8px] font-extrabold uppercase tracking-wider text-slate-600 leading-none" style={useTpl ? { color: c.primaryColor } : undefined}>
                     &ndash; PRINCIPAL
                   </span>
                 </>
@@ -564,13 +884,14 @@ export const StudentThoughtBackHalfCard: React.FC<StudentThoughtBackHalfCardProp
                       ? "border-sky-200/90 bg-[#eef5fc]"
                       : "border-amber-200/90 bg-[#fbf5eb]"
                   }`}
+                  style={idx === 0 ? quoteBoxStyle : quoteAltStyle}
                 >
                   <p className="text-[7.1px] font-semibold text-slate-800 leading-snug italic line-clamp-5">
-                    <span className="font-black text-slate-600 not-italic mr-0.5">&ldquo;</span>
+                    <span className="font-black text-slate-600 not-italic mr-0.5" style={useTpl ? { color: c.primaryColor } : undefined}>&ldquo;</span>
                     {thought.text}
-                    <span className="font-black text-slate-600 not-italic ml-0.5">&rdquo;</span>
+                    <span className="font-black text-slate-600 not-italic ml-0.5" style={useTpl ? { color: c.primaryColor } : undefined}>&rdquo;</span>
                   </p>
-                  <span className="text-[5.8px] font-black uppercase tracking-wider text-slate-600 text-right block truncate">
+                  <span className="text-[5.8px] font-black uppercase tracking-wider text-slate-600 text-right block truncate" style={useTpl ? { color: c.primaryColor } : undefined}>
                     &mdash; {thought.author}
                   </span>
                 </div>
@@ -581,7 +902,10 @@ export const StudentThoughtBackHalfCard: React.FC<StudentThoughtBackHalfCardProp
             <div className="flex flex-col items-center justify-center text-center">
               {showLeadership ? (
                 <>
-                  <div className="w-[114px] h-[130px] p-1 bg-white border-2 border-slate-300 shadow-sm rounded-md overflow-hidden flex items-center justify-center shrink-0">
+                  <div
+                    className="w-[114px] h-[130px] p-1 bg-white border-2 border-slate-300 shadow-sm rounded-md overflow-hidden flex items-center justify-center shrink-0"
+                    style={photoFrameStyle}
+                  >
                     {resolvedDirectorPhoto ? (
                       <img
                         src={resolvedDirectorPhoto}
@@ -600,7 +924,7 @@ export const StudentThoughtBackHalfCard: React.FC<StudentThoughtBackHalfCardProp
                   <p className="text-[7.2px] font-black uppercase tracking-tight text-slate-950 leading-tight truncate w-full mt-0.5">
                     {resolvedDirectorName}
                   </p>
-                  <span className="text-[5.8px] font-extrabold uppercase tracking-wider text-slate-600 leading-none">
+                  <span className="text-[5.8px] font-extrabold uppercase tracking-wider text-slate-600 leading-none" style={useTpl ? { color: c.primaryColor } : undefined}>
                     &ndash; DIRECTOR
                   </span>
                 </>
@@ -612,15 +936,27 @@ export const StudentThoughtBackHalfCard: React.FC<StudentThoughtBackHalfCardProp
         {/* BOTTOM ENLARGED (~30%): SCHOOL ERP MOBILE APP – FEATURES, BENEFITS & SETUP GUIDE */}
         {showErpAppQr && (
           <div className="flex flex-col justify-end shrink-0 pt-1">
-            <div className="mx-auto -mb-2.5 relative z-10 px-4 py-0.5 rounded-full bg-[#1a253c] text-amber-300 text-[7.5px] font-black uppercase tracking-wider shadow-xs border border-amber-400/50">
+            <div
+              className="mx-auto -mb-2.5 relative z-10 px-4 py-0.5 rounded-full bg-[#1a253c] text-amber-300 text-[7.5px] font-black uppercase tracking-wider shadow-xs border border-amber-400/50"
+              style={useTpl ? { backgroundColor: c.primaryColor, color: c.headerTextColor, borderColor: c.accentColor } : undefined}
+            >
               {cfg.erpAppTitle || "SCHOOL ERP MOBILE APP"} &ndash; FEATURES, BENEFITS &amp; SETUP GUIDE
             </div>
-            <div className="rounded-2xl border-2 border-slate-400 bg-gradient-to-br from-slate-50 via-white to-indigo-50/40 pt-3.5 pb-2 px-2.5 flex flex-col gap-1.5 shadow-xs">
+            <div
+              className="rounded-2xl border-2 border-slate-400 bg-gradient-to-br from-slate-50 via-white to-indigo-50/40 pt-3.5 pb-2 px-2.5 flex flex-col gap-1.5 shadow-xs"
+              style={useTpl ? { borderColor: c.borderColor, background: c.surfaceTint } : undefined}
+            >
               <div className="flex items-center gap-2.5">
                 {/* Left Enlarged QR Code + Scan Label */}
-                <div className="shrink-0 flex flex-col items-center bg-white border-2 border-[#1a253c] rounded-xl p-1.5 shadow-2xs">
+                <div
+                  className="shrink-0 flex flex-col items-center bg-white border-2 border-[#1a253c] rounded-xl p-1.5 shadow-2xs"
+                  style={useTpl ? { borderColor: c.primaryColor } : undefined}
+                >
                   <QRCode value={erpAppQrValue} size={74} level="M" />
-                  <span className="mt-1 px-1.5 py-0.5 rounded bg-[#1a253c] text-amber-300 text-[5.8px] font-black uppercase tracking-wider leading-none">
+                  <span
+                    className="mt-1 px-1.5 py-0.5 rounded bg-[#1a253c] text-amber-300 text-[5.8px] font-black uppercase tracking-wider leading-none"
+                    style={useTpl ? { backgroundColor: c.primaryColor, color: c.headerTextColor } : undefined}
+                  >
                     Scan to Download
                   </span>
                 </div>
@@ -631,12 +967,19 @@ export const StudentThoughtBackHalfCard: React.FC<StudentThoughtBackHalfCardProp
                     <div
                       key={i}
                       className="rounded-lg border border-slate-300/90 bg-white px-1.5 py-1 shadow-2xs flex flex-col justify-center"
+                      style={useTpl ? { borderColor: c.borderColor } : undefined}
                     >
                       <div className="flex items-center gap-1 min-w-0">
-                        <span className="w-3 h-3 rounded-full bg-[#1a253c] text-amber-300 text-[6px] font-black flex items-center justify-center shrink-0">
+                        <span
+                          className="w-3 h-3 rounded-full bg-[#1a253c] text-amber-300 text-[6px] font-black flex items-center justify-center shrink-0"
+                          style={useTpl ? { backgroundColor: c.primaryColor, color: c.headerTextColor } : undefined}
+                        >
                           {i + 1}
                         </span>
-                        <span className="text-[7px] font-black text-[#1a253c] leading-tight truncate">
+                        <span
+                          className="text-[7px] font-black text-[#1a253c] leading-tight truncate"
+                          style={useTpl ? { color: c.primaryColor } : undefined}
+                        >
                           {feat.title}
                         </span>
                       </div>
@@ -649,7 +992,10 @@ export const StudentThoughtBackHalfCard: React.FC<StudentThoughtBackHalfCardProp
               </div>
 
               {/* Clear 3-Step Setup & ID Card QR Linking Bar */}
-              <div className="px-2.5 py-1 rounded-full bg-[#1a253c] text-amber-300 text-[6.2px] font-extrabold text-center tracking-wide">
+              <div
+                className="px-2.5 py-1 rounded-full bg-[#1a253c] text-amber-300 text-[6.2px] font-extrabold text-center tracking-wide"
+                style={useTpl ? { backgroundColor: c.primaryColor, color: c.badgeBg } : undefined}
+              >
                 {cfg.erpAppStepNote || "How to Start: 1. Scan QR to Download App → 2. Create Parent/Student Account → 3. Scan Student ID Card QR Code to Link Profile"}
               </div>
             </div>
@@ -658,16 +1004,31 @@ export const StudentThoughtBackHalfCard: React.FC<StudentThoughtBackHalfCardProp
       </div>
 
       {/* Bottom Honor Footer */}
-      <div className="border-t border-slate-300 pt-0.5 flex items-center justify-between text-[6.5px] shrink-0">
+      <div
+        className="border-t border-slate-300 pt-0.5 flex items-center justify-between text-[6.5px] shrink-0"
+        style={useTpl ? { borderTopColor: c.borderColor } : undefined}
+      >
         <div className="flex items-center gap-1 font-bold text-slate-700">
-          <Award className="w-2.5 h-2.5 text-amber-600 shrink-0" />
+          <Award className="w-2.5 h-2.5 text-amber-600 shrink-0" style={useTpl ? { color: c.accentColor } : undefined} />
           <span>With Best Wishes for Your Bright Academic Future</span>
         </div>
-        <div className="font-black text-[#1a253c] uppercase tracking-wide truncate max-w-[45%] text-right">
+        <div
+          className="font-black text-[#1a253c] uppercase tracking-wide truncate max-w-[45%] text-right"
+          style={useTpl ? { color: c.primaryColor } : undefined}
+        >
           {resolvedPrincipalName ? `${resolvedPrincipalName} • ` : ""}
           {schoolName}
         </div>
       </div>
+
+      {useTpl && f === "passport_mrz" && (
+        <div
+          className="px-2 py-0.5 mt-0.5 text-[6px] font-mono tracking-[0.14em] truncate shrink-0"
+          style={{ backgroundColor: "#0f172a", color: "#cbd5e1" }}
+        >
+          P&lt;IND{(studentName || "STUDENT").replace(/\s+/g, "").slice(0, 12).toUpperCase()}&lt;&lt;ROLL{rollNo}&lt;&lt;RANK{classRankText}
+        </div>
+      )}
     </div>
   );
 };

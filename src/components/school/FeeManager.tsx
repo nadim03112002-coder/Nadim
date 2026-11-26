@@ -8,7 +8,7 @@ import type { SchoolStudent, SchoolClass, MonthlyFee, School, SchoolDocumentPrin
 import { schoolPrintFieldEnabled, hasEliteFeeTagadaAccess } from "../../school-types";
 import { CheckCircle, Clock, Download, ChevronLeft, ChevronRight, ChevronDown, IndianRupee, Users, TrendingUp, AlertCircle, Printer, MessageCircle, MessageSquare, ReceiptText, Building2, Sparkles, X, Check, RotateCcw, CheckCircle2, ShieldCheck, ToggleLeft, ToggleRight, Bus, QrCode, Search, Filter, Loader2, Bell, FileSpreadsheet, FileText, Plus, Trash2, CreditCard, Palette, CalendarClock, PhoneCall, Lock } from "lucide-react";
 import { FeeTagadaCallerPage, buildFamilyTagadaGroups, getLocalTodayYmd, getPendingActiveTagadaCall, type TagadaStudentFeeRow } from "./FeeTagadaCallerPage";
-import { DevelopedByCredit } from "./DevelopedByFooter";
+import { PremiumLoadingState } from "./PremiumLoadingState";
 import { EliteFeatureLockCard } from "./EliteFeatureLockCard";
 import { FeeTermSchedulerModal } from "./FeeTermSchedulerModal";
 import { resolveScheduledFeesForStudentMonth, mergeSettlementAfterPayment } from "../../utils/feeTermScheduler";
@@ -92,6 +92,7 @@ import {
   type FamilySettlementResult,
   type FamilySiblingInput,
 } from "../../utils/familyFeeEngine";
+import { logAdminAction } from "../../utils/adminAudit";
 
 interface Props {
   schoolId: string;
@@ -114,6 +115,7 @@ interface Props {
 }
 
 export const FeeManager: React.FC<Props> = ({ schoolId, classId, className, schoolName, school, sessionId, adminId, userRole = "SCHOOL_ADMIN", actorName = "Admin / Accountant", allowDiscountOverride, maxDiscountLimitPct, onBack, initialTool, exitOnToolClose = false, initialStudentId, initialStudentAction = "collect_fee", onInitialStudentActionHandled }) => {
+  const isAccountantRole = String(userRole || "").toUpperCase().includes("ACCOUNTANT");
   const canGiveDiscount = allowDiscountOverride !== undefined ? allowDiscountOverride : canRoleGiveDiscount(userRole);
   const clampByRoleLimit = (gross: number, requested: number): number => {
     if (!canGiveDiscount) return 0;
@@ -212,6 +214,9 @@ export const FeeManager: React.FC<Props> = ({ schoolId, classId, className, scho
   const [customBankName, setCustomBankName] = useState<string>("");
   const [customChequeNo, setCustomChequeNo] = useState<string>("");
   const [customConcession, setCustomConcession] = useState<string>("");
+  const [principalApprovalConfirmed, setPrincipalApprovalConfirmed] = useState<boolean>(false);
+  const [principalApproverName, setPrincipalApproverName] = useState<string>("");
+  const [discountReasonNote, setDiscountReasonNote] = useState<string>("");
   const [customPaymentDate, setCustomPaymentDate] = useState<string>(() => new Date().toISOString().slice(0, 10));
   const [bulkFamilyMerge, setBulkFamilyMerge] = useState<boolean>(true);
   const [downloadingBulkPdf, setDownloadingBulkPdf] = useState<boolean>(false);
@@ -1036,6 +1041,9 @@ export const FeeManager: React.FC<Props> = ({ schoolId, classId, className, scho
       ? Math.max(baseConcession, Number(fee.earlyDiscount || 0) + permanentDisc)
       : (earlyDisc > 0 ? earlyDisc + permanentDisc : baseConcession);
     setCustomConcession(effectiveConcession > 0 ? String(effectiveConcession) : "");
+    setPrincipalApprovalConfirmed(false);
+    setPrincipalApproverName("");
+    setDiscountReasonNote("");
 
     // Auto calculate net payable: Old Arrears (no discount) + Discounted Current Tuition + Term/Deferred Heads
     const arrears = Number(fee.arrearsAmount || 0);
@@ -1149,6 +1157,9 @@ export const FeeManager: React.FC<Props> = ({ schoolId, classId, className, scho
     const items = buildAdmissionItemsForStudent(s);
     setAdmFeeItems(items);
     setAdmConcession(0);
+    setPrincipalApprovalConfirmed(false);
+    setPrincipalApproverName("");
+    setDiscountReasonNote("");
     const gross = items.reduce((sum, it) => sum + (Number(it.due) || 0), 0);
     setAdmPaidAmount(String(gross));
     setAdmPaidManual(false);
@@ -1213,6 +1224,9 @@ export const FeeManager: React.FC<Props> = ({ schoolId, classId, className, scho
     const items = buildAdmissionItemsForStudent(s);
     setAdmFeeItems(items);
     setAdmConcession(0);
+    setPrincipalApprovalConfirmed(false);
+    setPrincipalApproverName("");
+    setDiscountReasonNote("");
     const gross = items.reduce((sum, it) => sum + (Number(it.due) || 0), 0);
     setAdmPaidAmount(String(gross));
     setAdmPaidManual(false);
@@ -1226,6 +1240,14 @@ export const FeeManager: React.FC<Props> = ({ schoolId, classId, className, scho
     const student = students.find(s => s.id === admSelectedStudentId);
     if (!student) {
       setFeeError("कृपया पहले एक छात्र चुनें!");
+      return;
+    }
+    if (
+      effectiveAdmConcession > 0 &&
+      isAccountantRole &&
+      (!principalApprovalConfirmed || principalApproverName.trim().length < 2 || discountReasonNote.trim().length < 3)
+    ) {
+      setFeeError("Accountant dwara Admission Discount dene ke liye Principal Approval & Reason darj karna anivarya hai!");
       return;
     }
     setFeeError(null);
@@ -1292,6 +1314,8 @@ export const FeeManager: React.FC<Props> = ({ schoolId, classId, className, scho
       await saveFee(admissionFeeRecord);
 
       if (effectiveAdmConcession > 0) {
+        const approverTag = principalApproverName.trim() ? `Approved by ${principalApproverName.trim()}` : userRole;
+        const admDiscountNote = `${approverTag}${discountReasonNote.trim() ? ` (${discountReasonNote.trim()})` : ""} • Online ₹${splitAdmPayInfo.onlineAmount || 0} + Offline ₹${splitAdmPayInfo.offlineAmount || 0}`;
         recordDiscountEntry(schoolId, {
           studentId: student.id,
           studentName: student.name,
@@ -1305,8 +1329,22 @@ export const FeeManager: React.FC<Props> = ({ schoolId, classId, className, scho
           discountPct: admGross > 0 ? Math.round((effectiveAdmConcession / admGross) * 1000) / 10 : 5,
           givenByName: actorName,
           givenByRole: userRole,
-          note: `Online ₹${splitAdmPayInfo.onlineAmount || 0} + Offline ₹${splitAdmPayInfo.offlineAmount || 0}`,
+          note: admDiscountNote,
         });
+        void logAdminAction(
+          "FEE_DISCOUNT_APPLIED",
+          `Admission fee discount ₹${effectiveAdmConcession} for ${student.name} (${receiptNo}) • ${admDiscountNote}`,
+          { id: adminId, name: actorName },
+          { targetId: student.id, targetName: student.name }
+        );
+      }
+      if (paidAmt > 0) {
+        void logAdminAction(
+          "FEE_PAYMENT_RECORDED",
+          `Admission fee ₹${paidAmt} recorded (${receiptNo}) for ${student.name} • Balance ₹${balanceAmt}`,
+          { id: adminId, name: actorName },
+          { targetId: student.id, targetName: student.name }
+        );
       }
 
       if (!student.admissionReceiptNo) {
@@ -1364,6 +1402,17 @@ export const FeeManager: React.FC<Props> = ({ schoolId, classId, className, scho
     const rawManualConcession = canGiveDiscount ? Math.max(0, Number(customConcession) || 0) : 0;
     const manualConcession = clampByRoleLimit(currentHeadsGross, rawManualConcession);
     const totalConcession = Math.max(manualConcession, earlyDiscount);
+    const hasManualOverrideDiscount = manualConcession > earlyDiscount;
+    if (
+      !markUnpaidDirectly &&
+      hasManualOverrideDiscount &&
+      isAccountantRole &&
+      (!principalApprovalConfirmed || principalApproverName.trim().length < 2 || discountReasonNote.trim().length < 3)
+    ) {
+      setFeeError("Accountant dwara manual fee discount dene ke liye Principal Approval & Reason darj karna anivarya hai!");
+      setSaving(null);
+      return;
+    }
 
     // Discount is permanently waived on current month heads and NEVER added to next month's due/arrears
     const currentMonthTuition = Math.max(0, monthlyAmount - earlyDiscount);
@@ -1443,6 +1492,10 @@ export const FeeManager: React.FC<Props> = ({ schoolId, classId, className, scho
     });
 
     if (totalConcession > 0) {
+      const approverTag = hasManualOverrideDiscount && principalApproverName.trim()
+        ? `Approved by ${principalApproverName.trim()}`
+        : userRole;
+      const monthlyDiscNote = `${approverTag}${discountReasonNote.trim() ? ` (${discountReasonNote.trim()})` : ""} • Online ₹${payModeInfo.onlineAmount || 0} + Offline ₹${payModeInfo.offlineAmount || 0}`;
       recordDiscountEntry(schoolId, {
         studentId: fee.studentId,
         studentName: student?.name || fee.studentName || "Student",
@@ -1456,8 +1509,14 @@ export const FeeManager: React.FC<Props> = ({ schoolId, classId, className, scho
         discountPct: currentHeadsGross > 0 ? Math.round((totalConcession / currentHeadsGross) * 1000) / 10 : 5,
         givenByName: actorName,
         givenByRole: userRole,
-        note: `Online ₹${payModeInfo.onlineAmount || 0} + Offline ₹${payModeInfo.offlineAmount || 0}`,
+        note: monthlyDiscNote,
       });
+      void logAdminAction(
+        "FEE_DISCOUNT_APPLIED",
+        `Monthly fee discount ₹${totalConcession} (${formatMonthLabel(fee.month)}) for ${student?.name || fee.studentName || "Student"} • ${monthlyDiscNote}`,
+        { id: adminId, name: actorName },
+        { targetId: fee.studentId, targetName: student?.name || fee.studentName }
+      );
     }
 
     // ── FIFO MULTI-MONTH ALLOCATION EXECUTION ──
@@ -1717,6 +1776,14 @@ export const FeeManager: React.FC<Props> = ({ schoolId, classId, className, scho
         } as MonthlyFee;
 
         setCollectingFee(null);
+        if (settledFam.totalPaidNow > 0) {
+          void logAdminAction(
+            "FEE_PAYMENT_RECORDED",
+            `Family Fee ₹${settledFam.totalPaidNow} (${famReceiptNo}) recorded • Remaining ₹${settledFam.totalFamilyRemainingAfter}`,
+            { id: adminId, name: actorName },
+            { targetId: fee.studentId, targetName: combinedSnapshot.studentName }
+          );
+        }
         await loadData(true);
         toast.success(
           settledFam.advanceCoveredMonths.length > 0
@@ -2059,6 +2126,12 @@ export const FeeManager: React.FC<Props> = ({ schoolId, classId, className, scho
       await loadData(true);
       if (effectivePaid > 0) {
         const remAfter = Math.max(0, Number(fifoResult.totalOutstandingDueAfter || 0));
+        void logAdminAction(
+          "FEE_PAYMENT_RECORDED",
+          `Fee ₹${effectivePaid} recorded (${receiptNo}) for ${student?.name || fee.studentName} • Remaining Due ₹${remAfter}`,
+          { id: adminId, name: actorName },
+          { targetId: fee.studentId, targetName: student?.name || fee.studentName }
+        );
         void autoSettleFeeCallFollowUp(schoolId, fee.studentId, {
           receiptNo,
           amountPaid: effectivePaid,
@@ -3296,6 +3369,8 @@ td{padding:8px 10px;border-bottom:1px solid #e2e8f0}</style></head>
           schoolName={schoolDetails.schoolName || schoolName || school?.name || "School"}
           schoolUpiId={schoolDetails.upiId || school?.upiId || ""}
           actorName={actorName}
+          actorId={adminId}
+          actorRole={userRole}
           classes={rawClasses}
           rows={tagadaRows}
           onBack={() => {
@@ -3638,9 +3713,17 @@ td{padding:8px 10px;border-bottom:1px solid #e2e8f0}</style></head>
 
         {/* Student fee list */}
         {loading ? (
-          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-8 text-center text-xs font-medium text-slate-400">
-            <p>Loading fee records...</p>
-            <DevelopedByCredit tone="auto" />
+          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl overflow-hidden">
+            <PremiumLoadingState
+              title="Loading fee records..."
+              subtitle="Reconciling dues, receipts & UPI ledger"
+              tone="auto"
+              variant="card"
+              accent="amber"
+              schoolId={schoolId}
+              schoolName={school?.name}
+              schoolLogoUrl={school?.logoUrl}
+            />
           </div>
         ) : (
           <>
@@ -5424,6 +5507,35 @@ td{padding:8px 10px;border-bottom:1px solid #e2e8f0}</style></head>
                         }}
                         className="w-full px-3 py-2 rounded-xl border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-700 font-bold text-slate-800 dark:text-white"
                       />
+                      {isAccountantRole && Number(customConcession || 0) > 0 && (
+                        <div className="mt-2 p-2.5 rounded-xl bg-amber-50 dark:bg-amber-950/30 border border-amber-300 dark:border-amber-700 space-y-1.5 text-[11px]">
+                          <label className="flex items-center gap-2 font-bold text-amber-900 dark:text-amber-200 cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={principalApprovalConfirmed}
+                              onChange={(e) => setPrincipalApprovalConfirmed(e.target.checked)}
+                              className="w-4 h-4 accent-amber-600"
+                            />
+                            <span>Principal Approval Received (अनिवार्य)</span>
+                          </label>
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
+                            <input
+                              type="text"
+                              placeholder="Approver Name (Principal) *"
+                              value={principalApproverName}
+                              onChange={(e) => setPrincipalApproverName(e.target.value)}
+                              className="px-2 py-1 rounded-lg border border-amber-300 bg-white dark:bg-slate-800 text-slate-900 dark:text-white font-semibold"
+                            />
+                            <input
+                              type="text"
+                              placeholder="Discount Reason *"
+                              value={discountReasonNote}
+                              onChange={(e) => setDiscountReasonNote(e.target.value)}
+                              className="px-2 py-1 rounded-lg border border-amber-300 bg-white dark:bg-slate-800 text-slate-900 dark:text-white font-semibold"
+                            />
+                          </div>
+                        </div>
+                      )}
                     </div>
                   ) : (
                     <div className="px-3 py-2 rounded-xl bg-amber-50 dark:bg-amber-950/30 border border-amber-200 text-[11px] font-bold text-amber-800 dark:text-amber-300 flex items-center">
@@ -5769,6 +5881,35 @@ td{padding:8px 10px;border-bottom:1px solid #e2e8f0}</style></head>
                         onChange={(e) => setAdmConcession(clampByRoleLimit(admGross, Math.max(0, Number(e.target.value))))}
                         className="w-full px-2.5 py-1.5 rounded-xl border border-slate-300 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 text-xs font-bold"
                       />
+                    </div>
+                  )}
+                  {canGiveDiscount && isAccountantRole && Number(admConcession || 0) > 0 && (
+                    <div className="col-span-2 sm:col-span-4 p-2.5 rounded-xl bg-amber-50 dark:bg-amber-950/30 border border-amber-300 dark:border-amber-700 space-y-1.5 text-[11px]">
+                      <label className="flex items-center gap-2 font-bold text-amber-900 dark:text-amber-200 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={principalApprovalConfirmed}
+                          onChange={(e) => setPrincipalApprovalConfirmed(e.target.checked)}
+                          className="w-4 h-4 accent-amber-600"
+                        />
+                        <span>Principal Approval Received for Admission Discount (अनिवार्य)</span>
+                      </label>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
+                        <input
+                          type="text"
+                          placeholder="Approver Name (Principal) *"
+                          value={principalApproverName}
+                          onChange={(e) => setPrincipalApproverName(e.target.value)}
+                          className="px-2 py-1 rounded-lg border border-amber-300 bg-white dark:bg-slate-800 text-slate-900 dark:text-white font-semibold"
+                        />
+                        <input
+                          type="text"
+                          placeholder="Discount Reason *"
+                          value={discountReasonNote}
+                          onChange={(e) => setDiscountReasonNote(e.target.value)}
+                          className="px-2 py-1 rounded-lg border border-amber-300 bg-white dark:bg-slate-800 text-slate-900 dark:text-white font-semibold"
+                        />
+                      </div>
                     </div>
                   )}
                   <div>

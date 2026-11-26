@@ -32,32 +32,72 @@ export interface SchoolSubscription {
   maxBranches?: number; // Lite = 1, Elite = 3, Supreme (whitelabel_5000) = 9999 (Unlimited)
   planDuration?: PlanDuration; // Yearly duration of assigned plan
   assignedAt?: string; // ISO date — when plan was last assigned by super admin
+  agentAddOn?: boolean; // Optional Dedicated ERP Agent add-on for ULTRA plan
+  agentYear?: number; // Year 1..5+ for agent renewal schedule
+  agentAnnualFee?: number; // Dedicated agent annual tariff
 }
 
 export const YEARLY_STUDENT_SLABS = [100, 300, 500, 1000, 2000, 5000] as const;
 export type YearlyStudentSlab = (typeof YEARLY_STUDENT_SLABS)[number];
 
 export const LITE_YEARLY_PRICES: Record<number, number> = {
-  100: 5000,
-  300: 7500,
-  500: 11250,
-  1000: 16875,
-  2000: 25313,
+  100: 20000,
+  300: 40000,
+  500: 60000,
+  1000: 80000,
+  2000: 100000,
+};
+
+export const ELITE_SLAB_PRICING: Record<
+  number,
+  { mrp: number; firstYear: number; renewal: number }
+> = {
+  100: { mrp: 100000, firstYear: 75000, renewal: 60000 },
+  300: { mrp: 125000, firstYear: 95000, renewal: 80000 },
+  500: { mrp: 150000, firstYear: 120000, renewal: 100000 },
+  1000: { mrp: 175000, firstYear: 140000, renewal: 115000 },
+  2000: { mrp: 210000, firstYear: 165000, renewal: 135000 },
+  5000: { mrp: 250000, firstYear: 200000, renewal: 165000 },
+};
+
+export const getElitePricingForSlab = (
+  students: number
+): { mrp: number; firstYear: number; renewal: number } => {
+  if (students <= 100) return ELITE_SLAB_PRICING[100];
+  if (students <= 300) return ELITE_SLAB_PRICING[300];
+  if (students <= 500) return ELITE_SLAB_PRICING[500];
+  if (students <= 1000) return ELITE_SLAB_PRICING[1000];
+  if (students <= 2000) return ELITE_SLAB_PRICING[2000];
+  return ELITE_SLAB_PRICING[5000];
 };
 
 export const ELITE_YEARLY_PRICING = {
-  mrp: 120000,
-  firstYear: 100000,
-  renewal: 80000,
+  mrp: 150000,
+  firstYear: 120000,
+  renewal: 100000,
   maxStudents: 5000,
   maxBranches: 3,
 } as const;
 
-export const SUPREME_YEARLY_PRICING = {
-  price: 200000,
+export const ULTRA_YEARLY_PRICING = {
+  price: 300000,
+  firstYear: 300000,
+  renewal: 200000,
+  minStudents: 2000,
   maxStudents: 5000,
   maxBranches: 9999,
 } as const;
+
+export const ULTRA_AGENT_SCHEDULE = [
+  { year: 1, label: "Year 1", erp: 300000, agent: 200000, total: 500000 },
+  { year: 2, label: "Year 2", erp: 200000, agent: 250000, total: 450000 },
+  { year: 3, label: "Year 3", erp: 200000, agent: 300000, total: 500000 },
+  { year: 4, label: "Year 4", erp: 200000, agent: 350000, total: 550000 },
+  { year: 5, label: "Year 5+ (Fixed Cap)", erp: 200000, agent: 400000, total: 600000 },
+] as const;
+
+// Backward-compatible alias pointing to ULTRA pricing
+export const SUPREME_YEARLY_PRICING = ULTRA_YEARLY_PRICING;
 
 export const getLitePriceForSlab = (students: number): number => {
   if (students <= 100) return LITE_YEARLY_PRICES[100];
@@ -69,88 +109,88 @@ export const getLitePriceForSlab = (students: number): number => {
 
 export const TIER_CONFIG: Record<SubscriptionTier, { name: string; maxStudents: number; maxTeachers: number; maxBranches: number; monthlyPrice: number; sessionPrice: number; eliteMonthlyPrice: number; eliteSessionPrice: number; eliteRenewalPrice?: number; eliteMrpPrice?: number; badge: string; desc: string }> = {
   starter_200: {
-    name: "Lite Yearly (100–2000 Students)",
+    name: "Lite Yearly (100–2,000 Students)",
     maxStudents: 2000,
     maxTeachers: 9999,
     maxBranches: 1,
-    monthlyPrice: 5000,
-    sessionPrice: 5000,
-    eliteMonthlyPrice: 100000,
-    eliteSessionPrice: 100000,
-    eliteRenewalPrice: 80000,
-    eliteMrpPrice: 120000,
+    monthlyPrice: 20000,
+    sessionPrice: 20000,
+    eliteMonthlyPrice: 120000,
+    eliteSessionPrice: 120000,
+    eliteRenewalPrice: 100000,
+    eliteMrpPrice: 150000,
     badge: "LITE YEARLY",
-    desc: "Up to 2,000 Students • 1 Branch • QR Attendance, Core ERP & Default School Website"
+    desc: "100–2,000 Students • 1 Branch • QR Attendance, Core ERP & Default School Website"
   },
   growth_500: {
     name: "Lite Growth (500 Students)",
     maxStudents: 500,
     maxTeachers: 9999,
     maxBranches: 1,
-    monthlyPrice: 11250,
-    sessionPrice: 11250,
-    eliteMonthlyPrice: 100000,
-    eliteSessionPrice: 100000,
-    eliteRenewalPrice: 80000,
-    eliteMrpPrice: 120000,
+    monthlyPrice: 60000,
+    sessionPrice: 60000,
+    eliteMonthlyPrice: 120000,
+    eliteSessionPrice: 120000,
+    eliteRenewalPrice: 100000,
+    eliteMrpPrice: 150000,
     badge: "LITE 500",
     desc: "Up to 500 Students • 1 Branch • Sub-Admins, QR ID Cards, Fees & Default Website"
   },
   enterprise_2000: {
-    name: "Elite Yearly (Up to 5,000 Students)",
+    name: "Elite Yearly (100–5,000 Students)",
     maxStudents: 5000,
     maxTeachers: 9999,
     maxBranches: 3,
-    monthlyPrice: 100000,
-    sessionPrice: 25313,
-    eliteMonthlyPrice: 100000,
-    eliteSessionPrice: 100000,
-    eliteRenewalPrice: 80000,
-    eliteMrpPrice: 120000,
+    monthlyPrice: 120000,
+    sessionPrice: 120000,
+    eliteMonthlyPrice: 120000,
+    eliteSessionPrice: 120000,
+    eliteRenewalPrice: 100000,
+    eliteMrpPrice: 150000,
     badge: "👑 ELITE BEST SELLER",
-    desc: "Up to 5,000 Students • 3 Branches • Custom Website CMS, AI Face ID, Entrance Exam & Notes"
+    desc: "Up to 5,000 Students • 3 Branches • AI Face ID, Fee Tagada Caller, Custom CMS & 60 Layouts"
   },
   whitelabel_5000: {
-    name: "Supreme White-Label (5,000+ Students)",
+    name: "ULTRA White-Label (2,000+ Students)",
     maxStudents: 5000,
     maxTeachers: 9999,
     maxBranches: 9999,
-    monthlyPrice: 200000,
-    sessionPrice: 200000,
-    eliteMonthlyPrice: 200000,
-    eliteSessionPrice: 200000,
+    monthlyPrice: 300000,
+    sessionPrice: 300000,
+    eliteMonthlyPrice: 300000,
+    eliteSessionPrice: 300000,
     eliteRenewalPrice: 200000,
-    eliteMrpPrice: 240000,
-    badge: "💎 SUPREME 5000+",
-    desc: "5,000+ Students • Unlimited Branches • Branded Play Store App, On-Site Training & Data Migration"
+    eliteMrpPrice: 350000,
+    badge: "💎 ULTRA 2000+",
+    desc: "2,000+ Students Only • Unlimited Branches • Own Domain, Brand Play Store APK, On-Site Training & Optional Agent"
   },
   lite: {
-    name: "Lite Yearly (Up to 2,000 Students)",
+    name: "Lite Yearly (100–2,000 Students)",
     maxStudents: 2000,
     maxTeachers: 9999,
     maxBranches: 1,
-    monthlyPrice: 5000,
-    sessionPrice: 5000,
-    eliteMonthlyPrice: 100000,
-    eliteSessionPrice: 100000,
-    eliteRenewalPrice: 80000,
-    eliteMrpPrice: 120000,
+    monthlyPrice: 20000,
+    sessionPrice: 20000,
+    eliteMonthlyPrice: 120000,
+    eliteSessionPrice: 120000,
+    eliteRenewalPrice: 100000,
+    eliteMrpPrice: 150000,
     badge: "LITE YEARLY",
-    desc: "Up to 2,000 Students • 1 Branch • QR Code Scan Attendance & Default School Website"
+    desc: "100–2,000 Students • 1 Branch • QR Code Scan Attendance & Default School Website"
   },
   full: {
-    name: "Elite Yearly (Up to 5,000 Students)",
+    name: "Elite Yearly (100–5,000 Students)",
     maxStudents: 5000,
     maxTeachers: 9999,
     maxBranches: 3,
-    monthlyPrice: 100000,
-    sessionPrice: 100000,
-    eliteMonthlyPrice: 100000,
-    eliteSessionPrice: 100000,
-    eliteRenewalPrice: 80000,
-    eliteMrpPrice: 120000,
+    monthlyPrice: 120000,
+    sessionPrice: 120000,
+    eliteMonthlyPrice: 120000,
+    eliteSessionPrice: 120000,
+    eliteRenewalPrice: 100000,
+    eliteMrpPrice: 150000,
     badge: "👑 ELITE YEARLY",
-    desc: "Up to 5,000 Students • 3 Branches • Custom Website CMS, AI Face ID, HRM & Full Suite"
+    desc: "Up to 5,000 Students • 3 Branches • Custom Website CMS, AI Face ID, Tagada Caller & Full Suite"
   }
 };
 
@@ -2922,6 +2962,9 @@ export interface SavedSchoolQuestionPaper {
 export type FeeCallOutcome =
   | "PROMISED_DATE"
   | "PAID_CLAIMED"
+  | "PARTIAL_PAID"
+  | "PAYMENT_REFUSED"
+  | "CALLED_TO_SCHOOL"
   | "NOT_PICKED"
   | "BUSY"
   | "SWITCHED_OFF"
@@ -2936,16 +2979,22 @@ export interface FeeCallLogEntry {
   outcome: FeeCallOutcome;
   durationSec?: number;
   promisedAmount?: number;
+  paidAmount?: number;
+  remainingAfterCall?: number;
   promiseDate?: string; // YYYY-MM-DD (Parent promised payment date, e.g. "2026-11-20")
   nextCallDate?: string; // YYYY-MM-DD (Auto-surfaces on this date if still unpaid, e.g. "2026-11-21")
   dueAtCallTime?: number;
   note?: string;
   calledBy?: string;
+  calledById?: string;
+  calledByRole?: string;
   callMode?: "NATIVE_SIM" | "WEB_DIALER" | "MANUAL_LOG";
   offlineSaved?: boolean;
   autoLogVerified?: boolean;
   callPicked?: boolean;
   callType?: string;
+  wrongNumberCorrectedTo?: string;
+  auditReason?: string;
 }
 
 export interface FeeCallFollowUpRecord {
@@ -2964,6 +3013,7 @@ export interface FeeCallFollowUpRecord {
   lastCallOutcome?: FeeCallOutcome;
   lastCallDurationSec?: number;
   lastCallBy?: string;
+  lastCallByRole?: string;
   lastNote?: string;
   promisedAmount?: number;
   promiseDate?: string; // YYYY-MM-DD
@@ -2977,6 +3027,8 @@ export interface FeeCallFollowUpRecord {
   settledBy?: string;
   resolvedTodayDate?: string; // YYYY-MM-DD (Marked "Aaj Sab Solve Ho Gaya" on this date)
   resolvedNote?: string;
+  resolvedBy?: string;
+  resolvedReason?: string;
   updatedAt: string;
 }
 

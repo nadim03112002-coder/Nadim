@@ -69,6 +69,23 @@ const MS_VARIANT_CSS = `
   .marksheet-tpl-custom .border-slate-800 {
     border-color: var(--ms-border) !important;
   }
+  .marksheet-tpl-custom .ms-left-hdr {
+    border-bottom-color: var(--ms-primary) !important;
+  }
+  .marksheet-tpl-custom .ms-left-hdr h2,
+  .marksheet-tpl-custom .ms-left-hdr p {
+    color: var(--ms-primary) !important;
+  }
+  .marksheet-tpl-custom .ms-photo-box {
+    border-color: var(--ms-primary) !important;
+  }
+  .marksheet-tpl-custom tbody tr:nth-child(even) {
+    background-color: var(--ms-surface) !important;
+  }
+  .marksheet-tpl-custom .ms-student-card,
+  .marksheet-tpl-custom .ms-summary-bar {
+    border-color: var(--ms-border) !important;
+  }
 
   /* Design 01: Royal Crest & Ribbon */
   .marksheet-tpl-custom.ms-var-classic_ribbon {
@@ -609,24 +626,40 @@ const MS_VARIANT_CSS = `
   }
 
   /* ── 60 Structural Frame Styles (Layouts 01-60) ────────────────────────── */
-  .marksheet-tpl-custom.ms-frm-left_spine { border-left: 12px solid var(--ms-primary) !important; }
-  .marksheet-tpl-custom.ms-frm-right_spine { border-right: 12px solid var(--ms-primary) !important; }
-  .marksheet-tpl-custom.ms-frm-left_wide { border-left: 22px solid var(--ms-primary) !important; }
-  .marksheet-tpl-custom.ms-frm-right_wide { border-right: 22px solid var(--ms-primary) !important; }
+  .marksheet-tpl-custom.ms-frm-left_spine {
+    border-left: 6px solid var(--ms-primary) !important;
+    padding-left: 34px !important;
+  }
+  .marksheet-tpl-custom.ms-frm-right_spine {
+    border-right: 6px solid var(--ms-primary) !important;
+    padding-right: 34px !important;
+  }
+  .marksheet-tpl-custom.ms-frm-left_wide {
+    border-left: 8px solid var(--ms-primary) !important;
+    padding-left: 44px !important;
+  }
+  .marksheet-tpl-custom.ms-frm-right_wide {
+    border-right: 8px solid var(--ms-primary) !important;
+    padding-right: 44px !important;
+  }
   .marksheet-tpl-custom.ms-frm-dual_rails {
-    border-left: 10px solid var(--ms-primary) !important;
-    border-right: 10px solid var(--ms-accent) !important;
+    border-left: 6px solid var(--ms-primary) !important;
+    border-right: 6px solid var(--ms-accent) !important;
+    padding-left: 26px !important;
+    padding-right: 26px !important;
   }
   .marksheet-tpl-custom.ms-frm-bottom_dock {
-    border-bottom: 14px solid var(--ms-primary) !important;
+    border-bottom: 4px solid var(--ms-primary) !important;
+    padding-bottom: 26px !important;
   }
   .marksheet-tpl-custom.ms-frm-lanyard_punch {
-    border-top: 10px solid var(--ms-primary) !important;
+    border-top: 8px solid var(--ms-primary) !important;
     border-radius: 18px !important;
+    padding-top: 22px !important;
   }
   .marksheet-tpl-custom.ms-frm-passport_mrz {
     border-top: 4px solid var(--ms-primary) !important;
-    border-bottom: 10px dashed #0f172a !important;
+    padding-bottom: 24px !important;
   }
   .marksheet-tpl-custom.ms-frm-ticket_notch {
     border: 2.5px dashed var(--ms-primary) !important;
@@ -634,20 +667,24 @@ const MS_VARIANT_CSS = `
   }
   .marksheet-tpl-custom.ms-frm-corner_brackets,
   .marksheet-tpl-custom.ms-frm-cyber_hud {
-    outline: 2px dashed var(--ms-accent) !important;
-    outline-offset: -8px !important;
+    outline: 1.5px dashed var(--ms-accent) !important;
+    outline-offset: -7px !important;
   }
   .marksheet-tpl-custom.ms-frm-beveled {
-    border-radius: 22px 2px 22px 2px !important;
+    border-radius: 24px 3px 24px 3px !important;
     border-width: 3px !important;
   }
+  .marksheet-tpl-custom.ms-frm-beveled .ms-student-card,
+  .marksheet-tpl-custom.ms-frm-beveled .ms-photo-box {
+    border-radius: 14px 2px 14px 2px !important;
+  }
   .marksheet-tpl-custom.ms-frm-blueprint_grid {
-    background-image: linear-gradient(rgba(15, 23, 42, 0.04) 1px, transparent 1px), linear-gradient(90deg, rgba(15, 23, 42, 0.04) 1px, transparent 1px) !important;
+    background-image: linear-gradient(rgba(15, 23, 42, 0.045) 1px, transparent 1px), linear-gradient(90deg, rgba(15, 23, 42, 0.045) 1px, transparent 1px) !important;
     background-size: 16px 16px !important;
     border-radius: 2px !important;
   }
   .marksheet-tpl-custom.ms-frm-stacked_deck {
-    box-shadow: 6px 6px 0 var(--ms-accent), 12px 12px 0 var(--ms-primary) !important;
+    box-shadow: 5px 5px 0 var(--ms-accent), 10px 10px 0 var(--ms-primary) !important;
   }
   .marksheet-tpl-custom.ms-frm-art_deco {
     border: 4px double var(--ms-border) !important;
@@ -665,22 +702,41 @@ const MS_VARIANT_CSS = `
     box-shadow: inset 0 0 0 3px #fffdf4, inset 0 0 0 6px var(--ms-accent) !important;
     border-radius: 2px !important;
   }
+  .marksheet-tpl-custom.ms-frm-ornate_filigree .ms-photo-box,
+  .marksheet-tpl-custom.ms-frm-laurel_wreath .ms-photo-box,
+  .marksheet-tpl-custom.ms-frm-diamond_crest .ms-photo-box {
+    border: 3px double var(--ms-accent) !important;
+    border-radius: 9999px !important;
+  }
   .marksheet-tpl-custom.ms-frm-dossier_tab {
-    border-top: 12px solid var(--ms-primary) !important;
+    border-top: 4px solid var(--ms-primary) !important;
     border-radius: 2px 18px 8px 8px !important;
+    padding-top: 26px !important;
   }
   .marksheet-tpl-custom.ms-frm-swiss_cross {
     border-left: 16px solid var(--ms-accent) !important;
     border-top: 4px solid var(--ms-primary) !important;
+    border-radius: 0 !important;
   }
   .marksheet-tpl-custom.ms-frm-heavy_bars {
     border-top: 10px solid var(--ms-primary) !important;
     border-bottom: 10px solid var(--ms-accent) !important;
+    border-left-width: 1px !important;
+    border-right-width: 1px !important;
     border-radius: 0 !important;
   }
   .marksheet-tpl-custom.ms-frm-mono_stripe {
+    border-width: 1px !important;
     border-left: 8px solid var(--ms-primary) !important;
     border-radius: 0 !important;
+  }
+  .marksheet-tpl-custom.ms-frm-mono_stripe thead,
+  .marksheet-tpl-custom.ms-frm-mono_stripe thead th,
+  .marksheet-tpl-custom.ms-frm-swiss_cross thead,
+  .marksheet-tpl-custom.ms-frm-swiss_cross thead th {
+    background-color: #ffffff !important;
+    color: var(--ms-primary) !important;
+    border-bottom: 2px solid var(--ms-primary) !important;
   }
   .marksheet-tpl-custom.ms-frm-checkered_rim {
     outline: 4px dotted var(--ms-accent) !important;
@@ -690,6 +746,15 @@ const MS_VARIANT_CSS = `
     background-color: #fafdf7 !important;
     border-left: 6px double var(--ms-primary) !important;
     border-right: 6px double var(--ms-primary) !important;
+    border-radius: 0 !important;
+  }
+  .marksheet-tpl-custom.ms-frm-folio_ledger .rounded-lg,
+  .marksheet-tpl-custom.ms-frm-folio_ledger .rounded-xl,
+  .marksheet-tpl-custom.ms-frm-matrix_boxed .rounded-lg,
+  .marksheet-tpl-custom.ms-frm-matrix_boxed .rounded-xl,
+  .marksheet-tpl-custom.ms-hdr-gazette_double .rounded-lg,
+  .marksheet-tpl-custom.ms-hdr-gazette_double .rounded-xl {
+    border-radius: 0 !important;
   }
   .marksheet-tpl-custom.ms-frm-postage_stamp {
     border: 4px dotted var(--ms-primary) !important;
@@ -700,6 +765,12 @@ const MS_VARIANT_CSS = `
     border-left: 10px solid var(--ms-primary) !important;
     border-radius: 0 !important;
   }
+  .marksheet-tpl-custom.ms-frm-zen_asymmetric thead,
+  .marksheet-tpl-custom.ms-frm-zen_asymmetric thead th {
+    background-color: var(--ms-surface) !important;
+    color: var(--ms-primary) !important;
+    border-bottom: 2px solid var(--ms-primary) !important;
+  }
   .marksheet-tpl-custom.ms-frm-bookmark_ribbon {
     border-top: 6px solid var(--ms-accent) !important;
     box-shadow: inset -6px 0 0 var(--ms-primary) !important;
@@ -707,6 +778,19 @@ const MS_VARIANT_CSS = `
   .marksheet-tpl-custom.ms-frm-tricolor {
     border-top: 6px solid #f97316 !important;
     border-bottom: 6px solid #16a34a !important;
+  }
+  .marksheet-tpl-custom.ms-hdr-floating_pill .ms-student-card,
+  .marksheet-tpl-custom.ms-hdr-floating_pill .ms-summary-bar,
+  .marksheet-tpl-custom.ms-hdr-horizon .ms-student-card,
+  .marksheet-tpl-custom.ms-hdr-horizon .ms-summary-bar {
+    border-radius: 16px !important;
+  }
+  .marksheet-tpl-custom.ms-hdr-scoreboard tfoot,
+  .marksheet-tpl-custom.ms-hdr-scoreboard tfoot td,
+  .marksheet-tpl-custom.ms-hdr-obsidian tfoot,
+  .marksheet-tpl-custom.ms-hdr-obsidian tfoot td {
+    background-color: #0f172a !important;
+    color: #ffffff !important;
   }
 `;
 
@@ -2598,6 +2682,122 @@ export const MarksheetGenerator: React.FC<Props> = ({
       return { workingDays: 45, presentDays: 42, scorePct: singleOverallPct, note: "Regular & Attentive in Class" };
     })();
 
+    // Helper: Real structural frame chrome (spines, dual rails, dossier tabs, corner HUD, bookmark ribbon, MRZ bar, etc.)
+    const renderMsStructuralChrome = (compactSlip = false) => {
+      if (!useCustomMsTpl || !msArch) return null;
+      const f = msArch.frameStyle;
+      const c = activeMsTemplate.colors;
+      const isL = f === "left_spine" || f === "left_wide";
+      const isR = f === "right_spine" || f === "right_wide";
+      const isW = f === "left_wide" || f === "right_wide";
+      const spineW = isW ? (compactSlip ? "30px" : "34px") : (compactSlip ? "22px" : "24px");
+      const mrzTxt = `P<IND${(sName || "STUDENT").replace(/\s+/g, "").slice(0, 12).toUpperCase()}<<ROLL${sRoll}<<${totals.overallPct}PCT<<${totals.overallGrade}`;
+      return (
+        <>
+          {(isL || isR) && (
+            <div
+              className={`pointer-events-none absolute inset-y-0 ${isL ? "left-0" : "right-0"} z-20 flex flex-col items-center justify-between py-3 px-0.5 text-center`}
+              style={{ width: spineW, background: `linear-gradient(180deg, ${c.primaryColor}, ${c.accentColor})`, color: c.headerTextColor }}
+            >
+              <span className="text-[7px] font-black uppercase tracking-widest px-1 py-0.5 rounded bg-white/20">
+                {cleanSessionText.slice(-5)}
+              </span>
+              <span
+                className="text-[8px] font-black uppercase tracking-[0.22em] whitespace-nowrap"
+                style={{ writingMode: "vertical-rl", transform: isL ? "rotate(180deg)" : undefined }}
+              >
+                {(schoolDetails.schoolName || "ACADEMY").slice(0, 22)} • OFFICIAL RECORD
+              </span>
+              <span className="text-[7px] font-mono font-black opacity-90">#{sRoll}</span>
+            </div>
+          )}
+          {f === "dual_rails" && (
+            <>
+              <div className="pointer-events-none absolute inset-y-0 left-0 w-[18px] z-20 flex items-center justify-center" style={{ backgroundColor: c.primaryColor, color: c.headerTextColor }}>
+                <span className="text-[6.5px] font-black uppercase tracking-[0.22em] whitespace-nowrap" style={{ writingMode: "vertical-rl", transform: "rotate(180deg)" }}>
+                  TRANSCRIPT • {cleanSessionText}
+                </span>
+              </div>
+              <div className="pointer-events-none absolute inset-y-0 right-0 w-[18px] z-20 flex items-center justify-center" style={{ backgroundColor: c.accentColor, color: "#ffffff" }}>
+                <span className="text-[6.5px] font-black uppercase tracking-[0.22em] whitespace-nowrap" style={{ writingMode: "vertical-rl" }}>
+                  VERIFIED • ROLL #{sRoll}
+                </span>
+              </div>
+            </>
+          )}
+          {f === "dossier_tab" && (
+            <div
+              className="pointer-events-none absolute top-0 inset-x-0 h-[18px] z-20 px-3 flex items-center justify-between text-[7.5px] font-black uppercase tracking-widest"
+              style={{ backgroundColor: c.primaryColor, color: c.headerTextColor }}
+            >
+              <span>📁 FILE DOSSIER • {sReg}</span>
+              <span>SESSION {cleanSessionText}</span>
+            </div>
+          )}
+          {f === "lanyard_punch" && (
+            <div
+              className="pointer-events-none absolute top-1.5 left-1/2 -translate-x-1/2 w-14 h-2.5 rounded-full border-2 bg-white z-20"
+              style={{ borderColor: c.accentColor }}
+            />
+          )}
+          {(f === "corner_brackets" || f === "cyber_hud" || f === "museum_plaque") && (
+            <>
+              <div className="pointer-events-none absolute top-1.5 left-1.5 w-4 h-4 border-t-[3px] border-l-[3px] z-20" style={{ borderColor: c.accentColor }} />
+              <div className="pointer-events-none absolute top-1.5 right-1.5 w-4 h-4 border-t-[3px] border-r-[3px] z-20" style={{ borderColor: c.accentColor }} />
+              <div className="pointer-events-none absolute bottom-1.5 left-1.5 w-4 h-4 border-b-[3px] border-l-[3px] z-20" style={{ borderColor: c.accentColor }} />
+              <div className="pointer-events-none absolute bottom-1.5 right-1.5 w-4 h-4 border-b-[3px] border-r-[3px] z-20" style={{ borderColor: c.accentColor }} />
+            </>
+          )}
+          {f === "bookmark_ribbon" && (
+            <div
+              className="pointer-events-none absolute top-0 right-6 w-6 h-10 z-20 flex items-start justify-center pt-1.5 text-[9px] font-black shadow-xs"
+              style={{ backgroundColor: c.accentColor, color: "#ffffff", clipPath: "polygon(0 0, 100% 0, 100% 100%, 50% 78%, 0 100%)" }}
+            >
+              ★
+            </div>
+          )}
+          {f === "diamond_crest" && (
+            <div
+              className="pointer-events-none absolute top-1 left-1/2 -translate-x-1/2 w-4 h-4 rotate-45 border-2 z-20 flex items-center justify-center text-[7px] font-black"
+              style={{ backgroundColor: c.accentColor, borderColor: c.primaryColor, color: "#ffffff" }}
+            >
+              <span className="-rotate-45">❖</span>
+            </div>
+          )}
+          {f === "concentric_halo" && (
+            <div className="pointer-events-none absolute inset-0 flex items-center justify-center opacity-15 z-0">
+              <div className="w-48 h-48 rounded-full border-4 flex items-center justify-center" style={{ borderColor: c.accentColor }}>
+                <div className="w-36 h-36 rounded-full border-2 border-dashed" style={{ borderColor: c.primaryColor }} />
+              </div>
+            </div>
+          )}
+          {f === "ticket_notch" && (
+            <>
+              <div className="pointer-events-none absolute top-1/2 -left-2.5 w-4 h-4 rounded-full bg-white border-r-2 z-20" style={{ borderColor: c.primaryColor }} />
+              <div className="pointer-events-none absolute top-1/2 -right-2.5 w-4 h-4 rounded-full bg-white border-l-2 z-20" style={{ borderColor: c.primaryColor }} />
+            </>
+          )}
+          {f === "passport_mrz" && (
+            <div
+              className="pointer-events-none absolute bottom-0 inset-x-0 h-[18px] z-20 px-3 flex items-center text-[7px] font-mono tracking-[0.14em] truncate"
+              style={{ backgroundColor: "#0f172a", color: "#cbd5e1" }}
+            >
+              {mrzTxt}
+            </div>
+          )}
+          {f === "bottom_dock" && (
+            <div
+              className="pointer-events-none absolute bottom-0 inset-x-0 h-[20px] z-20 px-3 flex items-center justify-between text-[7.5px] font-black uppercase tracking-wider"
+              style={{ backgroundColor: c.primaryColor, color: c.headerTextColor }}
+            >
+              <span>OFFICIAL VERIFIED MARKSHEET</span>
+              <span>{totals.overallPct}% • GRADE {totals.overallGrade}</span>
+            </div>
+          )}
+        </>
+      );
+    };
+
     // ══════════════════════════════════════════════════════════════════
     // 1. 2-IN-1 HALF-PAGE A4 LANDSCAPE CARD (PA-1, PA-2, PA-3, PA-4, Custom & Single Slip)
     // Renders a single student's compact slip sized for 50% width of an A4 Landscape sheet
@@ -2611,6 +2811,7 @@ export const MarksheetGenerator: React.FC<Props> = ({
           className={`marksheet-pa-half-card ${msCustomCls} w-full h-full bg-white rounded-lg border-2 border-slate-900 ${isDensePa ? "p-2" : "p-3"} text-slate-900 relative overflow-hidden flex flex-col justify-between box-border`}
           style={msCssVars}
         >
+          {renderMsStructuralChrome(true)}
           {/* Watermark */}
           {(!useCustomMsTpl || activeMsTemplate.showWatermark) && (
             <div className={`absolute inset-0 flex items-center justify-center ${useCustomMsTpl ? "opacity-[0.055]" : "opacity-[0.03]"} pointer-events-none select-none`}>
@@ -2880,6 +3081,7 @@ export const MarksheetGenerator: React.FC<Props> = ({
           className={`marksheet-sheet-box ${msCustomCls} ${isDenseSubjects ? "marksheet-dense-sheet" : ""} w-full ${isLandscapeView ? "min-w-[940px] max-w-[1120px]" : "min-w-[720px] max-w-[840px]"} bg-white rounded-xl border-4 border-slate-900 shadow-2xl ${isDenseSubjects ? "p-2.5" : isCompact ? "p-3" : "p-4"} text-slate-900 print:shadow-none print:m-0 print:border-2 print:border-black print:max-w-none print:min-w-0 print:p-2 print:rounded-none print:overflow-visible relative overflow-hidden flex flex-col justify-between`}
           style={msCssVars}
         >
+          {renderMsStructuralChrome(false)}
           {/* Decorative Watermark */}
           {(!useCustomMsTpl || activeMsTemplate.showWatermark) && (
             <div className={`absolute inset-0 flex items-center justify-center ${useCustomMsTpl ? "opacity-[0.05]" : "opacity-[0.03]"} pointer-events-none select-none`}>
@@ -3887,6 +4089,7 @@ export const MarksheetGenerator: React.FC<Props> = ({
             schoolDetails={schoolDetails}
             posterConfig={posterConfig}
             sessionText={cleanSessionText}
+            template={activeMsTemplate}
           />
         </div>
       );
@@ -3911,13 +4114,17 @@ export const MarksheetGenerator: React.FC<Props> = ({
             schoolId={school?.id}
             schoolDetails={schoolDetails}
             posterConfig={posterConfig}
+            template={activeMsTemplate}
           />
         </div>
       );
 
       return (
         <div key={pageKey} className="marksheet-print-page w-full flex justify-center print:block">
-          <div className="marksheet-sheet-box w-full min-w-[940px] max-w-[1120px] bg-white rounded-xl border-4 border-slate-900 shadow-2xl p-3 text-slate-900 print:shadow-none print:m-0 print:border-2 print:border-black print:max-w-none print:min-w-0 print:p-2 print:rounded-none print:overflow-visible relative flex flex-col justify-between">
+          <div
+            className={`marksheet-sheet-box ${msCustomCls} w-full min-w-[940px] max-w-[1120px] bg-white rounded-xl border-4 border-slate-900 shadow-2xl p-3 text-slate-900 print:shadow-none print:m-0 print:border-2 print:border-black print:max-w-none print:min-w-0 print:p-2 print:rounded-none print:overflow-visible relative flex flex-col justify-between`}
+            style={msCssVars}
+          >
             <div className="marksheet-landscape-split grid grid-cols-2 gap-3 w-full h-full items-stretch">
               {swapBackHalves ? (
                 <>
@@ -3949,6 +4156,7 @@ export const MarksheetGenerator: React.FC<Props> = ({
                 posterConfig={posterConfig}
                 sessionText={cleanSessionText}
                 compactPaSize
+                template={activeMsTemplate}
               />
             </div>
             <div className="marksheet-half-slot pl-0.5 flex flex-col">
@@ -3958,6 +4166,7 @@ export const MarksheetGenerator: React.FC<Props> = ({
                 posterConfig={posterConfig}
                 sessionText={cleanSessionText}
                 compactPaSize
+                template={activeMsTemplate}
               />
             </div>
           </div>
@@ -3984,6 +4193,7 @@ export const MarksheetGenerator: React.FC<Props> = ({
                   posterConfig={posterConfig}
                   sessionText={cleanSessionText}
                   compactPaSize
+                  template={activeMsTemplate}
                 />
               ) : (
                 <div className="h-full min-h-[420px] rounded-lg border-2 border-dashed border-slate-300 bg-slate-50/50 flex flex-col items-center justify-center text-slate-400 text-xs font-bold p-6 text-center print:bg-white print:border-slate-200">

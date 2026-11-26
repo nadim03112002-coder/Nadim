@@ -24,6 +24,12 @@ export const ScreenInfoGuideButton: React.FC<ScreenInfoGuideButtonProps> = ({
   }, [portal, screenKey]);
 
   useEffect(() => {
+    const onOpenGuide = () => setOpen(true);
+    window.addEventListener("nst-open-screen-guide", onOpenGuide);
+    return () => window.removeEventListener("nst-open-screen-guide", onOpenGuide);
+  }, []);
+
+  useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") setOpen(false);
