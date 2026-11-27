@@ -276,7 +276,7 @@ export const NoticeBoardManager: React.FC<Props> = ({
         </div>
       </div>
 
-      <div className="max-w-4xl mx-auto px-4 py-6 space-y-6">
+      <div className="max-w-5xl mx-auto px-1.5 sm:px-4 py-4 sm:py-6 space-y-5">
         {pushToast && (
           <div className="p-3.5 rounded-xl bg-emerald-600/15 border border-emerald-500/40 text-emerald-700 dark:text-emerald-300 text-xs font-bold flex items-center justify-between gap-2">
             <span>{pushToast}</span>

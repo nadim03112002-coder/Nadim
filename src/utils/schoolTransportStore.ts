@@ -4,6 +4,12 @@ import type {
   SchoolBusRoute,
   VehicleFitnessRecord,
 } from "../school-types";
+export type {
+  BusLiveLocation,
+  SchoolBusDriver,
+  SchoolBusRoute,
+  VehicleFitnessRecord,
+};
 import type { StudentHomePin } from "./busProximity";
 import { shouldUseDemoForSchool, isDemoSchoolId } from "../school-firebase";
 import { rtdb } from "../firebase";
@@ -19,7 +25,75 @@ import {
 export const DRIVERS_LOCAL_KEY = (sid: string) => `nst_school_bus_drivers_${sid || "demo"}`;
 export const ROUTES_LOCAL_KEY = (sid: string) => `nst_school_bus_routes_${sid || "demo"}`;
 export const FITNESS_LOCAL_KEY = (sid: string) => `bus_fitness_${sid || "demo"}`;
+export const BUS_LIVE_SHARE_LOCAL_KEY = (sid: string) => `nst_bus_live_share_${sid || "demo"}`;
 const DEMO_SEEDED_FLAG = (sid: string) => `nst_transport_seeded_${sid || "demo"}`;
+
+export function getAllBusLiveShareUrls(schoolId: string): Record<string, string> {
+  try {
+    const raw = localStorage.getItem(BUS_LIVE_SHARE_LOCAL_KEY(schoolId));
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+export function getBusLiveShareUrl(schoolId: string, busId: string): string {
+  if (!busId) return "";
+  const map = getAllBusLiveShareUrls(schoolId);
+  return String(map[busId] || "").trim();
+}
+
+export async function saveBusLiveShareUrl(
+  schoolId: string,
+  busId: string,
+  url: string
+): Promise<void> {
+  if (!busId) return;
+  const cleanUrl = String(url || "").trim();
+  try {
+    const map = getAllBusLiveShareUrls(schoolId);
+    if (cleanUrl) {
+      map[busId] = cleanUrl;
+    } else {
+      delete map[busId];
+    }
+    localStorage.setItem(BUS_LIVE_SHARE_LOCAL_KEY(schoolId), JSON.stringify(map));
+
+    // Also update local cached live bus telemetry if present
+    const liveKey = `nst_live_bus_${schoolId}_${busId}`;
+    const prevRaw = localStorage.getItem(liveKey);
+    if (prevRaw) {
+      const prev = JSON.parse(prevRaw);
+      prev.liveShareUrl = cleanUrl;
+      localStorage.setItem(liveKey, JSON.stringify(prev));
+    }
+
+    if (schoolId && !isDemoSchoolId(schoolId)) {
+      if (cleanUrl) {
+        void sbRtdbSet(`schools/${schoolId}/bus_live_share/${busId}`, {
+          busId,
+          liveShareUrl: cleanUrl,
+          updatedAt: new Date().toISOString(),
+        }).catch(() => {});
+        if (rtdb) {
+          void rtdbSet(rtdbRef(rtdb, `schools/${schoolId}/bus_live_share/${busId}`), {
+            busId,
+            liveShareUrl: cleanUrl,
+            updatedAt: new Date().toISOString(),
+          }).catch(() => {});
+        }
+      } else {
+        void sbRtdbRemove(`schools/${schoolId}/bus_live_share/${busId}`).catch(() => {});
+        if (rtdb) {
+          void rtdbRemove(rtdbRef(rtdb, `schools/${schoolId}/bus_live_share/${busId}`)).catch(() => {});
+        }
+      }
+    }
+  } catch {}
+  window.dispatchEvent(new CustomEvent("school-transport-updated", { detail: { schoolId } }));
+}
 
 function buildDemoDrivers(schoolId: string): SchoolBusDriver[] {
   const now = new Date().toISOString();
@@ -640,7 +714,11 @@ export function buildMergedFleetList(schoolId: string): BusLiveLocation[] {
     } catch {}
   }
 
-  return Array.from(map.values());
+  const shareUrls = getAllBusLiveShareUrls(schoolId);
+  return Array.from(map.values()).map((b) => {
+    const savedShare = shareUrls[b.busId] || b.liveShareUrl || "";
+    return savedShare ? { ...b, liveShareUrl: savedShare } : b;
+  });
 }
 
 export async function syncAllDriversAndRoutes(

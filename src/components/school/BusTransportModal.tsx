@@ -42,6 +42,8 @@ interface Props {
   classes: SchoolClass[];
   students: SchoolStudent[];
   initialClassId?: string;
+  initialTab?: "students" | "routes" | "drivers" | "live_radar" | "driver_console";
+  initialFullscreenMap?: boolean;
   onUpdated: () => void;
   isEmbedded?: boolean;
 }
@@ -55,6 +57,8 @@ export const BusTransportModal: React.FC<Props> = ({
   classes = [],
   students = [],
   initialClassId,
+  initialTab = "students",
+  initialFullscreenMap = false,
   onUpdated,
   isEmbedded = false,
 }) => {
@@ -96,7 +100,13 @@ export const BusTransportModal: React.FC<Props> = ({
   const [pinInputText, setPinInputText] = useState<string>("");
   const [activeViewTab, setActiveViewTab] = useState<
     "students" | "routes" | "drivers" | "live_radar" | "driver_console"
-  >("students");
+  >(initialTab || "students");
+
+  useEffect(() => {
+    if (initialTab) {
+      setActiveViewTab(initialTab);
+    }
+  }, [initialTab]);
   const [searchQuery, setSearchQuery] = useState("");
   const [saving, setSaving] = useState(false);
   const [successMsg, setSuccessMsg] = useState("");
@@ -621,36 +631,36 @@ export const BusTransportModal: React.FC<Props> = ({
   }, 0);
 
   return (
-    <div className={isEmbedded ? "w-full max-w-5xl mx-auto my-2" : "fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-black/75 backdrop-blur-sm overflow-y-auto"}>
-      <div className={`bg-white dark:bg-slate-900 rounded-3xl w-full ${isEmbedded ? "max-w-5xl shadow-xl" : "max-w-4xl my-4 max-h-[92vh] shadow-2xl"} border border-slate-200 dark:border-slate-800 overflow-hidden flex flex-col`}>
+    <div className={isEmbedded ? "w-full" : "fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-4 bg-black/75 backdrop-blur-sm overflow-y-auto"}>
+      <div className={`bg-white dark:bg-slate-900 w-full ${isEmbedded ? "rounded-2xl border border-slate-200 dark:border-slate-800" : "rounded-2xl sm:rounded-3xl max-w-4xl my-4 max-h-[92vh] shadow-2xl border border-slate-200 dark:border-slate-800"} overflow-hidden flex flex-col`}>
         {/* Header */}
-        <div className="bg-gradient-to-r from-teal-700 via-emerald-800 to-slate-900 px-5 py-4 text-white flex items-center justify-between shrink-0">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-2xl bg-amber-400 text-slate-950 flex items-center justify-center font-black shadow-md">
+        <div className="bg-gradient-to-r from-teal-700 via-emerald-800 to-slate-900 px-3.5 py-3 sm:px-5 sm:py-4 text-white flex items-center justify-between gap-2 shrink-0">
+          <div className="flex items-center gap-2.5 sm:gap-3 min-w-0">
+            <div className="w-9 h-9 sm:w-10 sm:h-10 rounded-xl sm:rounded-2xl bg-amber-400 text-slate-950 flex items-center justify-center font-black shadow-md shrink-0">
               <Bus className="w-5 h-5" />
             </div>
-            <div>
-              <h2 className="text-base font-black tracking-tight flex items-center gap-2">
-                Transport, Driver &amp; Route Manager
-                <span className="px-2 py-0.5 rounded-full text-[10px] font-black bg-amber-300 text-slate-950 uppercase">
+            <div className="min-w-0">
+              <h2 className="text-sm sm:text-base font-black tracking-tight flex items-center gap-2 flex-wrap">
+                <span className="truncate">Transport, Driver &amp; Route Manager</span>
+                <span className="px-2 py-0.5 rounded-full text-[10px] font-black bg-amber-300 text-slate-950 uppercase shrink-0">
                   {routes.length} Routes · {drivers.length} Drivers
                 </span>
               </h2>
-              <p className="text-xs text-teal-100">
+              <p className="text-[11px] sm:text-xs text-teal-100 truncate">
                 Routes, Stops, Drivers aur Student Bus Roster ek hi jagah manage karein
               </p>
             </div>
           </div>
           <button
             onClick={onClose}
-            className="w-8 h-8 rounded-full bg-white/10 hover:bg-white/20 flex items-center justify-center text-white transition cursor-pointer"
+            className="w-8 h-8 rounded-full bg-white/10 hover:bg-white/20 flex items-center justify-center text-white transition cursor-pointer shrink-0"
           >
             <X className="w-4 h-4" />
           </button>
         </div>
 
         {/* View Switcher Tabs */}
-        <div className="bg-slate-100 dark:bg-slate-950 px-4 py-2 border-b border-slate-200 dark:border-slate-800 flex items-center gap-2 overflow-x-auto shrink-0">
+        <div className="bg-slate-100 dark:bg-slate-950 px-2.5 sm:px-4 py-2 border-b border-slate-200 dark:border-slate-800 flex items-center gap-1.5 sm:gap-2 overflow-x-auto no-scrollbar shrink-0">
           {[
             { id: "students", label: "1. Student Bus Roster", icon: Users, activeCls: "bg-teal-700 text-white shadow-sm" },
             { id: "routes", label: `2. Routes & Stops (${routes.length})`, icon: RouteIcon, activeCls: "bg-indigo-600 text-white shadow-sm" },
@@ -664,7 +674,7 @@ export const BusTransportModal: React.FC<Props> = ({
                 key={tab.id}
                 type="button"
                 onClick={() => setActiveViewTab(tab.id as any)}
-                className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0 ${
+                className={`px-2.5 sm:px-3 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0 ${
                   activeViewTab === tab.id
                     ? tab.activeCls
                     : "text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white"
@@ -678,10 +688,13 @@ export const BusTransportModal: React.FC<Props> = ({
 
         {/* TAB 4: LIVE RADAR */}
         {activeViewTab === "live_radar" && (
-          <div className="p-4 flex-1 overflow-y-auto">
+          <div className="p-2.5 sm:p-4 flex-1 overflow-y-auto">
             <AdminBusFleetRadar
               school={{ id: schoolId, name: schoolName || "Institutional Campus", code: schoolCode } as any}
               onOpenDriverConsole={() => setActiveViewTab("driver_console")}
+              onClose={onClose}
+              isEmbedded={true}
+              initialFullscreen={initialFullscreenMap}
             />
           </div>
         )}
@@ -698,7 +711,7 @@ export const BusTransportModal: React.FC<Props> = ({
 
         {/* TAB 2: ROUTES & STOPS MASTER */}
         {activeViewTab === "routes" && (
-          <div className="p-5 flex-1 overflow-y-auto space-y-4">
+          <div className="p-3 sm:p-5 flex-1 overflow-y-auto space-y-3.5">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div>
                 <h3 className="font-black text-sm text-slate-900 dark:text-white">
@@ -1006,7 +1019,7 @@ export const BusTransportModal: React.FC<Props> = ({
 
         {/* TAB 3: DRIVERS DIRECTORY */}
         {activeViewTab === "drivers" && (
-          <div className="p-5 flex-1 overflow-y-auto space-y-4">
+          <div className="p-3 sm:p-5 flex-1 overflow-y-auto space-y-3.5">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div>
                 <h3 className="font-black text-sm text-slate-900 dark:text-white">
@@ -1237,7 +1250,7 @@ export const BusTransportModal: React.FC<Props> = ({
 
         {/* TAB 1: STUDENT BUS ROSTER */}
         {activeViewTab === "students" && (
-          <div className="p-5 flex-1 overflow-y-auto space-y-4">
+          <div className="p-3 sm:p-5 flex-1 overflow-y-auto space-y-3.5">
             {successMsg && (
               <div className="p-3 bg-emerald-50 dark:bg-emerald-950/50 border border-emerald-300 dark:border-emerald-700 rounded-xl text-xs font-bold text-emerald-800 dark:text-emerald-200 flex items-center gap-2">
                 <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />

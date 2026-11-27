@@ -4477,7 +4477,7 @@ export const MarksheetGenerator: React.FC<Props> = ({
         </div>
       </div>
 
-      <div className="max-w-6xl mx-auto px-4 py-4 print:p-0 print:m-0 print:max-w-none print:w-full">
+      <div className="max-w-6xl mx-auto px-1 sm:px-4 py-3 sm:py-4 print:p-0 print:m-0 print:max-w-none print:w-full">
         {promotionNotice && (
           <div className="mb-3 p-3 bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-500/30 rounded-2xl flex items-center gap-2 text-emerald-900 dark:text-emerald-200 text-xs font-bold print:hidden">
             <CheckCircle2 className="w-4 h-4 text-emerald-500 shrink-0" />
@@ -4492,7 +4492,7 @@ export const MarksheetGenerator: React.FC<Props> = ({
         )}
 
         {/* Generator & Data Editing Console (Hidden during print) */}
-        <div className="bg-white dark:bg-slate-800 rounded-2xl p-5 shadow-sm mb-6 space-y-4 print:hidden border border-slate-200 dark:border-slate-700">
+        <div className="bg-white dark:bg-slate-800 rounded-2xl p-3.5 sm:p-5 shadow-sm mb-5 space-y-4 print:hidden border border-slate-200 dark:border-slate-700">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
               <h1 className="text-xl font-black text-slate-900 dark:text-white flex items-center gap-2">

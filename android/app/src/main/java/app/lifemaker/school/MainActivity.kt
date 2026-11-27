@@ -1617,17 +1617,24 @@ class MainActivity : AppCompatActivity() {
     }
 
     fun setAccessibilityGuardLocked(locked: Boolean): Boolean {
+        val prev = AppPrefs.isAccessibilityGuardLocked(applicationContext)
+        val unlockUntil = AppPrefs.getGuardUnlockUntilMs(applicationContext)
         AppPrefs.setAccessibilityGuardLocked(applicationContext, locked)
         if (locked) {
             AppPrefs.setGuardUnlockUntilMs(applicationContext, 0L)
         }
-        pushDeviceAdminStatusToWebView()
+        if (prev != locked || (locked && unlockUntil > 0L)) {
+            pushDeviceAdminStatusToWebView()
+        }
         return true
     }
 
     fun setUninstallPinRequired(required: Boolean): Boolean {
+        val prev = AppPrefs.isUninstallPinRequired(applicationContext)
         AppPrefs.setUninstallPinRequired(applicationContext, required)
-        pushDeviceAdminStatusToWebView()
+        if (prev != required) {
+            pushDeviceAdminStatusToWebView()
+        }
         return true
     }
 

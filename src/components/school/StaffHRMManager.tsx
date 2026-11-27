@@ -1266,7 +1266,7 @@ export const StaffHRMManager: React.FC<Props> = ({
         </div>
       )}
 
-      <div className={embedded ? "space-y-6" : "max-w-5xl mx-auto px-4 py-6 space-y-6"}>
+      <div className={embedded ? "space-y-5" : "max-w-5xl mx-auto px-1.5 sm:px-4 py-4 sm:py-6 space-y-5"}>
         {feedback && (
           <div
             className={`px-4 py-3 rounded-xl text-xs font-bold flex items-center justify-between gap-3 print:hidden ${

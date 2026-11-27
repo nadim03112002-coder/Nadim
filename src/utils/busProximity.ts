@@ -25,9 +25,66 @@ export interface ProximityStatus {
  * Extracts latitude and longitude from Google Maps URLs or raw "lat, lng" text.
  * 100% local & free (no API calls).
  */
+export function extractGoogleMapsUrl(rawInput: string): string | null {
+  const trimmed = (rawInput || "").trim();
+  if (!trimmed) return null;
+  const match = trimmed.match(/https?:\/\/[^\s"'<>]+/i);
+  const candidate = (match ? match[0] : trimmed).trim();
+  if (!/^https?:\/\//i.test(candidate)) return null;
+  try {
+    const u = new URL(candidate);
+    const host = u.hostname.toLowerCase();
+    const isGoogleMapsHost =
+      host === "maps.app.goo.gl" ||
+      host === "goo.gl" ||
+      host === "g.co" ||
+      host === "maps.google.com" ||
+      host === "google.com" ||
+      host === "www.google.com" ||
+      /^(maps\.)?google\.[a-z.]{2,6}$/i.test(host);
+    return isGoogleMapsHost ? candidate : null;
+  } catch {
+    return null;
+  }
+}
+
+export function isGoogleMapsLiveShareLink(rawInput: string): boolean {
+  const url = extractGoogleMapsUrl(rawInput);
+  if (!url) return false;
+  const low = url.toLowerCase();
+  if (
+    low.includes("location-sharing-fdl") ||
+    low.includes("ct=location-sharing") ||
+    low.includes("/maps/@/data=") ||
+    low.includes("!7m4!1m2") ||
+    low.includes("maps.app.goo.gl/?link=")
+  ) {
+    return true;
+  }
+  // If it's a shortened maps.app.goo.gl link without direct lat/lng in string, also treat as share link candidate
+  try {
+    const u = new URL(url);
+    if (u.hostname.toLowerCase() === "maps.app.goo.gl" && !parseLatLngInput(url)) {
+      return true;
+    }
+  } catch {}
+  return false;
+}
+
 export function parseLatLngInput(rawInput: string): { lat: number; lng: number } | null {
-  const input = (rawInput || "").trim().replace(/%2C/gi, ",");
+  let input = (rawInput || "").trim().replace(/%2C/gi, ",");
   if (!input) return null;
+
+  // Unwrap nested ?link= / ?afl= / ?ifl= URLs (e.g. Firebase Dynamic Links from Google Maps)
+  try {
+    if (/^https?:\/\//i.test(input)) {
+      const parsed = new URL(input);
+      const nested = parsed.searchParams.get("link") || parsed.searchParams.get("afl") || parsed.searchParams.get("ifl");
+      if (nested) {
+        input = `${input} ${decodeURIComponent(nested)}`.replace(/%2C/gi, ",");
+      }
+    }
+  } catch {}
 
   const patterns = [
     /[?&]q=(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)/i,
@@ -67,23 +124,14 @@ export async function resolveGoogleMapsLocationInput(
   const direct = parseLatLngInput(rawInput);
   if (direct) return direct;
 
-  const trimmed = (rawInput || "").trim();
-  if (!/^https?:\/\//i.test(trimmed)) return null;
+  const candidateUrl = extractGoogleMapsUrl(rawInput);
+  if (!candidateUrl) return null;
 
   try {
-    const u = new URL(trimmed);
-    const host = u.hostname.toLowerCase();
-    const isGoogleMapsHost =
-      host === "maps.app.goo.gl" ||
-      host === "goo.gl" ||
-      host === "g.co" ||
-      host.includes("google.");
-    if (!isGoogleMapsHost) return null;
-
     const res = await fetch("/api/resolve-maps-link", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ url: trimmed }),
+      body: JSON.stringify({ url: candidateUrl }),
     });
     if (!res.ok) return null;
     const data = await res.json();

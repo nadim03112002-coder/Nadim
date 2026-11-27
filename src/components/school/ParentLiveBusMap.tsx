@@ -7,12 +7,12 @@ import {
   BellRing,
   Home,
   Crosshair,
-  ExternalLink,
   Radio,
   MapPin,
   Gauge,
   AlertCircle,
   CheckCircle2,
+  ExternalLink,
 } from "lucide-react";
 import type { School, BusLiveLocation, SchoolStudent, SchoolBusRoute } from "../../school-types";
 import { shouldUseDemoForSchool, updateStudent } from "../../school-firebase";
@@ -137,6 +137,11 @@ export const ParentLiveBusMap: React.FC<ParentLiveBusMapProps> = ({
   const [showPinEditor, setShowPinEditor] = useState<boolean>(false);
   const [pinLinkInput, setPinLinkInput] = useState<string>("");
   const [savingPin, setSavingPin] = useState<boolean>(false);
+  const [areaNameByBusId, setAreaNameByBusId] = useState<Record<string, string>>({});
+  const [liveShareByBusId, setLiveShareByBusId] = useState<Record<string, string>>({});
+  const [schoolMapsApiKey, setSchoolMapsApiKey] = useState<string>(() =>
+    String(school?.googleMapsApiKey || "").trim()
+  );
   const [notifPermission, setNotifPermission] = useState<string>(() => {
     try {
       return typeof Notification !== "undefined" ? Notification.permission : "default";
@@ -242,6 +247,31 @@ export const ParentLiveBusMap: React.FC<ParentLiveBusMapProps> = ({
         })
       : () => {};
 
+    const applyLiveShareMap = (val: any) => {
+      if (!val || typeof val !== "object") return;
+      const next: Record<string, string> = {};
+      Object.entries(val).forEach(([bid, entry]: [string, any]) => {
+        const url = String(entry?.liveShareUrl || entry || "").trim();
+        if (bid && url) next[bid] = url;
+      });
+      setLiveShareByBusId(next);
+    };
+
+    const unsubSbShare = isSafeRtdbKey(sid)
+      ? sbRtdbSubscribe(`schools/${sid}/bus_live_share`, applyLiveShareMap)
+      : () => {};
+
+    const unsubSbMapsKey = isSafeRtdbKey(sid)
+      ? sbRtdbSubscribe(`schools/${sid}/maps_config`, (val: any) => {
+          if (val && typeof val === "object" && typeof val.googleMapsApiKey === "string") {
+            setSchoolMapsApiKey(val.googleMapsApiKey.trim());
+          }
+        })
+      : () => {};
+
+    let unsubShare: any = null;
+    let unsubMapsKey: any = null;
+
     if (rtdb && isSafeRtdbKey(sid)) {
       try {
         unsubLoc1 = onValue(dbRef(rtdb, `school_bus_locations/${sid}`), (snap) => {
@@ -254,15 +284,34 @@ export const ParentLiveBusMap: React.FC<ParentLiveBusMapProps> = ({
           if (snap.exists()) mergeFleetMeta(snap.val() || {});
         });
       } catch {}
+
+      try {
+        unsubShare = onValue(dbRef(rtdb, `schools/${sid}/bus_live_share`), (snap) => {
+          if (snap.exists()) applyLiveShareMap(snap.val());
+        });
+      } catch {}
+
+      try {
+        unsubMapsKey = onValue(dbRef(rtdb, `schools/${sid}/maps_config`), (snap) => {
+          const val = snap.val();
+          if (val && typeof val.googleMapsApiKey === "string") {
+            setSchoolMapsApiKey(val.googleMapsApiKey.trim());
+          }
+        });
+      } catch {}
     }
 
     return () => {
       window.removeEventListener("school-transport-updated", loadLocal);
       window.removeEventListener("nst_bus_location_update", handleBusUpdate);
       if (typeof unsubSbFleet === "function") unsubSbFleet();
+      if (typeof unsubSbShare === "function") unsubSbShare();
+      if (typeof unsubSbMapsKey === "function") unsubSbMapsKey();
       if (typeof unsubLoc1 === "function") unsubLoc1();
       if (typeof unsubLoc2 === "function") unsubLoc2();
       if (typeof unsubFleet === "function") unsubFleet();
+      if (typeof unsubShare === "function") unsubShare();
+      if (typeof unsubMapsKey === "function") unsubMapsKey();
     };
   }, [school?.id, isDemo]);
 
@@ -570,6 +619,25 @@ export const ParentLiveBusMap: React.FC<ParentLiveBusMapProps> = ({
   }
 
   const isLive = assignedBus.tripStatus === "started";
+  const liveAreaName = areaNameByBusId[assignedBus.busId] || "";
+  const effectiveLiveShareUrl = isLive
+    ? (assignedBus.liveShareActive !== false
+        ? String(assignedBus.liveShareUrl || liveShareByBusId[assignedBus.busId] || "").trim()
+        : "")
+    : "";
+  const assignedBusForMap: BusLiveLocation = effectiveLiveShareUrl
+    ? { ...assignedBus, liveShareUrl: effectiveLiveShareUrl, liveShareActive: true }
+    : assignedBus;
+  const hasValidBusPin =
+    Number.isFinite(Number(assignedBus.latitude)) &&
+    Number.isFinite(Number(assignedBus.longitude)) &&
+    (Math.abs(Number(assignedBus.latitude)) > 0.001 ||
+      Math.abs(Number(assignedBus.longitude)) > 0.001);
+  const parentMapsHref =
+    effectiveLiveShareUrl ||
+    (isLive && hasValidBusPin
+      ? `https://www.google.com/maps?q=${Number(assignedBus.latitude)},${Number(assignedBus.longitude)}`
+      : "");
 
   return (
     <div className="flex flex-col h-full min-h-[76vh] bg-slate-950 rounded-2xl overflow-hidden border border-slate-800">
@@ -586,7 +654,11 @@ export const ParentLiveBusMap: React.FC<ParentLiveBusMapProps> = ({
             </span>
           )}
           <span className="text-xs font-bold text-slate-200 truncate">
-            {assignedBus.currentStop ? `Near ${assignedBus.currentStop}` : assignedBus.busNumber}
+            {liveAreaName
+              ? `📍 ${liveAreaName}`
+              : assignedBus.currentStop
+                ? `Near ${assignedBus.currentStop}`
+                : assignedBus.busNumber}
           </span>
         </div>
 
@@ -663,16 +735,18 @@ export const ParentLiveBusMap: React.FC<ParentLiveBusMapProps> = ({
       {/* 80% VIEWPORT: BIG READ-ONLY INTERACTIVE LIVE MAP */}
       <div className="flex-1 min-h-[380px] sm:min-h-[480px] relative p-2 bg-slate-950">
         <LiveBusGoogleMap
-          buses={[assignedBus]}
+          buses={[assignedBusForMap]}
           selectedBusId={assignedBus.busId}
           routes={assignedRouteOverlay}
           homePins={homePinOverlay}
           heightClass="h-full min-h-[380px] sm:min-h-[480px]"
           schoolId={school?.id}
           schoolCode={school?.code}
+          googleMapsApiKey={schoolMapsApiKey || school?.googleMapsApiKey}
           readOnly={true}
-          showOpenInMapsButton={true}
+          showOpenInMapsButton={isLive}
           connectBusToHome={true}
+          onAreaNamesResolved={setAreaNameByBusId}
         />
       </div>
 
@@ -708,7 +782,12 @@ export const ParentLiveBusMap: React.FC<ParentLiveBusMapProps> = ({
                 )}
               </div>
               <p className="text-xs text-slate-400 truncate">
-                {assignedBus.route} • ड्राइवर: <strong className="text-slate-200">{assignedBus.driverName || "—"}</strong>
+                {liveAreaName
+                  ? `गाड़ी अभी: ${liveAreaName}`
+                  : assignedBus.currentStop
+                    ? `स्टॉप: ${assignedBus.currentStop}`
+                    : assignedBus.route}{" "}
+                • ड्राइवर: <strong className="text-slate-200">{assignedBus.driverName || "—"}</strong>
               </p>
               {myHomePin && !showPinEditor && (
                 <button
@@ -722,8 +801,18 @@ export const ParentLiveBusMap: React.FC<ParentLiveBusMapProps> = ({
             </div>
           </div>
 
-          {/* 1-Tap Call Driver & Open Maps */}
+          {/* 1-Tap Call Driver + Live Google Maps (Active ONLY while trip is running) */}
           <div className="flex items-center gap-2 shrink-0">
+            {parentMapsHref && (
+              <button
+                type="button"
+                onClick={() => safeOpenExternalUrl(parentMapsHref)}
+                className="flex-1 sm:flex-none px-4 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-black flex items-center justify-center gap-1.5 shadow-lg shadow-indigo-600/20 transition cursor-pointer"
+              >
+                <ExternalLink size={14} />
+                <span>{effectiveLiveShareUrl ? "Live in Google Maps" : "Google Maps"}</span>
+              </button>
+            )}
             {assignedBus.driverPhone && (
               <a
                 href={`tel:${assignedBus.driverPhone}`}
@@ -731,19 +820,6 @@ export const ParentLiveBusMap: React.FC<ParentLiveBusMapProps> = ({
               >
                 <Phone size={14} /> Call Driver
               </a>
-            )}
-            {busHasValidCoords && (
-              <button
-                type="button"
-                onClick={() =>
-                  safeOpenExternalUrl(
-                    `https://www.google.com/maps?q=${assignedBus.latitude},${assignedBus.longitude}`
-                  )
-                }
-                className="px-3.5 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold flex items-center justify-center gap-1.5 shadow transition cursor-pointer"
-              >
-                <ExternalLink size={14} /> Google Maps
-              </button>
             )}
           </div>
         </div>

@@ -192,6 +192,12 @@ import { HomeDailyRoutineWidget } from "./HomeDailyRoutineWidget";
 import { AdminDashboardCharts } from "./AdminDashboardCharts";
 import { LessonTopicManagerPanel } from "./LessonTopicManagerPanel";
 import { RolesPermissionsManager } from "./RolesPermissionsManager";
+import {
+  getAdminRoleLabel,
+  isAdminViewAllowedForProfile,
+  resolveAdminProfilePermissions,
+} from "../../utils/schoolRolePermissions";
+import type { SchoolAdminProfile } from "../../school-types";
 import { PendingUpiApprovalsPanel } from "./PendingUpiApprovalsPanel";
 import { UpiProofVerificationPopup } from "./UpiProofVerificationPopup";
 import { OfficialFeeReceiptModal } from "./OfficialFeeReceiptModal";
@@ -230,7 +236,7 @@ type AdminView =
   | "community"
   | "absentee"
   | "sessions" | "classes" | "subjects" | "teachers" | "students"
-  | "content" | "class_notes_manager" | "attendance" | "fees" | "fee_class" | "fee_all" | "fee_structure" | "term_scheduler" | "fee_tagada" | "bus_transport" | "qr_pay" | "fee_alerts" | "receipt_header" | "discount_list" | "report_card" | "marks" | "results"
+  | "content" | "class_notes_manager" | "attendance" | "fees" | "fee_class" | "fee_all" | "fee_structure" | "term_scheduler" | "fee_tagada" | "bus_transport" | "live_bus_map" | "qr_pay" | "fee_alerts" | "receipt_header" | "discount_list" | "report_card" | "marks" | "results"
   | "sibling_profiles"
   | "store" | "subscription"
   | "id_cards" | "admit_cards" | "certificates" | "marksheet_hub" | "readmission" | "notices" | "holidays" | "staff_hrm" | "reports_hub"
@@ -537,6 +543,83 @@ export const SchoolAdminPanel: React.FC<Props> = ({
   const [savingLockCode, setSavingLockCode]   = useState(false);
   const [lockCodeSaved, setLockCodeSaved]     = useState(false);
   const [lockCodeDrawerOpen, setLockCodeDrawerOpen] = useState(false);
+
+  // Active Admin Profile (Principal / Manager / Director / Accountant)
+  const [selectedAdminProfileId, setSelectedAdminProfileId] = useState<string>(() => {
+    try {
+      return localStorage.getItem(`nst_active_admin_profile_${schoolId}`) || "";
+    } catch {
+      return "";
+    }
+  });
+  const [rolesManagerInitialTab, setRolesManagerInitialTab] = useState<"admins" | "teachers" | "accountants">("admins");
+  const [showAdminSwitchModal, setShowAdminSwitchModal] = useState(false);
+  const [adminSwitchPinInput, setAdminSwitchPinInput] = useState("");
+  const [adminSwitchPinError, setAdminSwitchPinError] = useState("");
+  const [pendingRoleUnlockPin, setPendingRoleUnlockPin] = useState("");
+  const [rolesPowerUnlocked, setRolesPowerUnlocked] = useState(false);
+
+  useEffect(() => {
+    if (school?.activeAdminProfileId) {
+      setSelectedAdminProfileId((prev) => {
+        if (prev && (school.adminProfiles || []).some((p) => p.id === prev)) return prev;
+        return school.activeAdminProfileId || "";
+      });
+    }
+  }, [school?.activeAdminProfileId, school?.adminProfiles]);
+
+  const adminProfilesList: SchoolAdminProfile[] = useMemo(
+    () => (Array.isArray(school?.adminProfiles) ? school!.adminProfiles! : []),
+    [school?.adminProfiles]
+  );
+
+  const activeAdminProfile: SchoolAdminProfile | null = useMemo(() => {
+    if (adminProfilesList.length === 0) return null;
+    const found =
+      adminProfilesList.find((p) => p.id === selectedAdminProfileId) ||
+      adminProfilesList.find((p) => p.id === school?.activeAdminProfileId) ||
+      adminProfilesList[0] ||
+      null;
+    return found;
+  }, [adminProfilesList, selectedAdminProfileId, school?.activeAdminProfileId]);
+
+  const activeAdminPermissions = useMemo(
+    () => resolveAdminProfilePermissions(activeAdminProfile),
+    [activeAdminProfile]
+  );
+
+  const activeAdminDisplayName = useMemo(() => {
+    if (activeAdminProfile?.name?.trim()) return activeAdminProfile.name.trim();
+    if (school?.principalName?.trim()) return school.principalName.trim();
+    if (school?.managerName?.trim()) return school.managerName.trim();
+    if (school?.directorName?.trim()) return school.directorName.trim();
+    return `${school?.name || "School"} Admin`;
+  }, [activeAdminProfile, school?.principalName, school?.managerName, school?.directorName, school?.name]);
+
+  const activeAdminRoleTitle = useMemo(() => {
+    if (activeAdminProfile) {
+      return getAdminRoleLabel(activeAdminProfile.role, activeAdminProfile.designation);
+    }
+    return "Admin Profile सेट करें";
+  }, [activeAdminProfile]);
+
+  const handleSelectActiveAdminProfile = async (profileId: string) => {
+    setSelectedAdminProfileId(profileId);
+    setRolesPowerUnlocked(false);
+    try {
+      localStorage.setItem(`nst_active_admin_profile_${schoolId}`, profileId);
+    } catch {}
+    if (school && school.activeAdminProfileId !== profileId) {
+      setSchool((prev) => (prev ? { ...prev, activeAdminProfileId: profileId } : prev));
+      await updateSchool(schoolId, { activeAdminProfileId: profileId }).catch(() => {});
+    }
+  };
+
+  const openAdminProfilesManager = () => {
+    setRolesManagerInitialTab("admins");
+    setView("roles_permissions");
+    setIsSidebarOpen(false);
+  };
 
   // Left Sidebar Drawer on mobile
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
@@ -1759,6 +1842,8 @@ export const SchoolAdminPanel: React.FC<Props> = ({
           prev.logoUrl === s.logoUrl &&
           prev.lockCode === s.lockCode &&
           prev.lockCodeActive === s.lockCodeActive &&
+          prev.activeAdminProfileId === s.activeAdminProfileId &&
+          JSON.stringify(prev.adminProfiles || []) === JSON.stringify(s.adminProfiles || []) &&
           JSON.stringify(prev.subscription) === JSON.stringify(s.subscription)
         ) {
           return prev;
@@ -3284,7 +3369,7 @@ export const SchoolAdminPanel: React.FC<Props> = ({
       },
       items: [
         { id: "teachers" as AdminView, label: "Teachers & Faculty (शिक्षक व स्टाफ हब)", icon: GraduationCap, desc: "शिक्षक सूची, Leave Requests, सैलरी व पेरोल सब एक जगह" },
-        { id: "roles_permissions" as AdminView, label: "Roles & Permissions (अधिकार नियंत्रण)", icon: ShieldCheck, desc: "Teacher व Accountant अधिकार, Class/Subject लॉक व छूट सीमा" },
+        { id: "roles_permissions" as AdminView, label: "Admin, Principal & Roles (नाम व पावर)", icon: ShieldCheck, desc: "Principal, Manager, Accountant प्रोफाइल जोड़ें व सभी के पावर तय करें" },
       ]
     },
     {
@@ -3636,20 +3721,36 @@ export const SchoolAdminPanel: React.FC<Props> = ({
                         const isActive = isMenuItemActive(item.id);
                         const isEliteItem = ELITE_ADMIN_MENU_IDS.has(item.id);
                         const isEliteLocked = isEliteItem && isEliteAdminItemLocked(item.id);
+                        const isPowerLocked = Boolean(
+                          activeAdminProfile && !isAdminViewAllowedForProfile(item.id, activeAdminProfile).allowed
+                        );
                         return (
                           <button
                             key={item.id}
                             type="button"
                             onClick={() => {
                               captureActiveMenuScrollRef.current();
+                              if (item.id === "roles_permissions") setRolesManagerInitialTab("admins");
                               setView(item.id);
                               mainContentScrollRef.current?.scrollTo({ top: 0 });
                               window.scrollTo({ top: 0, behavior: "smooth" });
                             }}
-                            title={isEliteItem ? (isEliteLocked ? `${item.label} — Elite Plan Feature` : `${item.label} — Elite Feature`) : item.desc}
+                            title={
+                              isPowerLocked
+                                ? `${item.label} — ${activeAdminProfile?.name} के लिए Power बंद है`
+                                : isEliteItem
+                                ? isEliteLocked
+                                  ? `${item.label} — Elite Plan Feature`
+                                  : `${item.label} — Elite Feature`
+                                : item.desc
+                            }
                             className={`w-full px-2.5 py-2 min-h-[38px] rounded-xl flex items-center gap-2.5 text-left transition-all cursor-pointer relative ${
                               isActive
                                 ? "bg-indigo-600 text-white font-semibold shadow-xs"
+                                : isPowerLocked
+                                ? isWhite
+                                  ? "text-slate-400 hover:bg-slate-100/70 font-medium opacity-75"
+                                  : "text-slate-500 hover:bg-white/5 font-medium opacity-75"
                                 : isWhite
                                 ? "text-slate-700 hover:text-slate-950 hover:bg-slate-100 font-medium"
                                 : `text-slate-300 hover:text-white ${cat.theme.hoverBg} font-medium`
@@ -3671,6 +3772,9 @@ export const SchoolAdminPanel: React.FC<Props> = ({
                                   : "text-slate-200"
                               }`}>{item.label}</p>
                             </div>
+                            {isPowerLocked && (
+                              <Lock className="w-3.5 h-3.5 text-amber-500 shrink-0" />
+                            )}
                             {(item.id === "term_scheduler" || item.id === "fee_tagada") && (
                               <span className="inline-flex items-center px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-500 dark:text-emerald-300 border border-emerald-500/30 text-[8px] font-black uppercase tracking-wider shrink-0 leading-none">
                                 NEW
@@ -3912,21 +4016,37 @@ export const SchoolAdminPanel: React.FC<Props> = ({
                           const isActive = isMenuItemActive(item.id);
                           const isEliteItem = ELITE_ADMIN_MENU_IDS.has(item.id);
                           const isEliteLocked = isEliteItem && isEliteAdminItemLocked(item.id);
+                          const isPowerLocked = Boolean(
+                            activeAdminProfile && !isAdminViewAllowedForProfile(item.id, activeAdminProfile).allowed
+                          );
                           return (
                             <button
                               key={`m-${item.id}`}
                               type="button"
                               onClick={() => {
                                 captureActiveMenuScrollRef.current();
+                                if (item.id === "roles_permissions") setRolesManagerInitialTab("admins");
                                 setView(item.id);
                                 setIsSidebarOpen(false);
                                 mainContentScrollRef.current?.scrollTo({ top: 0 });
                                 window.scrollTo({ top: 0, behavior: "smooth" });
                               }}
-                              title={isEliteItem ? (isEliteLocked ? `${item.label} — Elite Plan Feature` : `${item.label} — Elite Feature`) : item.desc}
+                              title={
+                                isPowerLocked
+                                  ? `${item.label} — ${activeAdminProfile?.name} के लिए Power बंद है`
+                                  : isEliteItem
+                                  ? isEliteLocked
+                                    ? `${item.label} — Elite Plan Feature`
+                                    : `${item.label} — Elite Feature`
+                                  : item.desc
+                              }
                               className={`w-full px-2.5 py-2 min-h-[40px] rounded-xl flex items-center gap-2.5 text-left transition-all cursor-pointer relative ${
                                 isActive
                                   ? "bg-indigo-600 text-white font-semibold shadow-xs"
+                                  : isPowerLocked
+                                  ? isWhite
+                                    ? "text-slate-400 hover:bg-slate-100/70 font-medium opacity-75"
+                                    : "text-slate-500 hover:bg-white/5 font-medium opacity-75"
                                   : isWhite
                                   ? "text-slate-700 hover:text-slate-950 hover:bg-slate-100 font-medium"
                                   : `text-slate-300 hover:text-white ${cat.theme.hoverBg} font-medium`
@@ -3948,6 +4068,9 @@ export const SchoolAdminPanel: React.FC<Props> = ({
                                     : "text-slate-200"
                                 }`}>{item.label}</p>
                               </div>
+                              {isPowerLocked && (
+                                <Lock className="w-3.5 h-3.5 text-amber-500 shrink-0" />
+                              )}
                               {(item.id === "term_scheduler" || item.id === "fee_tagada") && (
                                 <span className="inline-flex items-center px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-500 dark:text-emerald-300 border border-emerald-500/30 text-[8px] font-black uppercase tracking-wider shrink-0 leading-none">
                                   NEW
@@ -4190,8 +4313,46 @@ export const SchoolAdminPanel: React.FC<Props> = ({
             </h1>
           </div>
 
-          {/* Right: Search + Alerts + Walkie + Settings (Overlap-Free Mobile & Desktop) */}
+          {/* Right: Active Admin Chip + Search + Alerts + Walkie + Settings */}
           <div className="flex items-center gap-1.5 shrink-0">
+            {/* Active Admin Identity & Quick Switcher Icon Button */}
+            <button
+              type="button"
+              onClick={() => {
+                if (adminProfilesList.length > 0) {
+                  setAdminSwitchPinInput("");
+                  setAdminSwitchPinError("");
+                  setShowAdminSwitchModal(true);
+                } else {
+                  openAdminProfilesManager();
+                }
+              }}
+              className={`relative inline-flex items-center justify-center min-w-[36px] min-h-[36px] p-1.5 rounded-xl border transition cursor-pointer active:scale-95 shrink-0 ${
+                activeAdminProfile
+                  ? isWhite
+                    ? "bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border-emerald-300"
+                    : "bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-300 border-emerald-500/35"
+                  : isWhite
+                  ? "bg-amber-50 hover:bg-amber-100 text-amber-700 border-amber-300"
+                  : "bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 border-amber-500/35"
+              }`}
+              aria-label={
+                activeAdminProfile
+                  ? `Active Admin: ${activeAdminProfile.name} (${activeAdminRoleTitle})`
+                  : "Admin Profile जोड़ें"
+              }
+              title={
+                activeAdminProfile
+                  ? `सक्रिय एडमिन: ${activeAdminProfile.name} (${activeAdminRoleTitle}) — बदलने या पावर देखने के लिए क्लिक करें`
+                  : "Principal / Manager / Accountant Admin Profile जोड़ें"
+              }
+            >
+              <Crown className={`w-4 h-4 shrink-0 ${activeAdminProfile ? "text-emerald-500" : "text-amber-400"}`} />
+              {activeAdminProfile && (
+                <span className="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full bg-emerald-500 ring-2 ring-white dark:ring-slate-900" />
+              )}
+            </button>
+
             {/* Desktop/Tablet Routine Button */}
             <button
               type="button"
@@ -6081,7 +6242,7 @@ export const SchoolAdminPanel: React.FC<Props> = ({
             <div className="grid grid-cols-2 gap-2 pt-0.5">
               <button
                 type="button"
-                onClick={() => setView("bus_transport")}
+                onClick={() => setView("live_bus_map")}
                 className="min-h-[46px] py-2.5 px-3 rounded-xl bg-sky-600 hover:bg-sky-500 text-white font-bold text-xs sm:text-sm transition cursor-pointer text-center flex items-center justify-center gap-1.5 whitespace-nowrap shadow-xs"
               >
                 <MapPin className="w-4 h-4 shrink-0" />
@@ -6172,7 +6333,7 @@ export const SchoolAdminPanel: React.FC<Props> = ({
           classes={displayedClasses}
           subjects={subjects}
           teachers={displayedTeachers}
-          currentTeacherName={school?.principalName || "Principal / Admin"}
+          currentTeacherName={activeAdminDisplayName}
           onOpenFullTimetable={() => setView("timetable")}
           onOpenSyllabusTracker={() => setView("syllabus_pacing")}
         />
@@ -7371,7 +7532,7 @@ export const SchoolAdminPanel: React.FC<Props> = ({
         <AccountRecoveryCard
           uid={adminUid || school?.id || "admin_uid"}
           role="SCHOOL_ADMIN"
-          name={school?.principalName || `${school?.name || "School"} Admin`}
+          name={activeAdminDisplayName}
           displayId={school?.id}
           schoolId={schoolId}
           schoolName={school?.name}
@@ -7450,7 +7611,7 @@ export const SchoolAdminPanel: React.FC<Props> = ({
 
         {/* Master Institutional Form */}
         <div className="bg-white dark:bg-slate-800 rounded-3xl p-6 border border-slate-200 dark:border-slate-700 shadow-sm space-y-5">
-          <div className="border-b border-slate-100 dark:border-slate-700 pb-3 flex items-center justify-between">
+          <div className="border-b border-slate-100 dark:border-slate-700 pb-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
             <div>
               <h3 className="font-black text-base text-slate-800 dark:text-white">
                 School Master Profile Details (स्कूल की आधारभूत जानकारी)
@@ -7459,6 +7620,18 @@ export const SchoolAdminPanel: React.FC<Props> = ({
                 यह जानकारी सभी मार्कशीट, रसीद, आईडी कार्ड और आधिकारिक दस्तावेज़ों पर प्रिंट होगी।
               </p>
             </div>
+            <button
+              type="button"
+              onClick={openAdminProfilesManager}
+              className="px-3.5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer shrink-0 self-start sm:self-auto shadow-xs"
+            >
+              <Crown className="w-3.5 h-3.5" />
+              <span>
+                {activeAdminProfile
+                  ? `Admin Profile: ${activeAdminProfile.name} (${activeAdminRoleTitle})`
+                  : "Principal / Manager / Admin Profile जोड़ें"}
+              </span>
+            </button>
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -8520,8 +8693,8 @@ export const SchoolAdminPanel: React.FC<Props> = ({
             defaultClassId={selectedClass?.id || displayedClasses[0]?.id}
             existingStudents={displayedStudents}
             adminUid={adminUid}
-            userRole="SCHOOL_ADMIN"
-            actorName={school?.principalName || "School Admin"}
+            userRole={activeAdminProfile?.role === "accountant" ? "ACCOUNTANT" : "SCHOOL_ADMIN"}
+            actorName={activeAdminDisplayName}
             onSuccess={(newStudent, admFee) => {
               setShowDirectAdmissionModal(false);
               setStudents(prev => [newStudent, ...prev.filter(s => s.id !== newStudent.id)]);
@@ -9429,7 +9602,7 @@ export const SchoolAdminPanel: React.FC<Props> = ({
           school={school}
           schoolId={schoolId}
           currentUserId={adminUid || "STAFF_ADMIN"}
-          currentUserName={school?.principalName || "Principal / Admin"}
+          currentUserName={activeAdminDisplayName}
           currentUserRole="ADMIN"
           schoolAdminUid={school?.adminUid || adminUid}
           teachers={teachers}
@@ -9447,7 +9620,7 @@ export const SchoolAdminPanel: React.FC<Props> = ({
             role: "admin",
             userId: adminUid,
           })}
-          approverName={school?.principalName || "School Admin"}
+          approverName={activeAdminDisplayName}
           approverRole="admin"
           approverId={adminUid || "STAFF_ADMIN"}
           onApprovedReceipt={(approvedFee) => {
@@ -9470,12 +9643,214 @@ export const SchoolAdminPanel: React.FC<Props> = ({
             initialFormat="pos"
           />
         )}
+        {showAdminSwitchModal && (
+          <div className="fixed inset-0 z-50 bg-slate-950/70 backdrop-blur-xs flex items-center justify-center p-4">
+            <div className="w-full max-w-md bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-2xl p-5 space-y-4">
+              <div className="flex items-center justify-between gap-2 pb-2 border-b border-slate-100 dark:border-slate-800">
+                <div>
+                  <h3 className="text-sm sm:text-base font-bold text-slate-900 dark:text-white flex items-center gap-2">
+                    <Crown className="w-4 h-4 text-emerald-500" />
+                    <span>Active Admin चुनें / बदलें</span>
+                  </h3>
+                  <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                    अभी कौन Admin पैनल चला रहा है (Principal, Manager या Accountant)?
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowAdminSwitchModal(false)}
+                  className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 dark:hover:text-white cursor-pointer"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              {school?.lockCodeActive && school?.lockCode && activeAdminProfile && !activeAdminPermissions.canManageStaffAndRoles && (
+                <div className="p-3 rounded-xl bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800 space-y-2">
+                  <label className="text-[11px] font-bold text-amber-900 dark:text-amber-200 block">
+                    Admin बदलने के लिए School Lock Code डालें:
+                  </label>
+                  <input
+                    type="password"
+                    value={adminSwitchPinInput}
+                    onChange={(e) => {
+                      setAdminSwitchPinInput(e.target.value);
+                      setAdminSwitchPinError("");
+                    }}
+                    placeholder="School Lock Code"
+                    className="w-full px-3 py-2 rounded-lg border border-amber-300 dark:border-amber-700 bg-white dark:bg-slate-900 text-xs text-slate-900 dark:text-white outline-none"
+                  />
+                  {adminSwitchPinError && (
+                    <p className="text-[11px] font-semibold text-rose-600 dark:text-rose-400">{adminSwitchPinError}</p>
+                  )}
+                </div>
+              )}
+
+              <div className="space-y-2 max-h-64 overflow-y-auto">
+                {adminProfilesList.map((prof) => {
+                  const isCurrent = activeAdminProfile?.id === prof.id;
+                  const roleTitle = getAdminRoleLabel(prof.role, prof.designation);
+                  return (
+                    <button
+                      key={prof.id}
+                      type="button"
+                      onClick={() => {
+                        if (
+                          !isCurrent &&
+                          school?.lockCodeActive &&
+                          school?.lockCode &&
+                          activeAdminProfile &&
+                          !activeAdminPermissions.canManageStaffAndRoles
+                        ) {
+                          if (adminSwitchPinInput.trim() !== school.lockCode.trim()) {
+                            setAdminSwitchPinError("❌ गलत Lock Code — Admin बदलने के लिए सही कोड डालें।");
+                            return;
+                          }
+                        }
+                        handleSelectActiveAdminProfile(prof.id);
+                        setShowAdminSwitchModal(false);
+                        toast.success(`✅ अब सक्रिय एडमिन: ${prof.name} (${roleTitle})`);
+                      }}
+                      className={`w-full p-3 rounded-xl border text-left flex items-center justify-between gap-2 transition cursor-pointer ${
+                        isCurrent
+                          ? "bg-emerald-50 dark:bg-emerald-950/40 border-emerald-500 text-emerald-950 dark:text-white"
+                          : "bg-slate-50 dark:bg-slate-800/60 border-slate-200 dark:border-slate-700 hover:border-emerald-400 text-slate-800 dark:text-slate-200"
+                      }`}
+                    >
+                      <div className="min-w-0">
+                        <div className="text-xs font-bold truncate">{prof.name}</div>
+                        <div className="text-[11px] opacity-75 truncate">{roleTitle}</div>
+                      </div>
+                      {isCurrent ? (
+                        <span className="px-2 py-0.5 rounded bg-emerald-600 text-white text-[10px] font-bold shrink-0">
+                          ACTIVE
+                        </span>
+                      ) : (
+                        <span className="text-[11px] font-semibold text-indigo-600 dark:text-indigo-400 shrink-0">
+                          Switch →
+                        </span>
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+
+              <button
+                type="button"
+                onClick={() => {
+                  if (
+                    school?.lockCodeActive &&
+                    school?.lockCode &&
+                    activeAdminProfile &&
+                    !activeAdminPermissions.canManageStaffAndRoles
+                  ) {
+                    if (adminSwitchPinInput.trim() !== school.lockCode.trim()) {
+                      setAdminSwitchPinError("❌ गलत Lock Code — Admin Profiles खोलने के लिए सही कोड डालें।");
+                      return;
+                    }
+                    setRolesPowerUnlocked(true);
+                  }
+                  setShowAdminSwitchModal(false);
+                  openAdminProfilesManager();
+                }}
+                className="w-full py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold flex items-center justify-center gap-1.5 cursor-pointer"
+              >
+                <ShieldCheck className="w-4 h-4" />
+                <span>Admin Profiles जोड़ें व Powers बदलें</span>
+              </button>
+            </div>
+          </div>
+        )}
       </>
     );
   };
 
   // ── MASTER ERP SHELL (LEFT SIDEBAR ON COMPUTER/LANDSCAPE, DRAWER ON MOBILE PORTRAIT) ────
   const renderErpShell = (content: React.ReactNode) => {
+    const viewGate = isAdminViewAllowedForProfile(view, activeAdminProfile);
+    const needsRolesLock =
+      view === "roles_permissions" &&
+      Boolean(
+        activeAdminProfile &&
+          !activeAdminPermissions.canManageStaffAndRoles &&
+          school?.lockCodeActive &&
+          school?.lockCode &&
+          !rolesPowerUnlocked
+      );
+
+    const resolvedMainContent = !viewGate.allowed || needsRolesLock ? (
+      <div className="max-w-lg mx-auto my-8 bg-white dark:bg-slate-900 rounded-2xl border border-amber-300 dark:border-amber-700/60 p-6 text-center space-y-4 shadow-sm">
+        <div className="w-12 h-12 rounded-2xl bg-amber-100 dark:bg-amber-950/60 text-amber-600 dark:text-amber-400 flex items-center justify-center mx-auto">
+          <Lock className="w-6 h-6" />
+        </div>
+        <div className="space-y-1">
+          <h3 className="text-base font-bold text-slate-900 dark:text-white">
+            यह सेक्शन अभी लॉक है (Power Not Assigned)
+          </h3>
+          <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
+            सक्रिय एडमिन <strong>{activeAdminDisplayName}</strong> ({activeAdminRoleTitle}) के पास{" "}
+            <strong>{needsRolesLock ? "Staff, Salary & Roles (स्टाफ व अधिकार)" : viewGate.requiredPowerLabel}</strong>{" "}
+            का अधिकार चालू नहीं है।
+          </p>
+        </div>
+
+        {needsRolesLock && (
+          <div className="space-y-2 text-left bg-slate-50 dark:bg-slate-800/70 p-3 rounded-xl border border-slate-200 dark:border-slate-700">
+            <label className="text-[11px] font-bold text-slate-700 dark:text-slate-200 block">
+              अनलॉक करने के लिए School Lock Code दर्ज करें:
+            </label>
+            <div className="flex items-center gap-2">
+              <input
+                type="password"
+                value={pendingRoleUnlockPin}
+                onChange={(e) => setPendingRoleUnlockPin(e.target.value)}
+                placeholder="Lock Code"
+                className="flex-1 px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 text-xs text-slate-900 dark:text-white outline-none"
+              />
+              <button
+                type="button"
+                onClick={() => {
+                  if (pendingRoleUnlockPin.trim() === String(school?.lockCode || "").trim()) {
+                    setRolesPowerUnlocked(true);
+                    setPendingRoleUnlockPin("");
+                    toast.success("🔓 Admin Profiles & Powers अनलॉक हो गया");
+                  } else {
+                    toast.error("❌ गलत School Lock Code");
+                  }
+                }}
+                className="px-3.5 py-2 rounded-lg bg-emerald-600 text-white text-xs font-bold cursor-pointer"
+              >
+                Unlock
+              </button>
+            </div>
+          </div>
+        )}
+
+        <div className="flex flex-wrap items-center justify-center gap-2 pt-1">
+          <button
+            type="button"
+            onClick={() => {
+              setAdminSwitchPinInput("");
+              setAdminSwitchPinError("");
+              setShowAdminSwitchModal(true);
+            }}
+            className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold cursor-pointer"
+          >
+            Admin Profile बदलें (Switch)
+          </button>
+          <button
+            type="button"
+            onClick={() => setView("dashboard")}
+            className="px-4 py-2 rounded-xl border border-slate-200 dark:border-slate-700 text-xs font-semibold text-slate-700 dark:text-slate-200 cursor-pointer"
+          >
+            Home Dashboard पर जाएं
+          </button>
+        </div>
+      </div>
+    ) : (
+      content
+    );
+
     return (
       <div className={`h-screen h-[100dvh] max-h-screen overflow-hidden flex print:h-auto print:min-h-0 print:max-h-none print:overflow-visible print:block print:bg-white transition-colors duration-200 admin-theme-${appTheme} app-theme-${appTheme} ${
         appTheme === "white"
@@ -9497,7 +9872,7 @@ export const SchoolAdminPanel: React.FC<Props> = ({
           isEffectiveLandscape ? "overflow-x-auto" : "overflow-x-hidden"
         }`}>
           {renderTopHeader()}
-          <main className={`flex-1 p-3 sm:p-4 lg:p-6 w-full mx-auto pb-20 md:pb-8 print:p-0 print:m-0 print:max-w-none print:min-w-0 ${
+          <main className={`flex-1 px-2 py-2.5 sm:p-4 lg:p-6 w-full mx-auto pb-20 md:pb-8 print:p-0 print:m-0 print:max-w-none print:min-w-0 ${
             isEffectiveLandscape ? "min-w-[980px] sm:min-w-0 max-w-7xl" : "max-w-7xl"
           }`}>
             <Suspense
@@ -9514,7 +9889,7 @@ export const SchoolAdminPanel: React.FC<Props> = ({
                 />
               }
             >
-              {content}
+              {resolvedMainContent}
             </Suspense>
           </main>
         </div>
@@ -9733,7 +10108,7 @@ export const SchoolAdminPanel: React.FC<Props> = ({
 
   const renderDailyTeacherAttendanceDesk = (options?: { showDateSelector?: boolean }) => {
     const teacherRecordsMap = teacherAttRecords?.records || {};
-    const principalName = school?.principalName || "Principal / School Admin";
+    const principalName = activeAdminDisplayName;
 
     let localAdminAtt: { present?: boolean; inTime?: string; outTime?: string } | null = null;
     try {
@@ -10130,7 +10505,7 @@ export const SchoolAdminPanel: React.FC<Props> = ({
                   </span>
                 </div>
                 <p className="text-xs text-slate-600 dark:text-slate-300 font-medium mt-0.5 truncate">
-                  {principalName} · Principal · <span className="font-mono text-slate-500 dark:text-slate-400">ADMIN-01</span>
+                  {principalName} · {activeAdminProfile ? activeAdminRoleTitle : "School Admin"} · <span className="font-mono text-slate-500 dark:text-slate-400">ADMIN-01</span>
                 </p>
                 <div className="flex items-center gap-2.5 text-xs text-slate-500 dark:text-slate-400 mt-1.5 font-mono tabular-nums flex-wrap">
                   <span>
@@ -10621,7 +10996,7 @@ export const SchoolAdminPanel: React.FC<Props> = ({
     const activeClass = selectedClass || (displayedClasses.length > 0 ? displayedClasses[0] : null);
 
     return renderErpShell(
-      <div className="space-y-3 p-2.5 sm:p-4 max-w-6xl mx-auto">
+      <div className="space-y-3 w-full max-w-6xl mx-auto">
         {/* Unified Top Switcher: Students vs Teachers & Staff (date shown only on Teachers tab to eliminate duplicate date boxes) */}
         <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-2 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 shadow-xs">
           <div className="grid grid-cols-2 sm:inline-flex items-center gap-1.5 bg-slate-100 dark:bg-slate-950 p-1 rounded-xl border border-slate-200/80 dark:border-slate-800 w-full sm:w-auto">
@@ -10778,6 +11153,10 @@ export const SchoolAdminPanel: React.FC<Props> = ({
         school={school || undefined}
         sessionId={activeSession?.id || ""}
         adminId={adminUid}
+        userRole={activeAdminProfile?.role === "accountant" ? "ACCOUNTANT" : "SCHOOL_ADMIN"}
+        actorName={activeAdminDisplayName}
+        allowDiscountOverride={activeAdminPermissions.canGrantDiscount}
+        maxDiscountLimitPct={activeAdminPermissions.maxDiscountLimitPct}
         initialStudentId={feePreselectTarget?.studentId}
         initialStudentAction={feePreselectTarget?.action}
         onInitialStudentActionHandled={() => setFeePreselectTarget(null)}
@@ -10795,6 +11174,10 @@ export const SchoolAdminPanel: React.FC<Props> = ({
         school={school || undefined}
         sessionId={activeSession?.id || ""}
         adminId={adminUid}
+        userRole={activeAdminProfile?.role === "accountant" ? "ACCOUNTANT" : "SCHOOL_ADMIN"}
+        actorName={activeAdminDisplayName}
+        allowDiscountOverride={activeAdminPermissions.canGrantDiscount}
+        maxDiscountLimitPct={activeAdminPermissions.maxDiscountLimitPct}
         initialStudentId={feePreselectTarget?.studentId}
         initialStudentAction={feePreselectTarget?.action}
         onInitialStudentActionHandled={() => setFeePreselectTarget(null)}
@@ -10818,9 +11201,39 @@ export const SchoolAdminPanel: React.FC<Props> = ({
     );
   }
 
+  if (view === "live_bus_map") {
+    return renderErpShell(
+      <div className="w-full space-y-2.5">
+        <div className="flex items-center justify-between">
+          <button
+            type="button"
+            onClick={() => setView("dashboard")}
+            className="px-3.5 py-1.5 rounded-xl border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 text-xs font-bold text-slate-700 dark:text-slate-200 flex items-center gap-1.5 cursor-pointer shadow-xs transition"
+          >
+            <ChevronLeft className="w-4 h-4" />
+            <span>← Back to Dashboard</span>
+          </button>
+        </div>
+        <BusTransportModal
+          isOpen={true}
+          onClose={() => setView("dashboard")}
+          schoolId={schoolId}
+          schoolName={school?.name}
+          schoolCode={school?.code}
+          classes={displayedClasses}
+          students={displayedStudents}
+          initialTab="live_radar"
+          initialFullscreenMap={true}
+          onUpdated={() => {}}
+          isEmbedded={true}
+        />
+      </div>
+    );
+  }
+
   if (view === "bus_transport") {
     return renderErpShell(
-      <div className="p-3 sm:p-4 max-w-4xl mx-auto space-y-3">
+      <div className="w-full space-y-2.5">
         <div className="flex items-center justify-between">
           <button
             type="button"
@@ -10856,6 +11269,10 @@ export const SchoolAdminPanel: React.FC<Props> = ({
         school={school || undefined}
         sessionId={activeSession?.id || ""}
         adminId={adminUid}
+        userRole={activeAdminProfile?.role === "accountant" ? "ACCOUNTANT" : "SCHOOL_ADMIN"}
+        actorName={activeAdminDisplayName}
+        allowDiscountOverride={activeAdminPermissions.canGrantDiscount}
+        maxDiscountLimitPct={activeAdminPermissions.maxDiscountLimitPct}
         initialTool="qr_scanner"
         exitOnToolClose={true}
         onBack={() => setView("dashboard")}
@@ -10873,6 +11290,10 @@ export const SchoolAdminPanel: React.FC<Props> = ({
         school={school || undefined}
         sessionId={activeSession?.id || ""}
         adminId={adminUid}
+        userRole={activeAdminProfile?.role === "accountant" ? "ACCOUNTANT" : "SCHOOL_ADMIN"}
+        actorName={activeAdminDisplayName}
+        allowDiscountOverride={activeAdminPermissions.canGrantDiscount}
+        maxDiscountLimitPct={activeAdminPermissions.maxDiscountLimitPct}
         initialTool="term_scheduler"
         exitOnToolClose={true}
         onBack={() => setView("dashboard")}
@@ -10907,7 +11328,10 @@ export const SchoolAdminPanel: React.FC<Props> = ({
         school={school || undefined}
         sessionId={activeSession?.id || ""}
         adminId={adminUid}
-        actorName={school?.principalName || "School Admin"}
+        userRole={activeAdminProfile?.role === "accountant" ? "ACCOUNTANT" : "SCHOOL_ADMIN"}
+        actorName={activeAdminDisplayName}
+        allowDiscountOverride={activeAdminPermissions.canGrantDiscount}
+        maxDiscountLimitPct={activeAdminPermissions.maxDiscountLimitPct}
         initialTool="fee_tagada"
         exitOnToolClose={true}
         onBack={() => setView("dashboard")}
@@ -10956,6 +11380,10 @@ export const SchoolAdminPanel: React.FC<Props> = ({
           school={school || undefined}
           sessionId={activeSession?.id || ""}
           adminId={adminUid}
+          userRole={activeAdminProfile?.role === "accountant" ? "ACCOUNTANT" : "SCHOOL_ADMIN"}
+          actorName={activeAdminDisplayName}
+          allowDiscountOverride={activeAdminPermissions.canGrantDiscount}
+          maxDiscountLimitPct={activeAdminPermissions.maxDiscountLimitPct}
           initialTool="fee_alert"
           exitOnToolClose={true}
           onBack={() => setView("dashboard")}
@@ -10974,6 +11402,8 @@ export const SchoolAdminPanel: React.FC<Props> = ({
         school={school || undefined}
         sessionId={activeSession?.id || ""}
         adminId={adminUid}
+        userRole={activeAdminProfile?.role === "accountant" ? "ACCOUNTANT" : "SCHOOL_ADMIN"}
+        actorName={activeAdminDisplayName}
         initialTool="header"
         exitOnToolClose={true}
         onBack={() => setView("dashboard")}
@@ -11138,7 +11568,7 @@ export const SchoolAdminPanel: React.FC<Props> = ({
 
   if (view === "class_qr") {
     return renderErpShell(
-      <div className="p-4 sm:p-6 space-y-4 max-w-4xl mx-auto">
+      <div className="space-y-3.5 w-full max-w-5xl mx-auto">
         <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 p-4 bg-white dark:bg-slate-800 rounded-2xl border border-slate-200 dark:border-slate-700 shadow-xs">
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-xl bg-purple-50 dark:bg-purple-950/40 text-purple-600 dark:text-purple-400 flex items-center justify-center font-bold text-xl shrink-0">
@@ -11305,12 +11735,16 @@ export const SchoolAdminPanel: React.FC<Props> = ({
   }
   if (view === "roles_permissions" && school) {
     return renderErpShell(
-      <div className="p-3 sm:p-5">
+      <div className="w-full">
         <RolesPermissionsManager
           school={school}
           teachers={displayedTeachers}
           classes={displayedClasses}
           subjects={subjects}
+          initialTab={rolesManagerInitialTab}
+          activeAdminProfileId={activeAdminProfile?.id || ""}
+          onSelectActiveAdmin={handleSelectActiveAdminProfile}
+          onSchoolUpdated={(patch) => setSchool((prev) => (prev ? { ...prev, ...patch } : prev))}
           onTeacherUpdated={(updated) => {
             setTeachers((prev) => {
               const exists = prev.some((t) => t.id === updated.id);
@@ -11421,7 +11855,7 @@ export const SchoolAdminPanel: React.FC<Props> = ({
           schoolId={schoolId}
           schoolName={school?.name || "School"}
           currentUserId={adminUid}
-          currentUserName={school?.principalName || "Principal / Admin"}
+          currentUserName={activeAdminDisplayName}
           currentUserRole="ADMIN"
           classes={displayedClasses}
           onBack={() => setView("dashboard")}
@@ -11478,7 +11912,7 @@ export const SchoolAdminPanel: React.FC<Props> = ({
         user={{
           id: adminUid,
           uid: adminUid,
-          name: school?.principalName || "School Principal",
+          name: activeAdminDisplayName,
           role: "SCHOOL_ADMIN",
           isSchoolHost: true,
           schoolId: school!.id,
@@ -11502,7 +11936,7 @@ export const SchoolAdminPanel: React.FC<Props> = ({
         subjects={subjects}
         teachers={displayedTeachers}
         currentRole="ADMIN"
-        currentTeacherName={school?.principalName || "Principal"}
+        currentTeacherName={activeAdminDisplayName}
         onBack={() => setView("dashboard")}
       />
     );
@@ -11529,7 +11963,7 @@ export const SchoolAdminPanel: React.FC<Props> = ({
         teachers={displayedTeachers}
         classes={displayedClasses}
         currentUserRole="ADMIN"
-        currentUserName={school?.principalName || "Principal / Admin"}
+        currentUserName={activeAdminDisplayName}
         currentUserId={adminUid}
         onBack={() => setView("dashboard")}
       />
@@ -11572,7 +12006,7 @@ export const SchoolAdminPanel: React.FC<Props> = ({
               students={displayedStudents}
               teachers={displayedTeachers}
               currentUserId={adminUid}
-              currentUserName={school?.principalName || "Principal / Admin"}
+              currentUserName={activeAdminDisplayName}
               currentUserRole="ADMIN"
               onBack={() => setView("dashboard")}
             />
@@ -11759,7 +12193,7 @@ export const SchoolAdminPanel: React.FC<Props> = ({
         onClose={() => setView("dashboard")}
         school={school}
         activeSession={activeSession}
-        defaultAuthorizedBy={school?.principalName || "Admin (Principal)"}
+        defaultAuthorizedBy={`${activeAdminDisplayName} (${activeAdminRoleTitle})`}
         onReceiptCancelled={() => {}}
       />
     );
@@ -11891,7 +12325,7 @@ export const SchoolAdminPanel: React.FC<Props> = ({
         school={school!}
         classes={displayedClasses}
         students={displayedStudents}
-        actorName={school?.principalName || "School Admin"}
+        actorName={activeAdminDisplayName}
         canBroadcastEmergency={true}
         onBack={() => setView("dashboard")}
       />
@@ -12100,7 +12534,9 @@ export const SchoolAdminPanel: React.FC<Props> = ({
                   <span className="tabular-nums">सत्र {sessionLabel}</span>
                   <span aria-hidden="true">·</span>
                   <span className={isWhite ? "text-emerald-700 font-semibold" : "text-emerald-400 font-semibold"}>
-                    स्कूल एडमिनिस्ट्रेटर
+                    {activeAdminProfile
+                      ? `${activeAdminProfile.name} (${activeAdminRoleTitle})`
+                      : "Admin Profile सेट नहीं (पूर्ण अधिकार)"}
                   </span>
                   <span aria-hidden="true">·</span>
                   <span>डायरेक्ट स्कूल पोर्टल</span>
@@ -12108,23 +12544,33 @@ export const SchoolAdminPanel: React.FC<Props> = ({
               </div>
             </div>
 
-            <button
-              type="button"
-              onClick={() => {
-                setSettingsTab("profile");
-                setView("school_profile");
-              }}
-              className={`w-full sm:w-auto px-4 py-2.5 rounded-xl text-xs font-semibold border inline-flex items-center justify-center gap-2 transition cursor-pointer active:scale-[0.98] whitespace-nowrap shrink-0 ${
-                isWhite
-                  ? "bg-slate-900 hover:bg-slate-800 border-slate-900 text-white"
-                  : isBlack
-                  ? "bg-white hover:bg-slate-100 border-white text-neutral-950"
-                  : "bg-indigo-600 hover:bg-indigo-500 border-indigo-500 text-white"
-              }`}
-            >
-              <Settings className="w-3.5 h-3.5" />
-              <span>स्कूल सेटिंग्स (Settings)</span>
-            </button>
+            <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 shrink-0">
+              <button
+                type="button"
+                onClick={openAdminProfilesManager}
+                className="w-full sm:w-auto px-4 py-2.5 rounded-xl text-xs font-semibold border border-emerald-500/40 bg-emerald-600 hover:bg-emerald-700 text-white inline-flex items-center justify-center gap-2 transition cursor-pointer active:scale-[0.98] whitespace-nowrap shrink-0"
+              >
+                <Crown className="w-3.5 h-3.5" />
+                <span>Admin / Principal Profile &amp; Powers</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setSettingsTab("profile");
+                  setView("school_profile");
+                }}
+                className={`w-full sm:w-auto px-4 py-2.5 rounded-xl text-xs font-semibold border inline-flex items-center justify-center gap-2 transition cursor-pointer active:scale-[0.98] whitespace-nowrap shrink-0 ${
+                  isWhite
+                    ? "bg-slate-900 hover:bg-slate-800 border-slate-900 text-white"
+                    : isBlack
+                    ? "bg-white hover:bg-slate-100 border-white text-neutral-950"
+                    : "bg-indigo-600 hover:bg-indigo-500 border-indigo-500 text-white"
+                }`}
+              >
+                <Settings className="w-3.5 h-3.5" />
+                <span>स्कूल सेटिंग्स (Settings)</span>
+              </button>
+            </div>
           </div>
         </div>
 
@@ -12132,7 +12578,7 @@ export const SchoolAdminPanel: React.FC<Props> = ({
         <AccountRecoveryCard
           uid={adminUid || school?.id || "admin_uid"}
           role="SCHOOL_ADMIN"
-          name={school?.principalName || `${school?.name || "School"} Admin`}
+          name={activeAdminDisplayName}
           displayId={school?.id}
           schoolId={schoolId}
           schoolName={school?.name}
@@ -12350,7 +12796,7 @@ export const SchoolAdminPanel: React.FC<Props> = ({
     }
     if (view === "accounts_directory") {
       return (
-        <div className="p-4 sm:p-6 max-w-5xl mx-auto">
+        <div className="w-full max-w-5xl mx-auto">
           <LazyPanelBoundary title="Accounts Directory">
             <AdminAccountsDirectory
               schoolId={schoolId}
@@ -12369,7 +12815,7 @@ export const SchoolAdminPanel: React.FC<Props> = ({
     }
     if (view === "sessions") {
       return (
-        <div className="p-4 sm:p-6 space-y-5 max-w-4xl mx-auto animate-in fade-in duration-200">
+        <div className="space-y-4 w-full max-w-5xl mx-auto animate-in fade-in duration-200">
           {/* Top Header Card with Back Button */}
           <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 p-4 bg-white dark:bg-slate-800 rounded-2xl border border-slate-200 dark:border-slate-700 shadow-sm">
             <div className="flex items-center gap-3">
@@ -12736,8 +13182,8 @@ export const SchoolAdminPanel: React.FC<Props> = ({
 
     if (view === "face_id_studio") {
       return (
-        <div className="p-4 sm:p-6 space-y-4 max-w-4xl mx-auto">
-          <div className="bg-gradient-to-r from-emerald-600 to-teal-700 text-white rounded-3xl p-6 sm:p-8 shadow-xl relative overflow-hidden">
+        <div className="space-y-4 w-full max-w-5xl mx-auto">
+          <div className="bg-gradient-to-r from-emerald-600 to-teal-700 text-white rounded-2xl p-4 sm:p-6 shadow-xl relative overflow-hidden">
             <div className="relative z-10 space-y-3">
               <span className="px-3 py-1 bg-white/20 backdrop-blur-md rounded-full text-xs font-black uppercase tracking-wider inline-flex items-center gap-1.5">
                 {hasFaceAttendanceAccess(school) ? "Universal Live Biometric System" : "👑 Elite Plan Exclusive Feature"}
@@ -12790,7 +13236,7 @@ export const SchoolAdminPanel: React.FC<Props> = ({
       });
 
       return (
-        <div className="p-4 sm:p-6 space-y-4 max-w-4xl mx-auto">
+        <div className="space-y-3.5 w-full max-w-5xl mx-auto">
           {!activeSession && (
             <div className="text-center py-10 text-slate-400 text-sm bg-white dark:bg-slate-800 rounded-2xl border border-dashed border-slate-300 dark:border-slate-700 p-6">
               <p className="font-bold text-slate-600 dark:text-slate-300 text-base mb-1">Session Not Selected</p>
@@ -15005,7 +15451,7 @@ export const SchoolAdminPanel: React.FC<Props> = ({
       const totalSavedDisc = filteredDiscs.reduce((s, d) => s + (Number(d.discountAmount) || 0), 0);
 
       return (
-        <div className="p-4 space-y-3 max-w-4xl mx-auto">
+        <div className="space-y-3 w-full max-w-5xl mx-auto">
           <div className="bg-white dark:bg-slate-800 rounded-2xl p-4 border border-emerald-200 dark:border-emerald-800 shadow-xs flex flex-wrap items-center justify-between gap-3">
             <div>
               <h2 className="text-base font-black text-slate-800 dark:text-white flex items-center gap-2">
@@ -15119,7 +15565,7 @@ export const SchoolAdminPanel: React.FC<Props> = ({
       const paginatedStudents = filteredStudents.slice((currentStudentPage - 1) * pageSize, currentStudentPage * pageSize);
 
       return (
-        <div className="p-4 space-y-3 max-w-3xl mx-auto">
+        <div className="space-y-3 w-full max-w-5xl mx-auto">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <p className="text-sm text-slate-500">
               {selectedClass ? (
@@ -15656,6 +16102,10 @@ export const SchoolAdminPanel: React.FC<Props> = ({
                   <button
                     type="button"
                     onClick={() => {
+                      if (activeAdminProfile && !activeAdminPermissions.canDeleteStudents) {
+                        toast.error(`🔒 ${activeAdminDisplayName} के पास छात्र हटाने (Delete Student) का Power नहीं है।`);
+                        return;
+                      }
                       setConfirmAction({
                         title: "Student Recycle Bin me Bhejein?",
                         message: `"${s.name}" ko delete karne par yeh Settings > Recycle Bin me chale jayenge jahan se aap inhe kabhi bhi restore kar sakte hain.`,
@@ -15748,12 +16198,12 @@ export const SchoolAdminPanel: React.FC<Props> = ({
       const overallPct = schoolTotal > 0 ? Math.min(100, Math.round((schoolCollected / schoolTotal) * 100)) : 0;
 
       return (
-        <div className="p-4 sm:p-5 max-w-3xl mx-auto space-y-4">
+        <div className="space-y-4 w-full max-w-5xl mx-auto">
           {upiProofs.some((p) => p.status === "PENDING") && (
             <PendingUpiApprovalsPanel
               schoolId={schoolId}
               proofs={upiProofs}
-              approverName={school?.principalName || "School Admin"}
+              approverName={activeAdminDisplayName}
               approverRole="admin"
               approverId={adminUid || "STAFF_ADMIN"}
               isAdmin={true}
@@ -15999,7 +16449,7 @@ export const SchoolAdminPanel: React.FC<Props> = ({
       renderAccountHubPage()
     ) : (
       <div>
-        <div className="bg-white dark:bg-slate-800 border-b dark:border-slate-700 px-4 py-3 rounded-2xl mb-4 flex items-center justify-between gap-2 shadow-xs">
+        <div className="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 px-3 sm:px-4 py-2.5 rounded-xl mb-3 flex items-center justify-between gap-2 shadow-xs">
           <div className="flex items-center gap-2 min-w-0">
             <p className="text-sm font-black text-slate-700 dark:text-slate-200 capitalize truncate">
               {view.replace(/_/g, " ")}

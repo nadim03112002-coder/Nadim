@@ -143,18 +143,18 @@ export function syncSchoolAdminPinHashToNative(
   } catch {}
 }
 
-export function syncStoredAdminPinToNative(): void {
+export function syncStoredAdminPinToNative(schoolId?: string): void {
   const bridge = getBridge();
   if (!bridge) return;
   try {
     if (typeof bridge.syncAdminPinHash === "function") {
-      const stored = localStorage.getItem(ADMIN_PIN_HASH_STORAGE_KEY);
+      const stored = getCachedSchoolAdminPinHash(schoolId);
       if (stored && stored.trim().length > 0) {
         bridge.syncAdminPinHash(stored.trim());
       }
     }
     if (typeof bridge.setUninstallPinRequired === "function") {
-      bridge.setUninstallPinRequired(getCachedUninstallPinRequired());
+      bridge.setUninstallPinRequired(getCachedUninstallPinRequired(schoolId));
     }
   } catch {}
 }
@@ -209,8 +209,6 @@ export function getAndroidDeviceAdminStatus(): AndroidDeviceAdminStatus {
   if (!bridge || typeof bridge.getDeviceAdminStatus !== "function") {
     return fallback;
   }
-
-  syncStoredAdminPinToNative();
 
   try {
     const raw = bridge.getDeviceAdminStatus();

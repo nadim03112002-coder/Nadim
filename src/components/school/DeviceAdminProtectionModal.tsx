@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import {
   CheckCircle2,
   Clock,
@@ -83,6 +83,9 @@ export const DeviceAdminProtectionModal: React.FC<DeviceAdminProtectionModalProp
   const [savingPin, setSavingPin] = useState(false);
   const [verifyPinInput, setVerifyPinInput] = useState("");
   const [showPinSetup, setShowPinSetup] = useState(false);
+  const [confirmingAction, setConfirmingAction] = useState(false);
+  const pendingBoxRef = useRef<HTMLDivElement | null>(null);
+  const verifyPinInputRef = useRef<HTMLInputElement | null>(null);
   const [pendingAdminAction, setPendingAdminAction] = useState<
     | null
     | "temp_unlock"
@@ -135,7 +138,7 @@ export const DeviceAdminProtectionModal: React.FC<DeviceAdminProtectionModalProp
         syncSchoolAdminPinHashToNative(targetHash, schoolId);
         setHasPin(true);
       } else {
-        syncStoredAdminPinToNative();
+        syncStoredAdminPinToNative(schoolId);
       }
       setStatus(getAndroidDeviceAdminStatus());
     };
@@ -174,6 +177,17 @@ export const DeviceAdminProtectionModal: React.FC<DeviceAdminProtectionModalProp
       window.clearInterval(timer);
     };
   }, [isOpen, schoolId, schoolPinHash, schoolLockCode, uninstallPinRequired, canEditPin]);
+
+  useEffect(() => {
+    if (!isOpen || !pendingAdminAction) return;
+    const t = window.setTimeout(() => {
+      try {
+        pendingBoxRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+        verifyPinInputRef.current?.focus();
+      } catch {}
+    }, 60);
+    return () => window.clearTimeout(t);
+  }, [isOpen, pendingAdminAction]);
 
   if (!isOpen) return null;
 
@@ -300,31 +314,32 @@ export const DeviceAdminProtectionModal: React.FC<DeviceAdminProtectionModalProp
       return;
     }
     setSavingPinToggle(true);
-    try {
-      if (schoolId) {
-        await updateSchool(schoolId, {
-          uninstallPinRequired: nextRequired,
-          uninstallGuardPinUpdatedAt: new Date().toISOString(),
-        });
+    // 1. Apply immediately to local cache, React UI, and Android native guard (0ms, never blocks)
+    syncUninstallPinRequiredToNative(nextRequired, schoolId, { syncGuardLock: true });
+    setPinGuardEnabled(nextRequired);
+    onUninstallPinRequiredChanged?.(nextRequired);
+    refreshStatus();
+    toast.success(
+      nextRequired
+        ? "Uninstall PIN Guard ON ho gaya — ab uninstall par School PIN maanga jayega."
+        : "Uninstall PIN Prompt OFF ho gaya — ab user ko uninstall par PIN screen nahi dikhega."
+    );
+
+    // 2. Sync to cloud in bounded background/timeout without freezing UI
+    if (schoolId) {
+      try {
+        await Promise.race([
+          updateSchool(schoolId, {
+            uninstallPinRequired: nextRequired,
+            uninstallGuardPinUpdatedAt: new Date().toISOString(),
+          }),
+          new Promise((_, reject) => setTimeout(() => reject(new Error("timeout")), 2500)),
+        ]);
+      } catch {
+        // Local device & school state already updated; cloud sync will reconcile later
       }
-      syncUninstallPinRequiredToNative(nextRequired, schoolId, { syncGuardLock: true });
-      setPinGuardEnabled(nextRequired);
-      onUninstallPinRequiredChanged?.(nextRequired);
-      refreshStatus();
-      toast.success(
-        nextRequired
-          ? "Uninstall PIN Guard ON ho gaya — ab uninstall par School PIN maanga jayega."
-          : "Uninstall PIN Prompt OFF ho gaya — ab user ko uninstall par PIN screen nahi dikhega."
-      );
-    } catch {
-      syncUninstallPinRequiredToNative(nextRequired, schoolId, { syncGuardLock: true });
-      setPinGuardEnabled(nextRequired);
-      onUninstallPinRequiredChanged?.(nextRequired);
-      refreshStatus();
-      toast.error("Cloud sync me samasya aayi, local device par setting update kar di gayi hai.");
-    } finally {
-      setSavingPinToggle(false);
     }
+    setSavingPinToggle(false);
   };
 
   const handleTogglePinGuardSetting = () => {
@@ -333,6 +348,7 @@ export const DeviceAdminProtectionModal: React.FC<DeviceAdminProtectionModalProp
       if (hasConfiguredPin) {
         setPendingAdminAction("disable_pin_required");
         setVerifyPinInput("");
+        toast.info("PIN Guard OFF karne ke liye niche School Security PIN daalkar Confirm karein.");
       } else {
         void applyUninstallPinRequired(false);
       }
@@ -344,32 +360,39 @@ export const DeviceAdminProtectionModal: React.FC<DeviceAdminProtectionModalProp
   };
 
   const executeProtectedAction = async () => {
-    if (!pendingAdminAction) return;
-    if (requiresPinOrSchoolCode) {
-      const ok = await checkAdminPin(verifyPinInput);
-      if (!ok) return;
-    }
-
-    if (pendingAdminAction === "disable_pin_required") {
-      await applyUninstallPinRequired(false);
-    } else if (pendingAdminAction === "temp_unlock") {
-      unlockAndroidProtectionTemporarily(120);
-      toast.success("2 minute ke liye Settings/Uninstall Lock pause ho gaya!");
-    } else if (pendingAdminAction === "disable_accessibility_lock") {
-      setAndroidAccessibilityGuardLocked(false);
-      toast.success("Accessibility Guard Lock band kar diya gaya.");
-    } else if (pendingAdminAction === "deactivate_admin") {
-      const res = deactivateAndroidDeviceAdmin();
-      if (res) {
-        toast.success("Device Admin band kar diya gaya.");
-      } else {
-        toast.error("Settings → Device Admin Apps se deactivate karein.");
+    if (!pendingAdminAction || confirmingAction) return;
+    setConfirmingAction(true);
+    try {
+      if (requiresPinOrSchoolCode) {
+        const ok = await checkAdminPin(verifyPinInput);
+        if (!ok) return;
       }
-    }
 
-    setPendingAdminAction(null);
-    setVerifyPinInput("");
-    refreshStatus();
+      const action = pendingAdminAction;
+      setPendingAdminAction(null);
+      setVerifyPinInput("");
+
+      if (action === "disable_pin_required") {
+        await applyUninstallPinRequired(false);
+      } else if (action === "temp_unlock") {
+        unlockAndroidProtectionTemporarily(120);
+        toast.success("2 minute ke liye Settings/Uninstall Lock pause ho gaya!");
+      } else if (action === "disable_accessibility_lock") {
+        setAndroidAccessibilityGuardLocked(false);
+        toast.success("Accessibility Guard Lock band kar diya gaya.");
+      } else if (action === "deactivate_admin") {
+        const res = deactivateAndroidDeviceAdmin();
+        if (res) {
+          toast.success("Device Admin band kar diya gaya.");
+        } else {
+          toast.error("Settings → Device Admin Apps se deactivate karein.");
+        }
+      }
+
+      refreshStatus();
+    } finally {
+      setConfirmingAction(false);
+    }
   };
 
   const handleToggleHardUninstallBlock = () => {
@@ -601,6 +624,62 @@ export const DeviceAdminProtectionModal: React.FC<DeviceAdminProtectionModalProp
             )}
           </div>
 
+          {/* PIN Verification Box — directly below Master Toggle so it is immediately visible on mobile */}
+          {pendingAdminAction && (
+            <div
+              ref={pendingBoxRef}
+              className="p-3.5 rounded-2xl bg-rose-50 dark:bg-rose-950/40 border-2 border-rose-400 dark:border-rose-700 space-y-2.5 shadow-md"
+            >
+              <p className="text-xs font-black text-rose-800 dark:text-rose-200">
+                {requiresPinOrSchoolCode
+                  ? pendingAdminAction === "disable_pin_required"
+                    ? "Uninstall PIN Prompt OFF karne ke liye School Security PIN daalein:"
+                    : "Confirm karne ke liye School Security PIN daalein:"
+                  : pendingAdminAction === "temp_unlock"
+                  ? "Kya aap 2 minute ke liye Accessibility Uninstall Guard pause karna chahte hain?"
+                  : "Kya aap Device Admin band karna chahte hain?"}
+              </p>
+              <div className="flex items-center gap-2">
+                {requiresPinOrSchoolCode && (
+                  <input
+                    ref={verifyPinInputRef}
+                    type="password"
+                    inputMode="numeric"
+                    value={verifyPinInput}
+                    onChange={(e) => setVerifyPinInput(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        void executeProtectedAction();
+                      }
+                    }}
+                    placeholder="School PIN / Code"
+                    className="flex-1 px-3 py-2.5 rounded-xl border border-rose-300 dark:border-rose-700 bg-white dark:bg-slate-900 text-xs font-mono text-slate-900 dark:text-white"
+                  />
+                )}
+                <button
+                  type="button"
+                  disabled={confirmingAction}
+                  onClick={() => void executeProtectedAction()}
+                  className="px-4 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-500 disabled:opacity-60 text-white font-black text-xs cursor-pointer shrink-0"
+                >
+                  {confirmingAction ? "Checking..." : "Confirm"}
+                </button>
+                <button
+                  type="button"
+                  disabled={confirmingAction}
+                  onClick={() => {
+                    setPendingAdminAction(null);
+                    setVerifyPinInput("");
+                  }}
+                  className="px-3 py-2.5 rounded-xl bg-slate-200 dark:bg-slate-800 text-slate-700 dark:text-slate-300 font-bold text-xs cursor-pointer shrink-0"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          )}
+
           {/* Step-by-Step No-PC Double Shield Buttons */}
           <div className="space-y-2.5">
             {/* Layer 1: Accessibility Guard (Like Regain App) */}
@@ -806,50 +885,6 @@ export const DeviceAdminProtectionModal: React.FC<DeviceAdminProtectionModalProp
               </button>
             </div>
           </div>
-
-          {/* PIN Verification Box for Unlock / Deactivate / Turn Off PIN Guard */}
-          {pendingAdminAction && (
-            <div className="p-3.5 rounded-2xl bg-rose-50 dark:bg-rose-950/30 border border-rose-200 dark:border-rose-800 space-y-2.5">
-              <p className="text-xs font-bold text-rose-800 dark:text-rose-200">
-                {requiresPinOrSchoolCode
-                  ? pendingAdminAction === "disable_pin_required"
-                    ? "Uninstall PIN Prompt OFF karne ke liye School Security PIN daalein:"
-                    : "Confirm karne ke liye School Security PIN daalein:"
-                  : pendingAdminAction === "temp_unlock"
-                  ? "Kya aap 2 minute ke liye Accessibility Uninstall Guard pause karna chahte hain?"
-                  : "Kya aap Device Admin band karna chahte hain?"}
-              </p>
-              <div className="flex items-center gap-2">
-                {requiresPinOrSchoolCode && (
-                  <input
-                    type="password"
-                    inputMode="numeric"
-                    value={verifyPinInput}
-                    onChange={(e) => setVerifyPinInput(e.target.value)}
-                    placeholder="School PIN / Code"
-                    className="flex-1 px-3 py-2 rounded-xl border border-rose-300 dark:border-rose-700 bg-white dark:bg-slate-900 text-xs font-mono"
-                  />
-                )}
-                <button
-                  type="button"
-                  onClick={executeProtectedAction}
-                  className="px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-black text-xs cursor-pointer"
-                >
-                  Confirm
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setPendingAdminAction(null);
-                    setVerifyPinInput("");
-                  }}
-                  className="px-3 py-2 rounded-xl bg-slate-200 dark:bg-slate-800 text-slate-700 dark:text-slate-300 font-bold text-xs cursor-pointer"
-                >
-                  Cancel
-                </button>
-              </div>
-            </div>
-          )}
 
           {/* Central School Security PIN Setup Box (Admin Only) */}
           {canEditPin && showPinSetup && (

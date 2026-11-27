@@ -5710,7 +5710,7 @@ export const OnlineAdmissionManager: React.FC<Props> = ({
         </div>
       )}
 
-      <div className={`max-w-6xl mx-auto px-3 sm:px-4 ${hideTopNavbar ? "pt-4" : "mt-3"}`}>
+      <div className={`max-w-6xl mx-auto ${hideTopNavbar ? "px-1 sm:px-3 pt-2" : "px-3 sm:px-4 mt-3"}`}>
         {/* Mode Tabs: Top 3 options always in ONE single row */}
         {isAdmin && viewMode !== "fee_setup_only" && (
           <div className="space-y-2 mb-4">

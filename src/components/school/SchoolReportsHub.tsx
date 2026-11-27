@@ -347,9 +347,9 @@ export const SchoolReportsHub: React.FC<Props> = ({
         </div>
       </div>
 
-      <div className="max-w-6xl mx-auto px-4 py-5 print:p-0 print:m-0 print:max-w-none">
+      <div className="max-w-6xl mx-auto px-1 sm:px-4 py-3 sm:py-5 print:p-0 print:m-0 print:max-w-none">
         {/* Controls Bar (hidden in print) */}
-        <div className="bg-white dark:bg-slate-800 rounded-2xl p-4 shadow-sm mb-6 space-y-4 print:hidden">
+        <div className="bg-white dark:bg-slate-800 rounded-2xl p-3 sm:p-4 shadow-sm mb-5 space-y-4 print:hidden">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
               <h1 className="text-xl font-black text-slate-900 dark:text-white flex items-center gap-2">

@@ -452,40 +452,55 @@ export async function resolveDriverFromLocalAndCloudStores(
     } catch {}
   }
 
-  // Pass 2: cloud check across schools (bus_drivers, bus_routes, bus_fleet)
+  // Pass 2: cloud check across schools in parallel with strict 3.5s timeout
   try {
-    const cloudSchools = await getAllSchools().catch(() => []);
-    cloudSchools.forEach((s: any) => registerSchool(s?.id, s?.code || "", s?.name || ""));
+    const cloudPass = (async () => {
+      const cloudSchools = await Promise.race([
+        getAllSchools().catch(() => []),
+        new Promise<any[]>((resolve) => setTimeout(() => resolve([]), 2000)),
+      ]);
+      cloudSchools.forEach((s: any) => registerSchool(s?.id, s?.code || "", s?.name || ""));
 
-    for (const [sid, meta] of schoolMetaMap.entries()) {
-      try {
-        const { drivers, routes, vehicles } = await loadTransportData(sid);
-        let fleetArr = vehicles;
-        if (fleetArr.length === 0) {
-          let fleet: any = await sbRtdbGet(`schools/${sid}/bus_fleet`).catch(() => null);
-          if (!fleet && rtdb) {
-            try {
-              const fSnap = await rtdbGet(dbRef(rtdb, `schools/${sid}/bus_fleet`));
-              if (fSnap.exists()) fleet = fSnap.val();
-            } catch {}
+      const entries = Array.from(schoolMetaMap.entries()).slice(0, 12);
+      const results = await Promise.all(
+        entries.map(async ([sid, meta]) => {
+          try {
+            const { drivers, routes, vehicles } = await loadTransportData(sid);
+            let fleetArr = vehicles;
+            if (fleetArr.length === 0) {
+              let fleet: any = await sbRtdbGet(`schools/${sid}/bus_fleet`).catch(() => null);
+              if (!fleet && rtdb) {
+                try {
+                  const fSnap = await rtdbGet(dbRef(rtdb, `schools/${sid}/bus_fleet`));
+                  if (fSnap.exists()) fleet = fSnap.val();
+                } catch {}
+              }
+              if (fleet && typeof fleet === "object") {
+                fleetArr = Object.values(fleet);
+              }
+            }
+            return matchAgainstPool(
+              qLower,
+              cleanPhone,
+              sid,
+              meta.code,
+              meta.name,
+              drivers,
+              routes,
+              fleetArr
+            );
+          } catch {
+            return null;
           }
-          if (fleet && typeof fleet === "object") {
-            fleetArr = Object.values(fleet);
-          }
-        }
-        const hit = matchAgainstPool(
-          qLower,
-          cleanPhone,
-          sid,
-          meta.code,
-          meta.name,
-          drivers,
-          routes,
-          fleetArr
-        );
-        if (hit) return hit;
-      } catch {}
-    }
+        })
+      );
+      return results.find(Boolean) || null;
+    })();
+
+    return await Promise.race([
+      cloudPass,
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), 3500)),
+    ]);
   } catch {}
 
   return null;

@@ -22,7 +22,9 @@ import {
 } from "lucide-react";
 import { DirectUploadButton } from "../DirectUploadButton";
 import { getDynamicAcademicSessionLabel } from "../../utils/safeBrowserActions";
-import { getLocalRoutes } from "../../utils/schoolTransportStore";
+import { getLocalRoutes, saveStudentStopLocationPin } from "../../utils/schoolTransportStore";
+import type { StudentHomePin } from "../../utils/busProximity";
+import { StudentStopLocationFields } from "./StudentStopLocationFields";
 import { toUpperFormText, rememberOccupation } from "../../utils/schoolFormUtils";
 import { OccupationAutocomplete } from "./OccupationAutocomplete";
 import {
@@ -140,6 +142,9 @@ interface BatchStudentDraft {
   baseMonthlyFee: number;
   usesBus: boolean;
   busRoute: string;
+  busStop: string;
+  homeLat?: number;
+  homeLng?: number;
   busFee: number;
   feeLines: FeeLineDraft[];
   allFeeLines?: FeeLineDraft[];
@@ -231,6 +236,9 @@ export const DirectAdmissionModal: React.FC<Props> = ({
   const [monthlyFee, setMonthlyFee] = useState<number>(0);
   const [usesBus, setUsesBus] = useState<boolean>(false);
   const [busRoute, setBusRoute] = useState<string>("");
+  const [busStop, setBusStop] = useState<string>("");
+  const [homeLat, setHomeLat] = useState<number | undefined>(undefined);
+  const [homeLng, setHomeLng] = useState<number | undefined>(undefined);
   const [busFee, setBusFee] = useState<number>(0);
   const configuredRoutes = useMemo(() => (school?.id ? getLocalRoutes(school.id) : []), [school?.id, isOpen]);
   const selectedRouteObj = useMemo(
@@ -470,6 +478,9 @@ export const DirectAdmissionModal: React.FC<Props> = ({
     const hadBus = Boolean(src.usesBus);
     setUsesBus(hadBus);
     setBusRoute(src.busRoute || "");
+    setBusStop(src.busStop || "");
+    setHomeLat(typeof src.homeLat === "number" ? src.homeLat : undefined);
+    setHomeLng(typeof src.homeLng === "number" ? src.homeLng : undefined);
     setBusFee(hadBus ? Number(src.busFee || 0) : 0);
     setPreviousSchool(school?.name || "");
     setPreviousMarks(src.className ? `${src.className} (Promoted)` : "Promoted");
@@ -742,6 +753,9 @@ export const DirectAdmissionModal: React.FC<Props> = ({
     setShowPulledLedgerMonths(false);
     setSelectedTargetSessionId(activeSession?.id || sessionsProp[0]?.id || "");
     setIncludeBackDueInBill(true);
+    setBusStop("");
+    setHomeLat(undefined);
+    setHomeLng(undefined);
 
     Promise.all([
       getTeachers(school.id).catch(() => []),
@@ -1037,6 +1051,9 @@ export const DirectAdmissionModal: React.FC<Props> = ({
       baseMonthlyFee: baseMonthlyFee || Number(monthlyFee) || 0,
       usesBus,
       busRoute: toUpperFormText(busRoute.trim()),
+      busStop: toUpperFormText(busStop.trim()),
+      homeLat,
+      homeLng,
       busFee: Number(busFee) || 0,
       feeLines: [...activeFeeLines],
       allFeeLines: [...feeLines],
@@ -1148,6 +1165,9 @@ export const DirectAdmissionModal: React.FC<Props> = ({
           baseMonthlyFee: number;
           usesBus: boolean;
           busRoute: string;
+          busStop: string;
+          homeLat?: number;
+          homeLng?: number;
           busFee: number;
           feeLines: FeeLineDraft[];
           allFeeLines?: FeeLineDraft[];
@@ -1344,10 +1364,18 @@ export const DirectAdmissionModal: React.FC<Props> = ({
           photoUrl: draft.isPrimaryForm ? (photoUrl || undefined) : undefined,
           usesBus: draft.usesBus,
           busRoute: draft.usesBus ? (toUpperFormText(draft.busRoute) || undefined) : undefined,
+          busStop: draft.usesBus ? (toUpperFormText(draft.busStop) || undefined) : undefined,
           busFee: draft.usesBus ? draft.busFee : 0,
           busNumber: draft.usesBus ? selectedRouteObj?.busNumber : undefined,
           driverName: draft.usesBus ? selectedRouteObj?.driverName : undefined,
           driverPhone: draft.usesBus ? selectedRouteObj?.driverPhone : undefined,
+          ...(draft.usesBus && typeof draft.homeLat === "number" && typeof draft.homeLng === "number"
+            ? {
+                homeLat: draft.homeLat,
+                homeLng: draft.homeLng,
+                homeAddress: toUpperFormText(draft.busStop || address.trim()) || undefined,
+              }
+            : {}),
           submittedDocs,
           admissionReceiptNo: sReceiptNo,
           admissionTotalAmount: collectFeeNow ? sActiveNetPayable : 0,
@@ -1379,6 +1407,31 @@ export const DirectAdmissionModal: React.FC<Props> = ({
         };
 
         const saved = await saveStudent(sObj);
+        if (
+          draft.usesBus &&
+          typeof draft.homeLat === "number" &&
+          typeof draft.homeLng === "number" &&
+          Number.isFinite(draft.homeLat) &&
+          Number.isFinite(draft.homeLng)
+        ) {
+          const pinRec: StudentHomePin = {
+            studentId: saved.id,
+            studentName: saved.name,
+            rollNo: saved.rollNo,
+            className: saved.className || "",
+            busRoute: saved.busRoute || selectedRouteObj?.routeName || "",
+            busStop: saved.busStop || `${saved.name.split(" ")[0]} Stop`,
+            busNumber: saved.busNumber || selectedRouteObj?.busNumber || "",
+            homeLat: draft.homeLat,
+            homeLng: draft.homeLng,
+            homeAddress: saved.homeAddress || saved.busStop || "",
+            updatedAt: new Date().toISOString(),
+          };
+          void saveStudentStopLocationPin(school.id, pinRec, {
+            busId: selectedRouteObj?.busId,
+            overwriteStopCoord: false,
+          }).catch(() => {});
+        }
         rememberOccupation(fatherOccupation, school.id);
         rememberOccupation(motherOccupation, school.id);
 
@@ -1556,6 +1609,9 @@ export const DirectAdmissionModal: React.FC<Props> = ({
           baseMonthlyFee: b.baseMonthlyFee,
           usesBus: b.usesBus,
           busRoute: b.busRoute,
+          busStop: b.busStop,
+          homeLat: b.homeLat,
+          homeLng: b.homeLng,
           busFee: b.busFee,
           feeLines: b.feeLines,
           allFeeLines: b.allFeeLines || b.feeLines,
@@ -1578,6 +1634,9 @@ export const DirectAdmissionModal: React.FC<Props> = ({
           baseMonthlyFee: baseMonthlyFee || Number(monthlyFee) || 0,
           usesBus,
           busRoute: busRoute.trim(),
+          busStop: busStop.trim(),
+          homeLat,
+          homeLng,
           busFee: Number(busFee) || 0,
           feeLines: activeFeeLines,
           allFeeLines: feeLines,
@@ -2346,6 +2405,42 @@ export const DirectAdmissionModal: React.FC<Props> = ({
                 />
               </div>
             </div>
+
+            {/* Bus & Stop Location Selection (Available in Quick & Full Admission) */}
+            <div className="pt-3 border-t border-slate-200 dark:border-slate-700 space-y-2.5">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <label className="flex items-center gap-2 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={usesBus}
+                    onChange={(e) => setUsesBus(e.target.checked)}
+                    className="w-4 h-4 accent-amber-600"
+                  />
+                  <Bus className="w-4 h-4 text-amber-600" />
+                  <span className="text-xs font-bold text-slate-800 dark:text-white">
+                    School Bus / Van Transport &amp; Stop Location (स्टॉप लोकेशन जोड़ें)
+                  </span>
+                </label>
+              </div>
+              {usesBus && (
+                <StudentStopLocationFields
+                  schoolId={school.id}
+                  busRoute={busRoute}
+                  busStop={busStop}
+                  homeLat={homeLat}
+                  homeLng={homeLng}
+                  busFee={busFee}
+                  showBusFee
+                  onChange={(patch) => {
+                    if (patch.busRoute !== undefined) setBusRoute(patch.busRoute);
+                    if (patch.busStop !== undefined) setBusStop(patch.busStop);
+                    if (patch.busFee !== undefined) setBusFee(patch.busFee);
+                    if ("homeLat" in patch) setHomeLat(patch.homeLat);
+                    if ("homeLng" in patch) setHomeLng(patch.homeLng);
+                  }}
+                />
+              )}
+            </div>
           </div>
 
           {/* SAME-FAMILY SIBLING AUTO-DISCOUNT & TEACHER 10% REFERRAL COMMISSION */}
@@ -2751,68 +2846,6 @@ export const DirectAdmissionModal: React.FC<Props> = ({
                       className="w-full px-3 py-2 rounded-xl border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 text-xs font-mono text-slate-900 dark:text-slate-100 placeholder:text-slate-400"
                     />
                   </div>
-                </div>
-
-                {/* Bus Facility Toggle */}
-                <div className="pt-2 border-t border-slate-200 dark:border-slate-700 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                  <label className="flex items-center gap-2 cursor-pointer select-none">
-                    <input
-                      type="checkbox"
-                      checked={usesBus}
-                      onChange={(e) => setUsesBus(e.target.checked)}
-                      className="w-4 h-4 accent-amber-600"
-                    />
-                    <Bus className="w-4 h-4 text-amber-600" />
-                    <span className="text-xs font-bold text-slate-800 dark:text-white">
-                      School Bus / Van Transport सुविधा चाहिए
-                    </span>
-                  </label>
-
-                  {usesBus && (
-                    <div className="flex items-center gap-2 flex-wrap">
-                      {configuredRoutes.length > 0 ? (
-                        <select
-                          value={configuredRoutes.some((r) => r.routeName === busRoute) ? busRoute : "__custom__"}
-                          onChange={(e) => {
-                            const val = e.target.value;
-                            if (val === "__custom__") {
-                              if (configuredRoutes.some((r) => r.routeName === busRoute)) setBusRoute("");
-                              return;
-                            }
-                            const found = configuredRoutes.find((r) => r.routeName === val);
-                            setBusRoute(val);
-                            if (found && Number(found.monthlyFee) > 0) setBusFee(Number(found.monthlyFee));
-                          }}
-                          className="px-3 py-1.5 rounded-xl border border-amber-300 dark:border-amber-700 bg-amber-50/40 dark:bg-slate-900 text-xs font-semibold text-slate-800 dark:text-white max-w-[240px]"
-                        >
-                          <option value="__custom__">-- Route चुनें / Custom --</option>
-                          {configuredRoutes.map((r) => (
-                            <option key={r.id} value={r.routeName}>
-                              {r.routeName} {r.busNumber ? `(${r.busNumber})` : ""} · ₹{r.monthlyFee || 0}
-                            </option>
-                          ))}
-                        </select>
-                      ) : null}
-                      {(!configuredRoutes.length || !configuredRoutes.some((r) => r.routeName === busRoute)) && (
-                        <input
-                          type="text"
-                          value={busRoute}
-                          onChange={(e) => setBusRoute(toUpperFormText(e.target.value))}
-                          placeholder="STOP / ROUTE NAME"
-                          className="px-3 py-1.5 rounded-xl border border-amber-300 dark:border-amber-700 bg-amber-50/40 dark:bg-slate-900 text-xs font-semibold uppercase text-slate-800 dark:text-white w-44"
-                        />
-                      )}
-                      <div className="flex items-center gap-1">
-                        <span className="text-xs font-bold text-slate-500">Bus ₹:</span>
-                        <input
-                          type="number"
-                          value={busFee}
-                          onChange={(e) => setBusFee(Number(e.target.value))}
-                          className="px-2.5 py-1.5 rounded-xl border border-amber-300 dark:border-amber-700 bg-white dark:bg-slate-900 text-xs font-bold w-24 text-slate-800 dark:text-white"
-                        />
-                      </div>
-                    </div>
-                  )}
                 </div>
               </div>
 

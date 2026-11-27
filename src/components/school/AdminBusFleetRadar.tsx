@@ -3,10 +3,11 @@ import React, { useState, useEffect } from "react";
 import {
   Bus, Navigation, MapPin, Gauge, Phone, ExternalLink,
   RefreshCw, Radio, CheckCircle2, Clock, AlertCircle,
-  Sliders, Shield, Play, Map as MapIcon, Plus, Copy, Link2, X, Home, Crosshair, QrCode, Edit3, Trash2, LocateFixed, Users, Search
+  Sliders, Shield, Play, Map as MapIcon, Plus, Copy, Link2, X, Home, Crosshair, QrCode, Edit3, Trash2, LocateFixed, Users, Search,
+  ArrowLeft, Maximize2, Minimize2
 } from "lucide-react";
 import type { School, BusLiveLocation, SchoolStudent, SchoolBusRoute } from "../../school-types";
-import { shouldUseDemoForSchool, updateStudent, getStudents, getLocalStudents } from "../../school-firebase";
+import { shouldUseDemoForSchool, updateStudent, getStudents, getLocalStudents, updateSchool, isDemoSchoolId } from "../../school-firebase";
 import { safeOpenExternalUrl } from "../../utils/safeBrowserActions";
 import { rtdb } from "../../firebase";
 import { ref as dbRef, onValue, set as rtdbSet } from "firebase/database";
@@ -22,6 +23,8 @@ import {
   getLocalRoutes,
   updateRouteStopCoordinate,
   saveStudentStopLocationPin,
+  getBusLiveShareUrl,
+  saveBusLiveShareUrl,
 } from "../../utils/schoolTransportStore";
 import {
   LiveBusGoogleMap,
@@ -33,6 +36,7 @@ import { DriverIdCardModal, type DriverIdCardData } from "./DriverIdCardModal";
 import {
   type StudentHomePin,
   resolveGoogleMapsLocationInput,
+  extractGoogleMapsUrl,
   haversineMeters,
   computeBearingDeg,
   formatDistanceShort,
@@ -44,6 +48,8 @@ interface Props {
   onOpenDriverConsole?: () => void;
   onClose?: () => void;
   currentStudent?: Partial<SchoolStudent> | null;
+  isEmbedded?: boolean;
+  initialFullscreen?: boolean;
 }
 
 const DEFAULT_BUS_FLEET = [
@@ -122,6 +128,8 @@ const AdminBusFleetRadarInner: React.FC<Props> = ({
   onOpenDriverConsole,
   onClose,
   currentStudent,
+  isEmbedded = false,
+  initialFullscreen = false,
 }) => {
   const isDemo = shouldUseDemoForSchool(school?.id);
   const canManageFleet = Boolean(onOpenDriverConsole);
@@ -131,6 +139,10 @@ const AdminBusFleetRadarInner: React.FC<Props> = ({
   const [selectedBusId, setSelectedBusId] = useState<string>(() => (isDemo ? "bus-01" : ""));
   const [filterMode, setFilterMode] = useState<"all" | "active">("all");
   const [visualizerMode, setVisualizerMode] = useState<"map" | "radar">("map");
+  const [isFullscreenMap, setIsFullscreenMap] = useState<boolean>(
+    Boolean(initialFullscreen && !currentStudent?.id)
+  );
+  const [areaByBusId, setAreaByBusId] = useState<Record<string, string>>({});
   const [showHomePinsOnMap, setShowHomePinsOnMap] = useState<boolean>(true);
   const [pinningStopName, setPinningStopName] = useState<string | null>(null);
   const [lastRefreshed, setLastRefreshed] = useState<Date>(new Date());
@@ -141,10 +153,26 @@ const AdminBusFleetRadarInner: React.FC<Props> = ({
   const [newBusStops, setNewBusStops] = useState("");
   const [newDriverName, setNewDriverName] = useState("");
   const [newDriverPhone, setNewDriverPhone] = useState("");
+  const [newBusLiveShareUrl, setNewBusLiveShareUrl] = useState("");
+  const [showMapsApiKeyModal, setShowMapsApiKeyModal] = useState(false);
+  const [schoolMapsApiKey, setSchoolMapsApiKey] = useState<string>(() =>
+    String(school?.googleMapsApiKey || "").trim()
+  );
+  const [mapsApiKeyDraft, setMapsApiKeyDraft] = useState<string>(() =>
+    String(school?.googleMapsApiKey || "").trim()
+  );
+  const [savingMapsApiKey, setSavingMapsApiKey] = useState(false);
+  const [liveShareByBusId, setLiveShareByBusId] = useState<Record<string, string>>({});
   const [homePins, setHomePins] = useState<StudentHomePin[]>([]);
   const [selfPinInput, setSelfPinInput] = useState<string>("");
   const [showSelfPinBox, setShowSelfPinBox] = useState<boolean>(false);
   const [selectedDriverForIdCard, setSelectedDriverForIdCard] = useState<DriverIdCardData | null>(null);
+
+  useEffect(() => {
+    if (initialFullscreen && !currentStudent?.id) {
+      setIsFullscreenMap(true);
+    }
+  }, [initialFullscreen, currentStudent?.id]);
 
   // Admin Student-Stop Location Picker Modal state
   const [schoolStudents, setSchoolStudents] = useState<SchoolStudent[]>(() =>
@@ -277,6 +305,11 @@ const AdminBusFleetRadarInner: React.FC<Props> = ({
       updatedAt: new Date().toISOString(),
     });
 
+    const cleanLiveShare = newBusLiveShareUrl.trim()
+      ? extractGoogleMapsUrl(newBusLiveShareUrl.trim()) || newBusLiveShareUrl.trim()
+      : "";
+    await saveBusLiveShareUrl(sid, busId, cleanLiveShare);
+
     const liveEntry: BusLiveLocation = {
       busId,
       busNumber: newRecord.vehicleNumber,
@@ -294,6 +327,7 @@ const AdminBusFleetRadarInner: React.FC<Props> = ({
       currentStop: resolvedStops[0] || "Depot",
       totalStops: resolvedStops.length,
       completedStops: [],
+      liveShareUrl: cleanLiveShare || undefined,
     };
     setBuses((prev) => [liveEntry, ...prev.filter((b) => b.busId !== busId)]);
     setSelectedBusId(busId);
@@ -303,6 +337,7 @@ const AdminBusFleetRadarInner: React.FC<Props> = ({
     setNewBusStops("");
     setNewDriverName("");
     setNewDriverPhone("");
+    setNewBusLiveShareUrl("");
     setShowAddBusModal(false);
     setSelectedDriverForIdCard({
       busId,
@@ -321,6 +356,7 @@ const AdminBusFleetRadarInner: React.FC<Props> = ({
     setNewBusRoute(bus.route || "");
     setNewDriverName(bus.driverName || "");
     setNewDriverPhone(bus.driverPhone || "");
+    setNewBusLiveShareUrl(bus.liveShareUrl || liveShareByBusId[bus.busId] || getBusLiveShareUrl(school?.id || "", bus.busId) || "");
     setNewBusStops("");
     setShowAddBusModal(true);
   };
@@ -427,6 +463,30 @@ const AdminBusFleetRadarInner: React.FC<Props> = ({
       }
     };
 
+    const applyLiveShareMap = (val: any) => {
+      if (!val || typeof val !== "object") return;
+      const next: Record<string, string> = {};
+      Object.entries(val).forEach(([bid, entry]: [string, any]) => {
+        const u = String(entry?.liveShareUrl || entry || "").trim();
+        if (bid && u) next[bid] = u;
+      });
+      setLiveShareByBusId(next);
+    };
+
+    const unsubSbShare = sid ? sbRtdbSubscribe(`schools/${sid}/bus_live_share`, applyLiveShareMap) : () => {};
+    const unsubSbMapsKey = sid
+      ? sbRtdbSubscribe(`schools/${sid}/maps_config`, (val: any) => {
+          if (val && typeof val === "object" && typeof val.googleMapsApiKey === "string") {
+            const k = val.googleMapsApiKey.trim();
+            setSchoolMapsApiKey(k);
+            setMapsApiKeyDraft(k);
+          }
+        })
+      : () => {};
+
+    let unsubRtdbShare: any = null;
+    let unsubRtdbMapsKey: any = null;
+
     if (sid) {
       unsubSbFleet = sbRtdbSubscribe(`schools/${sid}/bus_fleet`, (val) => {
         if (val && typeof val === "object") {
@@ -453,6 +513,23 @@ const AdminBusFleetRadarInner: React.FC<Props> = ({
           }
         });
       } catch {}
+
+      try {
+        unsubRtdbShare = onValue(dbRef(rtdb, `schools/${sid}/bus_live_share`), (snap) => {
+          if (snap.exists()) applyLiveShareMap(snap.val());
+        });
+      } catch {}
+
+      try {
+        unsubRtdbMapsKey = onValue(dbRef(rtdb, `schools/${sid}/maps_config`), (snap) => {
+          const val = snap.val();
+          if (val && typeof val.googleMapsApiKey === "string") {
+            const k = val.googleMapsApiKey.trim();
+            setSchoolMapsApiKey(k);
+            setMapsApiKeyDraft(k);
+          }
+        });
+      } catch {}
     }
 
     const interval = setInterval(loadLocalBuses, 4000);
@@ -462,9 +539,13 @@ const AdminBusFleetRadarInner: React.FC<Props> = ({
       window.removeEventListener("school-transport-updated", loadLocalBuses);
       clearInterval(interval);
       if (typeof unsubSbFleet === "function") unsubSbFleet();
+      if (typeof unsubSbShare === "function") unsubSbShare();
+      if (typeof unsubSbMapsKey === "function") unsubSbMapsKey();
       if (typeof unsubRtdbLoc1 === "function") unsubRtdbLoc1();
       if (typeof unsubRtdbLoc2 === "function") unsubRtdbLoc2();
       if (typeof unsubRtdbFleet === "function") unsubRtdbFleet();
+      if (typeof unsubRtdbShare === "function") unsubRtdbShare();
+      if (typeof unsubRtdbMapsKey === "function") unsubRtdbMapsKey();
     };
   }, [school?.id]);
 
@@ -816,23 +897,237 @@ const AdminBusFleetRadarInner: React.FC<Props> = ({
   };
 
   return (
-    <div className="bg-slate-900 border border-slate-800 rounded-3xl p-4 sm:p-5 shadow-2xl space-y-4">
-      {/* Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-4 border-b border-slate-800">
-        <div className="flex items-center gap-3">
-          <div className="p-2.5 rounded-2xl bg-amber-500/20 text-amber-400 border border-amber-500/30">
-            <Bus size={22} />
+    <div className={isEmbedded ? "space-y-3.5" : "bg-slate-900 border border-slate-800 rounded-2xl p-3 sm:p-5 shadow-xl space-y-4"}>
+      {/* 95% FULLSCREEN ADMIN LIVE FLEET MAP OVERLAY */}
+      {isFullscreenMap && (
+        <div className="fixed inset-2 sm:inset-3 z-[90] rounded-2xl bg-slate-950 border border-slate-700/80 shadow-2xl flex flex-col overflow-hidden">
+          {/* Compact Top Bar with Prominent Back Button */}
+          <div className="px-3 py-2 sm:px-4 sm:py-2.5 bg-slate-900/95 border-b border-slate-800 flex flex-wrap items-center justify-between gap-2 shrink-0">
+            <div className="flex items-center gap-2 sm:gap-3 min-w-0">
+              <button
+                type="button"
+                onClick={() => {
+                  if (initialFullscreen && onClose) {
+                    onClose();
+                  } else {
+                    setIsFullscreenMap(false);
+                  }
+                }}
+                className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-white border border-slate-700 text-xs font-black flex items-center gap-1.5 cursor-pointer shadow-xs shrink-0"
+              >
+                <ArrowLeft size={14} /> Back
+              </button>
+              <div className="min-w-0">
+                <div className="flex items-center gap-2">
+                  <h2 className="text-xs sm:text-sm font-black text-white truncate">
+                    All Buses Live Map
+                  </h2>
+                  <span className="px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 text-[10px] font-black shrink-0">
+                    {activeBuses.length}/{buses.length} Live
+                  </span>
+                </div>
+                {currentSelectedBus && (
+                  <p className="text-[10px] text-slate-400 truncate">
+                    {currentSelectedBus.busNumber}
+                    {areaByBusId[currentSelectedBus.busId]
+                      ? ` • 📍 ${areaByBusId[currentSelectedBus.busId]}`
+                      : currentSelectedBus.currentStop
+                        ? ` • ${currentSelectedBus.currentStop}`
+                        : ""}
+                  </p>
+                )}
+              </div>
+            </div>
+
+            <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
+              <div className="flex items-center bg-slate-950 p-0.5 rounded-xl border border-slate-800 text-[11px]">
+                <button
+                  type="button"
+                  onClick={() => setFilterMode("all")}
+                  className={`px-2 py-1 rounded-lg font-bold cursor-pointer transition ${
+                    filterMode === "all" ? "bg-slate-800 text-white" : "text-slate-400 hover:text-white"
+                  }`}
+                >
+                  All ({buses.length})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setFilterMode("active")}
+                  className={`px-2 py-1 rounded-lg font-bold cursor-pointer transition ${
+                    filterMode === "active" ? "bg-emerald-600 text-white" : "text-slate-400 hover:text-white"
+                  }`}
+                >
+                  Live ({activeBuses.length})
+                </button>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsFullscreenMap(false)}
+                className="px-2.5 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-[11px] font-bold flex items-center gap-1 cursor-pointer"
+                title="Fleet Setup & Controls"
+              >
+                <Minimize2 size={13} /> <span className="hidden sm:inline">Manage / Setup</span>
+              </button>
+            </div>
           </div>
-          <div>
-            <div className="flex items-center gap-2">
-              <h2 className="text-lg font-black text-white tracking-wide">
+
+          {/* Main 95% Map Canvas */}
+          <div className="flex-1 min-h-0 relative bg-slate-950">
+            {displayList.length === 0 ? (
+              <div className="h-full flex flex-col items-center justify-center p-6 text-center space-y-3">
+                <div className="w-12 h-12 rounded-2xl bg-slate-900 border border-slate-800 text-amber-400 flex items-center justify-center">
+                  <Bus size={24} />
+                </div>
+                <p className="text-sm font-black text-white">
+                  {filterMode === "active"
+                    ? "अभी कोई बस लाइव ट्रिप पर नहीं है"
+                    : "अभी कोई स्कूल बस दर्ज नहीं है"}
+                </p>
+                <div className="flex items-center gap-2">
+                  {filterMode === "active" && buses.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => setFilterMode("all")}
+                      className="px-3.5 py-2 rounded-xl bg-slate-800 text-white text-xs font-bold cursor-pointer"
+                    >
+                      All Buses देखें ({buses.length})
+                    </button>
+                  )}
+                  {canManageFleet && (
+                    <button
+                      type="button"
+                      onClick={() => setShowAddBusModal(true)}
+                      className="px-3.5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-black flex items-center gap-1.5 cursor-pointer"
+                    >
+                      <Plus size={14} /> Add Bus &amp; Driver
+                    </button>
+                  )}
+                </div>
+              </div>
+            ) : (
+              <LiveBusGoogleMap
+                buses={displayList.map((b) => {
+                  const share = b.liveShareUrl || liveShareByBusId[b.busId] || "";
+                  return share ? { ...b, liveShareUrl: share } : b;
+                })}
+                selectedBusId={currentSelectedBus?.busId}
+                onSelectBus={(bid) => setSelectedBusId(bid)}
+                routes={mapRouteOverlays}
+                homePins={mapHomePinOverlays}
+                heightClass="h-full"
+                schoolId={school?.id}
+                schoolCode={school?.code}
+                googleMapsApiKey={schoolMapsApiKey || school?.googleMapsApiKey}
+                pinPickLabel={
+                  pinningStudentTarget
+                    ? `${pinningStudentTarget.studentName} (${pinningStudentTarget.busStop || "Stop"})`
+                    : pinningStopName
+                }
+                onPickLocation={handlePinStopOnMap}
+                showOpenInMapsButton={true}
+                fitAllOnLoad={true}
+                onAreaNamesResolved={setAreaByBusId}
+              />
+            )}
+          </div>
+
+          {/* Bottom Compact Live Fleet Selector & Admin Actions Strip */}
+          {buses.length > 0 && (
+            <div className="px-2.5 py-2 sm:px-3.5 bg-slate-900/95 border-t border-slate-800 flex items-center justify-between gap-2 shrink-0">
+              <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar flex-1 min-w-0">
+                {displayList.map((b) => {
+                  const isSel = b.busId === currentSelectedBus?.busId;
+                  const isLive = b.tripStatus === "started";
+                  const areaLabel = areaByBusId[b.busId] || b.currentStop || "Depot";
+                  return (
+                    <button
+                      key={b.busId}
+                      type="button"
+                      onClick={() => setSelectedBusId(b.busId)}
+                      className={`px-2.5 py-1.5 rounded-xl border text-left transition cursor-pointer shrink-0 flex items-center gap-2 ${
+                        isSel
+                          ? "bg-amber-500/20 border-amber-400 text-white"
+                          : "bg-slate-950 border-slate-800 text-slate-300 hover:border-slate-700"
+                      }`}
+                    >
+                      <span
+                        className={`w-2 h-2 rounded-full shrink-0 ${
+                          isLive ? "bg-emerald-400 animate-pulse" : "bg-slate-500"
+                        }`}
+                      />
+                      <div className="min-w-0">
+                        <div className="text-[11px] font-black leading-tight whitespace-nowrap">
+                          {b.busNumber.split("(")[0].trim()}
+                          <span className="ml-1.5 font-mono text-[10px] text-emerald-300">
+                            {isLive ? `${b.speed || 0} km/h` : "Idle"}
+                          </span>
+                        </div>
+                        <div className="text-[10px] text-slate-400 truncate max-w-[155px]">
+                          📍 {areaLabel}
+                        </div>
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+
+              {currentSelectedBus && (
+                <div className="flex items-center gap-1.5 shrink-0">
+                  {currentSelectedBus.driverPhone && (
+                    <a
+                      href={`tel:${currentSelectedBus.driverPhone}`}
+                      className="px-2.5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-[11px] font-black flex items-center gap-1 shadow-xs"
+                    >
+                      <Phone size={12} /> <span className="hidden sm:inline">Call</span>
+                    </a>
+                  )}
+                  {(() => {
+                    const liveShare =
+                      currentSelectedBus.tripStatus === "started" && currentSelectedBus.liveShareActive !== false
+                        ? String(currentSelectedBus.liveShareUrl || liveShareByBusId[currentSelectedBus.busId] || "").trim()
+                        : "";
+                    const hasPin =
+                      Number(currentSelectedBus.latitude) !== 0 &&
+                      Number(currentSelectedBus.longitude) !== 0;
+                    const targetUrl =
+                      liveShare ||
+                      (hasPin
+                        ? getGoogleMapsUrl(currentSelectedBus.latitude, currentSelectedBus.longitude)
+                        : "");
+                    if (!targetUrl) return null;
+                    return (
+                      <button
+                        type="button"
+                        onClick={() => safeOpenExternalUrl(targetUrl)}
+                        className="px-2.5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-[11px] font-black flex items-center gap-1 cursor-pointer shadow-xs"
+                        title={liveShare ? "Open Driver's Live Location Share in Google Maps" : "Open selected bus in Google Maps (Free)"}
+                      >
+                        <ExternalLink size={12} /> <span>{liveShare ? "Live G-Maps" : "Google Maps"}</span>
+                      </button>
+                    );
+                  })()}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+      {/* Header */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 pb-3 border-b border-slate-800/80">
+        <div className="flex items-center gap-2.5 min-w-0">
+          <div className="p-2 rounded-xl bg-amber-500/20 text-amber-400 border border-amber-500/30 shrink-0">
+            <Bus size={20} />
+          </div>
+          <div className="min-w-0">
+            <div className="flex items-center gap-2 flex-wrap">
+              <h2 className="text-base sm:text-lg font-black text-white tracking-wide truncate">
                 Live Bus Fleet Radar (लाइव बस ट्रैकर)
               </h2>
-              <span className="px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 text-[10px] font-bold">
+              <span className="px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 text-[10px] font-bold shrink-0">
                 {activeBuses.length} Active On Route
               </span>
             </div>
-            <p className="text-xs text-slate-400">
+            <p className="text-[11px] sm:text-xs text-slate-400">
               Real-time GPS telemetry • Auto-syncing every 3-5 seconds
             </p>
           </div>
@@ -840,19 +1135,37 @@ const AdminBusFleetRadarInner: React.FC<Props> = ({
 
         <div className="flex flex-wrap items-center gap-2">
           {canManageFleet && (
-            <button
-              type="button"
-              onClick={() => setShowAddBusModal(true)}
-              className="px-3.5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs flex items-center gap-1.5 shadow-lg shadow-emerald-600/20 transition-all cursor-pointer"
-            >
-              <Plus size={14} /> Add Bus &amp; Driver
-            </button>
+            <>
+              <button
+                type="button"
+                onClick={() => {
+                  setMapsApiKeyDraft(schoolMapsApiKey || String(school?.googleMapsApiKey || "").trim());
+                  setShowMapsApiKeyModal(true);
+                }}
+                className={`px-3 py-1.5 sm:px-3.5 sm:py-2 rounded-xl font-bold text-xs flex items-center gap-1.5 border transition-all cursor-pointer ${
+                  schoolMapsApiKey || school?.googleMapsApiKey
+                    ? "bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 border-amber-500/40"
+                    : "bg-slate-900 hover:bg-slate-800 text-slate-300 border-slate-700"
+                }`}
+                title="Optional Google Maps API Key (Default Free Map)"
+              >
+                <Sliders size={14} />
+                <span>{schoolMapsApiKey || school?.googleMapsApiKey ? "G-Maps API: ON" : "Map API Key"}</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowAddBusModal(true)}
+                className="px-3 py-1.5 sm:px-3.5 sm:py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs flex items-center gap-1.5 shadow-sm transition-all cursor-pointer"
+              >
+                <Plus size={14} /> Add Bus &amp; Driver
+              </button>
+            </>
           )}
           {onOpenDriverConsole && (
             <button
               type="button"
               onClick={onOpenDriverConsole}
-              className="px-3.5 py-2 rounded-xl bg-gradient-to-r from-amber-600 to-amber-700 hover:from-amber-500 hover:to-amber-600 text-white font-bold text-xs flex items-center gap-1.5 shadow-lg shadow-amber-600/20 transition-all cursor-pointer"
+              className="px-3 py-1.5 sm:px-3.5 sm:py-2 rounded-xl bg-gradient-to-r from-amber-600 to-amber-700 hover:from-amber-500 hover:to-amber-600 text-white font-bold text-xs flex items-center gap-1.5 shadow-sm transition-all cursor-pointer"
             >
               <Navigation size={14} /> Driver Console
             </button>
@@ -861,7 +1174,7 @@ const AdminBusFleetRadarInner: React.FC<Props> = ({
           <div className="flex items-center bg-slate-950 p-1 rounded-xl border border-slate-800 text-xs">
             <button
               onClick={() => setFilterMode("all")}
-              className={`px-3 py-1 rounded-lg font-bold transition-colors ${
+              className={`px-2.5 py-1 rounded-lg font-bold transition-colors cursor-pointer ${
                 filterMode === "all" ? "bg-slate-800 text-white" : "text-slate-400 hover:text-slate-200"
               }`}
             >
@@ -869,7 +1182,7 @@ const AdminBusFleetRadarInner: React.FC<Props> = ({
             </button>
             <button
               onClick={() => setFilterMode("active")}
-              className={`px-3 py-1 rounded-lg font-bold transition-colors ${
+              className={`px-2.5 py-1 rounded-lg font-bold transition-colors cursor-pointer ${
                 filterMode === "active" ? "bg-emerald-600 text-white" : "text-slate-400 hover:text-slate-200"
               }`}
             >
@@ -879,14 +1192,14 @@ const AdminBusFleetRadarInner: React.FC<Props> = ({
         </div>
       </div>
 
-      {/* School Admin Quick 3-Step Setup Strip */}
+      {/* School Admin Quick 3-Step Setup Strip (Hairline-divided, no nested box) */}
       {canManageFleet && (
-        <div className="rounded-2xl bg-slate-950/90 border border-slate-800 px-4 py-3 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs">
+        <div className="pb-3 border-b border-slate-800/70 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs">
           <div className="text-slate-300 space-y-0.5">
             <p className="font-black text-amber-300 text-[11px] uppercase tracking-wider">
               School Bus Setup (3 Aasan Steps):
             </p>
-            <p className="text-[11px] text-slate-400">
+            <p className="text-[11px] text-slate-400 leading-relaxed">
               1) <strong className="text-white">Add Bus &amp; Driver</strong> dabakar bus jodein (saath hi <strong className="text-amber-300">Driver ID Card + QR</strong> ban jayega) → 2) Driver apne ID Card ka <strong className="text-white">QR Code scan</strong> karke app me login karega → 3) Driver <strong className="text-emerald-300">Start Trip</strong> dabayega aur live tracking chalu ho jayegi.
             </p>
           </div>
@@ -903,7 +1216,7 @@ const AdminBusFleetRadarInner: React.FC<Props> = ({
                     driverPhone: currentSelectedBus.driverPhone || "",
                   })
                 }
-                className="px-3 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-xs flex items-center gap-1.5 cursor-pointer shadow"
+                className="px-3 py-1.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-xs flex items-center gap-1.5 cursor-pointer shadow-xs"
               >
                 <QrCode size={14} />
                 <span>Driver ID Card (QR)</span>
@@ -912,7 +1225,7 @@ const AdminBusFleetRadarInner: React.FC<Props> = ({
             <button
               type="button"
               onClick={() => handleCopyDriverLink(currentSelectedBus)}
-              className="px-3 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs flex items-center gap-1.5 cursor-pointer shadow"
+              className="px-3 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs flex items-center gap-1.5 cursor-pointer shadow-xs"
             >
               <Link2 size={14} />
               <span>{currentSelectedBus ? "Copy Driver Link" : "Copy Driver Portal Link"}</span>
@@ -923,7 +1236,7 @@ const AdminBusFleetRadarInner: React.FC<Props> = ({
 
       {/* Grid: Left List + Right Interactive Vector Radar */}
       {!currentSelectedBus ? (
-        <div className="bg-slate-950/70 border border-slate-800 rounded-2xl p-8 text-center space-y-4">
+        <div className="bg-slate-950/70 border border-slate-800 rounded-2xl p-6 text-center space-y-3">
           <div className="w-12 h-12 rounded-2xl bg-slate-900 border border-slate-800 text-amber-400 flex items-center justify-center mx-auto">
             <Bus size={24} />
           </div>
@@ -937,16 +1250,16 @@ const AdminBusFleetRadarInner: React.FC<Props> = ({
             <button
               type="button"
               onClick={() => setShowAddBusModal(true)}
-              className="mx-auto px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-black text-xs inline-flex items-center gap-2 cursor-pointer shadow-lg"
+              className="mx-auto px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-black text-xs inline-flex items-center gap-2 cursor-pointer shadow"
             >
               <Plus size={16} /> Add First School Bus &amp; Driver
             </button>
           )}
         </div>
       ) : (
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
-        {/* Fleet List (5 cols) */}
-        <div className="lg:col-span-5 space-y-3">
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
+        {/* Fleet List (4 cols) */}
+        <div className="lg:col-span-4 space-y-2.5">
           {displayList.map((bus) => {
             const isSelected = bus.busId === currentSelectedBus.busId;
             const isLive = bus.tripStatus === "started";
@@ -981,11 +1294,13 @@ const AdminBusFleetRadarInner: React.FC<Props> = ({
 
                 {/* Sub details */}
                 <div className="flex items-center justify-between text-[11px] text-slate-400 pt-2 border-t border-slate-800/80">
-                  <span className="flex items-center gap-1">
-                    <MapPin size={12} className="text-indigo-400" />
-                    <span className="truncate max-w-[150px]">{bus.currentStop || "Depot"}</span>
+                  <span className="flex items-center gap-1 min-w-0">
+                    <MapPin size={12} className="text-indigo-400 shrink-0" />
+                    <span className="truncate max-w-[170px]">
+                      {areaByBusId[bus.busId] || bus.currentStop || "Depot"}
+                    </span>
                   </span>
-                  <span className="font-mono text-slate-500">
+                  <span className="font-mono text-slate-500 shrink-0">
                     {bus.lastUpdated ? new Date(bus.lastUpdated).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }) : "—"}
                   </span>
                 </div>
@@ -994,19 +1309,23 @@ const AdminBusFleetRadarInner: React.FC<Props> = ({
           })}
         </div>
 
-        {/* Live Radar & Vehicle HUD (7 cols) */}
-        <div className="lg:col-span-7 bg-slate-950 border border-slate-800 rounded-2xl p-5 flex flex-col justify-between relative overflow-hidden">
+        {/* Live Radar & Vehicle HUD (8 cols — Single Card Surface with Hairline Dividers) */}
+        <div className="lg:col-span-8 bg-slate-950 border border-slate-800 rounded-2xl p-3 sm:p-4 flex flex-col justify-between relative overflow-hidden space-y-3">
           {/* Top Info Bar */}
-          <div className="flex items-start justify-between gap-3 z-10">
-            <div>
-              <span className="text-[10px] uppercase font-bold tracking-widest text-amber-400">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 z-10">
+            <div className="min-w-0">
+              <span className="text-[10px] uppercase font-bold tracking-widest text-amber-400 block">
                 Full Fleet Control Room Map
               </span>
-              <h3 className="text-base font-black text-white">{currentSelectedBus.busNumber}</h3>
-              <p className="text-xs text-slate-400">{currentSelectedBus.route}</p>
+              <h3 className="text-base font-black text-white truncate">{currentSelectedBus.busNumber}</h3>
+              <p className="text-xs text-slate-400 truncate">
+                {areaByBusId[currentSelectedBus.busId]
+                  ? `📍 ${areaByBusId[currentSelectedBus.busId]} • ${currentSelectedBus.route}`
+                  : currentSelectedBus.route}
+              </p>
             </div>
 
-            <div className="flex flex-wrap items-center gap-2">
+            <div className="flex flex-wrap items-center gap-1.5 sm:gap-2">
               <div className="flex items-center bg-slate-900 p-0.5 rounded-xl border border-slate-800 text-[11px]">
                 <button
                   type="button"
@@ -1032,28 +1351,53 @@ const AdminBusFleetRadarInner: React.FC<Props> = ({
                 </button>
               </div>
               {visualizerMode === "map" && (
-                <button
-                  type="button"
-                  onClick={() => setShowHomePinsOnMap((prev) => !prev)}
-                  className={`px-2.5 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1 border cursor-pointer transition ${
-                    showHomePinsOnMap
-                      ? "bg-emerald-600/20 text-emerald-300 border-emerald-500/40"
-                      : "bg-slate-800 text-slate-400 border-slate-700"
-                  }`}
-                  title="Show/Hide Student Home Pins on Map"
-                >
-                  <Home size={12} /> Homes
-                </button>
+                <>
+                  <button
+                    type="button"
+                    onClick={() => setIsFullscreenMap(true)}
+                    className="px-2.5 py-1.5 rounded-xl bg-sky-600 hover:bg-sky-500 text-white text-xs font-black flex items-center gap-1 cursor-pointer shadow-xs transition"
+                    title="Open 95% Fullscreen Map for All Buses"
+                  >
+                    <Maximize2 size={12} /> 95% Full Map
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setShowHomePinsOnMap((prev) => !prev)}
+                    className={`px-2.5 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1 border cursor-pointer transition ${
+                      showHomePinsOnMap
+                        ? "bg-emerald-600/20 text-emerald-300 border-emerald-500/40"
+                        : "bg-slate-800 text-slate-400 border-slate-700"
+                    }`}
+                    title="Show/Hide Student Home Pins on Map"
+                  >
+                    <Home size={12} /> Homes
+                  </button>
+                </>
               )}
-              {Number(currentSelectedBus.latitude) !== 0 && Number(currentSelectedBus.longitude) !== 0 && (
-                <button
-                  type="button"
-                  onClick={() => safeOpenExternalUrl(getGoogleMapsUrl(currentSelectedBus.latitude, currentSelectedBus.longitude))}
-                  className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-indigo-300 text-xs font-bold flex items-center gap-1.5 transition-colors border border-slate-700 cursor-pointer"
-                >
-                  <ExternalLink size={13} /> Maps App
-                </button>
-              )}
+              {(() => {
+                const liveShare =
+                  currentSelectedBus.tripStatus === "started" && currentSelectedBus.liveShareActive !== false
+                    ? String(currentSelectedBus.liveShareUrl || liveShareByBusId[currentSelectedBus.busId] || "").trim()
+                    : "";
+                const hasPin =
+                  Number(currentSelectedBus.latitude) !== 0 &&
+                  Number(currentSelectedBus.longitude) !== 0;
+                const targetUrl =
+                  liveShare ||
+                  (hasPin
+                    ? getGoogleMapsUrl(currentSelectedBus.latitude, currentSelectedBus.longitude)
+                    : "");
+                if (!targetUrl) return null;
+                return (
+                  <button
+                    type="button"
+                    onClick={() => safeOpenExternalUrl(targetUrl)}
+                    className="px-2.5 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-indigo-300 text-xs font-bold flex items-center gap-1 transition-colors border border-slate-700 cursor-pointer"
+                  >
+                    <ExternalLink size={13} /> {liveShare ? "Live G-Maps" : "Google Maps"}
+                  </button>
+                );
+              })()}
               {canManageFleet && currentSelectedBus && (
                 <>
                   <button
@@ -1077,7 +1421,7 @@ const AdminBusFleetRadarInner: React.FC<Props> = ({
               {currentSelectedBus.driverPhone && (
                 <a
                   href={`tel:${currentSelectedBus.driverPhone}`}
-                  className="px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold flex items-center gap-1.5 transition-colors shadow-md shadow-emerald-600/20"
+                  className="px-2.5 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold flex items-center gap-1 transition-colors shadow-xs"
                 >
                   <Phone size={13} /> Call Driver
                 </a>
@@ -1085,9 +1429,9 @@ const AdminBusFleetRadarInner: React.FC<Props> = ({
             </div>
           </div>
 
-          {/* Admin 1-Tap Stop Pinning Bar (Pin any Stop directly on the Map) */}
+          {/* Admin 1-Tap Stop Pinning Bar (Hairline-divided strip, no nested card box) */}
           {canManageFleet && visualizerMode === "map" && (
-            <div className="mt-3 p-2.5 rounded-2xl bg-slate-900/90 border border-slate-800 flex flex-wrap items-center gap-1.5 text-[11px]">
+            <div className="pt-2.5 border-t border-slate-800/70 flex flex-wrap items-center gap-1.5 text-[11px]">
               {selectedBusRouteObj && selectedBusRouteObj.stops.length > 0 && (
                 <>
                   <span className="font-black text-amber-300 flex items-center gap-1 mr-1">
@@ -1109,7 +1453,7 @@ const AdminBusFleetRadarInner: React.FC<Props> = ({
                             ? "bg-amber-500 text-slate-950 border-white animate-pulse"
                             : hasCoords
                               ? "bg-emerald-950/60 text-emerald-300 border-emerald-500/40 hover:bg-emerald-900/60"
-                              : "bg-slate-950 text-slate-300 border-slate-700 hover:border-amber-500/50"
+                              : "bg-slate-900 text-slate-300 border-slate-700 hover:border-amber-500/50"
                         }`}
                         title={
                           hasCoords
@@ -1154,16 +1498,20 @@ const AdminBusFleetRadarInner: React.FC<Props> = ({
 
           {/* Big Full-Fleet Interactive Map (Default) OR 2 KM Proximity Radar */}
           {visualizerMode === "map" ? (
-            <div className="my-3.5">
+            <div>
               <LiveBusGoogleMap
-                buses={displayList}
+                buses={displayList.map((b) => {
+                  const share = b.liveShareUrl || liveShareByBusId[b.busId] || "";
+                  return share ? { ...b, liveShareUrl: share } : b;
+                })}
                 selectedBusId={currentSelectedBus?.busId}
                 onSelectBus={(bid) => setSelectedBusId(bid)}
                 routes={mapRouteOverlays}
                 homePins={mapHomePinOverlays}
-                heightClass="h-[440px] sm:h-[540px]"
+                heightClass="h-[360px] sm:h-[490px]"
                 schoolId={school?.id}
                 schoolCode={school?.code}
+                googleMapsApiKey={schoolMapsApiKey || school?.googleMapsApiKey}
                 pinPickLabel={
                   pinningStudentTarget
                     ? `${pinningStudentTarget.studentName} (${pinningStudentTarget.busStop || "Stop"})`
@@ -1171,6 +1519,8 @@ const AdminBusFleetRadarInner: React.FC<Props> = ({
                 }
                 onPickLocation={handlePinStopOnMap}
                 showOpenInMapsButton={true}
+                fitAllOnLoad={true}
+                onAreaNamesResolved={setAreaByBusId}
               />
             </div>
           ) : (
@@ -1245,8 +1595,8 @@ const AdminBusFleetRadarInner: React.FC<Props> = ({
             </div>
           )}
 
-          {/* LIVE FREE HOUSE PROXIMITY BOARD (Visible in BOTH Radar & Map modes) */}
-          <div className="mb-3 rounded-2xl bg-slate-900/80 border border-slate-800 p-3 space-y-2">
+          {/* LIVE FREE HOUSE PROXIMITY BOARD (Hairline-divided section, flat rows) */}
+          <div className="pt-3 border-t border-slate-800/70 space-y-2">
             <div className="flex items-center justify-between gap-2 flex-wrap">
               <h4 className="text-xs font-black text-emerald-300 flex items-center gap-1.5">
                 <Home size={14} /> किसके घर / स्टॉप के पास गाड़ी पहुँची (Student Stop Locations)
@@ -1272,11 +1622,11 @@ const AdminBusFleetRadarInner: React.FC<Props> = ({
                 अभी किसी बच्चे/स्टॉप का GPS Pin सेव नहीं है। ऊपर <strong>+ Add Student Location</strong> दबाकर हर बच्चे की लोकेशन जोड़ें — वही उसका स्टॉप लोकेशन बन जाएगी।
               </p>
             ) : proximityList.length === 0 ? (
-              <div className="max-h-40 overflow-y-auto space-y-1.5 pr-1">
+              <div className="max-h-40 overflow-y-auto divide-y divide-slate-800/60 pr-1">
                 {homePins.slice(0, 15).map((item) => (
                   <div
                     key={item.studentId}
-                    className="px-2.5 py-2 rounded-xl border bg-slate-950/80 border-slate-800 flex items-center justify-between gap-2 text-xs"
+                    className="py-2 flex items-center justify-between gap-2 text-xs"
                   >
                     <div className="min-w-0">
                       <p className="font-bold text-white truncate">
@@ -1306,14 +1656,14 @@ const AdminBusFleetRadarInner: React.FC<Props> = ({
                 ))}
               </div>
             ) : (
-              <div className="max-h-40 overflow-y-auto space-y-1.5 pr-1">
+              <div className="max-h-40 overflow-y-auto divide-y divide-slate-800/60 pr-1">
                 {proximityList.slice(0, 12).map((item) => (
                   <div
                     key={item.studentId}
-                    className={`px-2.5 py-2 rounded-xl border flex items-center justify-between gap-2 text-xs ${
+                    className={`py-2 flex items-center justify-between gap-2 text-xs ${
                       item.studentId === currentStudent?.id
-                        ? "bg-emerald-950/50 border-emerald-500/50"
-                        : "bg-slate-950/80 border-slate-800"
+                        ? "bg-emerald-950/30 px-2 rounded-lg"
+                        : ""
                     }`}
                   >
                     <div className="min-w-0">
@@ -1358,25 +1708,25 @@ const AdminBusFleetRadarInner: React.FC<Props> = ({
             )}
           </div>
 
-          {/* Telemetry Metrics Footer */}
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-center pt-3 border-t border-slate-800/80">
-            <div className="bg-slate-900/80 p-2.5 rounded-xl border border-slate-800">
+          {/* Telemetry Metrics Footer (Crisp hairline-divided cells, no nested card borders) */}
+          <div className="grid grid-cols-2 sm:grid-cols-4 divide-y sm:divide-y-0 sm:divide-x divide-slate-800/70 text-center pt-3 border-t border-slate-800/70">
+            <div className="p-2">
               <span className="text-[10px] text-slate-400 block font-semibold">ड्राइवर का नाम</span>
               <span className="text-xs font-bold text-white truncate block">{currentSelectedBus.driverName || "—"}</span>
             </div>
-            <div className="bg-slate-900/80 p-2.5 rounded-xl border border-slate-800">
+            <div className="p-2">
               <span className="text-[10px] text-slate-400 block font-semibold">करंट स्टॉप</span>
               <span className="text-xs font-bold text-indigo-400 truncate block">
                 {currentSelectedBus.currentStop || "Depot"}
               </span>
             </div>
-            <div className="bg-slate-900/80 p-2.5 rounded-xl border border-slate-800">
+            <div className="p-2">
               <span className="text-[10px] text-slate-400 block font-semibold">GPS अक्षांश / देशांतर</span>
               <span className="text-xs font-bold font-mono text-slate-200 block truncate">
                 {Number(currentSelectedBus.latitude || 0).toFixed(4)}, {Number(currentSelectedBus.longitude || 0).toFixed(4)}
               </span>
             </div>
-            <div className="bg-slate-900/80 p-2.5 rounded-xl border border-slate-800">
+            <div className="p-2">
               <span className="text-[10px] text-slate-400 block font-semibold">स्टॉप्स प्रगति</span>
               <span className="text-xs font-bold font-mono text-emerald-400 block">
                 {currentSelectedBus.completedStops?.length || 0} / {currentSelectedBus.totalStops || 0}
@@ -1421,7 +1771,7 @@ const AdminBusFleetRadarInner: React.FC<Props> = ({
 
       {/* Quick Add Bus & Driver Modal */}
       {showAddBusModal && (
-        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+        <div className="fixed inset-0 z-[110] bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
           <div className="w-full max-w-md bg-slate-900 border border-slate-800 rounded-3xl p-6 shadow-2xl text-white space-y-4">
             <div className="flex items-center justify-between pb-3 border-b border-slate-800">
               <h3 className="text-base font-black text-white flex items-center gap-2">
@@ -1498,12 +1848,26 @@ const AdminBusFleetRadarInner: React.FC<Props> = ({
                 </div>
               </div>
 
+              <div>
+                <label className="block text-slate-400 mb-1 font-bold">
+                  Google Maps Live Share Link (Optional — 1 Time Save)
+                </label>
+                <input
+                  type="text"
+                  value={newBusLiveShareUrl}
+                  onChange={(e) => setNewBusLiveShareUrl(e.target.value)}
+                  placeholder="https://maps.app.goo.gl/... (Start Drive par active hoga)"
+                  className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-white"
+                />
+              </div>
+
               <div className="pt-2 flex justify-end gap-2">
                 <button
                   type="button"
                   onClick={() => {
                     setShowAddBusModal(false);
                     setEditingBusId(null);
+                    setNewBusLiveShareUrl("");
                   }}
                   className="px-4 py-2 bg-slate-800 rounded-xl text-slate-300 cursor-pointer"
                 >
@@ -1521,9 +1885,131 @@ const AdminBusFleetRadarInner: React.FC<Props> = ({
         </div>
       )}
 
+      {/* Optional School Google Maps API Key Settings Modal */}
+      {showMapsApiKeyModal && (
+        <div className="fixed inset-0 z-[115] bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="w-full max-w-md bg-slate-900 border border-slate-800 rounded-3xl p-5 shadow-2xl text-white space-y-4">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-800">
+              <h3 className="text-base font-black text-white flex items-center gap-2">
+                <Sliders className="w-5 h-5 text-amber-400" />
+                <span>Google Maps API Key (Optional)</span>
+              </h3>
+              <button
+                type="button"
+                onClick={() => setShowMapsApiKeyModal(false)}
+                className="text-slate-400 hover:text-white cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="space-y-3 text-xs">
+              <p className="text-[11px] text-slate-300 bg-slate-950 border border-slate-800 rounded-xl p-3 leading-relaxed">
+                <strong>Default Free Mode:</strong> Bina API Key ke app 100% Free OpenStreetMap + Satellite chalata hai. Agar aapko app ke andar <strong>Asli Google Maps</strong> chahiye, to apne Google Cloud Project ki restricted API Key yahan daalein (HTTP referrer restriction zaroor lagayein).
+              </p>
+
+              <div>
+                <label className="block text-slate-400 mb-1 font-bold">
+                  School Google Maps JS API Key
+                </label>
+                <input
+                  type="text"
+                  value={mapsApiKeyDraft}
+                  onChange={(e) => setMapsApiKeyDraft(e.target.value)}
+                  placeholder="AIzaSy... (khali chhodne par Free Map chalega)"
+                  className="w-full px-3 py-2.5 rounded-xl bg-slate-950 border border-slate-700 text-white font-mono text-xs"
+                />
+              </div>
+
+              <div className="flex items-center justify-end gap-2 pt-2">
+                {schoolMapsApiKey && (
+                  <button
+                    type="button"
+                    disabled={savingMapsApiKey}
+                    onClick={async () => {
+                      const sid = school?.id;
+                      if (!sid) return;
+                      setSavingMapsApiKey(true);
+                      try {
+                        setSchoolMapsApiKey("");
+                        setMapsApiKeyDraft("");
+                        if (!isDemoSchoolId(sid)) {
+                          void sbRtdbSet(`schools/${sid}/maps_config`, {
+                            googleMapsApiKey: "",
+                            updatedAt: new Date().toISOString(),
+                          }).catch(() => {});
+                          if (rtdb) {
+                            void rtdbSet(dbRef(rtdb, `schools/${sid}/maps_config`), {
+                              googleMapsApiKey: "",
+                              updatedAt: new Date().toISOString(),
+                            }).catch(() => {});
+                          }
+                          await updateSchool(sid, { googleMapsApiKey: "" });
+                        }
+                        setShowMapsApiKeyModal(false);
+                        toast.info("API Key hata di gayi — ab Free OpenStreetMap default chalega.");
+                      } finally {
+                        setSavingMapsApiKey(false);
+                      }
+                    }}
+                    className="mr-auto px-3 py-2 rounded-xl bg-rose-600/20 hover:bg-rose-600/35 border border-rose-500/40 text-rose-300 font-bold cursor-pointer"
+                  >
+                    Use Free Map
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => setShowMapsApiKeyModal(false)}
+                  className="px-4 py-2 rounded-xl bg-slate-800 text-slate-300 cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  disabled={savingMapsApiKey}
+                  onClick={async () => {
+                    const sid = school?.id;
+                    if (!sid) return;
+                    const cleanKey = mapsApiKeyDraft.trim();
+                    setSavingMapsApiKey(true);
+                    try {
+                      setSchoolMapsApiKey(cleanKey);
+                      if (!isDemoSchoolId(sid)) {
+                        void sbRtdbSet(`schools/${sid}/maps_config`, {
+                          googleMapsApiKey: cleanKey,
+                          updatedAt: new Date().toISOString(),
+                        }).catch(() => {});
+                        if (rtdb) {
+                          void rtdbSet(dbRef(rtdb, `schools/${sid}/maps_config`), {
+                            googleMapsApiKey: cleanKey,
+                            updatedAt: new Date().toISOString(),
+                          }).catch(() => {});
+                        }
+                        await updateSchool(sid, { googleMapsApiKey: cleanKey });
+                      }
+                      setShowMapsApiKeyModal(false);
+                      toast.success(
+                        cleanKey
+                          ? "Google Maps API Key save ho gayi! Admin, Driver aur Parents ke liye Google Maps active ho gaya."
+                          : "Free Map mode active hai."
+                      );
+                    } finally {
+                      setSavingMapsApiKey(false);
+                    }
+                  }}
+                  className="px-5 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-black cursor-pointer"
+                >
+                  {savingMapsApiKey ? "Saving..." : "Save API Key"}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Add Student / Stop Location Modal */}
       {showStudentPinModal && (
-        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+        <div className="fixed inset-0 z-[110] bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
           <div className="w-full max-w-md bg-slate-900 border border-slate-800 rounded-3xl p-5 shadow-2xl text-white space-y-4">
             <div className="flex items-center justify-between pb-3 border-b border-slate-800">
               <h3 className="text-base font-black text-white flex items-center gap-2">

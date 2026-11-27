@@ -2314,11 +2314,14 @@ export const Auth: React.FC<Props> = ({ onLogin, logActivity, appSettings, onBac
 
     if (cleanId.includes('@')) {
       try {
-        const userCredential = await signInWithEmailAndPassword(auth, cleanId, cleanPassword);
+        const userCredential = await Promise.race([
+          signInWithEmailAndPassword(auth, cleanId, cleanPassword),
+          new Promise<never>((_, reject) => setTimeout(() => reject(new Error('auth_timeout')), 5000)),
+        ]);
         if (userCredential?.user) {
           const fbUser = userCredential.user;
-          let fresh = await getFreshUserData(fbUser.uid);
-          if (!fresh) fresh = await getUserData(fbUser.uid);
+          let fresh = await getFreshUserData(fbUser.uid).catch(() => null);
+          if (!fresh) fresh = await getUserData(fbUser.uid).catch(() => null);
 
           const isSuperAdm = isSuperAdminEmailClean(fbUser.email) || isSuperAdmin;
           const isFbAdmin =
@@ -2354,7 +2357,7 @@ export const Auth: React.FC<Props> = ({ onLogin, logActivity, appSettings, onBac
       }
 
       if (!matchedUser) {
-        matchedUser = await getUserByEmail(cleanId);
+        matchedUser = await getUserByEmail(cleanId).catch(() => null);
         if (isSuperAdmin && matchedUser) {
           matchedUser.role = 'SUPERADMIN';
         } else if (matchedUser && (matchedUser.role === 'ADMIN' || matchedUser.isAdmin === true || matchedUser.userType === 'ADMIN')) {
@@ -2364,11 +2367,14 @@ export const Auth: React.FC<Props> = ({ onLogin, logActivity, appSettings, onBac
         }
       }
     } else {
-      const foundDriverFirst = await resolveDriverByMobileOrId(cleanId);
+      const [foundDriverFirst, foundUser] = await Promise.all([
+        resolveDriverByMobileOrId(cleanId).catch(() => null),
+        getUserByMobileOrId(cleanId).catch(() => null),
+      ]);
       if (foundDriverFirst) {
         matchedUser = foundDriverFirst;
       } else {
-        matchedUser = await getUserByMobileOrId(cleanId);
+        matchedUser = foundUser;
         if (matchedUser && isCorruptedDriverStudentRecord(matchedUser)) {
           const promoted = promoteCorruptedUserToDriverIfApplicable(matchedUser);
           matchedUser = promoted || null;
@@ -2453,13 +2459,6 @@ export const Auth: React.FC<Props> = ({ onLogin, logActivity, appSettings, onBac
           subscriptionTier: 'PRO',
           provider: resolvedRole === 'ACCOUNTANT' ? 'accountant_record' : 'teacher_record'
         };
-      }
-    }
-
-    if (!matchedUser) {
-      const foundDriver = await resolveDriverByMobileOrId(cleanId);
-      if (foundDriver) {
-        matchedUser = foundDriver;
       }
     }
 
@@ -2648,7 +2647,19 @@ export const Auth: React.FC<Props> = ({ onLogin, logActivity, appSettings, onBac
     setLoading(true);
 
     try {
-      const result = await verifyCredentialsAndResolveUser(formData.id, formData.password);
+      const result = await Promise.race([
+        verifyCredentialsAndResolveUser(formData.id, formData.password),
+        new Promise<{ ok: false; error: string }>((resolve) =>
+          setTimeout(
+            () =>
+              resolve({
+                ok: false,
+                error: 'Network slow hai — login verify karne me samay lag raha hai. Kripya dubara try karein.',
+              }),
+            12000
+          )
+        ),
+      ]);
       if (!result.ok) {
         setError(result.error);
         setLoading(false);

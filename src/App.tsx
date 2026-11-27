@@ -1202,13 +1202,21 @@ export function App() {
           try { parsedCached = JSON.parse(cachedRaw); } catch {}
         }
 
-        // Query Supabase / Firestore for fresh user data including role & isAdmin flags
+        // Query Supabase / Firestore for fresh user data including role & isAdmin flags (bounded & parallel)
         let fresh: any = null;
         try {
-          fresh = await getFreshUserData(firebaseUser.uid);
-          if (!fresh) fresh = await getUserData(firebaseUser.uid);
-          if (!fresh) fresh = await getUserByLinkedGoogleUid(firebaseUser.uid);
-          if (!fresh && firebaseUser.email) fresh = await getUserByEmail(firebaseUser.email);
+          fresh = await getFreshUserData(firebaseUser.uid).catch(() => null);
+          if (!fresh) {
+            const [u1, u2, u3] = await Promise.race([
+              Promise.all([
+                getUserData(firebaseUser.uid).catch(() => null),
+                getUserByLinkedGoogleUid(firebaseUser.uid).catch(() => null),
+                firebaseUser.email ? getUserByEmail(firebaseUser.email).catch(() => null) : Promise.resolve(null),
+              ]),
+              new Promise<[null, null, null]>((resolve) => setTimeout(() => resolve([null, null, null]), 3500)),
+            ]);
+            fresh = u1 || u2 || u3;
+          }
         } catch (e) {
           console.warn('[App] Error getting fresh user data on auth change:', e);
         }

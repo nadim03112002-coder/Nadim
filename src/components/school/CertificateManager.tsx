@@ -894,9 +894,9 @@ export const CertificateManager: React.FC<Props> = ({
         </div>
       </div>
 
-      <div className="max-w-6xl mx-auto p-4 sm:p-6 space-y-5 print:p-0 print:m-0 print:max-w-none">
+      <div className="max-w-6xl mx-auto px-1 py-3 sm:p-5 space-y-4 print:p-0 print:m-0 print:max-w-none">
         {/* Banner with 1-Click Auto-Generate */}
-        <div className="bg-gradient-to-br from-indigo-50 via-sky-50 to-amber-50 dark:from-indigo-950 dark:via-slate-900 dark:to-amber-950 rounded-3xl p-5 text-slate-900 dark:text-white shadow-md border-2 border-indigo-700 dark:border-amber-500/30 flex flex-col md:flex-row md:items-center justify-between gap-4 print:hidden">
+        <div className="bg-gradient-to-br from-indigo-50 via-sky-50 to-amber-50 dark:from-indigo-950 dark:via-slate-900 dark:to-amber-950 rounded-2xl p-4 sm:p-5 text-slate-900 dark:text-white shadow-sm border border-indigo-700/60 dark:border-amber-500/30 flex flex-col md:flex-row md:items-center justify-between gap-4 print:hidden">
           <div>
             <div className="flex items-center gap-2 flex-wrap">
               <span className="px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wider bg-amber-400 text-slate-950">

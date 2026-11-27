@@ -530,7 +530,10 @@ class WebAppBridge(private val activity: MainActivity) {
     @JavascriptInterface
     fun syncAdminPinHash(pinHash: String?) {
         if (!isTrustedHostActive) return
-        AppPrefs.setAdminPinHash(activity.applicationContext, pinHash)
+        val clean = pinHash?.trim().orEmpty()
+        val prev = AppPrefs.getAdminPinHash(activity.applicationContext)
+        if (prev == clean) return
+        AppPrefs.setAdminPinHash(activity.applicationContext, clean)
         activity.runOnUiThread {
             activity.pushDeviceAdminStatusToWebView()
         }

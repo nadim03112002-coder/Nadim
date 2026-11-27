@@ -30,6 +30,13 @@ import {
 import type { BusLiveLocation } from "../../school-types";
 import { safeOpenExternalUrl } from "../../utils/safeBrowserActions";
 import { haversineMeters, formatDistanceShort } from "../../utils/busProximity";
+import {
+  fetchNearbyStreetLabels,
+  getCachedAreaName,
+  resolveFreeAreaName,
+  snapTrailPointsToRoad,
+  type LocalStreetPlaceLabel,
+} from "../../utils/busLocationIntel";
 
 export interface MapRouteStopOverlay {
   id?: string;
@@ -75,6 +82,9 @@ export interface LiveBusGoogleMapProps {
   onPickLocation?: (lat: number, lng: number) => void;
   showOpenInMapsButton?: boolean;
   connectBusToHome?: boolean;
+  fitAllOnLoad?: boolean;
+  onAreaNamesResolved?: (areaByBusId: Record<string, string>) => void;
+  googleMapsApiKey?: string;
 }
 
 interface LatLngPoint {
@@ -118,6 +128,18 @@ function hasValidCoords(bus?: BusLiveLocation | null): boolean {
   return isValidLatLng(bus.latitude, bus.longitude);
 }
 
+function getPreferredGoogleMapsUrl(bus?: BusLiveLocation | null): string {
+  if (!bus) return "";
+  const liveShare = String(bus.liveShareUrl || "").trim();
+  if (liveShare && bus.tripStatus === "started" && bus.liveShareActive !== false) {
+    return liveShare;
+  }
+  if (hasValidCoords(bus)) {
+    return `https://www.google.com/maps?q=${Number(bus.latitude)},${Number(bus.longitude)}`;
+  }
+  return "";
+}
+
 function getShortBusLabel(busNumber?: string): string {
   const raw = String(busNumber || "Bus").trim();
   const parenMatch = raw.match(/\(([^)]+)\)/);
@@ -132,6 +154,116 @@ function escapeHtml(text?: string): string {
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#39;");
+}
+
+function build3DSchoolVanSvg(opts: {
+  idKey: string;
+  isLive: boolean;
+  isSelected: boolean;
+  size?: number;
+}): string {
+  const uid = String(opts.idKey || "van").replace(/[^a-zA-Z0-9_-]/g, "") || "van";
+  const w = opts.size || (opts.isSelected ? 64 : 56);
+  const h = Math.round(w * 0.82);
+  const bodyTop = opts.isSelected ? "#fde047" : "#fbbf24";
+  const bodySide = opts.isSelected ? "#f59e0b" : "#d97706";
+  const bodyFront = opts.isSelected ? "#fcd34d" : "#f59e0b";
+  const bodyDark = "#b45309";
+  const strokeMain = opts.isSelected ? "#ffffff" : "#fef3c7";
+
+  return `
+    <svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 120 98" style="overflow:visible;filter:drop-shadow(0 8px 10px rgba(2,6,23,0.48));">
+      <defs>
+        <linearGradient id="roof_${uid}" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0%" stop-color="#fef08a"/>
+          <stop offset="65%" stop-color="${bodyTop}"/>
+          <stop offset="100%" stop-color="${bodySide}"/>
+        </linearGradient>
+        <linearGradient id="side_${uid}" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stop-color="${bodyFront}"/>
+          <stop offset="100%" stop-color="${bodyDark}"/>
+        </linearGradient>
+        <linearGradient id="glass_${uid}" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0%" stop-color="#bae6fd"/>
+          <stop offset="40%" stop-color="#38bdf8"/>
+          <stop offset="100%" stop-color="#0f172a"/>
+        </linearGradient>
+        <linearGradient id="beam_${uid}" x1="0" y1="0" x2="1" y2="0.5">
+          <stop offset="0%" stop-color="rgba(254,240,138,0.75)"/>
+          <stop offset="100%" stop-color="rgba(254,240,138,0)"/>
+        </linearGradient>
+      </defs>
+
+      <!-- 3D Ground Contact Shadow -->
+      <ellipse cx="58" cy="84" rx="44" ry="11" fill="rgba(2,6,23,0.42)"/>
+      ${opts.isLive ? `<ellipse cx="58" cy="83" rx="48" ry="13" fill="none" stroke="#10b981" stroke-width="2" stroke-opacity="0.7"/>` : ""}
+
+      <!-- Live Headlight Cones -->
+      ${opts.isLive ? `
+        <polygon points="97,65 128,74 122,86 91,71" fill="url(#beam_${uid})"/>
+        <polygon points="108,58 134,65 129,74 103,64" fill="url(#beam_${uid})"/>
+      ` : ""}
+
+      <!-- Far/Back Wheels Hint -->
+      <ellipse cx="32" cy="73" rx="7" ry="9" fill="#0f172a"/>
+
+      <!-- Left Isometric Body Wall (Side) -->
+      <path d="M16,36 L58,56 L58,77 L16,57 Q12,55 12,50 L12,41 Q12,37 16,36 Z" fill="url(#side_${uid})" stroke="${strokeMain}" stroke-width="1.2" stroke-linejoin="round"/>
+
+      <!-- Front Isometric Nose & Hood -->
+      <path d="M58,56 L102,38 L108,46 Q111,51 110,57 L109,62 L76,77 Q66,81 58,77 Z" fill="${bodyFront}" stroke="${strokeMain}" stroke-width="1.2" stroke-linejoin="round"/>
+
+      <!-- Front Lower Bumper -->
+      <path d="M58,74 L109,57 L110,63 L75,80 Q65,83 58,79 Z" fill="#1e293b" stroke="#94a3b8" stroke-width="0.9"/>
+
+      <!-- 3D Roof Top Plane -->
+      <path d="M14,35 L58,16 Q63,14 68,16 L96,29 L58,51 Q54,53 49,50 L14,35 Z" fill="url(#roof_${uid})" stroke="${strokeMain}" stroke-width="1.4" stroke-linejoin="round"/>
+
+      <!-- Roof School Van AC Vent & Amber Beacon -->
+      <path d="M40,29 L56,22 L66,27 L50,34 Z" fill="#f8fafc" stroke="#cbd5e1" stroke-width="0.9"/>
+      <ellipse cx="75" cy="24" rx="4.5" ry="2.5" fill="${opts.isLive ? "#10b981" : "#f97316"}" stroke="#ffffff" stroke-width="1"/>
+
+      <!-- Panoramic Front Windshield (Tilted 3D) -->
+      <path d="M59,49 L95,31 L104,40 L66,58 Z" fill="url(#glass_${uid})" stroke="#0f172a" stroke-width="1.4" stroke-linejoin="round"/>
+      <!-- Windshield Glass Reflection -->
+      <polygon points="67,48 77,43 81,50 71,55" fill="rgba(255,255,255,0.42)"/>
+
+      <!-- Side Windows (3D Recessed Glass Strip) -->
+      <polygon points="18,40 31,46 31,55 18,49" fill="url(#glass_${uid})" stroke="#0f172a" stroke-width="1"/>
+      <polygon points="34,47 47,53 47,62 34,56" fill="url(#glass_${uid})" stroke="#0f172a" stroke-width="1"/>
+      <polygon points="49,54 56,57 56,66 49,63" fill="url(#glass_${uid})" stroke="#0f172a" stroke-width="1"/>
+
+      <!-- Navy Safety Stripe along Side -->
+      <polygon points="14,52 57,72 57,75 14,55" fill="#1e3a8a"/>
+
+      <!-- Front Grille & Headlights -->
+      <polygon points="82,61 101,53 101,59 82,67" fill="#0f172a" stroke="#64748b" stroke-width="0.8"/>
+      <line x1="86" y1="60" x2="86" y2="65" stroke="#94a3b8" stroke-width="1"/>
+      <line x1="91" y1="58" x2="91" y2="63" stroke="#94a3b8" stroke-width="1"/>
+      <line x1="96" y1="56" x2="96" y2="61" stroke="#94a3b8" stroke-width="1"/>
+
+      <!-- Dual Headlights -->
+      <ellipse cx="75" cy="67" rx="4" ry="2.8" fill="${opts.isLive ? "#fef08a" : "#fde68a"}" stroke="#ffffff" stroke-width="0.9"/>
+      <ellipse cx="105" cy="54" rx="3.4" ry="2.4" fill="${opts.isLive ? "#fef08a" : "#fde68a"}" stroke="#ffffff" stroke-width="0.9"/>
+
+      <!-- Side Mirror -->
+      <rect x="57" y="45" width="4" height="6" rx="1.2" fill="#0f172a" stroke="#e2e8f0" stroke-width="0.7"/>
+
+      <!-- 3D Rear Tire -->
+      <g transform="translate(26,64)">
+        <ellipse cx="0" cy="0" rx="7.5" ry="9.5" fill="#090d16" stroke="#334155" stroke-width="1.2"/>
+        <ellipse cx="1" cy="0" rx="3.8" ry="5.2" fill="#cbd5e1"/>
+        <ellipse cx="1.5" cy="0" rx="1.6" ry="2.2" fill="#475569"/>
+      </g>
+
+      <!-- 3D Front Tire -->
+      <g transform="translate(50,75)">
+        <ellipse cx="0" cy="0" rx="8" ry="10" fill="#090d16" stroke="#334155" stroke-width="1.2"/>
+        <ellipse cx="1" cy="0" rx="4.2" ry="5.5" fill="#cbd5e1"/>
+        <ellipse cx="1.6" cy="0" rx="1.8" ry="2.4" fill="#475569"/>
+      </g>
+    </svg>
+  `;
 }
 
 /* ============================================================================
@@ -152,6 +284,9 @@ interface LeafletMapProps {
   onPickLocation?: (lat: number, lng: number) => void;
   showOpenInMapsButton?: boolean;
   connectBusToHome?: boolean;
+  fitAllOnLoad?: boolean;
+  areaNameByBusId?: Record<string, string>;
+  stoppedLabelByBusId?: Record<string, string>;
   canSwitchToGoogle?: boolean;
   onSwitchEngine?: () => void;
 }
@@ -170,12 +305,16 @@ const LeafletFleetMap: React.FC<LeafletMapProps> = ({
   onPickLocation,
   showOpenInMapsButton = true,
   connectBusToHome = false,
+  fitAllOnLoad = false,
+  areaNameByBusId = {},
+  stoppedLabelByBusId = {},
   canSwitchToGoogle = false,
   onSwitchEngine,
 }) => {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<L.Map | null>(null);
   const tileLayerGroupRef = useRef<L.LayerGroup | null>(null);
+  const placesLayerRef = useRef<L.LayerGroup | null>(null);
   const routesLayerRef = useRef<L.LayerGroup | null>(null);
   const trailsLayerRef = useRef<L.LayerGroup | null>(null);
   const homesLayerRef = useRef<L.LayerGroup | null>(null);
@@ -186,8 +325,12 @@ const LeafletFleetMap: React.FC<LeafletMapProps> = ({
   const pinPickActiveRef = useRef(Boolean(pinPickLabel));
 
   const [mapType, setMapType] = useState<"roadmap" | "hybrid">("roadmap");
-  const [followSelected, setFollowSelected] = useState<boolean>(true);
+  const [followSelected, setFollowSelected] = useState<boolean>(!fitAllOnLoad);
   const [fitTrigger, setFitTrigger] = useState<number>(0);
+  const [nearbyPlaces, setNearbyPlaces] = useState<LocalStreetPlaceLabel[]>([]);
+  const [snappedTrailByBus, setSnappedTrailByBus] = useState<Record<string, LatLngPoint[]>>({});
+  const lastPlaceFetchKeyRef = useRef<string>("");
+  const lastSnapAtRef = useRef<Record<string, number>>({});
 
   onPickRef.current = onPickLocation;
   pinPickActiveRef.current = Boolean(pinPickLabel);
@@ -246,6 +389,7 @@ const LeafletFleetMap: React.FC<LeafletMapProps> = ({
     L.control.zoom({ position: "bottomright" }).addTo(map);
 
     tileLayerGroupRef.current = L.layerGroup().addTo(map);
+    placesLayerRef.current = L.layerGroup().addTo(map);
     routesLayerRef.current = L.layerGroup().addTo(map);
     trailsLayerRef.current = L.layerGroup().addTo(map);
     homesLayerRef.current = L.layerGroup().addTo(map);
@@ -253,6 +397,19 @@ const LeafletFleetMap: React.FC<LeafletMapProps> = ({
 
     map.on("dragstart", () => {
       setFollowSelected(false);
+    });
+
+    map.on("moveend", () => {
+      try {
+        const c = map.getCenter();
+        const key = `${(Math.round(c.lat * 45) / 45).toFixed(3)}_${(Math.round(c.lng * 45) / 45).toFixed(3)}`;
+        if (lastPlaceFetchKeyRef.current !== key) {
+          lastPlaceFetchKeyRef.current = key;
+          void fetchNearbyStreetLabels(c.lat, c.lng).then((items) => {
+            if (items.length > 0) setNearbyPlaces(items);
+          });
+        }
+      } catch {}
     });
 
     map.on("click", (e: L.LeafletMouseEvent) => {
@@ -265,6 +422,14 @@ const LeafletFleetMap: React.FC<LeafletMapProps> = ({
     });
 
     mapRef.current = map;
+
+    if (hasRealStartAnchor) {
+      const cKey = `${(Math.round(startCenter[0] * 45) / 45).toFixed(3)}_${(Math.round(startCenter[1] * 45) / 45).toFixed(3)}`;
+      lastPlaceFetchKeyRef.current = cKey;
+      void fetchNearbyStreetLabels(startCenter[0], startCenter[1]).then((items) => {
+        if (items.length > 0) setNearbyPlaces(items);
+      });
+    }
 
     // Auto-fix tile sizing whenever modal/panel opens or resizes
     const ro = new ResizeObserver(() => {
@@ -288,19 +453,37 @@ const LeafletFleetMap: React.FC<LeafletMapProps> = ({
     };
   }, []);
 
-  // 2. Switch Street Map (OSM) vs Satellite Hybrid (Esri Imagery + Place & Road Labels)
+  // 2. Switch Google-Style Street Map (Carto Voyager + OSM Fallback) vs Satellite Hybrid
   useEffect(() => {
     const group = tileLayerGroupRef.current;
     if (!group) return;
     group.clearLayers();
 
     if (mapType === "roadmap") {
-      L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-        maxZoom: 19,
-        attribution: "&copy; OpenStreetMap",
-      }).addTo(group);
+      // Crisp Google-Maps-style Voyager roads & neighborhood labels (100% Free)
+      const carto = L.tileLayer(
+        "https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png",
+        {
+          maxZoom: 19,
+          subdomains: "abcd",
+          attribution: "&copy; OpenStreetMap &copy; CARTO",
+        }
+      );
+      let fellBackToOsm = false;
+      carto.on("tileerror", () => {
+        if (fellBackToOsm) return;
+        fellBackToOsm = true;
+        try {
+          group.clearLayers();
+          L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+            maxZoom: 19,
+            attribution: "&copy; OpenStreetMap",
+          }).addTo(group);
+        } catch {}
+      });
+      carto.addTo(group);
     } else {
-      // Free Esri World Satellite Imagery
+      // Free Esri World Satellite Imagery + Road & Place Labels
       L.tileLayer(
         "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
         {
@@ -308,7 +491,6 @@ const LeafletFleetMap: React.FC<LeafletMapProps> = ({
           attribution: "&copy; Esri World Imagery",
         }
       ).addTo(group);
-      // Free Road Lines + Village / Town / City / Landmark Name Labels Overlay
       L.tileLayer(
         "https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Transportation/MapServer/tile/{z}/{y}/{x}",
         {
@@ -324,6 +506,50 @@ const LeafletFleetMap: React.FC<LeafletMapProps> = ({
       ).addTo(group);
     }
   }, [mapType]);
+
+  // 2b. Plot Free Local Village / Mohalla / Landmark Labels on Street View
+  useEffect(() => {
+    const layer = placesLayerRef.current;
+    if (!layer) return;
+    layer.clearLayers();
+    if (nearbyPlaces.length === 0) return;
+
+    nearbyPlaces.forEach((p) => {
+      const isTown = p.kind === "town";
+      const isVillage = p.kind === "village";
+      const bg =
+        mapType === "hybrid"
+          ? "rgba(2,6,23,0.78)"
+          : isTown
+            ? "rgba(255,255,255,0.92)"
+            : "rgba(255,255,255,0.86)";
+      const textClr =
+        mapType === "hybrid"
+          ? isTown
+            ? "#fde68a"
+            : "#e2e8f0"
+          : isTown
+            ? "#1e1b4b"
+            : isVillage
+              ? "#0f172a"
+              : "#334155";
+      const borderClr =
+        mapType === "hybrid"
+          ? "rgba(255,255,255,0.22)"
+          : "rgba(15,23,42,0.16)";
+      const icon = L.divIcon({
+        className: "nsta-local-place-label",
+        html: `<div style="transform:translate(-50%,-50%);pointer-events:none;white-space:nowrap;font-size:${isTown ? "11px" : "10px"};font-weight:${isTown || isVillage ? "800" : "700"};color:${textClr};background:${bg};border:1px solid ${borderClr};padding:1px 6px;border-radius:6px;box-shadow:0 1px 3px rgba(0,0,0,0.14);letter-spacing:0.01em;">${isVillage || isTown ? "📍 " : ""}${escapeHtml(p.name)}</div>`,
+        iconSize: [0, 0],
+        iconAnchor: [0, 0],
+      });
+      L.marker([p.lat, p.lng], {
+        icon,
+        interactive: false,
+        zIndexOffset: isTown ? 80 : 40,
+      }).addTo(layer);
+    });
+  }, [nearbyPlaces, mapType]);
 
   // 3. Draw Planned Routes & Stop Pins + School Campus Pin
   useEffect(() => {
@@ -499,26 +725,59 @@ const LeafletFleetMap: React.FC<LeafletMapProps> = ({
     });
   }, [homePins, connectBusToHome, selectedBus?.latitude, selectedBus?.longitude, selectedBus?.busId]);
 
-  // 5. Draw Live Breadcrumb Trails for Active Buses
+  // 5. Snap Active Bus Trails onto Real Roads (Free OSRM) + Render Clean Polylines
+  useEffect(() => {
+    let cancelled = false;
+    const now = Date.now();
+    Object.entries(trailByBus).forEach(([busId, pts]) => {
+      if (!pts || pts.length < 3) return;
+      const lastSnap = lastSnapAtRef.current[busId] || 0;
+      if (now - lastSnap < 10_000) return;
+      lastSnapAtRef.current[busId] = now;
+      void snapTrailPointsToRoad(pts).then((snapped) => {
+        if (!cancelled && snapped && snapped.length >= 2) {
+          setSnappedTrailByBus((prev) => ({ ...prev, [busId]: snapped }));
+        }
+      });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [trailByBus]);
+
   useEffect(() => {
     const layer = trailsLayerRef.current;
     if (!layer) return;
     layer.clearLayers();
 
-    Object.entries(trailByBus).forEach(([busId, pts]) => {
+    Object.entries(trailByBus).forEach(([busId, rawPts]) => {
+      const snapped = snappedTrailByBus[busId];
+      const pts = snapped && snapped.length >= 2 ? snapped : rawPts;
       if (!pts || pts.length < 2) return;
       const isSelected = selectedBus?.busId === busId;
       const color = colorByBusId.get(busId) || "#f59e0b";
       L.polyline(
         pts.map((p) => [p.lat, p.lng] as [number, number]),
         {
+          color: "#0f172a",
+          weight: isSelected ? 7 : 5,
+          opacity: 0.4,
+          lineCap: "round",
+          lineJoin: "round",
+        }
+      ).addTo(layer);
+      L.polyline(
+        pts.map((p) => [p.lat, p.lng] as [number, number]),
+        {
           color: isSelected ? "#fbbf24" : color,
           weight: isSelected ? 4.5 : 3,
-          opacity: isSelected ? 0.95 : 0.6,
+          opacity: isSelected ? 0.96 : 0.72,
+          lineCap: "round",
+          lineJoin: "round",
         }
       ).addTo(layer);
     });
-  }, [trailByBus, selectedBus?.busId, colorByBusId]);
+  }, [trailByBus, snappedTrailByBus, selectedBus?.busId, colorByBusId]);
 
   // 6. Smoothly Create / Update All Live Bus Markers
   useEffect(() => {
@@ -542,29 +801,44 @@ const LeafletFleetMap: React.FC<LeafletMapProps> = ({
       const pillBg = isSelected ? "#f59e0b" : isLive ? color : "#334155";
       const pillText = isSelected ? "#020617" : "#ffffff";
       const shortName = getShortBusLabel(bus.busNumber);
-      const speedText = isLive ? ` • ${bus.speed || 0} km/h` : " • Idle";
+      const speedText = isLive
+        ? stoppedLabelByBusId[bus.busId]
+          ? ` • ⏸ ${stoppedLabelByBusId[bus.busId]}`
+          : ` • ${bus.speed || 0} km/h`
+        : " • Idle";
+      const areaLabel = areaNameByBusId[bus.busId] || "";
+      const stoppedNote = isLive ? stoppedLabelByBusId[bus.busId] || "" : "";
+      const headingDeg = Number.isFinite(Number(bus.heading)) ? Number(bus.heading) : 0;
+
+      const vanSvg = build3DSchoolVanSvg({
+        idKey: bus.busId || String(idx),
+        isLive,
+        isSelected,
+        size: isSelected ? 64 : 56,
+      });
 
       const icon = L.divIcon({
         className: "nsta-bus-div-icon",
         html: `
-          <div style="display:flex;flex-direction:column;align-items:center;transform:translate(-50%,-88%);cursor:pointer;user-select:none;">
-            <div style="background:${pillBg};color:${pillText};border:2px solid #ffffff;padding:2px 8px;border-radius:999px;font-size:11px;font-weight:900;white-space:nowrap;box-shadow:0 4px 14px rgba(0,0,0,0.55);display:flex;align-items:center;gap:5px;margin-bottom:4px;">
+          <div style="display:flex;flex-direction:column;align-items:center;transform:translate(-50%,-82%);cursor:pointer;user-select:none;">
+            <div style="background:${pillBg};color:${pillText};border:2px solid #ffffff;padding:2px 8px;border-radius:999px;font-size:11px;font-weight:900;white-space:nowrap;box-shadow:0 4px 14px rgba(0,0,0,0.45);display:flex;align-items:center;gap:5px;margin-bottom:2px;">
               ${isLive ? `<span style="width:7px;height:7px;border-radius:999px;background:#ffffff;display:inline-block;box-shadow:0 0 8px #ffffff;"></span>` : ""}
               <span>${escapeHtml(shortName)}${escapeHtml(speedText)}</span>
+              ${isLive && !stoppedNote && headingDeg > 0 ? `<span style="display:inline-block;transform:rotate(${headingDeg}deg);font-size:10px;line-height:1;">▲</span>` : ""}
             </div>
+            ${areaLabel ? `<div style="background:rgba(2,6,23,0.88);color:#fde68a;border:1px solid rgba(251,191,36,0.45);padding:1px 6px;border-radius:6px;font-size:9px;font-weight:800;white-space:nowrap;max-width:170px;overflow:hidden;text-overflow:ellipsis;margin-bottom:2px;box-shadow:0 2px 6px rgba(0,0,0,0.45);">📍 ${escapeHtml(areaLabel)}</div>` : ""}
             <div style="position:relative;display:flex;align-items:center;justify-content:center;">
-              ${isLive ? `<span style="position:absolute;inset:-6px;border-radius:999px;background:${pillBg};opacity:0.35;"></span>` : ""}
-              <div style="width:38px;height:38px;border-radius:14px;background:${pillBg};color:${pillText};border:2.5px solid #ffffff;display:flex;align-items:center;justify-content:center;font-size:19px;box-shadow:0 6px 16px rgba(0,0,0,0.55);">
-                🚌
-              </div>
+              ${vanSvg}
             </div>
-            <div style="width:10px;height:10px;background:${pillBg};border-right:2px solid #ffffff;border-bottom:2px solid #ffffff;transform:rotate(45deg);margin-top:-5px;"></div>
           </div>
         `,
         iconSize: [0, 0],
         iconAnchor: [0, 0],
       });
 
+      const preferredMapsUrl = getPreferredGoogleMapsUrl(bus);
+      const canOpenExternalMaps = Boolean(showOpenInMapsButton) && Boolean(preferredMapsUrl);
+      const isLiveShareUrl = Boolean(bus.liveShareUrl && isLive && bus.liveShareActive !== false);
       const popupHtml = `
         <div style="font-family:system-ui,sans-serif;min-width:210px;color:#0f172a;line-height:1.4;">
           <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;">
@@ -572,11 +846,13 @@ const LeafletFleetMap: React.FC<LeafletMapProps> = ({
               <div style="font-weight:900;font-size:13px;">${escapeHtml(bus.busNumber)}</div>
               <div style="font-size:11px;color:#475569;">${escapeHtml(bus.route)}</div>
             </div>
-            <span style="padding:2px 7px;border-radius:999px;font-size:10px;font-weight:900;background:${isLive ? "#d1fae5" : "#e2e8f0"};color:${isLive ? "#065f46" : "#475569"};white-space:nowrap;">
-              ${isLive ? `LIVE • ${bus.speed || 0} km/h` : "Idle"}
+            <span style="padding:2px 7px;border-radius:999px;font-size:10px;font-weight:900;background:${isLive ? (stoppedNote ? "#fef3c7" : "#d1fae5") : "#e2e8f0"};color:${isLive ? (stoppedNote ? "#92400e" : "#065f46") : "#475569"};white-space:nowrap;">
+              ${isLive ? (stoppedNote ? `⏸ ${escapeHtml(stoppedNote)}` : `LIVE • ${bus.speed || 0} km/h`) : "Idle"}
             </span>
           </div>
           <div style="background:#f1f5f9;border-radius:8px;padding:7px;margin-top:8px;font-size:11px;">
+            ${areaLabel ? `<div style="display:flex;justify-content:space-between;gap:8px;margin-bottom:3px;"><span style="color:#64748b;">मौजूदा एरिया:</span><span style="font-weight:800;color:#b45309;">📍 ${escapeHtml(areaLabel)}</span></div>` : ""}
+            ${stoppedNote ? `<div style="display:flex;justify-content:space-between;gap:8px;margin-bottom:3px;"><span style="color:#64748b;">स्थिति:</span><span style="font-weight:800;color:#b45309;">⏸ यहाँ ${escapeHtml(stoppedNote)}</span></div>` : ""}
             <div style="display:flex;justify-content:space-between;gap:8px;">
               <span style="color:#64748b;">ड्राइवर:</span>
               <span style="font-weight:800;">${escapeHtml(bus.driverName || "—")}</span>
@@ -596,7 +872,11 @@ const LeafletFleetMap: React.FC<LeafletMapProps> = ({
                 ? `<a href="tel:${escapeHtml(bus.driverPhone)}" style="flex:1;padding:6px 8px;border-radius:8px;background:#059669;color:#ffffff;font-weight:800;font-size:11px;text-align:center;text-decoration:none;">📞 Call Driver</a>`
                 : ""
             }
-            <a href="https://www.google.com/maps?q=${Number(bus.latitude)},${Number(bus.longitude)}" target="_blank" rel="noopener noreferrer" style="flex:1;padding:6px 8px;border-radius:8px;background:#4f46e5;color:#ffffff;font-weight:800;font-size:11px;text-align:center;text-decoration:none;">🗺️ Google Maps</a>
+            ${
+              canOpenExternalMaps
+                ? `<a href="${escapeHtml(preferredMapsUrl)}" target="_blank" rel="noopener noreferrer" style="flex:1;padding:6px 8px;border-radius:8px;background:#4f46e5;color:#ffffff;font-weight:800;font-size:11px;text-align:center;text-decoration:none;">${isLiveShareUrl ? "🔴 Live G-Maps" : "🗺️ Google Maps"}</a>`
+                : ""
+            }
           </div>
         </div>
       `;
@@ -624,14 +904,15 @@ const LeafletFleetMap: React.FC<LeafletMapProps> = ({
         busMarkersRef.current.set(bus.busId, marker);
       }
     });
-  }, [busesWithCoords, selectedBus?.busId, colorByBusId, onSelectBus, readOnly]);
+  }, [busesWithCoords, selectedBus?.busId, colorByBusId, onSelectBus, readOnly, showOpenInMapsButton, areaNameByBusId, stoppedLabelByBusId]);
 
   const hadSelectedCoordsRef = useRef<boolean>(hasValidCoords(selectedBus));
 
-  // 7. Smooth Auto-Follow Selected Bus (and instant snap when first real GPS fix arrives)
+  // 7. Smooth Auto-Follow Selected Bus (skipped during initial fitAllOnLoad so all fleet buses stay visible)
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
+    if (fitAllOnLoad && !followSelected) return;
     const validNow = Boolean(selectedBus && hasValidCoords(selectedBus));
     if (!validNow) {
       hadSelectedCoordsRef.current = false;
@@ -641,10 +922,10 @@ const LeafletFleetMap: React.FC<LeafletMapProps> = ({
 
     const justAcquiredFirstFix = !hadSelectedCoordsRef.current;
     hadSelectedCoordsRef.current = true;
-    if (justAcquiredFirstFix && !followSelected) {
+    if (justAcquiredFirstFix && !followSelected && !fitAllOnLoad) {
       setFollowSelected(true);
     }
-    if (!followSelected && !justAcquiredFirstFix) return;
+    if (!followSelected && (!justAcquiredFirstFix || fitAllOnLoad)) return;
 
     const target: [number, number] = [Number(selectedBus.latitude), Number(selectedBus.longitude)];
     const currentZoom = map.getZoom();
@@ -655,6 +936,7 @@ const LeafletFleetMap: React.FC<LeafletMapProps> = ({
     }
   }, [
     followSelected,
+    fitAllOnLoad,
     selectedBus?.busId,
     selectedBus?.latitude,
     selectedBus?.longitude,
@@ -709,7 +991,7 @@ const LeafletFleetMap: React.FC<LeafletMapProps> = ({
 
   return (
     <div
-      className={`relative w-full ${heightClass} rounded-2xl overflow-hidden border border-slate-700/80 bg-slate-900 shadow-inner`}
+      className={`relative w-full ${heightClass} rounded-xl overflow-hidden border border-slate-700/40 bg-slate-900`}
     >
       {/* Leaflet Canvas */}
       <div
@@ -727,7 +1009,7 @@ const LeafletFleetMap: React.FC<LeafletMapProps> = ({
         </div>
       )}
 
-      {/* Top-Left Live Bus / Waiting Pill */}
+      {/* Top-Left Live Bus / Area Pill */}
       {!pinPickLabel && (
         <div className="absolute top-2.5 left-2.5 z-[400] flex flex-wrap items-center gap-1.5 pointer-events-none max-w-[60%]">
           {selectedBus && hasValidCoords(selectedBus) ? (
@@ -738,9 +1020,20 @@ const LeafletFleetMap: React.FC<LeafletMapProps> = ({
                 <MapPin size={12} className="text-amber-400 shrink-0" />
               )}
               <span className="truncate">{getShortBusLabel(selectedBus.busNumber)}</span>
-              <span className="text-amber-300 font-mono shrink-0">
-                {selectedBus.speed || 0} km/h
-              </span>
+              {selectedBus.tripStatus === "started" && stoppedLabelByBusId[selectedBus.busId] ? (
+                <span className="text-amber-300 font-mono shrink-0">
+                  ⏸ {stoppedLabelByBusId[selectedBus.busId]}
+                </span>
+              ) : (
+                <span className="text-amber-300 font-mono shrink-0">
+                  {selectedBus.speed || 0} km/h
+                </span>
+              )}
+              {areaNameByBusId[selectedBus.busId] && (
+                <span className="hidden sm:inline text-emerald-300 truncate max-w-[140px]">
+                  • {areaNameByBusId[selectedBus.busId]}
+                </span>
+              )}
             </div>
           ) : (
             <div className="px-2.5 py-1.5 rounded-xl bg-slate-950/90 border border-amber-500/40 text-[11px] font-bold text-amber-200 shadow-lg flex items-center gap-1.5 backdrop-blur-md">
@@ -810,23 +1103,29 @@ const LeafletFleetMap: React.FC<LeafletMapProps> = ({
           </button>
         )}
 
-        {showOpenInMapsButton && openTarget && (
+        {showOpenInMapsButton && selectedBus && getPreferredGoogleMapsUrl(selectedBus) && (
           <button
             type="button"
             onClick={() =>
-              safeOpenExternalUrl(
-                `https://www.google.com/maps?q=${openTarget.lat},${openTarget.lng}`
-              )
+              safeOpenExternalUrl(getPreferredGoogleMapsUrl(selectedBus))
             }
             className="px-2.5 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white border border-indigo-400/50 text-[11px] font-bold flex items-center gap-1 shadow-lg cursor-pointer transition"
-            title="Open exact live pin in Google Maps app (100% Free)"
+            title={
+              selectedBus.liveShareUrl && selectedBus.tripStatus === "started" && selectedBus.liveShareActive !== false
+                ? "Open Driver's Live Location Share in Google Maps"
+                : "Open exact live pin in Google Maps app (100% Free)"
+            }
           >
             <ExternalLink size={12} />
-            <span className="hidden sm:inline">Google Maps</span>
+            <span className="hidden sm:inline">
+              {selectedBus.liveShareUrl && selectedBus.tripStatus === "started" && selectedBus.liveShareActive !== false
+                ? "Live G-Maps"
+                : "Google Maps"}
+            </span>
           </button>
         )}
 
-        {canSwitchToGoogle && onSwitchEngine && !readOnly && (
+        {canSwitchToGoogle && onSwitchEngine && (
           <button
             type="button"
             onClick={onSwitchEngine}
@@ -865,6 +1164,9 @@ interface BusMarkerProps {
   isInfoOpen: boolean;
   onSelect: (busId: string) => void;
   onCloseInfo: () => void;
+  showOpenInMapsButton?: boolean;
+  readOnly?: boolean;
+  stoppedLabel?: string;
 }
 
 const BusAdvancedMarker: React.FC<BusMarkerProps> = ({
@@ -873,9 +1175,13 @@ const BusAdvancedMarker: React.FC<BusMarkerProps> = ({
   isInfoOpen,
   onSelect,
   onCloseInfo,
+  showOpenInMapsButton = true,
+  readOnly = false,
+  stoppedLabel = "",
 }) => {
   const [markerRef, marker] = useAdvancedMarkerRef();
   const isLive = bus.tripStatus === "started";
+  const preferredUrl = getPreferredGoogleMapsUrl(bus);
   const pos: LatLngPoint = {
     lat: Number(bus.latitude),
     lng: Number(bus.longitude),
@@ -887,7 +1193,7 @@ const BusAdvancedMarker: React.FC<BusMarkerProps> = ({
         ref={markerRef}
         position={pos}
         zIndex={isSelected ? 1000 : isLive ? 500 : 100}
-        title={`${bus.busNumber} • ${isLive ? `${bus.speed} km/h LIVE` : "Depot Idle"}`}
+        title={`${bus.busNumber} • ${isLive ? (stoppedLabel ? `⏸ ${stoppedLabel}` : `${bus.speed} km/h LIVE`) : "Depot Idle"}`}
         onClick={() => onSelect(bus.busId)}
       >
         <div
@@ -907,33 +1213,21 @@ const BusAdvancedMarker: React.FC<BusMarkerProps> = ({
               <span className="w-1.5 h-1.5 rounded-full bg-white animate-ping" />
             )}
             <span>{getShortBusLabel(bus.busNumber)}</span>
-            {isLive && <span>• {bus.speed} km/h</span>}
+            {isLive && (
+              <span>{stoppedLabel ? `• ⏸ ${stoppedLabel}` : `• ${bus.speed} km/h`}</span>
+            )}
           </div>
 
-          <div className="relative flex items-center justify-center">
-            {isLive && (
-              <span className="absolute -inset-1.5 rounded-full bg-emerald-400/40 animate-pulse" />
-            )}
-            <div
-              className={`w-9 h-9 rounded-2xl flex items-center justify-center border-2 shadow-xl transition-transform ${
-                isSelected
-                  ? "bg-amber-500 text-slate-950 border-white scale-110"
-                  : isLive
-                    ? "bg-emerald-500 text-slate-950 border-white"
-                    : "bg-slate-700 text-slate-100 border-slate-300"
-              }`}
-            >
-              <Bus size={18} strokeWidth={2.5} />
-            </div>
-          </div>
           <div
-            className={`w-2 h-2 rotate-45 -mt-1 border-r border-b ${
-              isSelected
-                ? "bg-amber-500 border-white"
-                : isLive
-                  ? "bg-emerald-500 border-white"
-                  : "bg-slate-700 border-slate-300"
-            }`}
+            className="relative flex items-center justify-center"
+            dangerouslySetInnerHTML={{
+              __html: build3DSchoolVanSvg({
+                idKey: `gm_${bus.busId}`,
+                isLive,
+                isSelected,
+                size: isSelected ? 64 : 56,
+              }),
+            }}
           />
         </div>
       </AdvancedMarker>
@@ -957,11 +1251,13 @@ const BusAdvancedMarker: React.FC<BusMarkerProps> = ({
               <span
                 className={`px-2 py-0.5 rounded-full text-[10px] font-black shrink-0 ${
                   isLive
-                    ? "bg-emerald-100 text-emerald-800"
+                    ? stoppedLabel
+                      ? "bg-amber-100 text-amber-800"
+                      : "bg-emerald-100 text-emerald-800"
                     : "bg-slate-200 text-slate-700"
                 }`}
               >
-                {isLive ? `LIVE • ${bus.speed} km/h` : "Idle"}
+                {isLive ? (stoppedLabel ? `⏸ ${stoppedLabel}` : `LIVE • ${bus.speed} km/h`) : "Idle"}
               </span>
             </div>
 
@@ -989,17 +1285,16 @@ const BusAdvancedMarker: React.FC<BusMarkerProps> = ({
                   <Phone size={12} /> Call Driver
                 </a>
               )}
-              <button
-                type="button"
-                onClick={() =>
-                  safeOpenExternalUrl(
-                    `https://www.google.com/maps?q=${bus.latitude},${bus.longitude}`
-                  )
-                }
-                className="flex-1 py-1.5 px-2.5 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-[11px] font-bold flex items-center justify-center gap-1 cursor-pointer"
-              >
-                <ExternalLink size={12} /> Open Maps
-              </button>
+              {showOpenInMapsButton && preferredUrl && (
+                <button
+                  type="button"
+                  onClick={() => safeOpenExternalUrl(preferredUrl)}
+                  className="flex-1 py-1.5 px-2.5 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-[11px] font-bold flex items-center justify-center gap-1 cursor-pointer"
+                >
+                  <ExternalLink size={12} />{" "}
+                  {bus.liveShareUrl && isLive && bus.liveShareActive !== false ? "Live Maps" : "Open Maps"}
+                </button>
+              )}
             </div>
           </div>
         </InfoWindow>
@@ -1021,6 +1316,9 @@ interface GoogleMapContentProps {
   onSelectBus: (busId: string) => void;
   onCloseInfo: () => void;
   connectBusToHome?: boolean;
+  showOpenInMapsButton?: boolean;
+  readOnly?: boolean;
+  stoppedLabelByBusId?: Record<string, string>;
 }
 
 const GoogleMapContent: React.FC<GoogleMapContentProps> = ({
@@ -1036,6 +1334,9 @@ const GoogleMapContent: React.FC<GoogleMapContentProps> = ({
   onSelectBus,
   onCloseInfo,
   connectBusToHome,
+  showOpenInMapsButton = true,
+  readOnly = false,
+  stoppedLabelByBusId = {},
 }) => {
   const map = useMap();
   const polylinesRef = useRef<google.maps.Polyline[]>([]);
@@ -1238,6 +1539,9 @@ const GoogleMapContent: React.FC<GoogleMapContentProps> = ({
           isInfoOpen={openInfoBusId === bus.busId}
           onSelect={onSelectBus}
           onCloseInfo={onCloseInfo}
+          showOpenInMapsButton={showOpenInMapsButton}
+          readOnly={readOnly}
+          stoppedLabel={stoppedLabelByBusId[bus.busId] || ""}
         />
       ))}
     </>
@@ -1258,6 +1562,7 @@ interface GoogleViewportProps {
   onPickLocation?: (lat: number, lng: number) => void;
   showOpenInMapsButton?: boolean;
   connectBusToHome?: boolean;
+  stoppedLabelByBusId?: Record<string, string>;
   onFallbackToLeaflet: () => void;
 }
 
@@ -1275,6 +1580,7 @@ const GoogleMapViewportInner: React.FC<GoogleViewportProps> = ({
   onPickLocation,
   showOpenInMapsButton,
   connectBusToHome,
+  stoppedLabelByBusId = {},
   onFallbackToLeaflet,
 }) => {
   const apiStatus = useApiLoadingStatus();
@@ -1364,6 +1670,9 @@ const GoogleMapViewportInner: React.FC<GoogleViewportProps> = ({
           onSelectBus={handleSelectMarker}
           onCloseInfo={() => setOpenInfoBusId(null)}
           connectBusToHome={connectBusToHome}
+          showOpenInMapsButton={showOpenInMapsButton}
+          readOnly={readOnly}
+          stoppedLabelByBusId={stoppedLabelByBusId}
         />
       </GoogleMap>
 
@@ -1409,29 +1718,29 @@ const GoogleMapViewportInner: React.FC<GoogleViewportProps> = ({
           </button>
         )}
 
-        {!readOnly && (
-          <button
-            type="button"
-            onClick={onFallbackToLeaflet}
-            className="px-2.5 py-1.5 rounded-xl bg-slate-950/90 hover:bg-slate-800 text-emerald-300 border border-emerald-500/40 text-[11px] font-bold shadow-lg backdrop-blur-md cursor-pointer transition"
-            title="Switch to Free OpenStreetMap Engine"
-          >
-            OSM Free
-          </button>
-        )}
+        <button
+          type="button"
+          onClick={onFallbackToLeaflet}
+          className="px-2.5 py-1.5 rounded-xl bg-slate-950/90 hover:bg-slate-800 text-emerald-300 border border-emerald-500/40 text-[11px] font-bold shadow-lg backdrop-blur-md cursor-pointer transition"
+          title="Switch to Free OpenStreetMap Engine"
+        >
+          OSM Free
+        </button>
 
-        {showOpenInMapsButton && selectedBus && hasValidCoords(selectedBus) && (
+        {showOpenInMapsButton && selectedBus && getPreferredGoogleMapsUrl(selectedBus) && (
           <button
             type="button"
             onClick={() =>
-              safeOpenExternalUrl(
-                `https://www.google.com/maps?q=${selectedBus.latitude},${selectedBus.longitude}`
-              )
+              safeOpenExternalUrl(getPreferredGoogleMapsUrl(selectedBus))
             }
             className="px-2.5 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white border border-indigo-400/50 text-[11px] font-bold flex items-center gap-1 shadow-lg cursor-pointer transition"
           >
             <ExternalLink size={12} />
-            <span className="hidden sm:inline">Maps App</span>
+            <span className="hidden sm:inline">
+              {selectedBus.liveShareUrl && selectedBus.tripStatus === "started" && selectedBus.liveShareActive !== false
+                ? "Live G-Maps"
+                : "Maps App"}
+            </span>
           </button>
         )}
       </div>
@@ -1458,19 +1767,37 @@ export const LiveBusGoogleMap: React.FC<LiveBusGoogleMapProps> = ({
   onPickLocation,
   showOpenInMapsButton = true,
   connectBusToHome = false,
+  fitAllOnLoad = false,
+  onAreaNamesResolved,
+  googleMapsApiKey,
 }) => {
   const envKey = ((import.meta as any).env?.VITE_GOOGLE_MAPS_API_KEY || "").trim();
+  const schoolCustomKey = String(googleMapsApiKey || "").trim();
   const normalizedSchoolId = (schoolId || "").trim();
   const normalizedSchoolCode = (schoolCode || "").trim();
   const hasSchoolLookup = Boolean(normalizedSchoolId || normalizedSchoolCode);
 
-  const [apiKey, setApiKey] = useState<string>(hasSchoolLookup ? "" : envKey);
-  const [engine, setEngine] = useState<"leaflet" | "google">("leaflet");
+  const [apiKey, setApiKey] = useState<string>(schoolCustomKey || (hasSchoolLookup ? "" : envKey));
+  const [engine, setEngine] = useState<"leaflet" | "google">(schoolCustomKey ? "google" : "leaflet");
   const [googleFailed, setGoogleFailed] = useState<boolean>(false);
   const [trailByBus, setTrailByBus] = useState<Record<string, LatLngPoint[]>>({});
+  const [areaNameByBusId, setAreaNameByBusId] = useState<Record<string, string>>({});
+  const stoppedSinceByBusRef = useRef<Record<string, { since: number; lat: number; lng: number }>>({});
+  const [haltTick, setHaltTick] = useState<number>(0);
 
-  // Check if an active Google Maps key is configured (runs in background without blocking Free Leaflet Map!)
+  // Refresh halt duration clock every 15s while live buses are present
   useEffect(() => {
+    const t = setInterval(() => setHaltTick((c) => c + 1), 15_000);
+    return () => clearInterval(t);
+  }, []);
+
+  // Check if an active Google Maps key is configured (School custom key takes top priority; else server lookup; Free Leaflet remains instant default!)
+  useEffect(() => {
+    if (schoolCustomKey) {
+      setApiKey(schoolCustomKey);
+      setGoogleFailed(false);
+      return;
+    }
     if (!hasSchoolLookup && envKey) {
       setApiKey(envKey);
       return;
@@ -1496,7 +1823,7 @@ export const LiveBusGoogleMap: React.FC<LiveBusGoogleMapProps> = ({
     return () => {
       active = false;
     };
-  }, [envKey, hasSchoolLookup, normalizedSchoolId, normalizedSchoolCode]);
+  }, [schoolCustomKey, envKey, hasSchoolLookup, normalizedSchoolId, normalizedSchoolCode]);
 
   // Listen to global Google Maps quota failure -> auto-fallback to Leaflet seamlessly
   useEffect(() => {
@@ -1516,7 +1843,7 @@ export const LiveBusGoogleMap: React.FC<LiveBusGoogleMapProps> = ({
   const selectedBus =
     buses.find((b) => b.busId === selectedBusId) || buses[0] || null;
 
-  // Record live GPS breadcrumb trail per bus (up to 80 points)
+  // Record clean, outlier-filtered live GPS breadcrumb trail per bus (up to 80 points)
   useEffect(() => {
     if (busesWithCoords.length === 0) return;
     setTrailByBus((prev) => {
@@ -1526,18 +1853,90 @@ export const LiveBusGoogleMap: React.FC<LiveBusGoogleMapProps> = ({
         const pt = { lat: Number(b.latitude), lng: Number(b.longitude) };
         const existing = next[b.busId] || [];
         const last = existing[existing.length - 1];
-        if (
-          !last ||
-          Math.abs(last.lat - pt.lat) > 0.00003 ||
-          Math.abs(last.lng - pt.lng) > 0.00003
-        ) {
+        if (!last) {
+          next[b.busId] = [pt];
+          changed = true;
+          continue;
+        }
+        const distM = haversineMeters(last.lat, last.lng, pt.lat, pt.lng);
+        // Ignore stationary < 8m GPS wobble, and reset trail if bus teleported > 1.5km instantaneously
+        if (distM >= 8 && distM < 1500) {
           next[b.busId] = [...existing.slice(-79), pt];
+          changed = true;
+        } else if (distM >= 1500) {
+          next[b.busId] = [pt];
           changed = true;
         }
       }
       return changed ? next : prev;
     });
   }, [busesWithCoords]);
+
+  // Free live reverse-geocoding for every bus ("कौन गाड़ी किस Area में है")
+  useEffect(() => {
+    if (busesWithCoords.length === 0) return;
+    let cancelled = false;
+
+    const immediate: Record<string, string> = {};
+    busesWithCoords.forEach((b) => {
+      const c = getCachedAreaName(Number(b.latitude), Number(b.longitude));
+      if (c) immediate[b.busId] = c;
+    });
+    if (Object.keys(immediate).length > 0) {
+      setAreaNameByBusId((prev) => ({ ...prev, ...immediate }));
+    }
+
+    const resolveAll = async () => {
+      const updates: Record<string, string> = {};
+      for (const b of busesWithCoords) {
+        const name = await resolveFreeAreaName(Number(b.latitude), Number(b.longitude));
+        if (name) updates[b.busId] = name;
+      }
+      if (!cancelled && Object.keys(updates).length > 0) {
+        setAreaNameByBusId((prev) => ({ ...prev, ...updates }));
+      }
+    };
+    void resolveAll();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [busesWithCoords]);
+
+  useEffect(() => {
+    if (Object.keys(areaNameByBusId).length > 0) {
+      onAreaNamesResolved?.(areaNameByBusId);
+    }
+  }, [areaNameByBusId, onAreaNamesResolved]);
+
+  const stoppedLabelByBusId = useMemo(() => {
+    const out: Record<string, string> = {};
+    const now = Date.now();
+    busesWithCoords.forEach((b) => {
+      if (b.tripStatus !== "started") {
+        delete stoppedSinceByBusRef.current[b.busId];
+        return;
+      }
+      const lat = Number(b.latitude);
+      const lng = Number(b.longitude);
+      const speed = Number(b.speed || 0);
+      if (speed >= 3) {
+        delete stoppedSinceByBusRef.current[b.busId];
+        return;
+      }
+      const existing = stoppedSinceByBusRef.current[b.busId];
+      if (!existing || haversineMeters(existing.lat, existing.lng, lat, lng) > 25) {
+        stoppedSinceByBusRef.current[b.busId] = { since: now, lat, lng };
+        return;
+      }
+      const elapsedSec = Math.floor((now - existing.since) / 1000);
+      if (elapsedSec >= 35) {
+        const mins = Math.floor(elapsedSec / 60);
+        out[b.busId] = mins >= 1 ? `Stopped ${mins}m` : `Stopped ${elapsedSec}s`;
+      }
+    });
+    return out;
+  }, [busesWithCoords, haltTick]);
 
   const canUseGoogle = Boolean(apiKey) && !googleFailed;
 
@@ -1564,6 +1963,7 @@ export const LiveBusGoogleMap: React.FC<LiveBusGoogleMapProps> = ({
           onPickLocation={onPickLocation}
           showOpenInMapsButton={showOpenInMapsButton}
           connectBusToHome={connectBusToHome}
+          stoppedLabelByBusId={stoppedLabelByBusId}
           onFallbackToLeaflet={() => {
             setGoogleFailed(true);
             setEngine("leaflet");
@@ -1588,6 +1988,9 @@ export const LiveBusGoogleMap: React.FC<LiveBusGoogleMapProps> = ({
       onPickLocation={onPickLocation}
       showOpenInMapsButton={showOpenInMapsButton}
       connectBusToHome={connectBusToHome}
+      fitAllOnLoad={fitAllOnLoad}
+      areaNameByBusId={areaNameByBusId}
+      stoppedLabelByBusId={stoppedLabelByBusId}
       canSwitchToGoogle={canUseGoogle}
       onSwitchEngine={() => setEngine("google")}
     />

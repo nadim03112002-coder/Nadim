@@ -39,7 +39,9 @@ class BusGpsForegroundService : Service(), LocationListener {
     private val ioExecutor = Executors.newSingleThreadExecutor()
 
     private var lastSentAtMs: Long = 0L
+    private var lastGpsProviderTimeMs: Long = 0L
     private var lastLocation: Location? = null
+    private var lastBearingDeg: Double = 0.0
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -213,10 +215,31 @@ class BusGpsForegroundService : Service(), LocationListener {
 
     private fun handleNewLocation(location: Location, forceSync: Boolean) {
         val nowMs = System.currentTimeMillis()
+        val provider = location.provider ?: ""
+        val acc = if (location.hasAccuracy()) location.accuracy else 25f
+
+        if (provider == LocationManager.GPS_PROVIDER && acc <= 45f) {
+            lastGpsProviderTimeMs = nowMs
+        } else if (provider == LocationManager.NETWORK_PROVIDER) {
+            if (lastGpsProviderTimeMs > 0L && (nowMs - lastGpsProviderTimeMs) < 25_000L) {
+                return
+            }
+            if (acc > 60f && lastLocation != null) {
+                return
+            }
+        }
+
         val prev = lastLocation
         if (!forceSync && prev != null) {
             val elapsedMs = nowMs - lastSentAtMs
             val movedMeters = prev.distanceTo(location)
+            val dtSec = (location.time - prev.time) / 1000.0
+            if (dtSec in 0.3..18.0 && movedMeters > 120f) {
+                val impliedKmh = (movedMeters / 1000.0) / (dtSec / 3600.0)
+                if (impliedKmh > 135.0) {
+                    return
+                }
+            }
             if (elapsedMs < 3_500L && movedMeters < 10f) {
                 return
             }
@@ -292,6 +315,17 @@ class BusGpsForegroundService : Service(), LocationListener {
         val lat = (location.latitude * 1_000_000.0).roundToInt() / 1_000_000.0
         val lng = (location.longitude * 1_000_000.0).roundToInt() / 1_000_000.0
 
+        var bearingDeg = if (location.hasBearing() && location.bearing > 0f) {
+            location.bearing.toDouble()
+        } else {
+            lastBearingDeg
+        }
+        if ((!location.hasBearing() || location.bearing == 0f) && prev != null && prev.distanceTo(location) >= 6f) {
+            val b = prev.bearingTo(location).toDouble()
+            bearingDeg = if (b < 0) b + 360.0 else b
+        }
+        lastBearingDeg = bearingDeg
+
         return JSONObject().apply {
             put("schoolId", schoolId)
             put("busId", busId)
@@ -304,7 +338,7 @@ class BusGpsForegroundService : Service(), LocationListener {
             put("lat", lat)
             put("lng", lng)
             put("speed", if (tripStatusOverride == "ended") 0 else kmh)
-            put("heading", if (location.hasBearing()) location.bearing.toDouble() else 0.0)
+            put("heading", bearingDeg.roundToInt())
             put("accuracy", if (location.hasAccuracy()) location.accuracy.roundToInt() else 12)
             put("tripStatus", tripStatusOverride ?: "started")
             put("tripType", cfg.optString("tripType", "morning_pickup"))

@@ -3586,7 +3586,7 @@ export const StudentSchoolPanel: React.FC<Props> = ({
       )}
 
       {/* ── MAIN TAB CONTENT CONTAINER ─────────────────────────────────────── */}
-      <main className="flex-1 max-w-6xl w-full mx-auto p-4 sm:p-6 pb-28 space-y-6">
+      <main className="flex-1 max-w-6xl w-full mx-auto px-2.5 py-3 sm:p-6 pb-28 space-y-5">
         {activeTab !== "overview" && (
           <div className={`flex items-center justify-between gap-2 px-3 py-2 rounded-2xl border ${
             studentTheme === "white"

@@ -537,23 +537,23 @@ export const ClassroomVideoArchive: React.FC<Props> = ({
   const isElite = isSchoolEliteCurriculum(school);
   if (!isElite) {
     return (
-      <div className="bg-white dark:bg-slate-900 p-6 rounded-3xl shadow-sm border border-slate-200 dark:border-slate-800 animate-in slide-in-from-right max-w-4xl mx-auto my-4">
-        <div className="flex items-center gap-3 mb-6 pb-4 border-b border-slate-100 dark:border-slate-800">
+      <div className="space-y-4 max-w-4xl mx-auto animate-in slide-in-from-right">
+        <div className="flex items-center gap-3 pb-3 border-b border-slate-200 dark:border-slate-800">
           {onBack && (
             <button type="button" onClick={onBack} className="bg-slate-100 dark:bg-slate-800 p-2 rounded-full hover:bg-slate-200 cursor-pointer">
               <ChevronLeft size={20} />
             </button>
           )}
-          <div className="flex-1">
-            <h3 className="text-xl font-black text-slate-800 dark:text-white flex items-center gap-2">
-              <Crown className="text-amber-500" size={24} />
-              Classroom YouTube Live &amp; Video Lectures
+          <div className="flex-1 min-w-0">
+            <h3 className="text-lg sm:text-xl font-black text-slate-800 dark:text-white flex items-center gap-2">
+              <Crown className="text-amber-500 shrink-0" size={22} />
+              <span className="truncate">Classroom YouTube Live &amp; Video Lectures</span>
             </h3>
             <p className="text-xs text-slate-500 font-medium">{school?.name || "School"} Video Archive Desk</p>
           </div>
         </div>
 
-        <div className="bg-gradient-to-br from-amber-500/10 via-amber-50 dark:via-amber-950/20 to-orange-500/10 border-2 border-amber-300 dark:border-amber-600 rounded-3xl p-6 sm:p-8 text-center space-y-4">
+        <div className="bg-gradient-to-br from-amber-500/10 via-amber-50 dark:via-amber-950/20 to-orange-500/10 border border-amber-300 dark:border-amber-600/60 rounded-2xl p-5 sm:p-8 text-center space-y-4">
           <div className="w-16 h-16 rounded-2xl bg-gradient-to-tr from-amber-500 to-amber-600 text-white flex items-center justify-center mx-auto shadow-lg shadow-amber-500/30">
             <Crown size={32} />
           </div>
@@ -594,9 +594,9 @@ export const ClassroomVideoArchive: React.FC<Props> = ({
   }
 
   return (
-    <div className="space-y-5 max-w-6xl mx-auto p-3 sm:p-5 animate-in fade-in duration-150">
+    <div className="space-y-4 max-w-6xl mx-auto animate-in fade-in duration-150">
       {/* ── TOP BANNER & ACTION HEADER ── */}
-      <div className="bg-gradient-to-r from-red-900 via-rose-900 to-slate-900 rounded-3xl p-5 sm:p-6 text-white shadow-2xl border border-red-700/40 relative overflow-hidden">
+      <div className="bg-gradient-to-r from-red-900 via-rose-900 to-slate-900 rounded-2xl p-4 sm:p-6 text-white shadow-xl border border-red-700/40 relative overflow-hidden">
         <div className="absolute right-0 top-0 bottom-0 w-1/3 bg-radial from-red-500/10 to-transparent pointer-events-none" />
         <div className="relative z-10 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
           <div>

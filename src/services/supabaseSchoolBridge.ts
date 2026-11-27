@@ -339,7 +339,6 @@ export async function sbBridgeGetDocs(colRef: SbColRef): Promise<SbQuerySnap> {
                 .map((docItem) => ({ id: docItem.id, data: docItem.data() as Record<string, any> }))
                 .filter((r) => r.id && !existingIds.has(r.id));
               if (missingRows.length > 0) {
-                allRows!.push(...missingRows);
                 if (colRef.path === 'schools') {
                   missingRows.forEach((r) => void sbSaveSchool(r.id, r.data, true));
                 } else if (colRef.path === 'users') {
@@ -350,14 +349,15 @@ export async function sbBridgeGetDocs(colRef: SbColRef): Promise<SbQuerySnap> {
                   );
                 }
               }
-              markCollectionBackfilled(colRef.path, allRows!.length);
+              markCollectionBackfilled(colRef.path, allRows!.length + missingRows.length);
             } catch {} finally {
               inflightColMigrations.delete(colRef.path);
             }
           })();
           inflightColMigrations.set(colRef.path, migrationTask);
         }
-        await migrationTask;
+        // Backfill missing legacy docs in background without blocking current read
+        void migrationTask;
       }
       return makeQuerySnap(matchesConstraints(allRows, colRef));
     }

@@ -583,6 +583,9 @@ export interface School {
   feeTypeSchedulePlans?: Record<string, FeeTypeSchedulePlan>;
   isDefaultPublicWebsite?: boolean;
   websiteConfig?: SchoolWebsiteConfig;
+  adminProfiles?: SchoolAdminProfile[];
+  activeAdminProfileId?: string;
+  googleMapsApiKey?: string;
 }
 
 export interface SettledFeeHeadRecord {
@@ -1827,6 +1830,46 @@ export interface SchoolAccountant {
   createdAt: string;
 }
 
+export type AdminProfileRole =
+  | "principal"
+  | "manager"
+  | "director"
+  | "accountant"
+  | "vice_principal"
+  | "coordinator"
+  | "custom";
+
+export interface AdminProfilePermissions {
+  canManageFees: boolean;
+  canGrantDiscount: boolean;
+  maxDiscountLimitPct: number;
+  canCancelReceipts: boolean;
+  canEditFeeStructure: boolean;
+  canManageExpensesAndCashbook: boolean;
+  canManageAdmissionsAndStudents: boolean;
+  canDeleteStudents: boolean;
+  canManageAttendanceAndLeaves: boolean;
+  canManageExamsAndResults: boolean;
+  canManageStaffAndRoles: boolean;
+  canManageTransport: boolean;
+  canEditSchoolProfileAndSettings: boolean;
+}
+
+export interface SchoolAdminProfile {
+  id: string;
+  schoolId: string;
+  name: string;
+  role: AdminProfileRole;
+  designation: string;
+  phone?: string;
+  email?: string;
+  active: boolean;
+  isPrimaryHead?: boolean;
+  permissions: AdminProfilePermissions;
+  createdAt: string;
+  updatedAt?: string;
+}
+
 export interface SchoolExpenseVoucher {
   id: string;
   schoolId: string;
@@ -1924,7 +1967,11 @@ export interface AdmissionApplication {
   usesBus?: boolean;
   busRoute?: string;
   busStop?: string;
+  busNumber?: string;
   busFee?: number;
+  homeLat?: number;
+  homeLng?: number;
+  homeAddress?: string;
   submittedDocs?: string[];
   religion?: string;
   nationality?: string;
@@ -2452,6 +2499,8 @@ export interface BusLiveLocation {
   currentStop?: string;
   totalStops?: number;
   completedStops?: string[];
+  liveShareUrl?: string;
+  liveShareActive?: boolean;
 }
 
 // ── 6. NSTA MESSENGER SUITE (WhatsApp-Style 3-Screen Architecture) ──

@@ -19,6 +19,8 @@ import {
   getLocalRoutes,
   getLocalFitnessVehicles,
   updateRouteStopCoordinate,
+  getBusLiveShareUrl,
+  saveBusLiveShareUrl,
 } from "../../utils/schoolTransportStore";
 import {
   LiveBusGoogleMap,
@@ -27,12 +29,16 @@ import {
 } from "./LiveBusGoogleMap";
 import {
   resolveGoogleMapsLocationInput,
+  extractGoogleMapsUrl,
+  isGoogleMapsLiveShareLink,
   haversineMeters,
   formatDistanceShort,
   getProximityStatus,
   type StudentHomePin,
 } from "../../utils/busProximity";
+import { BusGpsTrackerFilter } from "../../utils/busLocationIntel";
 import { sendSchoolPushNotification } from "../../utils/schoolPushClient";
+import { safeOpenExternalUrl } from "../../utils/safeBrowserActions";
 import { ScreenInfoGuideButton } from "./ScreenInfoGuideButton";
 import { LanguageToggleButton } from "./LanguageToggleButton";
 
@@ -251,6 +257,7 @@ export const DriverTripConsole: React.FC<Props> = ({
   const [tripType, setTripType] = useState<"morning_pickup" | "afternoon_drop">("morning_pickup");
   const [isTripActive, setIsTripActive] = useState(false);
   const [currentSpeed, setCurrentSpeed] = useState(0);
+  const [currentHeading, setCurrentHeading] = useState(0);
   const [coords, setCoords] = useState<{ lat: number; lng: number } | null>(null);
   const [completedStops, setCompletedStops] = useState<string[]>([]);
   const [tripDuration, setTripDuration] = useState(0); // in seconds
@@ -265,6 +272,15 @@ export const DriverTripConsole: React.FC<Props> = ({
   const [routesVersion, setRoutesVersion] = useState<number>(0);
   const [manualLocationText, setManualLocationText] = useState<string>("");
   const [resolvingLocationLink, setResolvingLocationLink] = useState<boolean>(false);
+  const [savedLiveShareUrl, setSavedLiveShareUrl] = useState<string>(() =>
+    getBusLiveShareUrl(school?.id || "", initialBusId || fleetBuses[0]?.id || "")
+  );
+  const [liveShareInput, setLiveShareInput] = useState<string>("");
+  const [savingLiveShare, setSavingLiveShare] = useState<boolean>(false);
+  const [schoolMapsApiKey, setSchoolMapsApiKey] = useState<string>(() =>
+    String(school?.googleMapsApiKey || "").trim()
+  );
+  const [visitedStudentIds, setVisitedStudentIds] = useState<string[]>([]);
   const [studentHomePins, setStudentHomePins] = useState<StudentHomePin[]>([]);
   const [nativeBgGpsActive, setNativeBgGpsActive] = useState<boolean>(() => {
     try {
@@ -364,9 +380,97 @@ export const DriverTripConsole: React.FC<Props> = ({
     };
   }, [school?.id]);
 
+  useEffect(() => {
+    const sid = school?.id || "";
+    const localUrl = getBusLiveShareUrl(sid, selectedBus.id);
+    setSavedLiveShareUrl(localUrl);
+    setLiveShareInput(localUrl);
+    if (!sid) return;
+
+    const unsubSbShare = sbRtdbSubscribe(
+      `schools/${sid}/bus_live_share/${selectedBus.id}`,
+      (val: any) => {
+        const u = String(val?.liveShareUrl || val || "").trim();
+        if (u) {
+          setSavedLiveShareUrl(u);
+          setLiveShareInput(u);
+        }
+      }
+    );
+    const unsubSbMaps = sbRtdbSubscribe(`schools/${sid}/maps_config`, (val: any) => {
+      if (val && typeof val === "object" && typeof val.googleMapsApiKey === "string") {
+        setSchoolMapsApiKey(val.googleMapsApiKey.trim());
+      }
+    });
+    let unsubRtdbShare: any = null;
+    let unsubRtdbMaps: any = null;
+    if (rtdb) {
+      try {
+        unsubRtdbShare = onValue(
+          dbRef(rtdb, `schools/${sid}/bus_live_share/${selectedBus.id}`),
+          (snap) => {
+            const v = snap.val();
+            const u = String(v?.liveShareUrl || v || "").trim();
+            if (u) {
+              setSavedLiveShareUrl(u);
+              setLiveShareInput(u);
+            }
+          }
+        );
+      } catch {}
+      try {
+        unsubRtdbMaps = onValue(dbRef(rtdb, `schools/${sid}/maps_config`), (snap) => {
+          const v = snap.val();
+          if (v && typeof v.googleMapsApiKey === "string") {
+            setSchoolMapsApiKey(v.googleMapsApiKey.trim());
+          }
+        });
+      } catch {}
+    }
+    return () => {
+      if (typeof unsubSbShare === "function") unsubSbShare();
+      if (typeof unsubSbMaps === "function") unsubSbMaps();
+      if (typeof unsubRtdbShare === "function") unsubRtdbShare();
+      if (typeof unsubRtdbMaps === "function") unsubRtdbMaps();
+    };
+  }, [school?.id, selectedBus.id]);
+
+  const busFilteredPins = React.useMemo(() => {
+    const busNumLow = (selectedBus.busNumber || "").toLowerCase();
+    const busRouteLow = (selectedBus.route || "").toLowerCase();
+    return studentHomePins.filter((p) => {
+      const pRoute = (p.busRoute || "").trim().toLowerCase();
+      const pBusNum = (p.busNumber || "").trim().toLowerCase();
+      if (!pRoute && !pBusNum) return true;
+      if (fleetBuses.length <= 1) return true;
+      if (pBusNum && busNumLow && (busNumLow.includes(pBusNum) || pBusNum.includes(busNumLow))) {
+        return true;
+      }
+      if (
+        pRoute &&
+        (busRouteLow.includes(pRoute) ||
+          pRoute.includes(busRouteLow) ||
+          busNumLow.includes(pRoute) ||
+          pRoute.includes(busNumLow))
+      ) {
+        return true;
+      }
+      return false;
+    });
+  }, [studentHomePins, selectedBus.busNumber, selectedBus.route, fleetBuses.length]);
+
   const nearestHomes = React.useMemo(() => {
-    if (!coords) return [];
-    return studentHomePins
+    const base = busFilteredPins.length > 0 ? busFilteredPins : studentHomePins;
+    const visitedSet = new Set(visitedStudentIds);
+    const pending = base.filter((p) => !visitedSet.has(p.studentId));
+    if (!coords) {
+      return pending.slice(0, 6).map((p) => ({
+        ...p,
+        distanceMeters: -1,
+        status: getProximityStatus(5000),
+      }));
+    }
+    return pending
       .map((p) => {
         const meters = haversineMeters(coords.lat, coords.lng, p.homeLat, p.homeLng);
         return {
@@ -377,11 +481,46 @@ export const DriverTripConsole: React.FC<Props> = ({
       })
       .sort((a, b) => a.distanceMeters - b.distanceMeters)
       .slice(0, 6);
-  }, [coords, studentHomePins]);
+  }, [coords, busFilteredPins, studentHomePins, visitedStudentIds]);
+
+  const nextUpcomingStudent = nearestHomes[0] || null;
+  const driverVoiceNotifiedRef = useRef<Set<string>>(new Set());
+
+  // Driver Voice Announcement + Auto-Advance when approaching/arriving at next student's stop
+  useEffect(() => {
+    if (!isTripActive || !coords || !nextUpcomingStudent) return;
+    const dist = nextUpcomingStudent.distanceMeters;
+    if (dist < 0) return;
+
+    const stId = nextUpcomingStudent.studentId;
+    const approachKey = `approach_${stId}`;
+    const arriveKey = `arrive_${stId}`;
+
+    if (dist <= 500 && dist > 150 && !driverVoiceNotifiedRef.current.has(approachKey)) {
+      driverVoiceNotifiedRef.current.add(approachKey);
+      const stopText = nextUpcomingStudent.busStop ? ` (${nextUpcomingStudent.busStop})` : "";
+      speakNotification(
+        "अगला स्टॉप नजदीक",
+        `अगला स्टॉप ${nextUpcomingStudent.studentName}${stopText}, ${formatDistanceShort(dist)} आगे है।`
+      );
+      toast.info(`🚌 अगला स्टॉप: ${nextUpcomingStudent.studentName} (${formatDistanceShort(dist)})`);
+    }
+
+    if (dist <= 150 && !driverVoiceNotifiedRef.current.has(arriveKey)) {
+      driverVoiceNotifiedRef.current.add(arriveKey);
+      speakNotification(
+        "स्टॉप आ गया",
+        `${nextUpcomingStudent.studentName} का स्टॉप आ गया है।`
+      );
+      toast.success(`🏠 ${nextUpcomingStudent.studentName} के स्टॉप पर पहुँच गए!`);
+      setVisitedStudentIds((prev) => (prev.includes(stId) ? prev : [...prev, stId]));
+    }
+  }, [isTripActive, coords?.lat, coords?.lng, nextUpcomingStudent]);
 
   const watchIdRef = useRef<number | null>(null);
   const fallbackWatchIdRef = useRef<number | null>(null);
   const tripIntervalRef = useRef<any>(null);
+  const gpsFilterRef = useRef<BusGpsTrackerFilter>(new BusGpsTrackerFilter());
   const lastCoordsRef = useRef<{ lat: number; lng: number; time: number } | null>(null);
   const bestFixRef = useRef<{
     lat: number;
@@ -391,6 +530,7 @@ export const DriverTripConsole: React.FC<Props> = ({
     isCoarse: boolean;
   } | null>(null);
   const coordsRef = useRef<{ lat: number; lng: number } | null>(null);
+  const currentHeadingRef = useRef<number>(0);
   const isTripActiveRef = useRef<boolean>(false);
   const completedStopsRef = useRef<string[]>([]);
   const autoCompletedStopsRef = useRef<Set<string>>(new Set());
@@ -474,33 +614,36 @@ export const DriverTripConsole: React.FC<Props> = ({
       try {
         const data = ev?.detail;
         if (!data || !Number.isFinite(Number(data.latitude)) || !Number.isFinite(Number(data.longitude))) return;
-        const lat = Number(data.latitude);
-        const lng = Number(data.longitude);
-        const kmh = Number.isFinite(Number(data.speed)) ? Math.round(Number(data.speed)) : 0;
-        const acc = Number.isFinite(Number(data.accuracy)) ? Math.round(Number(data.accuracy)) : 10;
+        const rawLat = Number(data.latitude);
+        const rawLng = Number(data.longitude);
+        const rawKmh = Number.isFinite(Number(data.speed)) ? Math.round(Number(data.speed)) : null;
+        const rawAcc = Number.isFinite(Number(data.accuracy)) ? Math.round(Number(data.accuracy)) : 12;
+        const rawHeading = Number.isFinite(Number(data.heading)) ? Number(data.heading) : null;
 
-        setCoords({ lat, lng });
-        setCurrentSpeed(kmh > 120 ? 0 : kmh);
-        setGpsAccuracy(acc);
+        const filtered = gpsFilterRef.current.evaluate({
+          lat: rawLat,
+          lng: rawLng,
+          accuracy: rawAcc,
+          speedKmhOverride: rawKmh,
+          headingDeg: rawHeading,
+          isCoarse: rawAcc > 65,
+        });
+        if (!filtered.accepted) return;
+
+        setCoords({ lat: filtered.lat, lng: filtered.lng });
+        coordsRef.current = { lat: filtered.lat, lng: filtered.lng };
+        setCurrentSpeed(filtered.speedKmh);
+        setCurrentHeading(filtered.heading);
+        currentHeadingRef.current = filtered.heading;
+        setGpsAccuracy(filtered.accuracy);
         setGpsError(null);
         setNativeBgGpsActive(true);
+        setGpsState(filtered.accuracy > 65 ? "network_fallback" : "active");
 
-        if (lastCoordsRef.current) {
-          const R = 6371;
-          const dLat = ((lat - lastCoordsRef.current.lat) * Math.PI) / 180;
-          const dLng = ((lng - lastCoordsRef.current.lng) * Math.PI) / 180;
-          const a =
-            Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-            Math.cos((lastCoordsRef.current.lat * Math.PI) / 180) *
-              Math.cos((lat * Math.PI) / 180) *
-              Math.sin(dLng / 2) *
-              Math.sin(dLng / 2);
-          const stepKm = R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-          if (stepKm > 0.005 && stepKm < 2) {
-            setDistanceKm((prev) => Number((prev + stepKm).toFixed(2)));
-          }
+        if (filtered.stepKm > 0) {
+          setDistanceKm((prev) => Number((prev + filtered.stepKm).toFixed(2)));
         }
-        lastCoordsRef.current = { lat, lng, time: Date.now() };
+        lastCoordsRef.current = { lat: filtered.lat, lng: filtered.lng, time: Date.now() };
       } catch {}
     };
 
@@ -576,6 +719,8 @@ export const DriverTripConsole: React.FC<Props> = ({
         : 0;
     const hasRealCoords = isValidCoordPair(resolvedLat, resolvedLng);
 
+    const effectiveTripStatus = update.tripStatus ?? (isTripActiveRef.current ? "started" : "idle");
+    const resolvedShareUrl = String(update.liveShareUrl ?? savedLiveShareUrl ?? "").trim();
     const payload: BusLiveLocation & { gpsFixed?: boolean } = {
       busId: selectedBus.id,
       busNumber: selectedBus.busNumber,
@@ -585,14 +730,19 @@ export const DriverTripConsole: React.FC<Props> = ({
       latitude: resolvedLat,
       longitude: resolvedLng,
       speed: update.speed ?? currentSpeed,
-      heading: update.heading ?? 0,
+      heading: update.heading ?? currentHeadingRef.current ?? 0,
       accuracy: update.accuracy ?? gpsAccuracy ?? (hasRealCoords ? 15 : 0),
-      tripStatus: update.tripStatus ?? (isTripActiveRef.current ? "started" : "idle"),
+      tripStatus: effectiveTripStatus,
       tripType: tripType,
       lastUpdated: new Date().toISOString(),
       currentStop: update.currentStop || (completedStops[completedStops.length - 1] || "Starting Depot"),
       totalStops: selectedBus.stops.length,
       completedStops: update.completedStops ?? completedStops,
+      liveShareUrl: resolvedShareUrl || undefined,
+      liveShareActive:
+        update.liveShareActive !== undefined
+          ? update.liveShareActive
+          : effectiveTripStatus === "started" && Boolean(resolvedShareUrl),
       gpsFixed: hasRealCoords,
     };
 
@@ -728,63 +878,46 @@ export const DriverTripConsole: React.FC<Props> = ({
     if (!isValidCoordPair(latitude, longitude)) return;
 
     const nowMs = Date.now();
-    const accMeters = Math.max(1, Math.round(Number(accuracy) || (opts?.isCoarse ? 150 : 12)));
-    const prevBest = bestFixRef.current;
-    // Never overwrite a fresh high-accuracy satellite fix with a coarser network fix
-    if (
-      opts?.isCoarse &&
-      prevBest &&
-      !prevBest.isCoarse &&
-      nowMs - prevBest.time < 15_000 &&
-      prevBest.accuracy < accMeters
-    ) {
-      return;
-    }
-
-    bestFixRef.current = {
+    const filtered = gpsFilterRef.current.evaluate({
       lat: latitude,
       lng: longitude,
-      accuracy: accMeters,
+      accuracy,
+      speedMps: speed,
+      headingDeg: heading,
+      isCoarse: opts?.isCoarse,
+      nowMs,
+    });
+    if (!filtered.accepted) return;
+
+    bestFixRef.current = {
+      lat: filtered.lat,
+      lng: filtered.lng,
+      accuracy: filtered.accuracy,
       time: nowMs,
-      isCoarse: Boolean(opts?.isCoarse),
+      isCoarse: Boolean(opts?.isCoarse) || filtered.accuracy > 65,
     };
-    coordsRef.current = { lat: latitude, lng: longitude };
-    setCoords({ lat: latitude, lng: longitude });
-    setGpsAccuracy(accMeters);
+    coordsRef.current = { lat: filtered.lat, lng: filtered.lng };
+    setCoords({ lat: filtered.lat, lng: filtered.lng });
+    setGpsAccuracy(filtered.accuracy);
     setGpsError(null);
-    setGpsState(opts?.isCoarse ? "network_fallback" : "active");
+    setGpsState(opts?.isCoarse || filtered.accuracy > 65 ? "network_fallback" : "active");
 
-    let kmh = speed !== null && speed >= 0 ? Math.round(speed * 3.6) : 0;
-
-    if (lastCoordsRef.current && isTripActiveRef.current) {
-      const dt = (nowMs - lastCoordsRef.current.time) / 1000;
-      const stepKm =
-        haversineMeters(
-          lastCoordsRef.current.lat,
-          lastCoordsRef.current.lng,
-          latitude,
-          longitude
-        ) / 1000;
-
-      if (stepKm > 0.005 && stepKm < 2) {
-        setDistanceKm((prev) => Number((prev + stepKm).toFixed(2)));
-        if (kmh === 0 && dt > 0) {
-          kmh = Math.round(stepKm / (dt / 3600));
-        }
-      }
+    if (isTripActiveRef.current && filtered.stepKm > 0) {
+      setDistanceKm((prev) => Number((prev + filtered.stepKm).toFixed(2)));
     }
 
-    lastCoordsRef.current = { lat: latitude, lng: longitude, time: nowMs };
-    const safeKmh = kmh > 120 ? 0 : kmh;
-    setCurrentSpeed(safeKmh);
+    lastCoordsRef.current = { lat: filtered.lat, lng: filtered.lng, time: nowMs };
+    setCurrentSpeed(filtered.speedKmh);
+    setCurrentHeading(filtered.heading);
+    currentHeadingRef.current = filtered.heading;
 
     if (opts?.forceBroadcast || isTripActiveRef.current) {
       broadcastLocation({
-        latitude,
-        longitude,
-        speed: safeKmh,
-        heading: heading || 0,
-        accuracy: accMeters,
+        latitude: filtered.lat,
+        longitude: filtered.lng,
+        speed: filtered.speedKmh,
+        heading: filtered.heading,
+        accuracy: filtered.accuracy,
         tripStatus: "started",
       });
     }
@@ -998,6 +1131,8 @@ export const DriverTripConsole: React.FC<Props> = ({
     completedStopsRef.current = [];
     autoCompletedStopsRef.current.clear();
     notifiedProximityRef.current.clear();
+    setVisitedStudentIds([]);
+    driverVoiceNotifiedRef.current.clear();
 
     speakNotification("यात्रा शुरू", `${selectedBus.busNumber} की लाइव लोकेशन और ऑटो स्टॉप डिटेक्शन शुरू हो चुकी है।`);
 
@@ -1036,8 +1171,15 @@ export const DriverTripConsole: React.FC<Props> = ({
       startBrowserGpsWatch();
     }
 
-    // Initial trip-started broadcast (uses real coords if pre-warmed, or 0/0 pending until first fix arrives)
-    broadcastLocation({ tripStatus: "started" });
+    // Initial trip-started broadcast (uses real coords if pre-warmed, and activates saved Google Maps share link)
+    broadcastLocation({
+      tripStatus: "started",
+      liveShareUrl: savedLiveShareUrl || undefined,
+      liveShareActive: Boolean(savedLiveShareUrl),
+    });
+    if (savedLiveShareUrl) {
+      toast.success("🔴 Saved Google Maps Live Link bhi ab Parents & Admin ke liye active ho gaya!");
+    }
   };
 
   // End Trip Handler
@@ -1056,6 +1198,7 @@ export const DriverTripConsole: React.FC<Props> = ({
     broadcastLocation({
       tripStatus: "ended",
       speed: 0,
+      liveShareActive: false,
     });
   };
 
@@ -1416,6 +1559,101 @@ export const DriverTripConsole: React.FC<Props> = ({
           </div>
         </div>
 
+        {/* Prominent Next Student Stop Highlight Card (Visible without scrolling during trip!) */}
+        {studentHomePins.length > 0 && (
+          <section
+            className={`rounded-3xl p-4 border transition-all ${
+              nextUpcomingStudent
+                ? isTripActive
+                  ? "bg-gradient-to-r from-emerald-950/90 via-[#0E1826] to-amber-950/50 border-emerald-400/40 shadow-lg"
+                  : "bg-[#0E1420] border-white/[0.1]"
+                : "bg-[#0E1420] border-emerald-500/30"
+            }`}
+          >
+            {nextUpcomingStudent ? (
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div className="flex items-start gap-3 min-w-0">
+                  <div className="w-11 h-11 rounded-2xl bg-amber-500/15 border border-amber-400/35 text-amber-300 flex items-center justify-center shrink-0">
+                    <Home size={20} />
+                  </div>
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="text-[10px] font-black uppercase tracking-wider px-2 py-0.5 rounded-full bg-amber-400/20 text-amber-300 border border-amber-400/30">
+                        अगला स्टॉप (NEXT STUDENT)
+                      </span>
+                      {nextUpcomingStudent.distanceMeters >= 0 && (
+                        <span className="text-xs font-mono font-bold text-emerald-300">
+                          {formatDistanceShort(nextUpcomingStudent.distanceMeters)} दूर
+                        </span>
+                      )}
+                    </div>
+                    <h2 className="text-base sm:text-lg font-black text-white truncate mt-1">
+                      {nextUpcomingStudent.studentName}
+                      {nextUpcomingStudent.className ? (
+                        <span className="text-xs font-semibold text-slate-300 ml-1.5">
+                          ({nextUpcomingStudent.className})
+                        </span>
+                      ) : null}
+                    </h2>
+                    <p className="text-xs text-slate-300 truncate">
+                      {nextUpcomingStudent.busStop
+                        ? `📍 स्टॉप: ${nextUpcomingStudent.busStop}`
+                        : "📍 Student Home Pin Saved"}{" "}
+                      · {nextUpcomingStudent.distanceMeters >= 0 ? nextUpcomingStudent.status.label : "GPS लॉक होते ही दूरी दिखेगी"}
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2 shrink-0">
+                  <button
+                    type="button"
+                    onClick={() =>
+                      safeOpenExternalUrl(
+                        `https://www.google.com/maps/dir/?api=1&destination=${nextUpcomingStudent.homeLat},${nextUpcomingStudent.homeLng}`
+                      )
+                    }
+                    className="min-h-[40px] px-3.5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer transition"
+                  >
+                    <Navigation size={14} />
+                    <span>Navigate</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setVisitedStudentIds((prev) =>
+                        prev.includes(nextUpcomingStudent.studentId)
+                          ? prev
+                          : [...prev, nextUpcomingStudent.studentId]
+                      );
+                      toast.success(`✓ ${nextUpcomingStudent.studentName} Done — अगला स्टॉप अपडेट हुआ`);
+                    }}
+                    className="min-h-[40px] px-3.5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer transition"
+                  >
+                    <CheckCircle2 size={14} />
+                    <span>Picked / Done</span>
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div className="flex items-center justify-between gap-3">
+                <p className="text-xs font-bold text-emerald-300 flex items-center gap-2">
+                  <CheckCircle2 size={16} /> सभी {busFilteredPins.length || studentHomePins.length} छात्रों के स्टॉप पूरे हो चुके हैं!
+                </p>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setVisitedStudentIds([]);
+                    driverVoiceNotifiedRef.current.clear();
+                  }}
+                  className="px-3 py-1.5 rounded-xl bg-white/10 hover:bg-white/15 text-xs font-bold text-white cursor-pointer"
+                >
+                  Reset List
+                </button>
+              </div>
+            )}
+          </section>
+        )}
+
         {/* 12-Column Responsive Cockpit Split */}
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 lg:gap-6 items-start">
           {/* LEFT COLUMN: Telemetry HUD, Primary Action, Bus & Shift Selection */}
@@ -1773,7 +2011,7 @@ export const DriverTripConsole: React.FC<Props> = ({
                         latitude: coords?.lat ?? 0,
                         longitude: coords?.lng ?? 0,
                         speed: currentSpeed,
-                        heading: 0,
+                        heading: currentHeading,
                         accuracy: gpsAccuracy ?? 0,
                         tripStatus: isTripActive ? "started" : "idle",
                         tripType,
@@ -1781,6 +2019,8 @@ export const DriverTripConsole: React.FC<Props> = ({
                         currentStop: completedStops[completedStops.length - 1] || "Depot",
                         totalStops: selectedBus.stops.length,
                         completedStops,
+                        liveShareUrl: savedLiveShareUrl || undefined,
+                        liveShareActive: isTripActive && Boolean(savedLiveShareUrl),
                       },
                     ]}
                     selectedBusId={selectedBus.id}
@@ -1798,13 +2038,14 @@ export const DriverTripConsole: React.FC<Props> = ({
                     heightClass="h-[280px] sm:h-[330px]"
                     schoolId={school?.id}
                     schoolCode={school?.code}
+                    googleMapsApiKey={schoolMapsApiKey || school?.googleMapsApiKey}
                     showOpenInMapsButton={true}
                   />
                 </div>
               )}
             </section>
 
-            {/* Collapsed Optional Manual Backup Link */}
+            {/* Saved Google Maps Live Link (1-Time Save — Auto Active on Start Drive, Auto Hidden on End Trip) */}
             <div className="bg-[#0E1420] border border-white/[0.08] rounded-2xl px-4 py-3 space-y-2.5">
               <button
                 type="button"
@@ -1814,11 +2055,17 @@ export const DriverTripConsole: React.FC<Props> = ({
                 <span className="flex items-center gap-2 font-medium min-w-0 truncate">
                   <Link2 size={14} className="text-sky-400 shrink-0" />
                   <span className="truncate">
-                    Optional Backup: Manual Google Maps Link
+                    Google Maps Live Link (1-Time Save / Backup)
                   </span>
                 </span>
-                <span className="flex items-center gap-2 text-[11px] text-emerald-400 font-medium shrink-0">
-                  <span>Auto GPS Active</span>
+                <span className="flex items-center gap-2 text-[11px] font-medium shrink-0">
+                  {savedLiveShareUrl ? (
+                    <span className={isTripActive ? "text-emerald-400" : "text-amber-300"}>
+                      {isTripActive ? "Live Link Active ✓" : "Link Saved (Idle)"}
+                    </span>
+                  ) : (
+                    <span className="text-emerald-400">Auto GPS Active</span>
+                  )}
                   {showBackupLinkBox || gpsState === "denied" ? (
                     <ChevronUp size={15} className="text-slate-400" />
                   ) : (
@@ -1828,53 +2075,114 @@ export const DriverTripConsole: React.FC<Props> = ({
               </button>
 
               {(showBackupLinkBox || gpsState === "denied") && (
-                <div className="flex flex-col sm:flex-row gap-2 pt-1 border-t border-white/[0.06]">
-                  <input
-                    type="text"
-                    value={manualLocationText}
-                    onChange={(e) => setManualLocationText(e.target.value)}
-                    placeholder="maps.app.goo.gl/... ya Google Maps link ya lat, lng"
-                    className="flex-1 min-h-[42px] px-3.5 py-2 rounded-xl bg-[#070B12] border border-white/15 text-xs text-white placeholder:text-slate-500 focus:outline-none focus:border-sky-400/60"
-                  />
-                  <button
-                    type="button"
-                    disabled={resolvingLocationLink}
-                    onClick={async () => {
-                      if (!manualLocationText.trim()) {
-                        toast.error("Google Maps share link ya 'lat, lng' daalein.");
-                        return;
-                      }
-                      setResolvingLocationLink(true);
-                      try {
-                        const parsed = await resolveGoogleMapsLocationInput(manualLocationText);
-                        if (!parsed) {
-                          toast.error(
-                            "Link se coordinates nahi mil sake. Google Maps me pin drop karke link share karein."
-                          );
-                          return;
-                        }
-                        coordsRef.current = { lat: parsed.lat, lng: parsed.lng };
-                        setCoords({ lat: parsed.lat, lng: parsed.lng });
-                        setIsTripActive(true);
-                        isTripActiveRef.current = true;
-                        setGpsError(null);
-                        broadcastLocation({
-                          latitude: parsed.lat,
-                          longitude: parsed.lng,
-                          tripStatus: "started",
-                        });
-                        setManualLocationText("");
-                        toast.success(
-                          `Location (${parsed.lat.toFixed(4)}, ${parsed.lng.toFixed(4)}) attach aur live broadcast ho gayi!`
-                        );
-                      } finally {
-                        setResolvingLocationLink(false);
-                      }
-                    }}
-                    className="min-h-[42px] px-4 py-2 rounded-xl bg-sky-600 hover:bg-sky-500 disabled:opacity-60 text-white font-semibold text-xs cursor-pointer shrink-0 transition-colors"
-                  >
-                    {resolvingLocationLink ? "Resolving..." : "Attach & Share"}
-                  </button>
+                <div className="space-y-2.5 pt-2 border-t border-white/[0.06]">
+                  <p className="text-[11px] text-slate-400 leading-relaxed">
+                    Google Maps ka <strong>Share Location</strong> link (<code className="text-amber-300">maps.app.goo.gl/...</code> ya <code className="text-amber-300">location-sharing-fdl</code>) ya <code className="text-amber-300">lat, lng</code> yahan paste karein. Live Share link 1 baar save karne par jab bhi <strong>Start Drive</strong> dabayenge wo automatic active ho jayega aur <strong>End Trip</strong> par hide hoga.
+                  </p>
+                  <div className="flex flex-col sm:flex-row gap-2">
+                    <input
+                      type="text"
+                      value={manualLocationText || liveShareInput}
+                      onChange={(e) => {
+                        setManualLocationText(e.target.value);
+                        setLiveShareInput(e.target.value);
+                      }}
+                      placeholder="https://maps.app.goo.gl/... ya Google Maps live share link"
+                      className="flex-1 min-h-[42px] px-3.5 py-2 rounded-xl bg-[#070B12] border border-white/15 text-xs text-white placeholder:text-slate-500 focus:outline-none focus:border-sky-400/60"
+                    />
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      <button
+                        type="button"
+                        disabled={resolvingLocationLink || savingLiveShare}
+                        onClick={async () => {
+                          const rawVal = (manualLocationText || liveShareInput).trim();
+                          if (!rawVal) {
+                            toast.error("Google Maps share link ya 'lat, lng' daalein.");
+                            return;
+                          }
+                          setResolvingLocationLink(true);
+                          setSavingLiveShare(true);
+                          try {
+                            const gmapsUrl = extractGoogleMapsUrl(rawVal);
+                            if (gmapsUrl && isGoogleMapsLiveShareLink(gmapsUrl)) {
+                              await saveBusLiveShareUrl(school?.id || "", selectedBus.id, gmapsUrl);
+                              setSavedLiveShareUrl(gmapsUrl);
+                              setLiveShareInput(gmapsUrl);
+                              setManualLocationText("");
+                              broadcastLocation({
+                                liveShareUrl: gmapsUrl,
+                                liveShareActive: isTripActiveRef.current,
+                                tripStatus: isTripActiveRef.current ? "started" : "idle",
+                              });
+                              toast.success(
+                                isTripActiveRef.current
+                                  ? "Google Maps Live Link save & LIVE active ho gaya!"
+                                  : "Google Maps Live Link save ho gaya! Start Drive dabate hi active hoga."
+                              );
+                              return;
+                            }
+
+                            const parsed = await resolveGoogleMapsLocationInput(rawVal);
+                            if (parsed) {
+                              coordsRef.current = { lat: parsed.lat, lng: parsed.lng };
+                              setCoords({ lat: parsed.lat, lng: parsed.lng });
+                              setIsTripActive(true);
+                              isTripActiveRef.current = true;
+                              setGpsError(null);
+                              broadcastLocation({
+                                latitude: parsed.lat,
+                                longitude: parsed.lng,
+                                tripStatus: "started",
+                              });
+                              setManualLocationText("");
+                              toast.success(
+                                `Location (${parsed.lat.toFixed(4)}, ${parsed.lng.toFixed(4)}) attach aur live broadcast ho gayi!`
+                              );
+                              return;
+                            }
+
+                            if (gmapsUrl) {
+                              await saveBusLiveShareUrl(school?.id || "", selectedBus.id, gmapsUrl);
+                              setSavedLiveShareUrl(gmapsUrl);
+                              setLiveShareInput(gmapsUrl);
+                              setManualLocationText("");
+                              broadcastLocation({
+                                liveShareUrl: gmapsUrl,
+                                liveShareActive: isTripActiveRef.current,
+                                tripStatus: isTripActiveRef.current ? "started" : "idle",
+                              });
+                              toast.success("Google Maps Link save ho gaya!");
+                              return;
+                            }
+
+                            toast.error("Valid Google Maps link ya 'lat, lng' coordinates daalein.");
+                          } finally {
+                            setResolvingLocationLink(false);
+                            setSavingLiveShare(false);
+                          }
+                        }}
+                        className="min-h-[42px] px-4 py-2 rounded-xl bg-sky-600 hover:bg-sky-500 disabled:opacity-60 text-white font-semibold text-xs cursor-pointer transition-colors"
+                      >
+                        {resolvingLocationLink ? "Saving..." : "Save & Use Link"}
+                      </button>
+                      {savedLiveShareUrl && (
+                        <button
+                          type="button"
+                          onClick={async () => {
+                            await saveBusLiveShareUrl(school?.id || "", selectedBus.id, "");
+                            setSavedLiveShareUrl("");
+                            setLiveShareInput("");
+                            setManualLocationText("");
+                            broadcastLocation({ liveShareUrl: "", liveShareActive: false });
+                            toast.info("Saved Google Maps Link hata diya gaya.");
+                          }}
+                          className="min-h-[42px] px-3 py-2 rounded-xl bg-rose-600/20 hover:bg-rose-600/35 border border-rose-500/40 text-rose-300 font-semibold text-xs cursor-pointer transition-colors"
+                        >
+                          Remove
+                        </button>
+                      )}
+                    </div>
+                  </div>
                 </div>
               )}
             </div>

@@ -3564,7 +3564,7 @@ td{padding:8px 10px;border-bottom:1px solid #e2e8f0}</style></head>
         </div>
       </div>
 
-      <div className="p-4 sm:p-5 space-y-4 max-w-3xl mx-auto">
+      <div className="px-1 py-3 sm:p-5 space-y-4 max-w-5xl mx-auto">
         {feeError && (
           <div role="alert" className="rounded-xl border border-red-200 dark:border-red-900/60 bg-red-50 dark:bg-red-950/40 p-3 text-xs sm:text-sm text-red-800 dark:text-red-200">
             {feeError}
@@ -3745,7 +3745,7 @@ td{padding:8px 10px;border-bottom:1px solid #e2e8f0}</style></head>
         ) : (
           <>
           {unpaidFees.length > 0 && (
-            <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-4 sm:p-5 space-y-3.5 shadow-xs">
+            <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-3 sm:p-5 space-y-3.5 shadow-xs">
               <div className="flex flex-wrap items-start justify-between gap-2.5">
                 <div className="flex items-start gap-2.5 min-w-0">
                   <div className="w-8 h-8 rounded-lg bg-amber-50 dark:bg-amber-950/50 border border-amber-200/80 dark:border-amber-800/60 flex items-center justify-center shrink-0 text-amber-600 dark:text-amber-400 mt-0.5">

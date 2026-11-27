@@ -1780,28 +1780,26 @@ export const getUserData = async (userId: string) => {
     const cleanUid = userId.trim();
     try {
         // 0. Supabase Primary
-        const sbUser = await sbGetUser<any>(cleanUid);
+        const sbUser = await withQuickTimeout(sbGetUser<any>(cleanUid), 3000).catch(() => null);
         if (sbUser && (sbUser.id || sbUser.uid)) return sbUser;
 
         let coreData: any = null;
 
-        // Fallback to Firestore / RTDB and auto-seed Supabase
-        try {
-            const docSnap = await getDoc(doc(db, "users", cleanUid));
-            if (docSnap.exists()) coreData = docSnap.data();
-        } catch {}
-        if (!coreData) {
-            try {
-                const rtdbRef = ref(rtdb, `users/${cleanUid}`);
-                const snap = await get(rtdbRef).catch(() => null);
-                if (snap && typeof snap.exists === 'function' && snap.exists()) coreData = snap.val();
-            } catch {}
+        // Fallback to Firestore / RTDB and auto-seed Supabase (parallel with timeout)
+        const [fsRes, rtdbRes] = await Promise.all([
+            withQuickTimeout(getDoc(doc(db, "users", cleanUid)), 3000).catch(() => null),
+            withQuickTimeout(get(ref(rtdb, `users/${cleanUid}`)), 2500).catch(() => null),
+        ]);
+        if (fsRes && fsRes.exists()) {
+            coreData = fsRes.data();
+        } else if (rtdbRes && typeof rtdbRes.exists === 'function' && rtdbRes.exists()) {
+            coreData = rtdbRes.val();
         }
 
         if (coreData) {
              let merged = coreData;
              try {
-                 const bulkySnap = await getDoc(doc(db, "user_data", cleanUid)).catch(() => null);
+                 const bulkySnap = await withQuickTimeout(getDoc(doc(db, "user_data", cleanUid)), 2500).catch(() => null);
                  if (bulkySnap && bulkySnap.exists()) {
                       merged = { ...coreData, ...bulkySnap.data() };
                  }
@@ -1825,22 +1823,22 @@ export const getFreshUserData = async (userId: string) => {
     const cleanUid = userId.trim();
     try {
         // 0. Supabase direct server query (always fresh, no stale IndexedDB cache)
-        const sbUser = await sbGetUser<any>(cleanUid);
+        const sbUser = await withQuickTimeout(sbGetUser<any>(cleanUid), 3000).catch(() => null);
         if (sbUser && (sbUser.id || sbUser.uid)) return sbUser;
 
         let coreData: any = null;
         let rtdbData: any = null;
         try {
-            const docSnap = await getDocFromServer(doc(db, "users", cleanUid));
+            const docSnap = await withQuickTimeout(getDocFromServer(doc(db, "users", cleanUid)), 3000);
             if (docSnap.exists()) coreData = docSnap.data();
         } catch {
             try {
-                const cacheSnap = await getDoc(doc(db, "users", cleanUid));
+                const cacheSnap = await withQuickTimeout(getDoc(doc(db, "users", cleanUid)), 2000);
                 if (cacheSnap.exists()) coreData = cacheSnap.data();
             } catch {}
             if (!coreData && cleanUid && !/[.#$\[\]/]/.test(cleanUid)) {
                 try {
-                    const snap = await get(ref(rtdb, `users/${cleanUid}`)).catch(() => null);
+                    const snap = await withQuickTimeout(get(ref(rtdb, `users/${cleanUid}`)), 2500).catch(() => null);
                     if (snap && typeof snap.exists === 'function' && snap.exists()) coreData = snap.val();
                 } catch {}
             }
@@ -1850,18 +1848,18 @@ export const getFreshUserData = async (userId: string) => {
 
         if (cleanUid && !/[.#$\[\]/]/.test(cleanUid)) {
             try {
-                const snap = await get(ref(rtdb, `users/${cleanUid}`)).catch(() => null);
+                const snap = await withQuickTimeout(get(ref(rtdb, `users/${cleanUid}`)), 2000).catch(() => null);
                 if (snap && typeof snap.exists === 'function' && snap.exists()) rtdbData = snap.val();
             } catch {}
         }
 
         let accountData: any = null;
         try {
-            const bulkySnap = await getDocFromServer(doc(db, "user_data", userId));
+            const bulkySnap = await withQuickTimeout(getDocFromServer(doc(db, "user_data", userId)), 2500);
             if (bulkySnap.exists()) accountData = bulkySnap.data();
         } catch {
             try {
-                const cacheSnap = await getDoc(doc(db, "user_data", userId));
+                const cacheSnap = await withQuickTimeout(getDoc(doc(db, "user_data", userId)), 1500);
                 if (cacheSnap.exists()) accountData = cacheSnap.data();
             } catch {}
         }
@@ -1890,32 +1888,32 @@ export const getUserByEmail = async (email: string) => {
         if (!cleanEmail) return null;
 
         // 0. Supabase Primary
-        const sbUser = await sbFindUserByEmail<any>(cleanEmail);
+        const sbUser = await withQuickTimeout(sbFindUserByEmail<any>(cleanEmail), 3000).catch(() => null);
         if (sbUser && (sbUser.id || sbUser.uid)) return sbUser;
 
-        // 1. Try Firestore with error suppression + auto-seed
+        // 1. Try Firestore (parallel + timeout)
         try {
-            const q = query(collection(db, "users"), where("email", "==", cleanEmail));
-            const querySnapshot = await getDocs(q);
-            if (!querySnapshot.empty) {
-                const coreData = querySnapshot.docs[0].data();
+            const [querySnapshot, recSnap] = await withQuickTimeout(
+                Promise.all([
+                    getDocs(query(collection(db, "users"), where("email", "==", cleanEmail))).catch(() => null),
+                    getDocs(query(collection(db, "users"), where("recoveryEmail", "==", cleanEmail))).catch(() => null),
+                ]),
+                3000
+            );
+            const matchedSnap =
+                querySnapshot && !querySnapshot.empty
+                    ? querySnapshot
+                    : recSnap && !recSnap.empty
+                    ? recSnap
+                    : null;
+            if (matchedSnap) {
+                const coreData = matchedSnap.docs[0].data();
                 let merged = coreData;
                 if (coreData && (coreData.id || coreData.uid)) {
-                    const bulkySnap = await getDoc(doc(db, "user_data", coreData.id || coreData.uid)).catch(() => null);
-                    if (bulkySnap && bulkySnap.exists()) {
-                        merged = { ...coreData, ...bulkySnap.data() };
-                    }
-                }
-                sbSaveUser(merged, true).catch(() => {});
-                return merged;
-            }
-            const qRec = query(collection(db, "users"), where("recoveryEmail", "==", cleanEmail));
-            const recSnap = await getDocs(qRec).catch(() => null);
-            if (recSnap && !recSnap.empty) {
-                const coreData = recSnap.docs[0].data();
-                let merged = coreData;
-                if (coreData && (coreData.id || coreData.uid)) {
-                    const bulkySnap = await getDoc(doc(db, "user_data", coreData.id || coreData.uid)).catch(() => null);
+                    const bulkySnap = await withQuickTimeout(
+                        getDoc(doc(db, "user_data", coreData.id || coreData.uid)),
+                        2000
+                    ).catch(() => null);
                     if (bulkySnap && bulkySnap.exists()) {
                         merged = { ...coreData, ...bulkySnap.data() };
                     }
@@ -1929,11 +1927,16 @@ export const getUserByEmail = async (email: string) => {
             }
         }
 
-        // 2. Try RTDB lookup + auto-seed
+        // 2. Try RTDB lookup in parallel with timeout + auto-seed
         try {
-            const rtdbUser =
-                await getUserFromRTDB('email', cleanEmail).catch(() => null) ||
-                await getUserFromRTDB('recoveryEmail', cleanEmail).catch(() => null);
+            const [rtdbPrimary, rtdbRecovery] = await withQuickTimeout(
+                Promise.all([
+                    getUserFromRTDB('email', cleanEmail).catch(() => null),
+                    getUserFromRTDB('recoveryEmail', cleanEmail).catch(() => null),
+                ]),
+                2500
+            );
+            const rtdbUser = rtdbPrimary || rtdbRecovery;
             if (rtdbUser) {
                 sbSaveUser(rtdbUser, true).catch(() => {});
                 return rtdbUser;
@@ -1978,16 +1981,16 @@ export const getUserByNameAndClass = async (name: string, classLevel: string) =>
 
 export const getUserByLinkedGoogleUid = async (googleUid: string) => {
     try {
-        const sbUser = await sbFindUserByField<any>('linkedGoogleUid', googleUid);
+        const sbUser = await withQuickTimeout(sbFindUserByField<any>('linkedGoogleUid', googleUid), 3000).catch(() => null);
         if (sbUser && (sbUser.id || sbUser.uid)) return sbUser;
 
         const q = query(collection(db, "users"), where("linkedGoogleUid", "==", googleUid));
-        const querySnapshot = await getDocs(q);
+        const querySnapshot = await withQuickTimeout(getDocs(q), 3000);
         if (!querySnapshot.empty) {
             const coreData = querySnapshot.docs[0].data();
             let merged = coreData;
             if (coreData && coreData.id) {
-                const bulkySnap = await getDoc(doc(db, "user_data", coreData.id)).catch(() => null);
+                const bulkySnap = await withQuickTimeout(getDoc(doc(db, "user_data", coreData.id)), 2000).catch(() => null);
                 if (bulkySnap && bulkySnap.exists()) {
                     merged = { ...coreData, ...bulkySnap.data() };
                 }
@@ -1996,7 +1999,7 @@ export const getUserByLinkedGoogleUid = async (googleUid: string) => {
             return merged;
         }
         return null;
-    } catch (e) { console.error(e); return null; }
+    } catch { return null; }
 };
 
 // ── RTDB-based user lookup (works without Firebase Auth session) ──
@@ -2042,21 +2045,27 @@ export const getUserByMobileOrId = async (input: string) => {
 
         // ── 0. Supabase Primary Lookup ──
         try {
-            const sbUser = await sbFindUserByCandidates<any>(candidateIds, rawInput, lowerInput);
+            const sbUser = await withQuickTimeout(
+                sbFindUserByCandidates<any>(candidateIds, rawInput, lowerInput),
+                3500
+            );
             if (sbUser && (sbUser.id || sbUser.uid)) {
                 return sbUser;
             }
         } catch {}
 
-        // ── 1. Firestore attempt (fallback + auto-seed) ──
+        // ── 1. Firestore attempt (fallback + auto-seed, bounded timeout) ──
         try {
-            const directDocSnaps = await Promise.all(
-                candidateIds.map(candDocId => getDoc(doc(db, "users", candDocId)).catch(() => null))
+            const directDocSnaps = await withQuickTimeout(
+                Promise.all(
+                    candidateIds.map(candDocId => getDoc(doc(db, "users", candDocId)).catch(() => null))
+                ),
+                3000
             );
             for (const directSnap of directDocSnaps) {
                 if (directSnap && directSnap.exists()) {
                     const coreData = directSnap.data();
-                    const bulkySnap = await getDoc(doc(db, "user_data", directSnap.id)).catch(() => null);
+                    const bulkySnap = await withQuickTimeout(getDoc(doc(db, "user_data", directSnap.id)), 2000).catch(() => null);
                     const merged = bulkySnap && bulkySnap.exists() ? { ...coreData, ...bulkySnap.data() } : coreData;
                     sbSaveUser(merged, true).catch(() => {});
                     return merged;
@@ -2077,7 +2086,10 @@ export const getUserByMobileOrId = async (input: string) => {
                 ...idQueries
             ];
 
-            const snaps = await Promise.all(queries.map(q => getDocs(q).catch(() => null)));
+            const snaps = await withQuickTimeout(
+                Promise.all(queries.map(q => getDocs(q).catch(() => null))),
+                3500
+            );
             let coreData: any = null;
             for (const snap of snaps) {
                 if (snap && !snap.empty) {
@@ -2088,53 +2100,51 @@ export const getUserByMobileOrId = async (input: string) => {
 
             if (coreData && (coreData.id || coreData.uid)) {
                 const docKey = coreData.id || coreData.uid;
-                const bulkySnap = await getDoc(doc(db, "user_data", docKey)).catch(() => null);
+                const bulkySnap = await withQuickTimeout(getDoc(doc(db, "user_data", docKey)), 2000).catch(() => null);
                 const merged = bulkySnap && bulkySnap.exists() ? { ...coreData, ...bulkySnap.data() } : coreData;
                 sbSaveUser(merged, true).catch(() => {});
                 return merged;
             }
         } catch (firestoreErr: any) {
             if (!firestoreErr?.message?.includes('Missing or insufficient permissions') && firestoreErr?.code !== 'permission-denied') {
-                console.warn('[NSTA] Firestore lookup blocked, trying RTDB:', firestoreErr?.code);
+                console.warn('[NSTA] Firestore lookup notice, trying RTDB:', firestoreErr?.code || firestoreErr?.message);
             }
         }
 
-        // ── 2. RTDB fallback + auto-seed ──
+        // ── 2. RTDB fallback in parallel with timeout + auto-seed ──
         let rtdbUser: any = null;
         const validRtdbCandIds = candidateIds.filter(id => id && !/[.#$\[\]/]/.test(id));
 
-        if (rtdb && validRtdbCandIds.length > 0) {
-            const rtdbSnaps = await Promise.all(
-                validRtdbCandIds.map(candId => {
-                    try {
-                        return get(ref(rtdb, `users/${candId}`)).catch(() => null);
-                    } catch {
-                        return Promise.resolve(null);
-                    }
-                })
+        try {
+            const rtdbTasks: Promise<any>[] = [];
+            if (rtdb && validRtdbCandIds.length > 0) {
+                validRtdbCandIds.forEach(candId => {
+                    rtdbTasks.push(
+                        get(ref(rtdb, `users/${candId}`))
+                            .then(snap => (snap && typeof snap.exists === 'function' && snap.exists() ? snap.val() : null))
+                            .catch(() => null)
+                    );
+                });
+            }
+            validRtdbCandIds.slice(0, 4).forEach(candId => {
+                rtdbTasks.push(getUserFromRTDB('displayId', candId).catch(() => null));
+            });
+            rtdbTasks.push(
+                getUserFromRTDB('mobile', rawInput).catch(() => null),
+                getUserFromRTDB('recoveryMobile', rawInput).catch(() => null),
+                getUserFromRTDB('email', lowerInput).catch(() => null),
+                getUserFromRTDB('recoveryEmail', lowerInput).catch(() => null),
+                getUserFromRTDB('email', rawInput).catch(() => null)
             );
-            for (const snap of rtdbSnaps) {
-                if (snap && typeof snap.exists === 'function' && snap.exists()) {
-                    rtdbUser = snap.val();
-                    if (rtdbUser) break;
+
+            const rtdbResults = await withQuickTimeout(Promise.all(rtdbTasks), 3000);
+            for (const item of rtdbResults) {
+                if (item && (item.id || item.uid)) {
+                    rtdbUser = item;
+                    break;
                 }
             }
-        }
-
-        if (!rtdbUser) {
-            for (const candId of validRtdbCandIds.slice(0, 4)) {
-                rtdbUser = await getUserFromRTDB('displayId', candId).catch(() => null);
-                if (rtdbUser) break;
-            }
-        }
-        if (!rtdbUser) {
-            rtdbUser =
-                await getUserFromRTDB('mobile', rawInput).catch(() => null) ||
-                await getUserFromRTDB('recoveryMobile', rawInput).catch(() => null) ||
-                await getUserFromRTDB('email', lowerInput).catch(() => null) ||
-                await getUserFromRTDB('recoveryEmail', lowerInput).catch(() => null) ||
-                await getUserFromRTDB('email', rawInput).catch(() => null);
-        }
+        } catch {}
 
         if (rtdbUser && (rtdbUser.id || rtdbUser.uid)) {
             sbSaveUser(rtdbUser, true).catch(() => {});

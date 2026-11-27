@@ -1601,7 +1601,7 @@ export const IdCardManager: React.FC<Props> = ({
       </div>
 
       {/* Main Container */}
-      <div className="max-w-6xl mx-auto px-4 py-5 print:p-0">
+      <div className="max-w-6xl mx-auto px-1 sm:px-4 py-3 sm:py-5 print:p-0">
         {/* Success toast notification */}
         {saveSuccessMsg && (
           <div className="mb-4 p-3 bg-emerald-500 text-white font-bold text-xs rounded-xl flex items-center gap-2 shadow print:hidden animate-in fade-in">
