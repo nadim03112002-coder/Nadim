@@ -84,13 +84,11 @@ export function syncUninstallPinRequiredToNative(
     bridge?.setUninstallPinRequired?.(required);
   } catch {}
 
-  // Backward-compatible sync for APKs using isAccessibilityGuardLocked:
-  // When OFF -> unlock guard so Accessibility Service never shows the PIN prompt.
-  // When ON  -> lock guard on explicit toggle or OFF->ON transition (without clobbering active temp unlock).
+  // Accessibility Guard stays LOCKED regardless of whether PIN prompt is ON or OFF:
+  // - required === true  -> uninstall shows Admin PIN entry screen
+  // - required === false -> uninstall shows hard School Data Safety block screen (no PIN option)
   try {
-    if (!required) {
-      bridge?.setAccessibilityGuardLocked?.(false);
-    } else if (options?.syncGuardLock || !prevRequired) {
+    if (options?.syncGuardLock) {
       bridge?.setAccessibilityGuardLocked?.(true);
     }
   } catch {}
@@ -195,7 +193,7 @@ export function getAndroidDeviceAdminStatus(): AndroidDeviceAdminStatus {
     isDeviceOwner: false,
     isUninstallBlocked: false,
     isAccessibilityGuardEnabled: false,
-    isAccessibilityGuardLocked: cachedPinRequired,
+    isAccessibilityGuardLocked: true,
     uninstallPinRequired: cachedPinRequired,
     hasNativeAdminPin: false,
     tempUnlockRemainingSec: 0,
@@ -221,7 +219,7 @@ export function getAndroidDeviceAdminStatus(): AndroidDeviceAdminStatus {
         : Boolean(parsed.isAccessibilityGuardLocked);
     const pinRequired =
       parsed.uninstallPinRequired === undefined
-        ? cachedPinRequired && guardLocked
+        ? cachedPinRequired
         : Boolean(parsed.uninstallPinRequired);
     return {
       isNativeApp: isNative,

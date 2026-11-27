@@ -1921,18 +1921,51 @@ export const DriverTripConsole: React.FC<Props> = ({
                     <MapIcon size={14} className="text-amber-400 shrink-0" />
                     <span>Live Route Map</span>
                   </h2>
-                  <p className="text-[11px] font-mono tabular-nums text-slate-400 mt-0.5 truncate">
-                    {coords
-                      ? `${coords.lat.toFixed(5)}, ${coords.lng.toFixed(5)} · ${
-                          gpsState === "network_fallback" ? "Network GPS" : "Satellite GPS"
-                        } · ±${gpsAccuracy ?? 15}m`
-                      : gpsState === "denied"
+                  {coords ? (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        safeOpenExternalUrl(
+                          `https://www.google.com/maps?q=${coords.lat},${coords.lng}`
+                        )
+                      }
+                      className="text-left text-[11px] font-mono tabular-nums text-sky-300 hover:text-sky-200 mt-0.5 flex items-center gap-1 truncate cursor-pointer"
+                      title="Tap karein Google Maps par yahi location kholne ke liye"
+                    >
+                      <span className="truncate">
+                        {coords.lat.toFixed(5)}, {coords.lng.toFixed(5)} ·{" "}
+                        {gpsState === "network_fallback" ? "Network GPS" : "Satellite GPS"} · ±
+                        {gpsAccuracy ?? 15}m
+                      </span>
+                      <ExternalLink size={11} className="shrink-0 text-sky-400" />
+                    </button>
+                  ) : (
+                    <p className="text-[11px] font-mono tabular-nums text-slate-400 mt-0.5 truncate">
+                      {gpsState === "denied"
                         ? "Location permission required"
                         : "Acquiring live GPS fix..."}
-                  </p>
+                    </p>
+                  )}
                 </div>
 
-                <div className="flex items-center gap-1.5 shrink-0">
+                <div className="flex flex-wrap items-center justify-end gap-1.5 shrink-0">
+                  {(coords || (savedLiveShareUrl && isTripActive)) && (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        safeOpenExternalUrl(
+                          coords
+                            ? `https://www.google.com/maps?q=${coords.lat},${coords.lng}`
+                            : savedLiveShareUrl
+                        )
+                      }
+                      className="min-h-[36px] px-3 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 border border-indigo-400/50 text-xs font-bold text-white flex items-center gap-1.5 cursor-pointer transition-colors whitespace-nowrap shadow-sm"
+                      title="Google Maps par exact live location kholein"
+                    >
+                      <ExternalLink size={12} />
+                      <span>Google Maps</span>
+                    </button>
+                  )}
                   <button
                     type="button"
                     onClick={() => {
@@ -2166,20 +2199,31 @@ export const DriverTripConsole: React.FC<Props> = ({
                         {resolvingLocationLink ? "Saving..." : "Save & Use Link"}
                       </button>
                       {savedLiveShareUrl && (
-                        <button
-                          type="button"
-                          onClick={async () => {
-                            await saveBusLiveShareUrl(school?.id || "", selectedBus.id, "");
-                            setSavedLiveShareUrl("");
-                            setLiveShareInput("");
-                            setManualLocationText("");
-                            broadcastLocation({ liveShareUrl: "", liveShareActive: false });
-                            toast.info("Saved Google Maps Link hata diya gaya.");
-                          }}
-                          className="min-h-[42px] px-3 py-2 rounded-xl bg-rose-600/20 hover:bg-rose-600/35 border border-rose-500/40 text-rose-300 font-semibold text-xs cursor-pointer transition-colors"
-                        >
-                          Remove
-                        </button>
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => safeOpenExternalUrl(savedLiveShareUrl)}
+                            className="min-h-[42px] px-3 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-semibold text-xs flex items-center gap-1.5 cursor-pointer transition-colors"
+                            title="Google Maps App mein Live Link khol kar check karein"
+                          >
+                            <ExternalLink size={13} />
+                            <span>Open G-Maps</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={async () => {
+                              await saveBusLiveShareUrl(school?.id || "", selectedBus.id, "");
+                              setSavedLiveShareUrl("");
+                              setLiveShareInput("");
+                              setManualLocationText("");
+                              broadcastLocation({ liveShareUrl: "", liveShareActive: false });
+                              toast.info("Saved Google Maps Link hata diya gaya.");
+                            }}
+                            className="min-h-[42px] px-3 py-2 rounded-xl bg-rose-600/20 hover:bg-rose-600/35 border border-rose-500/40 text-rose-300 font-semibold text-xs cursor-pointer transition-colors"
+                          >
+                            Remove
+                          </button>
+                        </>
                       )}
                     </div>
                   </div>

@@ -1090,19 +1090,18 @@ const AdminBusFleetRadarInner: React.FC<Props> = ({
                       Number(currentSelectedBus.latitude) !== 0 &&
                       Number(currentSelectedBus.longitude) !== 0;
                     const targetUrl =
-                      liveShare ||
                       (hasPin
                         ? getGoogleMapsUrl(currentSelectedBus.latitude, currentSelectedBus.longitude)
-                        : "");
+                        : "") || liveShare;
                     if (!targetUrl) return null;
                     return (
                       <button
                         type="button"
                         onClick={() => safeOpenExternalUrl(targetUrl)}
                         className="px-2.5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-[11px] font-black flex items-center gap-1 cursor-pointer shadow-xs"
-                        title={liveShare ? "Open Driver's Live Location Share in Google Maps" : "Open selected bus in Google Maps (Free)"}
+                        title={!hasPin && liveShare ? "Open Driver's Live Location Share in Google Maps" : "Open selected bus in Google Maps (Free)"}
                       >
-                        <ExternalLink size={12} /> <span>{liveShare ? "Live G-Maps" : "Google Maps"}</span>
+                        <ExternalLink size={12} /> <span>{!hasPin && liveShare ? "Live G-Maps" : "Google Maps"}</span>
                       </button>
                     );
                   })()}
@@ -1383,10 +1382,9 @@ const AdminBusFleetRadarInner: React.FC<Props> = ({
                   Number(currentSelectedBus.latitude) !== 0 &&
                   Number(currentSelectedBus.longitude) !== 0;
                 const targetUrl =
-                  liveShare ||
                   (hasPin
                     ? getGoogleMapsUrl(currentSelectedBus.latitude, currentSelectedBus.longitude)
-                    : "");
+                    : "") || liveShare;
                 if (!targetUrl) return null;
                 return (
                   <button
@@ -1394,7 +1392,7 @@ const AdminBusFleetRadarInner: React.FC<Props> = ({
                     onClick={() => safeOpenExternalUrl(targetUrl)}
                     className="px-2.5 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-indigo-300 text-xs font-bold flex items-center gap-1 transition-colors border border-slate-700 cursor-pointer"
                   >
-                    <ExternalLink size={13} /> {liveShare ? "Live G-Maps" : "Google Maps"}
+                    <ExternalLink size={13} /> {!hasPin && liveShare ? "Live G-Maps" : "Google Maps"}
                   </button>
                 );
               })()}

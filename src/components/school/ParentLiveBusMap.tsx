@@ -634,10 +634,9 @@ export const ParentLiveBusMap: React.FC<ParentLiveBusMapProps> = ({
     (Math.abs(Number(assignedBus.latitude)) > 0.001 ||
       Math.abs(Number(assignedBus.longitude)) > 0.001);
   const parentMapsHref =
-    effectiveLiveShareUrl ||
-    (isLive && hasValidBusPin
+    isLive && hasValidBusPin
       ? `https://www.google.com/maps?q=${Number(assignedBus.latitude)},${Number(assignedBus.longitude)}`
-      : "");
+      : effectiveLiveShareUrl || "";
 
   return (
     <div className="flex flex-col h-full min-h-[76vh] bg-slate-950 rounded-2xl overflow-hidden border border-slate-800">
@@ -653,13 +652,31 @@ export const ParentLiveBusMap: React.FC<ParentLiveBusMapProps> = ({
               <Bus size={12} /> Depot Idle
             </span>
           )}
-          <span className="text-xs font-bold text-slate-200 truncate">
-            {liveAreaName
-              ? `📍 ${liveAreaName}`
-              : assignedBus.currentStop
-                ? `Near ${assignedBus.currentStop}`
-                : assignedBus.busNumber}
-          </span>
+          {parentMapsHref ? (
+            <button
+              type="button"
+              onClick={() => safeOpenExternalUrl(parentMapsHref)}
+              className="text-xs font-bold text-sky-300 hover:text-sky-200 truncate flex items-center gap-1 cursor-pointer"
+              title="Tap karein Google Maps me yahi live location dekhne ke liye"
+            >
+              <span className="truncate">
+                {liveAreaName
+                  ? `📍 ${liveAreaName}`
+                  : assignedBus.currentStop
+                    ? `Near ${assignedBus.currentStop}`
+                    : assignedBus.busNumber}
+              </span>
+              <ExternalLink size={11} className="shrink-0" />
+            </button>
+          ) : (
+            <span className="text-xs font-bold text-slate-200 truncate">
+              {liveAreaName
+                ? `📍 ${liveAreaName}`
+                : assignedBus.currentStop
+                  ? `Near ${assignedBus.currentStop}`
+                  : assignedBus.busNumber}
+            </span>
+          )}
         </div>
 
         {/* 1 KM Auto Alert Status Badge */}
@@ -781,14 +798,33 @@ export const ParentLiveBusMap: React.FC<ParentLiveBusMapProps> = ({
                   </span>
                 )}
               </div>
-              <p className="text-xs text-slate-400 truncate">
-                {liveAreaName
-                  ? `गाड़ी अभी: ${liveAreaName}`
-                  : assignedBus.currentStop
-                    ? `स्टॉप: ${assignedBus.currentStop}`
-                    : assignedBus.route}{" "}
-                • ड्राइवर: <strong className="text-slate-200">{assignedBus.driverName || "—"}</strong>
-              </p>
+              {parentMapsHref ? (
+                <button
+                  type="button"
+                  onClick={() => safeOpenExternalUrl(parentMapsHref)}
+                  className="text-left text-xs text-sky-300 hover:text-sky-200 truncate flex items-center gap-1 cursor-pointer max-w-full"
+                  title="Tap karein Google Maps me yahi live location dekhne ke liye"
+                >
+                  <span className="truncate">
+                    {liveAreaName
+                      ? `गाड़ी अभी: ${liveAreaName}`
+                      : assignedBus.currentStop
+                        ? `स्टॉप: ${assignedBus.currentStop}`
+                        : assignedBus.route}{" "}
+                    • ड्राइवर: <strong className="text-slate-200">{assignedBus.driverName || "—"}</strong>
+                  </span>
+                  <ExternalLink size={11} className="shrink-0" />
+                </button>
+              ) : (
+                <p className="text-xs text-slate-400 truncate">
+                  {liveAreaName
+                    ? `गाड़ी अभी: ${liveAreaName}`
+                    : assignedBus.currentStop
+                      ? `स्टॉप: ${assignedBus.currentStop}`
+                      : assignedBus.route}{" "}
+                  • ड्राइवर: <strong className="text-slate-200">{assignedBus.driverName || "—"}</strong>
+                </p>
+              )}
               {myHomePin && !showPinEditor && (
                 <button
                   type="button"
@@ -810,7 +846,7 @@ export const ParentLiveBusMap: React.FC<ParentLiveBusMapProps> = ({
                 className="flex-1 sm:flex-none px-4 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-black flex items-center justify-center gap-1.5 shadow-lg shadow-indigo-600/20 transition cursor-pointer"
               >
                 <ExternalLink size={14} />
-                <span>{effectiveLiveShareUrl ? "Live in Google Maps" : "Google Maps"}</span>
+                <span>{!hasValidBusPin && effectiveLiveShareUrl ? "Live in Google Maps" : "Google Maps"}</span>
               </button>
             )}
             {assignedBus.driverPhone && (

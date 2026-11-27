@@ -321,8 +321,8 @@ export const DeviceAdminProtectionModal: React.FC<DeviceAdminProtectionModalProp
     refreshStatus();
     toast.success(
       nextRequired
-        ? "Uninstall PIN Guard ON ho gaya — ab uninstall par School PIN maanga jayega."
-        : "Uninstall PIN Prompt OFF ho gaya — ab user ko uninstall par PIN screen nahi dikhega."
+        ? "Uninstall PIN Prompt ON ho gaya — ab uninstall par School Admin PIN maanga jayega."
+        : "PIN Prompt OFF ho gaya (Guard ABHI BHI ON HAI) — ab PIN dalne ka option nahi aayega, seedha 'School Data Safety' block message dikhega!"
     );
 
     // 2. Sync to cloud in bounded background/timeout without freezing UI
@@ -425,7 +425,6 @@ export const DeviceAdminProtectionModal: React.FC<DeviceAdminProtectionModalProp
 
   const isTempUnlocked = status.tempUnlockRemainingSec > 0;
   const isFullNoPcProtected =
-    pinGuardEnabled &&
     status.isAdminActive &&
     status.isAccessibilityGuardEnabled &&
     status.isAccessibilityGuardLocked &&
@@ -438,17 +437,6 @@ export const DeviceAdminProtectionModal: React.FC<DeviceAdminProtectionModalProp
         title: "100% OS Uninstall Locked (Device Owner Active)",
         desc: "Ye app OS-level par permanently locked hai — bina Admin ke Settings se bhi Uninstall nahi ho sakta.",
       }
-    : !pinGuardEnabled
-    ? {
-        bg: "bg-amber-500/15 border-amber-500/40 text-amber-900 dark:text-amber-200",
-        icon: <Unlock className="w-5 h-5 text-amber-600 dark:text-amber-400" />,
-        title: "Uninstall PIN Prompt OFF Hai (Admin Setting)",
-        desc: `School Admin ne Uninstall par PIN puchhne ka option OFF kar rakha hai — ab users ko uninstall karte samay PIN screen nahi dikhega.${
-          status.isAdminActive
-            ? " (Note: Agar Device Admin alag se ON hai to OS ke liye usey Settings/button se band karna hoga.)"
-            : ""
-        }`,
-      }
     : isTempUnlocked
     ? {
         bg: "bg-amber-500/15 border-amber-500/40 text-amber-800 dark:text-amber-300",
@@ -460,15 +448,23 @@ export const DeviceAdminProtectionModal: React.FC<DeviceAdminProtectionModalProp
     ? {
         bg: "bg-emerald-600/15 border-emerald-500/40 text-emerald-700 dark:text-emerald-300",
         icon: <ShieldCheck className="w-5 h-5 text-emerald-600 dark:text-emerald-400" />,
-        title: "Full Uninstall Protection ON (Device Admin + Accessibility Guard)",
-        desc: "Bina computer ke Regain app jaisi double suraksha! Uninstall, Force Stop, Device Admin & Accessibility hatana sab blocked hai.",
+        title: pinGuardEnabled
+          ? "Full Uninstall Protection ON (PIN Unlock Mode)"
+          : "Full Uninstall Protection ON (Strict Data-Safety Mode — No PIN)",
+        desc: pinGuardEnabled
+          ? "Bina computer ke double suraksha! Uninstall try karne par School Admin PIN puchha jayega."
+          : "Hard Lock ON hai: Uninstall par PIN dalne ka option nahi aayega — seedha 'School ke data safety ke wajah se aap ye app uninstall nahi kar sakte' message dikhkar block hoga.",
       }
     : status.isAccessibilityGuardEnabled && status.isAccessibilityGuardLocked
     ? {
         bg: "bg-blue-600/15 border-blue-500/40 text-blue-700 dark:text-blue-300",
         icon: <Shield className="w-5 h-5 text-blue-600 dark:text-blue-400" />,
-        title: "Accessibility Uninstall Guard Active (Regain Mode)",
-        desc: "Uninstall dialog, App Info aur Accessibility off karne ki koshish turant block hogi. Aur mazboot karne ke liye Device Admin bhi ON karein.",
+        title: pinGuardEnabled
+          ? "Accessibility Uninstall Guard Active (PIN Mode)"
+          : "Accessibility Uninstall Guard Active (Strict Data-Safety Mode)",
+        desc: pinGuardEnabled
+          ? "Uninstall dialog, App Info aur Accessibility off karne par Admin PIN maanga jayega. Aur mazboot karne ke liye Device Admin bhi ON karein."
+          : "Uninstall try karne par PIN box nahi dikhega, seedha School Data Safety block message dikhkar wapas bhej diya jayega. Device Admin bhi ON karein.",
       }
     : status.isAdminActive
     ? {
@@ -541,14 +537,14 @@ export const DeviceAdminProtectionModal: React.FC<DeviceAdminProtectionModalProp
                   APK: {status.isNativeApp ? "Yes" : "Browser"}
                 </span>
                 <span className="px-2 py-0.5 rounded-full bg-white/60 dark:bg-slate-900/60">
-                  PIN Guard: {pinGuardEnabled ? "ON ✓" : "OFF (No PIN Prompt)"}
+                  PIN Unlock: {pinGuardEnabled ? "ON ✓" : "OFF (Strict Block Message)"}
                 </span>
                 <span className="px-2 py-0.5 rounded-full bg-white/60 dark:bg-slate-900/60">
                   Accessibility Guard:{" "}
                   {status.isAccessibilityGuardEnabled
-                    ? pinGuardEnabled && status.isAccessibilityGuardLocked
+                    ? status.isAccessibilityGuardLocked
                       ? "ON + Locked ✓"
-                      : "ON (Paused/OFF)"
+                      : "ON (Paused)"
                     : "OFF"}
                 </span>
                 <span className="px-2 py-0.5 rounded-full bg-white/60 dark:bg-slate-900/60">
@@ -563,33 +559,33 @@ export const DeviceAdminProtectionModal: React.FC<DeviceAdminProtectionModalProp
             </div>
           </div>
 
-          {/* Master School Admin Toggle: Uninstall PIN ON / OFF */}
+          {/* Master School Admin Toggle: Uninstall PIN Prompt ON / OFF */}
           <div
             className={`rounded-2xl border p-3.5 sm:p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 transition-colors ${
               pinGuardEnabled
                 ? "border-emerald-200 dark:border-emerald-800/70 bg-emerald-50/70 dark:bg-emerald-950/25"
-                : "border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/60"
+                : "border-rose-200 dark:border-rose-800/70 bg-rose-50/60 dark:bg-rose-950/25"
             }`}
           >
             <div className="min-w-0 space-y-1">
               <div className="flex items-center gap-2 flex-wrap">
                 <span className="text-xs sm:text-sm font-black text-slate-900 dark:text-white">
-                  Uninstall par PIN Guard (ON / OFF)
+                  Uninstall par PIN Dikhayein (ON / OFF)
                 </span>
                 <span
                   className={`px-2 py-0.5 rounded-md text-[10px] font-black uppercase tracking-wide ${
                     pinGuardEnabled
                       ? "bg-emerald-600 text-white"
-                      : "bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-200"
+                      : "bg-rose-600 text-white"
                   }`}
                 >
-                  {pinGuardEnabled ? "ON — PIN Required" : "OFF — No PIN Screen"}
+                  {pinGuardEnabled ? "ON — PIN Option" : "OFF — Strict Data-Safety Block"}
                 </span>
               </div>
               <p className="text-[11px] text-slate-600 dark:text-slate-300 leading-relaxed">
                 {pinGuardEnabled
-                  ? "Abhi ON hai: Uninstall ya Settings lock try karne par sabhi school devices par Admin PIN screen dikhega."
-                  : "Abhi OFF hai: Users ko app uninstall karte samay School PIN dalne ka option bilkul nahi dikhega."}
+                  ? "Abhi ON hai: Uninstall ya Settings lock try karne par School Admin PIN dalne ka screen aayega."
+                  : "Abhi OFF hai (Guard ON rahega): Uninstall try karne par PIN dalne ka option NAHI aayega — seedha 'School ke data safety ke wajah se aap ye app uninstall nahi kar sakte' message aakar block hoga."}
               </p>
             </div>
 
@@ -607,19 +603,19 @@ export const DeviceAdminProtectionModal: React.FC<DeviceAdminProtectionModalProp
               >
                 {pinGuardEnabled ? (
                   <>
-                    <Unlock className="w-4 h-4" />
-                    <span>{savingPinToggle ? "Updating..." : "PIN Prompt OFF Karein"}</span>
+                    <Shield className="w-4 h-4" />
+                    <span>{savingPinToggle ? "Updating..." : "PIN OFF (Strict Block)"}</span>
                   </>
                 ) : (
                   <>
                     <Lock className="w-4 h-4" />
-                    <span>{savingPinToggle ? "Updating..." : "PIN Prompt ON Karein"}</span>
+                    <span>{savingPinToggle ? "Updating..." : "PIN Option ON Karein"}</span>
                   </>
                 )}
               </button>
             ) : (
               <div className="px-3 py-2 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-[11px] font-bold text-slate-700 dark:text-slate-200 shrink-0">
-                {pinGuardEnabled ? "School Admin: ON" : "School Admin: OFF"}
+                {pinGuardEnabled ? "Mode: PIN Prompt" : "Mode: Strict Block"}
               </div>
             )}
           </div>

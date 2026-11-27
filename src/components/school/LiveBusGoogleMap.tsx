@@ -130,12 +130,12 @@ function hasValidCoords(bus?: BusLiveLocation | null): boolean {
 
 function getPreferredGoogleMapsUrl(bus?: BusLiveLocation | null): string {
   if (!bus) return "";
+  if (hasValidCoords(bus)) {
+    return `https://www.google.com/maps?q=${Number(bus.latitude)},${Number(bus.longitude)}`;
+  }
   const liveShare = String(bus.liveShareUrl || "").trim();
   if (liveShare && bus.tripStatus === "started" && bus.liveShareActive !== false) {
     return liveShare;
-  }
-  if (hasValidCoords(bus)) {
-    return `https://www.google.com/maps?q=${Number(bus.latitude)},${Number(bus.longitude)}`;
   }
   return "";
 }
@@ -460,28 +460,30 @@ const LeafletFleetMap: React.FC<LeafletMapProps> = ({
     group.clearLayers();
 
     if (mapType === "roadmap") {
-      // Crisp Google-Maps-style Voyager roads & neighborhood labels (100% Free)
-      const carto = L.tileLayer(
-        "https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png",
+      // Free OpenStreetMap Standard Street Tiles (zero API key, crisp India roads & villages)
+      const osm = L.tileLayer(
+        "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
         {
           maxZoom: 19,
-          subdomains: "abcd",
-          attribution: "&copy; OpenStreetMap &copy; CARTO",
+          attribution: "&copy; OpenStreetMap",
         }
       );
-      let fellBackToOsm = false;
-      carto.on("tileerror", () => {
-        if (fellBackToOsm) return;
-        fellBackToOsm = true;
+      let fellBackToEsri = false;
+      osm.on("tileerror", () => {
+        if (fellBackToEsri) return;
+        fellBackToEsri = true;
         try {
           group.clearLayers();
-          L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-            maxZoom: 19,
-            attribution: "&copy; OpenStreetMap",
-          }).addTo(group);
+          L.tileLayer(
+            "https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}",
+            {
+              maxZoom: 19,
+              attribution: "&copy; Esri & OpenStreetMap",
+            }
+          ).addTo(group);
         } catch {}
       });
-      carto.addTo(group);
+      osm.addTo(group);
     } else {
       // Free Esri World Satellite Imagery + Road & Place Labels
       L.tileLayer(
@@ -619,13 +621,14 @@ const LeafletFleetMap: React.FC<LeafletMapProps> = ({
           zIndexOffset: isSelectedRoute ? 250 : 120,
         });
         marker.bindPopup(`
-          <div style="font-family:system-ui,sans-serif;min-width:160px;color:#0f172a;">
+          <div style="font-family:system-ui,sans-serif;min-width:165px;color:#0f172a;">
             <div style="font-weight:900;font-size:13px;">Stop #${sIdx + 1}: ${escapeHtml(stop.stopName)}</div>
             <div style="font-size:11px;color:#475569;margin-top:2px;">${escapeHtml(route.busNumber || route.routeName || "")}</div>
             ${stop.pickupTime ? `<div style="font-size:11px;margin-top:4px;">🌅 Pickup: <b>${escapeHtml(stop.pickupTime)}</b>${stop.dropTime ? ` • 🌇 Drop: <b>${escapeHtml(stop.dropTime)}</b>` : ""}</div>` : ""}
             <div style="font-size:11px;margin-top:4px;font-weight:700;color:${stop.completed ? "#059669" : "#d97706"};">
               ${stop.completed ? "✓ स्टॉप पार हो गया" : "⏳ आने वाला स्टॉप"}
             </div>
+            <a href="https://www.google.com/maps?q=${Number(stop.lat)},${Number(stop.lng)}" target="_blank" rel="noopener noreferrer" style="display:block;margin-top:7px;padding:5px 8px;border-radius:8px;background:#4f46e5;color:#ffffff;font-weight:800;font-size:11px;text-align:center;text-decoration:none;">🗺️ Open in Google Maps</a>
           </div>
         `);
         marker.addTo(layer);
@@ -695,11 +698,12 @@ const LeafletFleetMap: React.FC<LeafletMapProps> = ({
         zIndexOffset: pin.isOwnHome ? 450 : 280,
       });
       marker.bindPopup(`
-        <div style="font-family:system-ui,sans-serif;min-width:150px;color:#0f172a;">
+        <div style="font-family:system-ui,sans-serif;min-width:155px;color:#0f172a;">
           <div style="font-weight:900;font-size:13px;">🏠 ${escapeHtml(pin.label)}</div>
           ${pin.sublabel ? `<div style="font-size:11px;color:#475569;margin-top:2px;">${escapeHtml(pin.sublabel)}</div>` : ""}
           ${pin.distanceText ? `<div style="font-size:12px;font-weight:800;color:#059669;margin-top:4px;">बस से दूरी: ${escapeHtml(pin.distanceText)}</div>` : ""}
           ${pin.show1KmRadius ? `<div style="font-size:10px;color:#047857;margin-top:3px;">🔔 हरा घेरा = 1 KM ऑटो अलर्ट ज़ोन</div>` : ""}
+          <a href="https://www.google.com/maps?q=${Number(pin.lat)},${Number(pin.lng)}" target="_blank" rel="noopener noreferrer" style="display:block;margin-top:7px;padding:5px 8px;border-radius:8px;background:#4f46e5;color:#ffffff;font-weight:800;font-size:11px;text-align:center;text-decoration:none;">🗺️ Open in Google Maps</a>
         </div>
       `);
       marker.addTo(layer);
@@ -838,7 +842,7 @@ const LeafletFleetMap: React.FC<LeafletMapProps> = ({
 
       const preferredMapsUrl = getPreferredGoogleMapsUrl(bus);
       const canOpenExternalMaps = Boolean(showOpenInMapsButton) && Boolean(preferredMapsUrl);
-      const isLiveShareUrl = Boolean(bus.liveShareUrl && isLive && bus.liveShareActive !== false);
+      const isLiveShareUrl = Boolean(!hasValidCoords(bus) && bus.liveShareUrl && isLive && bus.liveShareActive !== false);
       const popupHtml = `
         <div style="font-family:system-ui,sans-serif;min-width:210px;color:#0f172a;line-height:1.4;">
           <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;">
@@ -1009,34 +1013,67 @@ const LeafletFleetMap: React.FC<LeafletMapProps> = ({
         </div>
       )}
 
-      {/* Top-Left Live Bus / Area Pill */}
+      {/* Top-Left Live Bus / Area Pill — Tap to open exact live location in Google Maps */}
       {!pinPickLabel && (
-        <div className="absolute top-2.5 left-2.5 z-[400] flex flex-wrap items-center gap-1.5 pointer-events-none max-w-[60%]">
+        <div className="absolute top-2.5 left-2.5 z-[400] flex flex-wrap items-center gap-1.5 max-w-[60%]">
           {selectedBus && hasValidCoords(selectedBus) ? (
-            <div className="px-2.5 py-1.5 rounded-xl bg-slate-950/90 border border-slate-700 text-[11px] font-bold text-white shadow-lg flex items-center gap-1.5 backdrop-blur-md">
-              {selectedBus.tripStatus === "started" ? (
-                <Radio size={12} className="text-emerald-400 animate-pulse shrink-0" />
-              ) : (
-                <MapPin size={12} className="text-amber-400 shrink-0" />
-              )}
-              <span className="truncate">{getShortBusLabel(selectedBus.busNumber)}</span>
-              {selectedBus.tripStatus === "started" && stoppedLabelByBusId[selectedBus.busId] ? (
-                <span className="text-amber-300 font-mono shrink-0">
-                  ⏸ {stoppedLabelByBusId[selectedBus.busId]}
-                </span>
-              ) : (
-                <span className="text-amber-300 font-mono shrink-0">
-                  {selectedBus.speed || 0} km/h
-                </span>
-              )}
-              {areaNameByBusId[selectedBus.busId] && (
-                <span className="hidden sm:inline text-emerald-300 truncate max-w-[140px]">
-                  • {areaNameByBusId[selectedBus.busId]}
-                </span>
-              )}
-            </div>
+            showOpenInMapsButton && getPreferredGoogleMapsUrl(selectedBus) ? (
+              <button
+                type="button"
+                onClick={() =>
+                  safeOpenExternalUrl(getPreferredGoogleMapsUrl(selectedBus))
+                }
+                className="pointer-events-auto cursor-pointer px-2.5 py-1.5 rounded-xl bg-slate-950/90 hover:bg-slate-900 border border-slate-700 hover:border-indigo-400 text-[11px] font-bold text-white shadow-lg flex items-center gap-1.5 backdrop-blur-md transition max-w-full"
+                title="Google Maps mein yahi live location kholein"
+              >
+                {selectedBus.tripStatus === "started" ? (
+                  <Radio size={12} className="text-emerald-400 animate-pulse shrink-0" />
+                ) : (
+                  <MapPin size={12} className="text-amber-400 shrink-0" />
+                )}
+                <span className="truncate">{getShortBusLabel(selectedBus.busNumber)}</span>
+                {selectedBus.tripStatus === "started" && stoppedLabelByBusId[selectedBus.busId] ? (
+                  <span className="text-amber-300 font-mono shrink-0">
+                    ⏸ {stoppedLabelByBusId[selectedBus.busId]}
+                  </span>
+                ) : (
+                  <span className="text-amber-300 font-mono shrink-0">
+                    {selectedBus.speed || 0} km/h
+                  </span>
+                )}
+                {areaNameByBusId[selectedBus.busId] && (
+                  <span className="hidden sm:inline text-emerald-300 truncate max-w-[140px]">
+                    • {areaNameByBusId[selectedBus.busId]}
+                  </span>
+                )}
+                <ExternalLink size={11} className="text-indigo-300 shrink-0" />
+              </button>
+            ) : (
+              <div className="pointer-events-none px-2.5 py-1.5 rounded-xl bg-slate-950/90 border border-slate-700 text-[11px] font-bold text-white shadow-lg flex items-center gap-1.5 backdrop-blur-md">
+                {selectedBus.tripStatus === "started" ? (
+                  <Radio size={12} className="text-emerald-400 animate-pulse shrink-0" />
+                ) : (
+                  <MapPin size={12} className="text-amber-400 shrink-0" />
+                )}
+                <span className="truncate">{getShortBusLabel(selectedBus.busNumber)}</span>
+                {selectedBus.tripStatus === "started" && stoppedLabelByBusId[selectedBus.busId] ? (
+                  <span className="text-amber-300 font-mono shrink-0">
+                    ⏸ {stoppedLabelByBusId[selectedBus.busId]}
+                  </span>
+                ) : (
+                  <span className="text-amber-300 font-mono shrink-0">
+                    {selectedBus.speed || 0} km/h
+                  </span>
+                )}
+                {areaNameByBusId[selectedBus.busId] && (
+                  <span className="hidden sm:inline text-emerald-300 truncate max-w-[140px]">
+                    • {areaNameByBusId[selectedBus.busId]}
+                  </span>
+                )}
+              </div>
+            )
           ) : (
-            <div className="px-2.5 py-1.5 rounded-xl bg-slate-950/90 border border-amber-500/40 text-[11px] font-bold text-amber-200 shadow-lg flex items-center gap-1.5 backdrop-blur-md">
+            <div className="pointer-events-none px-2.5 py-1.5 rounded-xl bg-slate-950/90 border border-amber-500/40 text-[11px] font-bold text-amber-200 shadow-lg flex items-center gap-1.5 backdrop-blur-md">
               <Navigation size={12} className="text-amber-400 shrink-0" />
               <span>Driver GPS का इंतज़ार है...</span>
             </div>
@@ -1109,18 +1146,14 @@ const LeafletFleetMap: React.FC<LeafletMapProps> = ({
             onClick={() =>
               safeOpenExternalUrl(getPreferredGoogleMapsUrl(selectedBus))
             }
-            className="px-2.5 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white border border-indigo-400/50 text-[11px] font-bold flex items-center gap-1 shadow-lg cursor-pointer transition"
-            title={
-              selectedBus.liveShareUrl && selectedBus.tripStatus === "started" && selectedBus.liveShareActive !== false
-                ? "Open Driver's Live Location Share in Google Maps"
-                : "Open exact live pin in Google Maps app (100% Free)"
-            }
+            className="px-2.5 py-1.5 rounded-xl border text-[11px] font-bold flex items-center gap-1 shadow-lg cursor-pointer transition bg-indigo-600 hover:bg-indigo-500 text-white border-indigo-400/50"
+            title="Open exact live pin in Google Maps app (100% Free)"
           >
             <ExternalLink size={12} />
-            <span className="hidden sm:inline">
-              {selectedBus.liveShareUrl && selectedBus.tripStatus === "started" && selectedBus.liveShareActive !== false
+            <span>
+              {!hasValidCoords(selectedBus) && selectedBus.liveShareUrl && selectedBus.tripStatus === "started" && selectedBus.liveShareActive !== false
                 ? "Live G-Maps"
-                : "Google Maps"}
+                : "G-Maps"}
             </span>
           </button>
         )}
@@ -1733,13 +1766,13 @@ const GoogleMapViewportInner: React.FC<GoogleViewportProps> = ({
             onClick={() =>
               safeOpenExternalUrl(getPreferredGoogleMapsUrl(selectedBus))
             }
-            className="px-2.5 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white border border-indigo-400/50 text-[11px] font-bold flex items-center gap-1 shadow-lg cursor-pointer transition"
+            className="px-2.5 py-1.5 rounded-xl border text-[11px] font-bold flex items-center gap-1 shadow-lg cursor-pointer transition bg-indigo-600 hover:bg-indigo-500 text-white border-indigo-400/50"
           >
             <ExternalLink size={12} />
-            <span className="hidden sm:inline">
-              {selectedBus.liveShareUrl && selectedBus.tripStatus === "started" && selectedBus.liveShareActive !== false
+            <span>
+              {!hasValidCoords(selectedBus) && selectedBus.liveShareUrl && selectedBus.tripStatus === "started" && selectedBus.liveShareActive !== false
                 ? "Live G-Maps"
-                : "Maps App"}
+                : "G-Maps"}
             </span>
           </button>
         )}

@@ -34,16 +34,19 @@ class UninstallPinPromptActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        if (!AppPrefs.isUninstallPinRequired(applicationContext)) {
-            finish()
-            return
-        }
+        val isPinModeEnabled = AppPrefs.isUninstallPinRequired(applicationContext)
+        val hasPinConfigured = AppPrefs.hasAdminPinHash(applicationContext)
 
-        window.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_STATE_VISIBLE)
+        window.setSoftInputMode(
+            if (isPinModeEnabled && hasPinConfigured) {
+                WindowManager.LayoutParams.SOFT_INPUT_STATE_VISIBLE
+            } else {
+                WindowManager.LayoutParams.SOFT_INPUT_STATE_HIDDEN
+            }
+        )
 
         val reason = intent?.getStringExtra(EXTRA_REASON)?.takeIf { it.isNotBlank() }
-            ?: "SCHOOL+ Uninstall / Lock Guard"
-        val hasPinConfigured = AppPrefs.hasAdminPinHash(applicationContext)
+            ?: "App Uninstall / Security Change"
 
         val rootScroll = ScrollView(this).apply {
             setBackgroundColor(Color.parseColor("#0B1120"))
@@ -59,7 +62,10 @@ class UninstallPinPromptActivity : Activity() {
         val cardBg = GradientDrawable().apply {
             setColor(Color.parseColor("#111827"))
             cornerRadius = dp(20).toFloat()
-            setStroke(dp(1), Color.parseColor("#334155"))
+            setStroke(
+                dp(1),
+                Color.parseColor(if (isPinModeEnabled) "#334155" else "#7F1D1D")
+            )
         }
 
         val card = LinearLayout(this).apply {
@@ -69,14 +75,18 @@ class UninstallPinPromptActivity : Activity() {
         }
 
         val badgeBg = GradientDrawable().apply {
-            setColor(Color.parseColor("#1E1B4B"))
+            setColor(Color.parseColor(if (isPinModeEnabled) "#1E1B4B" else "#450A0A"))
             cornerRadius = dp(10).toFloat()
-            setStroke(dp(1), Color.parseColor("#4F46E5"))
+            setStroke(dp(1), Color.parseColor(if (isPinModeEnabled) "#4F46E5" else "#EF4444"))
         }
 
         val badgeText = TextView(this).apply {
-            text = "SCHOOL+ UNINSTALL GUARD"
-            setTextColor(Color.parseColor("#A5B4FC"))
+            text = if (isPinModeEnabled) {
+                "SCHOOL+ UNINSTALL GUARD"
+            } else {
+                "SCHOOL+ DATA SECURITY GUARD"
+            }
+            setTextColor(Color.parseColor(if (isPinModeEnabled) "#A5B4FC" else "#FCA5A5"))
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
             typeface = Typeface.DEFAULT_BOLD
             background = badgeBg
@@ -85,27 +95,45 @@ class UninstallPinPromptActivity : Activity() {
         }
 
         val titleView = TextView(this).apply {
-            text = if (hasPinConfigured) {
-                "School Admin PIN Darj Karein"
-            } else {
-                "School Security PIN Sync Nahi Hua"
+            text = when {
+                !isPinModeEnabled -> "App Uninstall Restricted Hai"
+                hasPinConfigured -> "School Admin PIN Darj Karein"
+                else -> "School Security PIN Sync Nahi Hua"
             }
             setTextColor(Color.WHITE)
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 20f)
             typeface = Typeface.DEFAULT_BOLD
-            setPadding(0, dp(14), 0, dp(6))
+            setPadding(0, dp(14), 0, dp(8))
         }
 
         val subtitleView = TextView(this).apply {
-            text = if (hasPinConfigured) {
-                "$reason ko aage badhane ke liye School Admin Security PIN daalein. Sahi PIN par 2 minute ke liye unlock milega."
-            } else {
-                "$reason surakshit hai. Kripya SCHOOL+ App kholkar apna School account refresh karein — School Admin ka PIN sync hote hi yahan PIN daalne ka box dikhega."
+            text = when {
+                !isPinModeEnabled ->
+                    "School ke zaroori data, attendance records aur suraksha (data safety) ki wajah se aap is device se SCHOOL+ app ko uninstall, force-stop ya band nahi kar sakte.\n\nYeh device School Security Policy ke tahat surakshit hai. Kisi bhi badlav ya sahayta ke liye apne School Admin se sampark karein."
+                hasPinConfigured ->
+                    "$reason ko aage badhane ke liye School Admin Security PIN daalein. Sahi PIN par 2 minute ke liye unlock milega."
+                else ->
+                    "$reason surakshit hai. Kripya SCHOOL+ App kholkar apna School account refresh karein — School Admin ka PIN sync hote hi yahan PIN daalne ka box dikhega."
             }
             setTextColor(Color.parseColor("#CBD5E1"))
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 13.5f)
-            setLineSpacing(dp(3).toFloat(), 1.0f)
+            setLineSpacing(dp(4).toFloat(), 1.0f)
             setPadding(0, 0, 0, dp(16))
+        }
+
+        val policyBoxBg = GradientDrawable().apply {
+            setColor(Color.parseColor("#0F172A"))
+            cornerRadius = dp(12).toFloat()
+            setStroke(dp(1), Color.parseColor("#334155"))
+        }
+
+        val policyNoticeView = TextView(this).apply {
+            text = "Protected Action: $reason • Status: Blocked by School Policy"
+            setTextColor(Color.parseColor("#FDE68A"))
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
+            typeface = Typeface.DEFAULT_BOLD
+            background = policyBoxBg
+            setPadding(dp(12), dp(10), dp(12), dp(10))
         }
 
         val errorView = TextView(this).apply {
@@ -153,19 +181,19 @@ class UninstallPinPromptActivity : Activity() {
         }
 
         val cancelBtnBg = GradientDrawable().apply {
-            setColor(Color.parseColor("#1E293B"))
+            setColor(Color.parseColor(if (isPinModeEnabled) "#1E293B" else "#DC2626"))
             cornerRadius = dp(12).toFloat()
-            setStroke(dp(1), Color.parseColor("#334155"))
+            setStroke(dp(1), Color.parseColor(if (isPinModeEnabled) "#334155" else "#F87171"))
         }
 
         val cancelBtn = Button(this).apply {
-            text = "Cancel & Keep Protected"
-            setTextColor(Color.parseColor("#E2E8F0"))
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
+            text = if (isPinModeEnabled) "Cancel & Keep Protected" else "Surakshit Wapas Jayein"
+            setTextColor(Color.WHITE)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 14.5f)
             typeface = Typeface.DEFAULT_BOLD
             isAllCaps = false
             background = cancelBtnBg
-            setPadding(dp(16), dp(12), dp(16), dp(12))
+            setPadding(dp(16), dp(13), dp(16), dp(13))
         }
 
         card.addView(badgeText, LinearLayout.LayoutParams(
@@ -174,17 +202,24 @@ class UninstallPinPromptActivity : Activity() {
         ))
         card.addView(titleView)
         card.addView(subtitleView)
-        if (hasPinConfigured) {
-            card.addView(pinInput, LinearLayout.LayoutParams(
+        if (!isPinModeEnabled) {
+            card.addView(policyNoticeView, LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { bottomMargin = dp(16) })
+        } else {
+            if (hasPinConfigured) {
+                card.addView(pinInput, LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+                ).apply { bottomMargin = dp(10) })
+            }
+            card.addView(errorView)
+            card.addView(unlockBtn, LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT
             ).apply { bottomMargin = dp(10) })
         }
-        card.addView(errorView)
-        card.addView(unlockBtn, LinearLayout.LayoutParams(
-            LinearLayout.LayoutParams.MATCH_PARENT,
-            LinearLayout.LayoutParams.WRAP_CONTENT
-        ).apply { bottomMargin = dp(10) })
         card.addView(cancelBtn, LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT,
             LinearLayout.LayoutParams.WRAP_CONTENT
@@ -197,11 +232,15 @@ class UninstallPinPromptActivity : Activity() {
         rootScroll.addView(outer)
         setContentView(rootScroll)
 
-        if (hasPinConfigured) {
+        if (isPinModeEnabled && hasPinConfigured) {
             pinInput.requestFocus()
         }
 
         unlockBtn.setOnClickListener {
+            if (!isPinModeEnabled) {
+                goHomeSafe()
+                return@setOnClickListener
+            }
             if (!hasPinConfigured) {
                 openMainApp()
                 return@setOnClickListener
