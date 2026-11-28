@@ -29,7 +29,6 @@ import {
   AlertTriangle,
   Sparkles,
   ExternalLink,
-  LogOut,
   MessageCircle,
   Home,
   Users,
@@ -71,11 +70,11 @@ const loadStudentQuestionBankView = () => import("./StudentQuestionBankView").th
 
 const StudentFaceIdModal = lazyWithRetry(loadStudentFaceIdModal, "Face ID");
 const ClassroomVideoArchive = lazyWithRetry(loadClassroomVideoArchive, "Classroom Videos");
-import { StudentDatewiseNotesView } from "./StudentDatewiseNotesView";
+const StudentDatewiseNotesView = lazyWithRetry(() => import("./StudentDatewiseNotesView").then(m => ({ default: m.StudentDatewiseNotesView })), "Class Notes");
 const SchoolLucentViewer = lazyWithRetry(loadSchoolLucentViewer, "Lesson Viewer");
 import type { LucentViewerTab } from "./SchoolLucentViewer";
 import { DEFAULT_SUBJECTS_BY_CLASS } from "./ClassCurriculumNotesManager";
-import { CustomPlayer } from "../CustomPlayer";
+const CustomPlayer = lazyWithRetry(() => import("../CustomPlayer").then(m => ({ default: m.CustomPlayer })), "Video Player");
 const GroupStudyModal = lazyWithRetry(loadGroupStudyModal, "Online Test");
 import {
   subscribeToActiveRooms,
@@ -140,17 +139,17 @@ import { getSavedSchoolLogo, getVisibleSchoolRegNo, isAppLogo, maskSensitive2Cha
 import { formatCoveredMonthsList, formatMonthNameOnly, formatCompactDayMonth } from "../../utils/familyFeeEngine";
 import { buildStudentIdCardQrUrl } from "../../utils/qrVerifyUrl";
 import { getDemoSchoolDataset, isHolidayDate, isDemoDataEnabled, setDemoDataEnabled } from "./demoDataStore";
-import { OfficialFeeReceiptModal } from "./OfficialFeeReceiptModal";
-import { AdmissionFormPrintModal } from "./AdmissionFormPrintModal";
+const OfficialFeeReceiptModal = lazyWithRetry(() => import("./OfficialFeeReceiptModal").then(m => ({ default: m.OfficialFeeReceiptModal })), "Fee Receipt");
+const AdmissionFormPrintModal = lazyWithRetry(() => import("./AdmissionFormPrintModal").then(m => ({ default: m.AdmissionFormPrintModal })), "Admission Form Print");
 import { EasyScanQrPanel } from "./EasyScanQrPanel";
-import { AnnualBulkFeeStatementModal } from "./AnnualBulkFeeStatementModal";
-import { QrAttendanceScannerModal } from "./QrAttendanceScannerModal";
-import { SchoolCommunityFeed } from "./SchoolCommunityFeed";
-import { SchoolClassChannelView } from "./SchoolClassChannelView";
+const AnnualBulkFeeStatementModal = lazyWithRetry(() => import("./AnnualBulkFeeStatementModal").then(m => ({ default: m.AnnualBulkFeeStatementModal })), "Fee Statement");
+const QrAttendanceScannerModal = lazyWithRetry(() => import("./QrAttendanceScannerModal").then(m => ({ default: m.QrAttendanceScannerModal })), "QR Scanner");
+const SchoolCommunityFeed = lazyWithRetry(() => import("./SchoolCommunityFeed").then(m => ({ default: m.SchoolCommunityFeed })), "Community Feed");
+const SchoolClassChannelView = lazyWithRetry(() => import("./SchoolClassChannelView").then(m => ({ default: m.SchoolClassChannelView })), "Class Channel");
 const NstaMessengerSuite = lazyWithRetry(loadNstaMessengerSuite, "NSTA Messenger");
-import { SchoolWelcomeModal } from "./SchoolWelcomeModal";
-import { StudentIdCardModal } from "./StudentIdCardModal";
-import { SchoolBirthdayModal } from "./SchoolBirthdayModal";
+const SchoolWelcomeModal = lazyWithRetry(() => import("./SchoolWelcomeModal").then(m => ({ default: m.SchoolWelcomeModal })), "Welcome Letter");
+const StudentIdCardModal = lazyWithRetry(() => import("./StudentIdCardModal").then(m => ({ default: m.StudentIdCardModal })), "Student ID Card");
+const SchoolBirthdayModal = lazyWithRetry(() => import("./SchoolBirthdayModal").then(m => ({ default: m.SchoolBirthdayModal })), "Birthday Card");
 import { NstaCallPortalHost } from "./NstaCallModal";
 import { ScreenInfoGuideButton } from "./ScreenInfoGuideButton";
 import { getScreenFeatureGuide } from "../../utils/screenInfoCatalog";
@@ -179,12 +178,12 @@ import {
 } from "../../utils/schoolPushClient";
 import { subscribeUserToPush } from "../NotificationManager";
 import { hasEliteCallAccess, type School, type SchoolStudent, type SchoolTeacher, type NstaWelcomeData, type NstaBirthdayData } from "../../school-types";
-import { ParentLeaveManager } from "./ParentLeaveManager";
-import { PtmSchedulerModal } from "./PtmSchedulerModal";
-import { AdminBusFleetRadar } from "./AdminBusFleetRadar";
+const ParentLeaveManager = lazyWithRetry(() => import("./ParentLeaveManager").then(m => ({ default: m.ParentLeaveManager })), "Leave Desk");
+const PtmSchedulerModal = lazyWithRetry(() => import("./PtmSchedulerModal").then(m => ({ default: m.PtmSchedulerModal })), "PTM Scheduler");
+const AdminBusFleetRadar = lazyWithRetry(() => import("./AdminBusFleetRadar").then(m => ({ default: m.AdminBusFleetRadar })), "Bus Radar");
 import { ParentTrustDashboardCard } from "./ParentTrustDashboardCard";
-import { StudentGrowthAndPortfolioView } from "./StudentGrowthAndPortfolioView";
-import { StudentHealthAndSafetyView } from "./StudentHealthAndSafetyView";
+const StudentGrowthAndPortfolioView = lazyWithRetry(() => import("./StudentGrowthAndPortfolioView").then(m => ({ default: m.StudentGrowthAndPortfolioView })), "Growth & Portfolio");
+const StudentHealthAndSafetyView = lazyWithRetry(() => import("./StudentHealthAndSafetyView").then(m => ({ default: m.StudentHealthAndSafetyView })), "Health & Safety");
 import { playBusArrivalAlarmChime, checkAndTriggerBusProximity } from "../../utils/busProximityAlarm";
 import { rtdb } from "../../firebase";
 import { ref as dbRef, onValue } from "firebase/database";
@@ -203,7 +202,8 @@ import {
 } from "../../utils/schoolAttendanceSchedule";
 import { useBackHandler } from "../../utils/backNavigation";
 import { LanguageToggleButton } from "./LanguageToggleButton";
-import { StudentUpiPayUploadModal, type FamilyPayChildOption } from "./StudentUpiPayUploadModal";
+import type { FamilyPayChildOption } from "./StudentUpiPayUploadModal";
+const StudentUpiPayUploadModal = lazyWithRetry(() => import("./StudentUpiPayUploadModal").then(m => ({ default: m.StudentUpiPayUploadModal })), "UPI Upload");
 import { pickLang, useAppLang } from "../../utils/appLang";
 import type { UpiPaymentProofRecord } from "../../school-types";
 
@@ -301,7 +301,7 @@ export const StudentSchoolPanel: React.FC<Props> = ({
   onLogout,
 }) => {
   useEffect(() => {
-    return scheduleIdlePreload([loadNstaMessengerSuite], 1800);
+    return scheduleIdlePreload([loadNstaMessengerSuite], 4500);
   }, []);
 
   const normalizeTab = (t?: string): TabType => {
@@ -601,21 +601,6 @@ export const StudentSchoolPanel: React.FC<Props> = ({
     };
   }, []);
 
-  const handleStudentLogout = () => {
-    try {
-      localStorage.removeItem("nst_current_user");
-      localStorage.removeItem("nsta_cached_user");
-      localStorage.removeItem("nst_is_guest");
-      localStorage.setItem("nst_logged_out", "true");
-    } catch (e) {}
-    if (onLogout) {
-      onLogout();
-    } else if (onBack) {
-      onBack();
-    } else {
-      window.location.reload();
-    }
-  };
   const [school, setSchool] = useState<School | null>(null);
   const [schoolSessions, setSchoolSessions] = useState<any[]>([]);
   const [allSchoolStudents, setAllSchoolStudents] = useState<SchoolStudent[]>(() =>
@@ -3319,17 +3304,8 @@ export const StudentSchoolPanel: React.FC<Props> = ({
             </div>
           </div>
 
-          <div className="pt-2 flex flex-col gap-2">
-            {onLogout && (
-              <button
-                type="button"
-                onClick={onLogout}
-                className="w-full py-3 px-4 rounded-xl bg-slate-800 hover:bg-slate-700 text-white text-xs font-bold transition cursor-pointer"
-              >
-                Logout / Switch Student
-              </button>
-            )}
-            {onBack && (
+          {onBack && (
+            <div className="pt-2 flex flex-col gap-2">
               <button
                 type="button"
                 onClick={onBack}
@@ -3337,14 +3313,15 @@ export const StudentSchoolPanel: React.FC<Props> = ({
               >
                 Back
               </button>
-            )}
-          </div>
+            </div>
+          )}
         </div>
       </div>
     );
   }
 
   return (
+    <Suspense fallback={null}>
     <div className={`min-h-screen flex flex-col font-sans transition-colors duration-200 student-theme-${studentTheme} app-theme-${studentTheme} ${
       studentTheme === "white"
         ? "bg-slate-100 text-slate-900"
@@ -7498,24 +7475,6 @@ export const StudentSchoolPanel: React.FC<Props> = ({
                     </div>
                   );
                 })()}
-
-                <div className={`pt-3.5 border-t flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 ${dividerBorder}`}>
-                  <p className={`text-[11px] ${mutedText}`}>
-                    Logout karne par aapka linked data aur ID card surakshit rahega
-                  </p>
-                  <button
-                    type="button"
-                    onClick={handleStudentLogout}
-                    className={`w-full sm:w-auto min-h-[44px] px-5 rounded-xl border text-xs font-semibold flex items-center justify-center gap-2 transition active:scale-95 cursor-pointer whitespace-nowrap ${
-                      isWhite
-                        ? "bg-rose-50 hover:bg-rose-100 text-rose-700 border-rose-200"
-                        : "bg-rose-600/20 hover:bg-rose-600/30 text-rose-300 border-rose-500/40"
-                    }`}
-                  >
-                    <LogOut className="w-4 h-4" />
-                    <span>Full App Logout</span>
-                  </button>
-                </div>
               </div>
             </div>
           );
@@ -8843,6 +8802,7 @@ export const StudentSchoolPanel: React.FC<Props> = ({
         />
       )}
     </div>
+    </Suspense>
   );
 };
 

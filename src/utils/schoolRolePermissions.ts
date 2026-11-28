@@ -589,7 +589,8 @@ export function isAdminViewAllowedForProfile(
     viewId === "fee_tagada" ||
     viewId === "qr_pay" ||
     viewId === "discount_list" ||
-    viewId === "fee_alerts"
+    viewId === "fee_alerts" ||
+    viewId === "admission_kit"
   ) {
     return p.canManageFees
       ? { allowed: true }

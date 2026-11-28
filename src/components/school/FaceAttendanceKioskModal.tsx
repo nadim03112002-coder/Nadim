@@ -526,13 +526,19 @@ export const FaceAttendanceKioskModal: React.FC<FaceAttendanceKioskModalProps> =
       try {
         const [faOk, afOk] = await Promise.all([
           isFaceApiLoaded() ? Promise.resolve(true) : loadFaceApiModels().catch(() => false),
-          isArcFaceReady() ? Promise.resolve(true) : initArcFaceEngine().catch(() => false),
+          isArcFaceReady() ? Promise.resolve(true) : initArcFaceEngine(true).catch(() => false),
         ]);
         if (!cancelled) {
           setAiEngineStatus(faOk && afOk ? "ready" : "fallback");
+          if (faOk && afOk) {
+            setIsAiWarmingUpInView(false);
+          }
         }
       } catch {
-        if (!cancelled) setAiEngineStatus("fallback");
+        if (!cancelled) {
+          setAiEngineStatus("fallback");
+          setIsAiWarmingUpInView(false);
+        }
       }
     };
     void ensureModelsReady();
@@ -541,9 +547,10 @@ export const FaceAttendanceKioskModal: React.FC<FaceAttendanceKioskModalProps> =
     const warmupPoll = setInterval(() => {
       if (isFaceApiLoaded() && isArcFaceReady()) {
         setAiEngineStatus("ready");
+        setIsAiWarmingUpInView(false);
         clearInterval(warmupPoll);
       }
-    }, 800);
+    }, 600);
 
     // Every 10 minutes, sync newly enrolled faces from other devices (uses sync_versions guard)
     const syncInterval = setInterval(() => {
@@ -1467,9 +1474,9 @@ export const FaceAttendanceKioskModal: React.FC<FaceAttendanceKioskModalProps> =
                 }
               } else {
                 // ── 2. NORMAL ATTENDANCE FLOW ──
-                const isEngineWarming = Boolean(
-                  primaryFace.isAiEngineWarmingUp || (!isFaceApiLoaded() || !isArcFaceReady())
-                );
+                const isEngineWarming =
+                  aiEngineStatus === "loading" &&
+                  Boolean(primaryFace.isAiEngineWarmingUp || !isFaceApiLoaded() || !isArcFaceReady());
                 if (detectedFaces.length > 1) {
                   setLiveMatchedCandidate(null);
                   setIsFaceUnregistered(false);
@@ -2326,6 +2333,24 @@ export const FaceAttendanceKioskModal: React.FC<FaceAttendanceKioskModalProps> =
                   <span className="w-2.5 h-2.5 rounded-full bg-cyan-400 animate-ping" />
                   <span>⏳ AI Face Engine लोड हो रहा है...</span>
                 </span>
+              ) : aiEngineStatus === "fallback" && !isArcFaceReady() ? (
+                <button
+                  type="button"
+                  onClick={async () => {
+                    setAiEngineStatus("loading");
+                    setIsAiWarmingUpInView(true);
+                    const [faOk, afOk] = await Promise.all([
+                      isFaceApiLoaded() ? Promise.resolve(true) : loadFaceApiModels().catch(() => false),
+                      initArcFaceEngine(true).catch(() => false),
+                    ]);
+                    setIsAiWarmingUpInView(false);
+                    setAiEngineStatus(faOk && afOk ? "ready" : "fallback");
+                  }}
+                  className="pointer-events-auto text-[12px] font-bold tracking-wider text-amber-200 bg-amber-950/90 border border-amber-400/70 px-4 py-1.5 rounded-full backdrop-blur-md flex items-center gap-2 shadow-2xl cursor-pointer"
+                >
+                  <span>🔄</span>
+                  <span>AI Engine पुनः लोड करें (Retry)</span>
+                </button>
               ) : isFaceUnregistered ? (
                 <span className="text-[12px] font-bold tracking-wider text-rose-200 bg-rose-950/90 border border-rose-400 px-4 py-1.5 rounded-full backdrop-blur-md flex items-center gap-2 shadow-2xl animate-pulse">
                   <span>🔴</span>

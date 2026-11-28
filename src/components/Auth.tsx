@@ -1,5 +1,5 @@
 // @ts-nocheck
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, lazy, Suspense } from 'react';
 import type { User, SystemSettings } from '../types';
 import { ADMIN_EMAIL } from '../constants';
 import {
@@ -56,11 +56,11 @@ import {
   Trash2,
   Zap
 } from 'lucide-react';
-import { Html5Qrcode } from 'html5-qrcode';
-import jsQR from 'jsqr';
 import { LoginGuide } from './LoginGuide';
 import { CustomAlert } from './CustomDialogs';
-import { FaceLoginModal } from './school/FaceLoginModal';
+const FaceLoginModal = lazy(() =>
+  import('./school/FaceLoginModal').then((m) => ({ default: m.FaceLoginModal }))
+);
 import { parseLoginQrToken } from '../services/sessionManager';
 import { isQrVerificationExpired } from '../utils/qrVerifyUrl';
 import { getDemoSchoolDataset } from './school/demoDataStore';
@@ -80,7 +80,14 @@ import {
   dispatchOfficialSchoolWelcomeMessage,
   registerStudentIdCardLinkSlot,
 } from '../school-firebase';
-import { isActiveRosterPerson, deleteFaceDescriptor } from '../utils/faceRecognitionEngine';
+const isActiveRosterPerson = (person: any): boolean => {
+  if (!person || typeof person !== 'object') return false;
+  if (person.isDeleted === true || person.deleted === true || person.active === false) return false;
+  const st = String(person.status || '').trim().toLowerCase();
+  return !['inactive', 'deleted', 'tc_issued', 'left', 'archived'].includes(st);
+};
+const deleteFaceDescriptor = (studentId: string, schoolId: string) =>
+  import('../utils/faceRecognitionEngine').then((m) => m.deleteFaceDescriptor(studentId, schoolId));
 import { useBackHandler } from '../utils/backNavigation';
 import {
   isDriverUser,
@@ -155,6 +162,30 @@ export const Auth: React.FC<Props> = ({ onLogin, logActivity, appSettings, onBac
   const [rememberMe, setRememberMe] = useState(false);
   const [loading, setLoading] = useState(false);
 
+  // Email OTP Login / Signup / Recovery States
+  const [loginMode, setLoginMode] = useState<'PASSWORD' | 'EMAIL_OTP'>('PASSWORD');
+  const [emailOtpConfigured, setEmailOtpConfigured] = useState<boolean | null>(null);
+  const [otpEmail, setOtpEmail] = useState('');
+  const [otpCode, setOtpCode] = useState('');
+  const [otpChallengeToken, setOtpChallengeToken] = useState<string | null>(null);
+  const [otpMaskedEmail, setOtpMaskedEmail] = useState('');
+  const [otpSending, setOtpSending] = useState(false);
+  const [otpVerifying, setOtpVerifying] = useState(false);
+  const [otpCooldownSec, setOtpCooldownSec] = useState(0);
+  const [otpSuccessNotice, setOtpSuccessNotice] = useState<string | null>(null);
+
+  // Signup Email Verification States
+  const [signupOtpChallenge, setSignupOtpChallenge] = useState<string | null>(null);
+  const [signupOtpCode, setSignupOtpCode] = useState('');
+  const [signupEmailVerified, setSignupEmailVerified] = useState(false);
+  const [signupVerifiedEmail, setSignupVerifiedEmail] = useState('');
+  const [signupOtpBusy, setSignupOtpBusy] = useState(false);
+
+  // Recovery Email OTP States
+  const [recoveryOtpChallenge, setRecoveryOtpChallenge] = useState<string | null>(null);
+  const [recoveryOtpCode, setRecoveryOtpCode] = useState('');
+  const [recoveryOtpBusy, setRecoveryOtpBusy] = useState(false);
+
   // Recovery States
   const [recoveryUserObj, setRecoveryUserObj] = useState<any>(null);
   const [recoveryStep, setRecoveryStep] = useState<1 | 2 | 3>(1);
@@ -198,7 +229,7 @@ export const Auth: React.FC<Props> = ({ onLogin, logActivity, appSettings, onBac
   const [qrFactorError, setQrFactorError] = useState<string | null>(null);
   const [qrFactorVerifying, setQrFactorVerifying] = useState(false);
   const [facingMode, setFacingMode] = useState<'environment' | 'user'>('environment');
-  const scannerInstanceRef = useRef<Html5Qrcode | null>(null);
+  const scannerInstanceRef = useRef<any>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -209,19 +240,46 @@ export const Auth: React.FC<Props> = ({ onLogin, logActivity, appSettings, onBac
   }, []);
 
   useEffect(() => {
-    if (!passkeyCaps.supported) return;
     let active = true;
-    setPasskeySyncing(true);
-    syncPasskeysFromCloud(true)
-      .then((list) => {
-        if (active) setSavedPasskeys(list);
+    fetch('/api/auth/email-otp-status')
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (active && data && typeof data.configured === 'boolean') {
+          setEmailOtpConfigured(data.configured);
+        }
       })
-      .catch(() => {})
-      .finally(() => {
-        if (active) setPasskeySyncing(false);
-      });
+      .catch(() => {});
     return () => {
       active = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (otpCooldownSec <= 0) return;
+    const timer = window.setInterval(() => {
+      setOtpCooldownSec((prev) => (prev > 1 ? prev - 1 : 0));
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [otpCooldownSec]);
+
+  useEffect(() => {
+    if (!passkeyCaps.supported) return;
+    let active = true;
+    const syncTimer = window.setTimeout(() => {
+      if (!active) return;
+      setPasskeySyncing(true);
+      syncPasskeysFromCloud(true)
+        .then((list) => {
+          if (active) setSavedPasskeys(list);
+        })
+        .catch(() => {})
+        .finally(() => {
+          if (active) setPasskeySyncing(false);
+        });
+    }, 350);
+    return () => {
+      active = false;
+      window.clearTimeout(syncTimer);
     };
   }, [passkeyCaps.supported]);
 
@@ -281,6 +339,7 @@ export const Auth: React.FC<Props> = ({ onLogin, logActivity, appSettings, onBac
         } catch {}
       }
 
+      const { Html5Qrcode } = await import('html5-qrcode');
       const instance = new Html5Qrcode('auth-qr-reader');
       scannerInstanceRef.current = instance;
 
@@ -1757,7 +1816,7 @@ export const Auth: React.FC<Props> = ({ onLogin, logActivity, appSettings, onBac
     const reader = new FileReader();
     reader.onload = () => {
       const img = new Image();
-      img.onload = () => {
+      img.onload = async () => {
         const canvas = document.createElement('canvas');
         canvas.width = img.width;
         canvas.height = img.height;
@@ -1769,6 +1828,7 @@ export const Auth: React.FC<Props> = ({ onLogin, logActivity, appSettings, onBac
         }
         ctx.drawImage(img, 0, 0);
         const imageData = ctx.getImageData(0, 0, img.width, img.height);
+        const jsQR = (await import('jsqr')).default;
         const code = jsQR(imageData.data, imageData.width, imageData.height);
         if (code && code.data) {
           handleQrDecoded(code.data);
@@ -2685,6 +2745,430 @@ export const Auth: React.FC<Props> = ({ onLogin, logActivity, appSettings, onBac
     }
   };
 
+  // ── EMAIL OTP LOGIN, SIGNUP & RECOVERY HELPERS ─────────────────────────────
+  const isDeliverableEmail = (rawEmail?: string | null): boolean => {
+    const clean = String(rawEmail || '').trim().toLowerCase();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(clean)) return false;
+    const domain = clean.split('@')[1] || '';
+    if (BLOCKED_DOMAINS.includes(domain)) return false;
+    if (
+      clean.endsWith('@nsta.app') ||
+      clean.endsWith('@student.nsta.app') ||
+      clean.endsWith('@student.nsta.in') ||
+      clean.endsWith('@demo-school.example') ||
+      clean === 'n@gmail.com'
+    ) {
+      return false;
+    }
+    return true;
+  };
+
+  const getActiveAuthSchoolId = (): string => {
+    try {
+      const stored = localStorage.getItem('nst_active_school_id') || '';
+      if (stored && stored !== 'dps_gurgaon_sector45') return stored;
+    } catch {}
+    return DEFAULT_SCHOOL_ID;
+  };
+
+  const resolveVerifiedEmailUser = async (verifiedEmailRaw: string): Promise<User> => {
+    const cleanEmail = verifiedEmailRaw.trim().toLowerCase();
+
+    if (isSuperAdminEmailClean(cleanEmail)) {
+      return {
+        id: 'super_admin_nadim',
+        uid: 'super_admin_nadim',
+        displayId: 'SUPERADMIN',
+        name: 'Nadim Anwar (Super Admin)',
+        email: cleanEmail,
+        role: 'SUPERADMIN',
+        isAdmin: true,
+        isSuperAdmin: true,
+        schoolId: '',
+        credits: 99999,
+        diamonds: 99999,
+        streak: 100,
+        profileCompleted: true,
+        emailVerified: true,
+        provider: 'email_otp_login',
+      };
+    }
+
+    if (isSchoolAdminEmailClean(cleanEmail)) {
+      return {
+        id: 'admin_uid',
+        uid: 'admin_uid',
+        displayId: 'ADM-LMPS-001',
+        name: 'SHAHID KHAN SIR (Principal & School Admin)',
+        email: cleanEmail,
+        role: 'SCHOOL_ADMIN',
+        schoolId: DEFAULT_SCHOOL_ID,
+        credits: 10000,
+        diamonds: 500,
+        streak: 30,
+        profileCompleted: true,
+        subscriptionTier: 'PRO',
+        emailVerified: true,
+        provider: 'email_otp_login',
+      };
+    }
+
+    let matchedUser: any = await getUserByEmail(cleanEmail).catch(() => null);
+
+    if (!matchedUser) {
+      try {
+        for (let i = 0; i < localStorage.length; i++) {
+          const k = localStorage.key(i);
+          if (k && (k.startsWith('nst_user_profile_') || k === 'nst_current_user' || k === 'nst_user_profile')) {
+            const raw = localStorage.getItem(k);
+            if (!raw) continue;
+            const parsed = JSON.parse(raw);
+            if (parsed && String(parsed.email || '').trim().toLowerCase() === cleanEmail) {
+              matchedUser = parsed;
+              break;
+            }
+          }
+        }
+      } catch {}
+    }
+
+    if (!matchedUser) {
+      const foundTeacher = resolveTeacherOrStaff(cleanEmail);
+      if (foundTeacher) {
+        const resolvedRole = foundTeacher._resolvedRole === 'ACCOUNTANT' ? 'ACCOUNTANT' : 'TEACHER';
+        matchedUser = {
+          id: foundTeacher.id || `tea_${Date.now()}`,
+          uid: foundTeacher.id || `tea_${Date.now()}`,
+          displayId: foundTeacher.employeeId
+            ? `EMP-${foundTeacher.employeeId}`
+            : `${resolvedRole === 'ACCOUNTANT' ? 'ACC' : 'TEA'}-${(foundTeacher.id || '').slice(0, 6).toUpperCase()}`,
+          name: foundTeacher.name,
+          email: cleanEmail,
+          mobile: foundTeacher.phone || '',
+          role: resolvedRole,
+          schoolId: foundTeacher.schoolId && foundTeacher.schoolId !== 'dps_gurgaon_sector45'
+            ? foundTeacher.schoolId
+            : DEFAULT_SCHOOL_ID,
+          department: foundTeacher.department || (resolvedRole === 'ACCOUNTANT' ? 'Accounts' : 'Academic'),
+          designation: foundTeacher.designation || (resolvedRole === 'ACCOUNTANT' ? 'Accountant' : 'Teacher'),
+          credits: 500,
+          streak: 1,
+          profileCompleted: true,
+          subscriptionTier: 'PRO',
+          provider: 'email_otp_login',
+        };
+      }
+    }
+
+    if (!matchedUser) {
+      try {
+        const activeSid = getActiveAuthSchoolId();
+        const studentPool = getLocalStudents(activeSid);
+        const foundByEmail = studentPool.find(
+          (s: any) => s && String(s.email || '').trim().toLowerCase() === cleanEmail && isActiveRosterPerson(s)
+        );
+        if (foundByEmail) {
+          matchedUser = {
+            id: foundByEmail.id,
+            uid: foundByEmail.id,
+            studentId: foundByEmail.id,
+            displayId: foundByEmail.rollNo ? `ROLL-${foundByEmail.rollNo}` : (foundByEmail.admissionNo || foundByEmail.id),
+            name: foundByEmail.name,
+            email: cleanEmail,
+            mobile: foundByEmail.phone || '',
+            role: 'STUDENT',
+            userType: 'SCHOOL_STUDENT',
+            schoolId: foundByEmail.schoolId || activeSid,
+            classLevel: foundByEmail.classGrade || foundByEmail.className || '10',
+            className: foundByEmail.className || '',
+            admissionNo: foundByEmail.admissionNo || '',
+            rollNo: foundByEmail.rollNo || '',
+            credits: 100,
+            diamonds: 50,
+            streak: 1,
+            profileCompleted: true,
+            provider: 'email_otp_login',
+          };
+        }
+      } catch {}
+    }
+
+    if (!matchedUser) {
+      const savedPk = findSavedPasskeyForAccount(cleanEmail);
+      if (savedPk?.userSnapshot) {
+        matchedUser = { ...savedPk.userSnapshot };
+      }
+    }
+
+    if (!matchedUser) {
+      let emailHash = 0;
+      for (let i = 0; i < cleanEmail.length; i++) {
+        emailHash = (Math.imul(emailHash, 31) + cleanEmail.charCodeAt(i)) >>> 0;
+      }
+      const restoredId = `NSTA-E${String((emailHash % 900000) + 100000)}`;
+      matchedUser = {
+        id: restoredId,
+        uid: restoredId,
+        displayId: restoredId,
+        name: cleanEmail.split('@')[0],
+        mobile: '',
+        email: cleanEmail,
+        role: 'STUDENT',
+        classLevel: '10',
+        schoolId: getActiveAuthSchoolId(),
+        credits: 100,
+        diamonds: 50,
+        streak: 1,
+        totalScore: 0,
+        profileCompleted: true,
+        provider: 'email_otp_restore',
+      };
+    }
+
+    const enrichedUser: any = {
+      ...matchedUser,
+      email: matchedUser.email || cleanEmail,
+      emailVerified: true,
+      lastOtpVerifiedAt: new Date().toISOString(),
+    };
+    void saveUserToLive(enrichedUser, { immediate: true }).catch(() => {});
+    return enrichedUser;
+  };
+
+  const handleSendLoginEmailOtp = async () => {
+    setError(null);
+    setOtpSuccessNotice(null);
+    const cleanEmail = otpEmail.trim().toLowerCase();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(cleanEmail)) {
+      setError('Kripya ek valid Gmail / Email address darj karein.');
+      return;
+    }
+    const domain = cleanEmail.split('@')[1] || '';
+    if (BLOCKED_DOMAINS.includes(domain)) {
+      setError('Temporary email domains allowed nahi hain. Kripya apna real Gmail / Email daalein.');
+      return;
+    }
+
+    setOtpSending(true);
+    try {
+      const res = await fetch('/api/auth/send-email-otp', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email: cleanEmail,
+          schoolId: getActiveAuthSchoolId(),
+          purpose: 'LOGIN',
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (typeof data?.configured === 'boolean') {
+        setEmailOtpConfigured(data.configured);
+      }
+      if (!res.ok || !data?.ok) {
+        if (Number(data?.retryAfterSeconds) > 0) {
+          setOtpCooldownSec(Number(data.retryAfterSeconds));
+        }
+        setError(data?.error || 'OTP bhejne me problem aayi. Kripya dubara try karein.');
+        return;
+      }
+
+      setOtpChallengeToken(data.challengeToken);
+      setOtpMaskedEmail(data.maskedEmail || cleanEmail);
+      setOtpCooldownSec(Number(data.resendCooldownSeconds || 45));
+      setOtpCode('');
+      setOtpSuccessNotice(`${data.maskedEmail || cleanEmail} par 6-digit OTP bhej diya gaya hai. Spam/Promotions folder bhi check karein.`);
+      triggerAuthHaptic('success');
+    } catch (err: any) {
+      setError(err?.message || 'Network error — OTP bhejne me samasya aayi.');
+    } finally {
+      setOtpSending(false);
+    }
+  };
+
+  const handleVerifyLoginEmailOtp = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError(null);
+    const cleanEmail = otpEmail.trim().toLowerCase();
+    const cleanOtp = otpCode.replace(/\D/g, '').trim();
+    if (!otpChallengeToken) {
+      setError('Pehle "Send OTP" par click karke apna email OTP mangwayein.');
+      return;
+    }
+    if (cleanOtp.length !== 6) {
+      setError('Kripya 6-digit OTP darj karein.');
+      return;
+    }
+
+    setOtpVerifying(true);
+    try {
+      const res = await fetch('/api/auth/verify-email-otp', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email: cleanEmail,
+          otp: cleanOtp,
+          challengeToken: otpChallengeToken,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data?.verified) {
+        setError(data?.error || 'OTP verify nahi hua. Dobara check karein.');
+        triggerAuthHaptic('error');
+        return;
+      }
+
+      const resolvedUser = await resolveVerifiedEmailUser(cleanEmail);
+      triggerAuthHaptic('success');
+      triggerLoginSuccess(resolvedUser);
+    } catch (err: any) {
+      setError(err?.message || 'OTP verify karne me network samasya aayi.');
+    } finally {
+      setOtpVerifying(false);
+    }
+  };
+
+  const handleSendSignupEmailOtp = async () => {
+    setError(null);
+    const cleanEmail = formData.email.trim().toLowerCase();
+    if (!isDeliverableEmail(cleanEmail)) {
+      setError('Kripya pehle ek valid Gmail / Email address darj karein.');
+      return;
+    }
+    setSignupOtpBusy(true);
+    try {
+      const res = await fetch('/api/auth/send-email-otp', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email: cleanEmail,
+          schoolId: getActiveAuthSchoolId(),
+          purpose: 'SIGNUP',
+          userName: formData.name.trim(),
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (typeof data?.configured === 'boolean') {
+        setEmailOtpConfigured(data.configured);
+      }
+      if (!res.ok || !data?.ok) {
+        setError(data?.error || 'Signup OTP bhejne me samasya aayi.');
+        return;
+      }
+      setSignupOtpChallenge(data.challengeToken);
+      setSignupOtpCode('');
+      setOtpCooldownSec(Number(data.resendCooldownSeconds || 45));
+      triggerAuthHaptic('success');
+    } catch (err: any) {
+      setError(err?.message || 'OTP bhejne me network error aaya.');
+    } finally {
+      setSignupOtpBusy(false);
+    }
+  };
+
+  const handleVerifySignupEmailOtp = async () => {
+    setError(null);
+    const cleanEmail = formData.email.trim().toLowerCase();
+    const cleanOtp = signupOtpCode.replace(/\D/g, '').trim();
+    if (!signupOtpChallenge || cleanOtp.length !== 6) {
+      setError('6-digit OTP darj karein.');
+      return;
+    }
+    setSignupOtpBusy(true);
+    try {
+      const res = await fetch('/api/auth/verify-email-otp', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email: cleanEmail,
+          otp: cleanOtp,
+          challengeToken: signupOtpChallenge,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data?.verified) {
+        setError(data?.error || 'Galat OTP hai.');
+        return;
+      }
+      setSignupEmailVerified(true);
+      setSignupVerifiedEmail(cleanEmail);
+      setSignupOtpChallenge(null);
+      setSignupOtpCode('');
+      triggerAuthHaptic('success');
+    } catch (err: any) {
+      setError(err?.message || 'OTP verify nahi ho saka.');
+    } finally {
+      setSignupOtpBusy(false);
+    }
+  };
+
+  const handleSendRecoveryEmailOtp = async () => {
+    if (!recoveryUserObj?.email) return;
+    setError(null);
+    setRecoveryNotice(null);
+    setRecoveryOtpBusy(true);
+    try {
+      const res = await fetch('/api/auth/send-email-otp', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email: String(recoveryUserObj.email).trim().toLowerCase(),
+          schoolId: recoveryUserObj.schoolId || getActiveAuthSchoolId(),
+          purpose: 'RECOVERY',
+          userName: recoveryUserObj.name || '',
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data?.ok) {
+        setError(data?.error || 'Recovery OTP bhejne me samasya aayi.');
+        return;
+      }
+      setRecoveryOtpChallenge(data.challengeToken);
+      setRecoveryOtpCode('');
+      setOtpCooldownSec(Number(data.resendCooldownSeconds || 45));
+      setRecoveryNotice(`${data.maskedEmail || recoveryUserObj.email} par 6-digit recovery OTP bheja gaya hai.`);
+      triggerAuthHaptic('success');
+    } catch (err: any) {
+      setError(err?.message || 'Recovery OTP bhejne me network error aaya.');
+    } finally {
+      setRecoveryOtpBusy(false);
+    }
+  };
+
+  const handleVerifyRecoveryEmailOtp = async () => {
+    if (!recoveryUserObj?.email || !recoveryOtpChallenge) return;
+    setError(null);
+    const cleanOtp = recoveryOtpCode.replace(/\D/g, '').trim();
+    if (cleanOtp.length !== 6) {
+      setError('6-digit OTP darj karein.');
+      return;
+    }
+    setRecoveryOtpBusy(true);
+    try {
+      const res = await fetch('/api/auth/verify-email-otp', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email: String(recoveryUserObj.email).trim().toLowerCase(),
+          otp: cleanOtp,
+          challengeToken: recoveryOtpChallenge,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data?.verified) {
+        setError(data?.error || 'Galat OTP hai.');
+        return;
+      }
+      triggerAuthHaptic('success');
+      setRecoveryOtpChallenge(null);
+      setRecoveryNotice('Email OTP verify ho gaya! Ab apna naya password set karein.');
+      setRecoveryStep(3);
+    } catch (err: any) {
+      setError(err?.message || 'OTP verify karne me samasya aayi.');
+    } finally {
+      setRecoveryOtpBusy(false);
+    }
+  };
+
   // ── PASSKEY QUICK UNLOCK & ENROLLMENT HANDLERS ────────────────────────────
   const handlePasskeyUnlock = async (entry: PasskeySavedAccount) => {
     setQuickModalError(null);
@@ -2881,7 +3365,15 @@ export const Auth: React.FC<Props> = ({ onLogin, logActivity, appSettings, onBac
         createdAt: new Date().toISOString()
       };
 
-      await saveUserToLive(newUser, { immediate: true });
+      await saveUserToLive(
+        {
+          ...newUser,
+          emailVerified:
+            signupEmailVerified &&
+            signupVerifiedEmail === (formData.email.trim().toLowerCase() || ''),
+        },
+        { immediate: true }
+      );
       localStorage.setItem('nst_last_registered_id', newId);
 
       // Auto-dispatch official welcome message & set welcome celebratory popup flag
@@ -3312,8 +3804,59 @@ export const Auth: React.FC<Props> = ({ onLogin, logActivity, appSettings, onBac
                         </div>
                       ) : (
                         <p className="text-xs text-slate-500 dark:text-slate-400">
-                          Is phone par is ID ke liye Passkey link nahi hai — neeche Security Question se recover karein.
+                          Is phone par is ID ke liye Passkey link nahi hai — neeche Email OTP ya Security Question se recover karein.
                         </p>
+                      )}
+
+                      {emailOtpConfigured && isDeliverableEmail(recoveryUserObj?.email) && (
+                        <div className="p-4 rounded-2xl bg-emerald-50/70 dark:bg-emerald-950/30 border border-emerald-200/80 dark:border-emerald-800/70 space-y-2.5">
+                          <div className="flex items-center justify-between gap-2">
+                            <div className="flex items-center gap-2 min-w-0">
+                              <Mail size={16} className="text-emerald-600 dark:text-emerald-400 shrink-0" />
+                              <span className="text-xs font-black text-slate-900 dark:text-white truncate">
+                                Email OTP Verification
+                              </span>
+                            </div>
+                            <button
+                              type="button"
+                              disabled={recoveryOtpBusy || otpCooldownSec > 0}
+                              onClick={handleSendRecoveryEmailOtp}
+                              className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:opacity-60 text-white text-[11px] font-bold cursor-pointer whitespace-nowrap"
+                            >
+                              {recoveryOtpBusy
+                                ? 'Sending...'
+                                : recoveryOtpChallenge
+                                ? otpCooldownSec > 0
+                                  ? `Resend (${otpCooldownSec}s)`
+                                  : 'Resend OTP'
+                                : 'Send OTP'}
+                            </button>
+                          </div>
+                          {recoveryOtpChallenge && (
+                            <div className="flex items-center gap-2 pt-1">
+                              <input
+                                type="text"
+                                inputMode="numeric"
+                                maxLength={6}
+                                placeholder="6-digit OTP"
+                                value={recoveryOtpCode}
+                                onChange={(e) => {
+                                  setRecoveryOtpCode(e.target.value.replace(/\D/g, '').slice(0, 6));
+                                  setError(null);
+                                }}
+                                className="flex-1 bg-white dark:bg-slate-950 border border-emerald-300 dark:border-emerald-800 rounded-xl px-3 py-2 text-sm font-mono font-bold tracking-widest text-slate-900 dark:text-white outline-none"
+                              />
+                              <button
+                                type="button"
+                                disabled={recoveryOtpBusy || recoveryOtpCode.length !== 6}
+                                onClick={handleVerifyRecoveryEmailOtp}
+                                className="px-3.5 py-2 rounded-xl bg-slate-950 dark:bg-emerald-600 hover:bg-slate-900 text-white text-xs font-black disabled:opacity-50 cursor-pointer whitespace-nowrap"
+                              >
+                                Verify
+                              </button>
+                            </div>
+                          )}
+                        </div>
                       )}
 
                       <div className="p-3.5 rounded-xl bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800/60 text-left">
@@ -3435,6 +3978,188 @@ export const Auth: React.FC<Props> = ({ onLogin, logActivity, appSettings, onBac
                     </p>
                   </div>
 
+                  {/* Login Method Switcher: Password vs Email OTP */}
+                  <div className="grid grid-cols-2 gap-1.5 p-1 rounded-xl bg-slate-100 dark:bg-slate-950/80 border border-slate-200/80 dark:border-slate-800">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        triggerAuthHaptic('light');
+                        setLoginMode('PASSWORD');
+                        setError(null);
+                        setOtpSuccessNotice(null);
+                      }}
+                      className={`min-h-[38px] rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 transition cursor-pointer ${
+                        loginMode === 'PASSWORD'
+                          ? 'bg-white dark:bg-slate-800 text-slate-900 dark:text-white shadow-xs'
+                          : 'text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200'
+                      }`}
+                    >
+                      <Lock size={13} />
+                      <span>Password</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        triggerAuthHaptic('light');
+                        setLoginMode('EMAIL_OTP');
+                        setError(null);
+                      }}
+                      className={`min-h-[38px] rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 transition cursor-pointer ${
+                        loginMode === 'EMAIL_OTP'
+                          ? 'bg-white dark:bg-slate-800 text-slate-900 dark:text-white shadow-xs'
+                          : 'text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200'
+                      }`}
+                    >
+                      <Mail size={13} />
+                      <span>Email OTP</span>
+                    </button>
+                  </div>
+
+                  {loginMode === 'EMAIL_OTP' ? (
+                    <form onSubmit={handleVerifyLoginEmailOtp} className="w-full space-y-3.5">
+                      <div className="space-y-1.5">
+                        <label className="text-xs font-bold text-slate-700 dark:text-slate-300 block">
+                          Registered Email / Gmail Address
+                        </label>
+                        <div className="relative flex items-center">
+                          <Mail size={17} className="absolute left-3.5 text-slate-400 dark:text-slate-500" />
+                          <input
+                            type="email"
+                            required
+                            placeholder="student@gmail.com"
+                            value={otpEmail}
+                            onChange={(e) => {
+                              setOtpEmail(e.target.value);
+                              setError(null);
+                              if (otpChallengeToken) {
+                                setOtpChallengeToken(null);
+                                setOtpCode('');
+                                setOtpSuccessNotice(null);
+                              }
+                            }}
+                            autoCapitalize="none"
+                            className="w-full bg-slate-50/70 dark:bg-slate-950/60 border border-slate-200 dark:border-slate-800 focus:bg-white dark:focus:bg-slate-950 focus:border-slate-900 dark:focus:border-indigo-400 focus:ring-4 focus:ring-slate-900/10 dark:focus:ring-indigo-500/20 rounded-xl pl-10 pr-28 py-3 text-sm text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 font-medium outline-none transition-all duration-200"
+                          />
+                          <button
+                            type="button"
+                            disabled={otpSending || otpCooldownSec > 0 || !otpEmail.trim()}
+                            onClick={handleSendLoginEmailOtp}
+                            className="absolute right-1.5 px-3 min-h-[36px] rounded-lg bg-slate-950 hover:bg-slate-800 dark:bg-indigo-600 dark:hover:bg-indigo-500 disabled:opacity-50 text-white text-[11px] font-black transition cursor-pointer whitespace-nowrap"
+                          >
+                            {otpSending
+                              ? 'Sending...'
+                              : otpCooldownSec > 0
+                              ? `${otpCooldownSec}s`
+                              : otpChallengeToken
+                              ? 'Resend'
+                              : 'Send OTP'}
+                          </button>
+                        </div>
+                      </div>
+
+                      {otpSuccessNotice && (
+                        <div className="p-3 rounded-xl bg-emerald-50 dark:bg-emerald-950/50 border border-emerald-200 dark:border-emerald-800/70 text-xs font-semibold text-emerald-800 dark:text-emerald-200 flex items-start gap-2">
+                          <CheckCircle2 size={15} className="shrink-0 mt-0.5 text-emerald-600 dark:text-emerald-400" />
+                          <span>{otpSuccessNotice}</span>
+                        </div>
+                      )}
+
+                      {emailOtpConfigured === false && (
+                        <div className="p-3 rounded-xl bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800/70 text-[11.5px] font-medium text-amber-800 dark:text-amber-200">
+                          Server par Gmail SMTP env variables (`SMTP_USER`, `SMTP_PASS`) set karne ke baad OTP emails turant bheje ja sakenge.
+                        </div>
+                      )}
+
+                      {otpChallengeToken && (
+                        <div className="space-y-1.5 lm-enter">
+                          <label className="text-xs font-bold text-slate-700 dark:text-slate-300 flex items-center justify-between">
+                            <span>6-Digit Verification OTP</span>
+                            {otpMaskedEmail && (
+                              <span className="text-[11px] font-medium text-slate-500 dark:text-slate-400">
+                                Sent to {otpMaskedEmail}
+                              </span>
+                            )}
+                          </label>
+                          <div className="relative flex items-center">
+                            <ShieldCheck size={17} className="absolute left-3.5 text-emerald-600 dark:text-emerald-400" />
+                            <input
+                              type="text"
+                              inputMode="numeric"
+                              autoFocus
+                              required
+                              maxLength={6}
+                              placeholder="Enter 6-digit OTP"
+                              value={otpCode}
+                              onChange={(e) => {
+                                setOtpCode(e.target.value.replace(/\D/g, '').slice(0, 6));
+                                setError(null);
+                              }}
+                              className="w-full bg-slate-50/70 dark:bg-slate-950/60 border border-slate-200 dark:border-slate-800 focus:bg-white dark:focus:bg-slate-950 focus:border-emerald-600 dark:focus:border-emerald-400 rounded-xl pl-10 pr-3.5 py-3 text-base font-mono font-black tracking-[0.35em] text-slate-900 dark:text-white placeholder:tracking-normal placeholder:font-sans placeholder:text-sm placeholder-slate-400 outline-none transition"
+                            />
+                          </div>
+                        </div>
+                      )}
+
+                      <button
+                        type={otpChallengeToken ? 'submit' : 'button'}
+                        disabled={otpSending || otpVerifying}
+                        onClick={() => {
+                          if (!otpChallengeToken) {
+                            void handleSendLoginEmailOtp();
+                          }
+                        }}
+                        className="w-full min-h-[48px] py-3 rounded-xl text-sm font-black tracking-wider text-white bg-slate-950 hover:bg-slate-900 dark:bg-indigo-600 dark:hover:bg-indigo-500 shadow-md shadow-slate-900/10 dark:shadow-indigo-950/40 transition-all duration-200 flex items-center justify-center gap-2 uppercase cursor-pointer hover:-translate-y-0.5 active:scale-[0.98] whitespace-nowrap"
+                      >
+                        {(otpSending || otpVerifying) ? (
+                          <Loader2 size={16} className="animate-spin text-white" />
+                        ) : (
+                          <span>{otpChallengeToken ? 'VERIFY OTP & LOGIN' : 'SEND EMAIL OTP'}</span>
+                        )}
+                        <ArrowRight size={16} />
+                      </button>
+
+                      {/* ── UNIFIED QUICK LOGIN TRIGGER ── */}
+                      <div className="pt-1">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            triggerAuthHaptic('light');
+                            setError(null);
+                            setQuickModalError(null);
+                            setSavedPasskeys(listSavedPasskeyAccounts());
+                            if (passkeyCaps.supported) {
+                              setPasskeySyncing(true);
+                              syncPasskeysFromCloud(true)
+                                .then((list) => setSavedPasskeys(list))
+                                .catch(() => {})
+                                .finally(() => setPasskeySyncing(false));
+                            }
+                            setShowPasskeyDrawerInModal(false);
+                            setShowPasskeyEnrollForm(false);
+                            setShowQuickLoginModal(true);
+                          }}
+                          disabled={loading || otpSending || otpVerifying}
+                          className="w-full min-h-[48px] py-2.5 px-4 rounded-xl text-xs sm:text-sm font-bold text-slate-800 dark:text-slate-100 bg-slate-50 hover:bg-slate-100 dark:bg-slate-800/80 dark:hover:bg-slate-800 border border-slate-200/90 dark:border-slate-700/80 transition-all duration-200 flex items-center justify-between gap-3 cursor-pointer active:scale-[0.98]"
+                        >
+                          <div className="flex items-center gap-3 min-w-0">
+                            <div className="w-9 h-9 rounded-lg bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-700 flex items-center justify-center shrink-0">
+                              <Zap size={17} className="text-indigo-600 dark:text-indigo-400" />
+                            </div>
+                            <div className="text-left min-w-0">
+                              <span className="block text-sm font-extrabold text-slate-900 dark:text-white truncate">
+                                Quick Login
+                              </span>
+                              <span className="block text-[11px] font-medium text-slate-500 dark:text-slate-400 truncate">
+                                Face ID · Passkey · QR Code
+                                {savedPasskeys.length > 0 ? ` · ${savedPasskeys.length} saved` : ''}
+                              </span>
+                            </div>
+                          </div>
+                          <ArrowRight size={16} className="text-slate-400 dark:text-slate-500 shrink-0" />
+                        </button>
+                      </div>
+                    </form>
+                  ) : (
                   <form onSubmit={handleLoginSubmit} className="w-full space-y-3.5">
                     <div className="space-y-1.5 lm-enter-delay-1">
                       <label className="text-xs font-bold text-slate-700 dark:text-slate-300 block">
@@ -3504,6 +4229,8 @@ export const Auth: React.FC<Props> = ({ onLogin, logActivity, appSettings, onBac
                             setRecoveryNotice(null);
                             setRecoveryNewPassword('');
                             setRecoveryConfirmPassword('');
+                            setRecoveryOtpChallenge(null);
+                            setRecoveryOtpCode('');
                             setView('RECOVERY');
                             setError(null);
                           }}
@@ -3577,6 +4304,7 @@ export const Auth: React.FC<Props> = ({ onLogin, logActivity, appSettings, onBac
                       </button>
                     </div>
                   </form>
+                  )}
 
                   <div className="pt-1 text-center">
                     <p className="text-xs text-slate-500 dark:text-slate-400">
@@ -3638,8 +4366,15 @@ export const Auth: React.FC<Props> = ({ onLogin, logActivity, appSettings, onBac
                       </div>
                     </div>
 
-                    <div className="space-y-1">
-                      <label className="text-xs font-bold text-slate-700 dark:text-slate-300">Email Address (Optional)</label>
+                    <div className="space-y-1.5">
+                      <label className="text-xs font-bold text-slate-700 dark:text-slate-300 flex items-center justify-between">
+                        <span>Email Address (Optional)</span>
+                        {signupEmailVerified && signupVerifiedEmail === formData.email.trim().toLowerCase() && (
+                          <span className="inline-flex items-center gap-1 text-[11px] font-black text-emerald-600 dark:text-emerald-400">
+                            <CheckCircle2 size={12} /> Verified
+                          </span>
+                        )}
+                      </label>
                       <div className="relative flex items-center">
                         <Mail size={16} className="absolute left-3.5 text-slate-400 dark:text-slate-500" />
                         <input
@@ -3647,10 +4382,54 @@ export const Auth: React.FC<Props> = ({ onLogin, logActivity, appSettings, onBac
                           type="email"
                           placeholder="Email ID (e.g. name@gmail.com)"
                           value={formData.email}
-                          onChange={handleChange}
-                          className="w-full bg-slate-50/70 dark:bg-slate-950/60 border border-slate-200 dark:border-slate-800 focus:bg-white dark:focus:bg-slate-950 focus:border-slate-900 dark:focus:border-indigo-400 rounded-xl pl-10 pr-3.5 py-2.5 text-sm text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 font-medium outline-none transition"
+                          onChange={(e) => {
+                            handleChange(e);
+                            if (signupEmailVerified && e.target.value.trim().toLowerCase() !== signupVerifiedEmail) {
+                              setSignupEmailVerified(false);
+                              setSignupVerifiedEmail('');
+                            }
+                            if (signupOtpChallenge) {
+                              setSignupOtpChallenge(null);
+                              setSignupOtpCode('');
+                            }
+                          }}
+                          className={`w-full bg-slate-50/70 dark:bg-slate-950/60 border border-slate-200 dark:border-slate-800 focus:bg-white dark:focus:bg-slate-950 focus:border-slate-900 dark:focus:border-indigo-400 rounded-xl pl-10 ${emailOtpConfigured && isDeliverableEmail(formData.email) ? 'pr-24' : 'pr-3.5'} py-2.5 text-sm text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 font-medium outline-none transition`}
                         />
+                        {emailOtpConfigured && isDeliverableEmail(formData.email) && !(signupEmailVerified && signupVerifiedEmail === formData.email.trim().toLowerCase()) && (
+                          <button
+                            type="button"
+                            disabled={signupOtpBusy || otpCooldownSec > 0}
+                            onClick={handleSendSignupEmailOtp}
+                            className="absolute right-1.5 px-2.5 py-1.5 rounded-lg bg-slate-900 dark:bg-indigo-600 hover:bg-slate-800 disabled:opacity-50 text-white text-[11px] font-bold cursor-pointer whitespace-nowrap"
+                          >
+                            {signupOtpBusy ? '...' : otpCooldownSec > 0 ? `${otpCooldownSec}s` : 'Verify OTP'}
+                          </button>
+                        )}
                       </div>
+                      {signupOtpChallenge && (
+                        <div className="flex items-center gap-2 pt-1">
+                          <input
+                            type="text"
+                            inputMode="numeric"
+                            maxLength={6}
+                            placeholder="Enter 6-digit Email OTP"
+                            value={signupOtpCode}
+                            onChange={(e) => {
+                              setSignupOtpCode(e.target.value.replace(/\D/g, '').slice(0, 6));
+                              setError(null);
+                            }}
+                            className="flex-1 px-3 py-2 bg-slate-50 dark:bg-slate-950 border border-emerald-300 dark:border-emerald-800 rounded-xl text-xs sm:text-sm font-mono font-bold tracking-widest text-slate-900 dark:text-white outline-none"
+                          />
+                          <button
+                            type="button"
+                            disabled={signupOtpBusy || signupOtpCode.length !== 6}
+                            onClick={handleVerifySignupEmailOtp}
+                            className="px-3.5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-black disabled:opacity-50 cursor-pointer whitespace-nowrap"
+                          >
+                            Confirm
+                          </button>
+                        </div>
+                      )}
                     </div>
 
                     <div className="space-y-1">
@@ -4241,11 +5020,15 @@ export const Auth: React.FC<Props> = ({ onLogin, logActivity, appSettings, onBac
       )}
 
       {/* ── ON-DEVICE AI FACE ID LOGIN MODAL ── */}
-      <FaceLoginModal
-        isOpen={showFaceLoginModal}
-        onClose={() => setShowFaceLoginModal(false)}
-        onStudentMatched={handleFaceLoginSuccess}
-      />
+      {showFaceLoginModal && (
+        <Suspense fallback={null}>
+          <FaceLoginModal
+            isOpen={showFaceLoginModal}
+            onClose={() => setShowFaceLoginModal(false)}
+            onStudentMatched={handleFaceLoginSuccess}
+          />
+        </Suspense>
+      )}
     </div>
   );
 };

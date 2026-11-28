@@ -17,6 +17,9 @@ import {
   saveFaceDescriptor,
   extractNeuralDescriptor,
   enrollPersonFromImageFile,
+  loadFaceApiModels,
+  initArcFaceEngine,
+  isArcFaceReady,
   playAttendanceSuccessChime,
   FaceDescriptorRecord,
 } from "../../utils/faceRecognitionEngine";
@@ -109,6 +112,10 @@ export const StudentFaceIdModal: React.FC<Props> = ({
       setProcessing(false);
       setCountdown(null);
       startCamera();
+      void Promise.all([
+        loadFaceApiModels().catch(() => false),
+        isArcFaceReady() ? Promise.resolve(true) : initArcFaceEngine(true).catch(() => false),
+      ]);
     } else {
       stopCamera();
     }
@@ -141,6 +148,7 @@ export const StudentFaceIdModal: React.FC<Props> = ({
         height: canvas.height * 0.72,
       };
 
+      await initArcFaceEngine(!isArcFaceReady()).catch(() => false);
       const neural = await extractNeuralDescriptor(canvas);
       const has512 = Boolean(neural?.arcfaceDescriptor && neural.arcfaceDescriptor.length === 512);
 
@@ -177,8 +185,13 @@ export const StudentFaceIdModal: React.FC<Props> = ({
       // 1. Save strict 512-D ArcFace descriptor
       await saveFaceDescriptor(record);
 
-      // 2. Update Student photo & timestamp in school database
-      await updateStudentPhoto(targetSchoolId, stId, photoDataUrl);
+      // 2. Update Student photo & timestamp in school database (bounded timeout so slow network never hangs button)
+      try {
+        await Promise.race([
+          updateStudentPhoto(targetSchoolId, stId, photoDataUrl),
+          new Promise((resolve) => setTimeout(resolve, 4500)),
+        ]);
+      } catch {}
 
       // 3. Save local timestamp for 30-day enforcement
       try {
@@ -245,7 +258,12 @@ export const StudentFaceIdModal: React.FC<Props> = ({
         return;
       }
 
-      await updateStudentPhoto(targetSchoolId, stId, result.photoDataUrl);
+      try {
+        await Promise.race([
+          updateStudentPhoto(targetSchoolId, stId, result.photoDataUrl),
+          new Promise((resolve) => setTimeout(resolve, 4500)),
+        ]);
+      } catch {}
       const nowIso = new Date().toISOString();
       try {
         localStorage.setItem(`nst_face_last_update_${stId}`, nowIso);

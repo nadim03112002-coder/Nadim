@@ -1,5 +1,5 @@
 // @ts-nocheck
-import React, { useState, useEffect, useLayoutEffect, useRef, useMemo } from "react";
+import React, { Suspense, useState, useEffect, useLayoutEffect, useRef, useMemo } from "react";
 import { toast } from "sonner";
 import { setErrorLoggerModule, setErrorLoggerContext } from "../../utils/errorLogger";
 import {
@@ -29,11 +29,13 @@ import {
   formatReferralDurationLabel,
   normalizePersonName
 } from "../../utils/schoolReferralSiblingEngine";
-import { AttendanceManager } from "./AttendanceManager";
-import { MarksManager } from "./MarksManager";
-import { SmartClass } from "./SmartClass";
-import { ContentManager } from "./ContentManager";
-import { SchoolCommunityFeed } from "./SchoolCommunityFeed";
+import { lazyWithRetry, LazyPanelBoundary, scheduleIdlePreload } from "../../utils/lazyWithRetry";
+import { COMMON_BOOK_PRESETS } from "../../constants/bookPresets";
+const AttendanceManager = lazyWithRetry(() => import("./AttendanceManager").then(m => ({ default: m.AttendanceManager })), "Attendance Manager");
+const MarksManager = lazyWithRetry(() => import("./MarksManager").then(m => ({ default: m.MarksManager })), "Marks Manager");
+const SmartClass = lazyWithRetry(() => import("./SmartClass").then(m => ({ default: m.SmartClass })), "Smart Class");
+const ContentManager = lazyWithRetry(() => import("./ContentManager").then(m => ({ default: m.ContentManager })), "Content Manager");
+const SchoolCommunityFeed = lazyWithRetry(() => import("./SchoolCommunityFeed").then(m => ({ default: m.SchoolCommunityFeed })), "Community Feed");
 import {
   BookOpen, Users, ClipboardList, LayoutDashboard,
   ChevronRight, ChevronLeft, Edit3, FileText, HelpCircle, Play,
@@ -47,8 +49,7 @@ import {
   Camera, Lock, ShieldCheck, PenTool, Radio, EyeOff,
   MoreVertical, Globe, Info
 } from "lucide-react";
-import { TimetableManager } from "./TimetableManager";
-import { lazyWithRetry, LazyPanelBoundary, scheduleIdlePreload } from "../../utils/lazyWithRetry";
+const TimetableManager = lazyWithRetry(() => import("./TimetableManager").then(m => ({ default: m.TimetableManager })), "Timetable Manager");
 const loadClassroomVideoArchive = () => import("./ClassroomVideoArchive").then(m => ({ default: m.ClassroomVideoArchive }));
 const loadNstaMessengerSuite = () => import("./NstaMessengerSuite").then(m => ({ default: m.NstaMessengerSuite }));
 const loadOnlineAdmissionManager = () => import("./OnlineAdmissionManager").then(m => ({ default: m.OnlineAdmissionManager }));
@@ -57,17 +58,17 @@ const loadUniversalFaceIdStudioModal = () => import("./UniversalFaceIdStudioModa
 const loadQuestionPaperBuilder = () => import("./QuestionPaperBuilder").then(m => ({ default: m.QuestionPaperBuilder }));
 
 const ClassroomVideoArchive = lazyWithRetry(loadClassroomVideoArchive, "Classroom Video Archive");
-import { HomeworkManager } from "./HomeworkManager";
-import { LibraryManager } from "./LibraryManager";
-import { ParentTeacherQueryManager } from "./ParentTeacherQueryManager";
+const HomeworkManager = lazyWithRetry(() => import("./HomeworkManager").then(m => ({ default: m.HomeworkManager })), "Homework Manager");
+const LibraryManager = lazyWithRetry(() => import("./LibraryManager").then(m => ({ default: m.LibraryManager })), "Library Manager");
+const ParentTeacherQueryManager = lazyWithRetry(() => import("./ParentTeacherQueryManager").then(m => ({ default: m.ParentTeacherQueryManager })), "Parent Queries");
 const NstaMessengerSuite = lazyWithRetry(loadNstaMessengerSuite, "NSTA Messenger");
-import { AbsenteeActionPage } from "./AbsenteeActionPage";
+const AbsenteeActionPage = lazyWithRetry(() => import("./AbsenteeActionPage").then(m => ({ default: m.AbsenteeActionPage })), "Absentee Desk");
 const OnlineAdmissionManager = lazyWithRetry(loadOnlineAdmissionManager, "Online Admission Manager");
-import { DirectAdmissionModal } from "./DirectAdmissionModal";
-import { AdmissionFormPrintModal } from "./AdmissionFormPrintModal";
-import { StudentIdCardModal } from "./StudentIdCardModal";
+const DirectAdmissionModal = lazyWithRetry(() => import("./DirectAdmissionModal").then(m => ({ default: m.DirectAdmissionModal })), "Direct Admission");
+const AdmissionFormPrintModal = lazyWithRetry(() => import("./AdmissionFormPrintModal").then(m => ({ default: m.AdmissionFormPrintModal })), "Admission Form Print");
+const StudentIdCardModal = lazyWithRetry(() => import("./StudentIdCardModal").then(m => ({ default: m.StudentIdCardModal })), "Student ID Card");
 import { getSavedSchoolLogo } from "./feeReceiptUtils";
-import { ClassCurriculumNotesManager } from "./ClassCurriculumNotesManager";
+const ClassCurriculumNotesManager = lazyWithRetry(() => import("./ClassCurriculumNotesManager").then(m => ({ default: m.ClassCurriculumNotesManager })), "Curriculum Notes");
 import {
   isSchoolEliteCurriculum,
   hasFaceAttendanceAccess,
@@ -76,15 +77,15 @@ import {
   hasEliteFeeTagadaAccess,
 } from "../../school-types";
 const GroupStudyModal = lazyWithRetry(loadGroupStudyModal, "Study Room");
-import { ParentLeaveManager } from "./ParentLeaveManager";
-import { PtmSchedulerModal } from "./PtmSchedulerModal";
+const ParentLeaveManager = lazyWithRetry(() => import("./ParentLeaveManager").then(m => ({ default: m.ParentLeaveManager })), "Parent Leaves");
+const PtmSchedulerModal = lazyWithRetry(() => import("./PtmSchedulerModal").then(m => ({ default: m.PtmSchedulerModal })), "PTM Scheduler");
 const UniversalFaceIdStudioModal = lazyWithRetry(loadUniversalFaceIdStudioModal, "Face ID Studio");
 const QuestionPaperBuilder = lazyWithRetry(loadQuestionPaperBuilder, "Question Paper Builder");
-import { TeacherAdminGrowthHub } from "./TeacherAdminGrowthHub";
-import { TeacherRulesRegulationsView } from "./TeacherRulesRegulationsView";
-import { TeacherSignatureModal } from "./TeacherSignatureModal";
-import { AppointmentLetterModal } from "./AppointmentLetterModal";
-import { HomeDailyRoutineWidget } from "./HomeDailyRoutineWidget";
+const TeacherAdminGrowthHub = lazyWithRetry(() => import("./TeacherAdminGrowthHub").then(m => ({ default: m.TeacherAdminGrowthHub })), "Growth Hub");
+const TeacherRulesRegulationsView = lazyWithRetry(() => import("./TeacherRulesRegulationsView").then(m => ({ default: m.TeacherRulesRegulationsView })), "Staff Rules");
+const TeacherSignatureModal = lazyWithRetry(() => import("./TeacherSignatureModal").then(m => ({ default: m.TeacherSignatureModal })), "Teacher Signature");
+const AppointmentLetterModal = lazyWithRetry(() => import("./AppointmentLetterModal").then(m => ({ default: m.AppointmentLetterModal })), "Appointment Letter");
+const HomeDailyRoutineWidget = lazyWithRetry(() => import("./HomeDailyRoutineWidget").then(m => ({ default: m.HomeDailyRoutineWidget })), "Daily Routine");
 import { AccountRecoveryCard } from "./AccountRecoveryCard";
 import { rotateToLandscape, rotateToPortrait, setDesktopMode, useDeviceOrientation } from "../../utils/displayPrefs";
 import { autoSyncSchoolPushIfPermitted } from "../../utils/schoolPushClient";
@@ -100,10 +101,10 @@ import { ScreenInfoGuideButton } from "./ScreenInfoGuideButton";
 import { useAppLang } from "../../utils/appLang";
 import { syncSchoolDirectoryToAndroid, extractTodayAbsentStudentIds } from "../../utils/schoolCallerId";
 import { useSchoolWalkieChannel } from "../../utils/schoolWalkieService";
-import { WalkieTalkieModal } from "./WalkieTalkieModal";
-import { PendingUpiApprovalsPanel } from "./PendingUpiApprovalsPanel";
-import { UpiProofVerificationPopup } from "./UpiProofVerificationPopup";
-import { OfficialFeeReceiptModal } from "./OfficialFeeReceiptModal";
+const WalkieTalkieModal = lazyWithRetry(() => import("./WalkieTalkieModal").then(m => ({ default: m.WalkieTalkieModal })), "Walkie Talkie");
+const PendingUpiApprovalsPanel = lazyWithRetry(() => import("./PendingUpiApprovalsPanel").then(m => ({ default: m.PendingUpiApprovalsPanel })), "UPI Approvals");
+const UpiProofVerificationPopup = lazyWithRetry(() => import("./UpiProofVerificationPopup").then(m => ({ default: m.UpiProofVerificationPopup })), "UPI Popup");
+const OfficialFeeReceiptModal = lazyWithRetry(() => import("./OfficialFeeReceiptModal").then(m => ({ default: m.OfficialFeeReceiptModal })), "Fee Receipt");
 
 interface Props {
   schoolId: string;
@@ -157,7 +158,7 @@ export const TeacherPanel: React.FC<Props> = ({
   onOpenPlatformContent
 }) => {
   useEffect(() => {
-    return scheduleIdlePreload([loadNstaMessengerSuite, loadQuestionPaperBuilder], 1800);
+    return scheduleIdlePreload([loadNstaMessengerSuite], 4500);
   }, []);
 
   const handleExploreFullApp = () => {
@@ -610,19 +611,22 @@ export const TeacherPanel: React.FC<Props> = ({
     if (!schoolId || (!school && allStudents.length === 0 && latestTeachersRef.current.length === 0)) {
       return;
     }
-    const targetSchool = school || latestSchoolRef.current;
-    const allowParentCaller = hasEliteFeeTagadaAccess(targetSchool);
-    syncSchoolDirectoryToAndroid({
-      school: targetSchool,
-      schoolName: targetSchool?.name,
-      teachers: teachersList.length > 0 ? teachersList : latestTeachersRef.current,
-      students: allowParentCaller ? allStudents : [],
-      classes: allowParentCaller ? classes : [],
-      fees: allowParentCaller ? schoolFees : [],
-      feeCallFollowUps: allowParentCaller ? feeCallFollowUps : [],
-      absentStudentIds: allowParentCaller ? todayAbsentStudentIds : [],
-      inquiries: allowParentCaller ? inquiries : [],
-    });
+    const timer = window.setTimeout(() => {
+      const targetSchool = school || latestSchoolRef.current;
+      const allowParentCaller = hasEliteFeeTagadaAccess(targetSchool);
+      syncSchoolDirectoryToAndroid({
+        school: targetSchool,
+        schoolName: targetSchool?.name,
+        teachers: teachersList.length > 0 ? teachersList : latestTeachersRef.current,
+        students: allowParentCaller ? allStudents : [],
+        classes: allowParentCaller ? classes : [],
+        fees: allowParentCaller ? schoolFees : [],
+        feeCallFollowUps: allowParentCaller ? feeCallFollowUps : [],
+        absentStudentIds: allowParentCaller ? todayAbsentStudentIds : [],
+        inquiries: allowParentCaller ? inquiries : [],
+      });
+    }, 850);
+    return () => window.clearTimeout(timer);
   }, [
     schoolId,
     school,
@@ -1102,13 +1106,15 @@ export const TeacherPanel: React.FC<Props> = ({
   // Full-screen smart class mode
   if (view === "smart_class" && selectedLesson) {
     return (
-      <SmartClass
-        lesson={selectedLesson}
-        initialMode={smartMode}
-        schoolId={schoolId}
-        teacherId={teacherId}
-        onBack={() => setView("lessons")}
-      />
+      <Suspense fallback={null}>
+        <SmartClass
+          lesson={selectedLesson}
+          initialMode={smartMode}
+          schoolId={schoolId}
+          teacherId={teacherId}
+          onBack={() => setView("lessons")}
+        />
+      </Suspense>
     );
   }
 
@@ -4180,7 +4186,7 @@ export const TeacherPanel: React.FC<Props> = ({
   }
 
   return (
-    <>
+    <Suspense fallback={null}>
       {renderTeacherShell(renderViewContent())}
       {school?.id && hasEliteCallAccess(school) && (
         <NstaCallPortalHost
@@ -4392,7 +4398,7 @@ export const TeacherPanel: React.FC<Props> = ({
           initialFormat="pos"
         />
       )}
-    </>
+    </Suspense>
   );
 };
 

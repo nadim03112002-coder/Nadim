@@ -581,6 +581,7 @@ export interface School {
   feeDiscountSlabs?: FeeDiscountSlab[];
   feeTermCampaigns?: FeeTermCampaign[];
   feeTypeSchedulePlans?: Record<string, FeeTypeSchedulePlan>;
+  admissionKitRates?: Record<string, Record<string, number>>;
   isDefaultPublicWebsite?: boolean;
   websiteConfig?: SchoolWebsiteConfig;
   adminProfiles?: SchoolAdminProfile[];
@@ -595,6 +596,13 @@ export interface SettledFeeHeadRecord {
   targetCap?: number;
   source?: string;
   updatedAt?: string;
+}
+
+export interface KitDeliveryStatusRecord {
+  delivered: boolean;
+  deliveredDate?: string;
+  deliveredBy?: string;
+  note?: string;
 }
 
 export interface WaivedFeeHeadRecord {
@@ -1181,6 +1189,7 @@ export interface SchoolStudent {
   tcDate?: string;
   admissionPaymentPlan?: 'registration_only' | 'half_payment' | 'full_payment';
   settledFeeHeads?: Record<string, SettledFeeHeadRecord>;
+  kitDeliveryStatus?: Record<string, KitDeliveryStatusRecord>;
   deferredScheduledHeads?: DeferredScheduledFeeHead[];
   waivedFeeHeads?: Record<string, WaivedFeeHeadRecord>;
   paidCampaignIds?: string[];
@@ -1482,8 +1491,8 @@ export interface MonthlyFee {
   concession?: number;
   earlyDiscount?: number;
   isEarlyBirdEligible?: boolean;
-  feeType?: 'monthly' | 'admission';
-  receiptCategory?: 'monthly' | 'admission';
+  feeType?: 'monthly' | 'admission' | 'store_fee_sync';
+  receiptCategory?: 'monthly' | 'admission' | 'store_fee_sync';
   includeAdmissionFee?: boolean;
   includeCautionMoney?: boolean;
   includeAnnualCharges?: boolean;

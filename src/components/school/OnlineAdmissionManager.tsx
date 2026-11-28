@@ -103,7 +103,8 @@ import {
   buildSettledHeadsFromAdmission,
   canonicalizeFeeHeadKey,
 } from "../../utils/feeTermScheduler";
-import { enrollStudentFromPhotoUrl } from "../../utils/faceRecognitionEngine";
+const enrollStudentFromPhotoUrl = (params: any) =>
+  import("../../utils/faceRecognitionEngine").then((m) => m.enrollStudentFromPhotoUrl(params));
 import {
   getAdmissionApplications,
   subscribeAdmissionApplications,

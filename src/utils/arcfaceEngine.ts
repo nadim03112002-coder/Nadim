@@ -16,22 +16,51 @@
 
 import * as ort from "onnxruntime-web/wasm";
 
-function getLocalOnnxWasmBase(): string {
+function getLocalOriginPrefix(): string {
   if (typeof window !== "undefined" && window.location?.origin) {
-    return `${window.location.origin}/onnx-wasm/`;
+    return window.location.origin;
   }
-  return "/onnx-wasm/";
+  return "";
 }
 
-const CDN_ONNX_WASM_BASES = [
-  "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.31.1/dist/",
-  "https://unpkg.com/onnxruntime-web@1.31.1/dist/",
-];
+const ARCFACE_CACHE_NAME = "nsta-arcface-assets-v2";
+const ARCFACE_MODEL_PATH = "/models/arcface/w600k_mbf.onnx";
+const LOCAL_WASM_PATH = "/onnx-wasm/ort-wasm-simd-threaded.wasm";
+
+const WASM_BINARY_CANDIDATES = (): string[] => {
+  const origin = getLocalOriginPrefix();
+  const localUrl = origin ? `${origin}${LOCAL_WASM_PATH}` : LOCAL_WASM_PATH;
+  return [
+    `${localUrl}?v=2`,
+    localUrl,
+    "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.31.1/dist/ort-wasm-simd-threaded.wasm",
+    "https://unpkg.com/onnxruntime-web@1.31.1/dist/ort-wasm-simd-threaded.wasm",
+  ];
+};
+
+const MODEL_BINARY_CANDIDATES = (): string[] => {
+  const origin = getLocalOriginPrefix();
+  const localUrl = origin ? `${origin}${ARCFACE_MODEL_PATH}` : ARCFACE_MODEL_PATH;
+  return [`${localUrl}?v=2`, localUrl];
+};
+
+function isWasmSimdSupported(): boolean {
+  try {
+    if (typeof WebAssembly === "undefined" || typeof WebAssembly.validate !== "function") {
+      return false;
+    }
+    return WebAssembly.validate(
+      new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0, 1, 5, 1, 96, 0, 1, 123, 3, 2, 1, 0, 10, 10, 1, 8, 0, 65, 0, 253, 15, 253, 98, 11])
+    );
+  } catch {
+    return false;
+  }
+}
 
 async function fetchWithTimeout(
   url: string,
   options: RequestInit = {},
-  timeoutMs = 3000
+  timeoutMs = 15000
 ): Promise<Response> {
   const controller = typeof AbortController !== "undefined" ? new AbortController() : null;
   const timer = controller ? setTimeout(() => controller.abort(), timeoutMs) : null;
@@ -63,54 +92,121 @@ async function withPromiseTimeout<T>(
   }
 }
 
-async function isWasmAssetBaseReachable(base: string): Promise<boolean> {
-  try {
-    const [mjsRes, wasmRes] = await Promise.all([
-      fetchWithTimeout(`${base}ort-wasm-simd-threaded.mjs`, { method: "HEAD" }, 3500).catch(() =>
-        fetchWithTimeout(`${base}ort-wasm-simd-threaded.mjs`, { method: "GET" }, 4000)
-      ),
-      fetchWithTimeout(`${base}ort-wasm-simd-threaded.wasm`, { method: "HEAD" }, 3500).catch(() => null),
-    ]);
-    const mjsCt = (mjsRes.headers.get("content-type") || "").toLowerCase();
-    if (!mjsRes.ok || mjsCt.includes("text/html")) {
-      return false;
+function isLikelyHtmlPayload(bytes: Uint8Array): boolean {
+  if (bytes.byteLength === 0) return true;
+  // Skip UTF-8 BOM or leading ASCII whitespace
+  let i = 0;
+  if (bytes.byteLength >= 3 && bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf) {
+    i = 3;
+  }
+  while (i < bytes.byteLength && i < 64 && (bytes[i] === 32 || bytes[i] === 9 || bytes[i] === 10 || bytes[i] === 13)) {
+    i++;
+  }
+  if (i >= bytes.byteLength) return true;
+  // HTML/XML starts with '<' (0x3c); ONNX protobuf & WASM binaries never start with whitespace + '<'
+  if (bytes[i] === 0x3c) {
+    const head = String.fromCharCode(...bytes.slice(i, Math.min(bytes.byteLength, i + 32))).toLowerCase();
+    if (head.startsWith("<!doctype") || head.startsWith("<html") || head.startsWith("<head") || head.startsWith("<script")) {
+      return true;
     }
-    if (wasmRes) {
-      const wasmCt = (wasmRes.headers.get("content-type") || "").toLowerCase();
-      if (!wasmRes.ok || wasmCt.includes("text/html")) {
-        return false;
+  }
+  return false;
+}
+
+function isValidBinaryPayload(bytes: Uint8Array, minBytes: number, expectedKind: "onnx" | "wasm"): boolean {
+  if (bytes.byteLength < minBytes) return false;
+  if (isLikelyHtmlPayload(bytes)) return false;
+  if (expectedKind === "wasm") {
+    return bytes[0] === 0x00 && bytes[1] === 0x61 && bytes[2] === 0x73 && bytes[3] === 0x6d;
+  }
+  return true;
+}
+
+async function loadBinaryWithCache(
+  urls: string[],
+  cacheKey: string,
+  minBytes: number,
+  label: string,
+  timeoutMs = 45000,
+  expectedKind: "onnx" | "wasm" = "onnx"
+): Promise<Uint8Array> {
+  // 1. Check persistent Cache API first (and purge if somehow corrupted)
+  if (typeof caches !== "undefined") {
+    try {
+      const cache = await caches.open(ARCFACE_CACHE_NAME);
+      const cached = await cache.match(cacheKey);
+      if (cached && cached.ok) {
+        const buf = await cached.arrayBuffer();
+        const bytes = new Uint8Array(buf);
+        if (isValidBinaryPayload(bytes, minBytes, expectedKind)) {
+          return bytes;
+        }
+        await cache.delete(cacheKey).catch(() => {});
+      }
+    } catch {}
+  }
+
+  let lastErr = `${label} download failed`;
+  for (const rawUrl of urls) {
+    // Try normal cache first, then bypass poisoned browser HTTP cache with no-store + timestamp cache-buster
+    const attempts: Array<{ url: string; cacheMode: RequestCache }> = [
+      { url: rawUrl, cacheMode: "default" },
+      {
+        url: `${rawUrl}${rawUrl.includes("?") ? "&" : "?"}_cb=${Date.now()}`,
+        cacheMode: "no-store",
+      },
+    ];
+
+    for (const attempt of attempts) {
+      try {
+        const res = await fetchWithTimeout(attempt.url, { cache: attempt.cacheMode }, timeoutMs);
+        const ct = (res.headers.get("content-type") || "").toLowerCase();
+        if (!res.ok || ct.includes("text/html")) {
+          lastErr = `${label} invalid response (${res.status})`;
+          continue;
+        }
+        const buf = await withPromiseTimeout(res.arrayBuffer(), timeoutMs, label);
+        const bytes = new Uint8Array(buf);
+        if (!isValidBinaryPayload(bytes, minBytes, expectedKind)) {
+          lastErr = isLikelyHtmlPayload(bytes)
+            ? `${label} invalid HTML response (${res.status})`
+            : `${label} truncated (${buf.byteLength} bytes)`;
+          continue;
+        }
+        // Save asynchronously in Cache API without blocking session startup
+        if (typeof caches !== "undefined") {
+          caches
+            .open(ARCFACE_CACHE_NAME)
+            .then((cache) =>
+              cache.put(
+                cacheKey,
+                new Response(buf.slice(0), {
+                  headers: { "Content-Type": expectedKind === "wasm" ? "application/wasm" : "application/octet-stream" },
+                })
+              )
+            )
+            .catch(() => {});
+        }
+        return bytes;
+      } catch (e: any) {
+        lastErr = e?.message || String(e) || lastErr;
       }
     }
-    return true;
-  } catch {
-    return false;
   }
+  throw new Error(lastErr);
 }
 
-async function resolveWorkingWasmBase(): Promise<string> {
-  const localBase = getLocalOnnxWasmBase();
-  const candidates = [localBase, ...CDN_ONNX_WASM_BASES];
-  for (const base of candidates) {
-    if (await isWasmAssetBaseReachable(base)) {
-      return base;
-    }
-  }
-  return localBase;
-}
-
-// Ensure single-thread wasm execution to avoid COOP/COEP SharedArrayBuffer restrictions in iframe/browser
+// Configure single-thread wasm execution; keep wasmPaths undefined so onnxruntime-web/wasm uses its bundled io JS glue cleanly
 try {
   if (typeof window !== "undefined") {
     ort.env.wasm.numThreads = 1;
-    ort.env.wasm.wasmPaths = getLocalOnnxWasmBase();
-    ort.env.wasm.simd = true;
+    (ort.env.wasm as any).wasmPaths = undefined;
+    ort.env.wasm.simd = isWasmSimdSupported();
     (ort.env.wasm as any).proxy = false;
   }
 } catch (e) {
   console.warn("[ArcFace] Error configuring ort wasm environment:", e);
 }
-
-const ARCFACE_MODEL_PATH = "/models/arcface/w600k_mbf.onnx";
 
 let arcfaceSession: ort.InferenceSession | null = null;
 let isInitializing = false;
@@ -119,6 +215,8 @@ let inferenceMutex: Promise<any> = Promise.resolve();
 let lastArcFaceError: string | null = null;
 let consecutiveInferenceErrors = 0;
 let shared112Canvas: HTMLCanvasElement | null = null;
+let cachedModelBytes: Uint8Array | null = null;
+let cachedWasmBytes: Uint8Array | null = null;
 
 function getShared112Canvas(): HTMLCanvasElement {
   if (!shared112Canvas && typeof document !== "undefined") {
@@ -131,6 +229,10 @@ function getShared112Canvas(): HTMLCanvasElement {
 
 export function getArcFaceError(): string | null {
   return lastArcFaceError;
+}
+
+export function isArcFaceInitializing(): boolean {
+  return isInitializing;
 }
 
 /**
@@ -153,77 +255,89 @@ export function isArcFaceReady(): boolean {
 /**
  * Pre-warms and loads the 512-D ArcFace MobileFaceNet ONNX model into memory.
  */
-export async function initArcFaceEngine(): Promise<boolean> {
+export async function initArcFaceEngine(forceRetry = false): Promise<boolean> {
   if (arcfaceSession) return true;
-  if (initPromise) return initPromise;
+  if (initPromise) {
+    if (!forceRetry) return initPromise;
+    await initPromise.catch(() => false);
+    if (arcfaceSession) return true;
+  }
 
   initPromise = (async () => {
     isInitializing = true;
+    lastArcFaceError = null;
     try {
-      const modelUrl =
-        typeof window !== "undefined" && window.location?.origin
-          ? `${window.location.origin}${ARCFACE_MODEL_PATH}`
-          : ARCFACE_MODEL_PATH;
+      // Download/load from Cache API in parallel so first cold load takes minimal time
+      const [modelBytes, wasmBytes] = await Promise.all([
+        cachedModelBytes
+          ? Promise.resolve(cachedModelBytes)
+          : loadBinaryWithCache(
+              MODEL_BINARY_CANDIDATES(),
+              "/__arcface_cache/w600k_mbf_v2.onnx",
+              100_000,
+              "ArcFace model download",
+              45000,
+              "onnx"
+            ),
+        cachedWasmBytes
+          ? Promise.resolve(cachedWasmBytes)
+          : loadBinaryWithCache(
+              WASM_BINARY_CANDIDATES(),
+              "/__arcface_cache/ort-wasm-simd-threaded-1.31.1-v2.wasm",
+              500_000,
+              "ArcFace WASM download",
+              45000,
+              "wasm"
+            ),
+      ]);
 
-      console.log("[ArcFace 512D] Loading MobileFaceNet ONNX model from:", modelUrl);
+      cachedModelBytes = modelBytes;
+      cachedWasmBytes = wasmBytes;
 
-      lastArcFaceError = null;
-      // Fetch ONNX model bytes directly once with generous timeout for reliable loading across mobile/WebView
-      let modelSource: string | Uint8Array = modelUrl;
+      const simdSupported = isWasmSimdSupported();
+      ort.env.wasm.numThreads = 1;
+      (ort.env.wasm as any).proxy = false;
+      (ort.env.wasm as any).wasmPaths = undefined;
+      ort.env.wasm.simd = simdSupported;
+      (ort.env.wasm as any).wasmBinary = wasmBytes;
+
       try {
-        const res = await fetchWithTimeout(modelUrl, {}, 30000);
-        const ct = (res.headers.get("content-type") || "").toLowerCase();
-        if (res.ok && !ct.includes("text/html")) {
-          const buf = await withPromiseTimeout(res.arrayBuffer(), 30000, "ArcFace model download");
-          if (buf.byteLength > 100000) {
-            modelSource = new Uint8Array(buf);
-          }
-        }
-      } catch {}
-
-      // Pre-flight probe local /onnx-wasm/ vs CDN BEFORE invoking ort.InferenceSession.create
-      const workingWasmBase = await resolveWorkingWasmBase();
-
-      try {
-        ort.env.wasm.numThreads = 1;
-        ort.env.wasm.simd = true;
-        (ort.env.wasm as any).proxy = false;
-        ort.env.wasm.wasmPaths = workingWasmBase;
         arcfaceSession = await withPromiseTimeout(
-          ort.InferenceSession.create(modelSource as any, {
+          ort.InferenceSession.create(modelBytes, {
             executionProviders: ["wasm"],
             graphOptimizationLevel: "all",
           }),
-          30000,
-          "ArcFace SIMD WASM init"
+          25000,
+          "ArcFace WASM init"
         );
       } catch (wasmErr: any) {
         const errMsg = String(wasmErr?.message || wasmErr || "");
-        const isTimedOutOrBusy =
-          errMsg.includes("timed out") ||
-          errMsg.includes("multiple calls to 'initWasm()'");
-        if (isTimedOutOrBusy) {
-          lastArcFaceError = errMsg || "ONNX WASM init timed out";
-          console.warn("[ArcFace 512D] ONNX WASM init deferred (using Face-API neural fallback):", lastArcFaceError);
+        const isWasmLocked =
+          errMsg.includes("multiple calls to 'initWasm()'") ||
+          errMsg.includes("multiple calls to 'initializeWebAssembly()'") ||
+          errMsg.includes("previous call to 'initializeWebAssembly()' failed");
+
+        if (isWasmLocked) {
+          lastArcFaceError = errMsg || "ONNX WASM runtime locked";
           arcfaceSession = null;
         } else {
-          console.warn("[ArcFace 512D] Primary WASM session init failed, retrying safe non-SIMD basic mode:", wasmErr);
+          console.warn("[ArcFace 512D] Primary session init failed, retrying basic graph optimization:", wasmErr);
           try {
             ort.env.wasm.numThreads = 1;
-            ort.env.wasm.simd = false;
             (ort.env.wasm as any).proxy = false;
-            ort.env.wasm.wasmPaths = workingWasmBase;
+            (ort.env.wasm as any).wasmPaths = undefined;
+            (ort.env.wasm as any).wasmBinary = wasmBytes;
             arcfaceSession = await withPromiseTimeout(
-              ort.InferenceSession.create(modelSource as any, {
+              ort.InferenceSession.create(modelBytes, {
                 executionProviders: ["wasm"],
                 graphOptimizationLevel: "basic",
               }),
-              25000,
+              20000,
               "ArcFace fallback WASM init"
             );
           } catch (fallbackErr: any) {
             lastArcFaceError = fallbackErr?.message || wasmErr?.message || "ONNX WASM failed to initialize";
-            console.warn("[ArcFace 512D] ONNX WASM unavailable (using Face-API neural fallback):", lastArcFaceError);
+            console.warn("[ArcFace 512D] ONNX WASM unavailable:", lastArcFaceError);
             arcfaceSession = null;
           }
         }
@@ -251,14 +365,14 @@ export async function initArcFaceEngine(): Promise<boolean> {
             await arcfaceSession.run({ [arcfaceSession.inputNames[0]]: dummyTensor });
           }
         }, 8000);
-        console.log("[ArcFace 512D] Pre-warm inference complete!");
       } catch (warmErr) {
         console.warn("[ArcFace 512D] Pre-warm note:", warmErr);
       }
 
       isInitializing = false;
       return true;
-    } catch (err) {
+    } catch (err: any) {
+      lastArcFaceError = err?.message || String(err) || "ArcFace ONNX download/init failed";
       console.warn("[ArcFace 512D] Failed to load ONNX model:", err);
       arcfaceSession = null;
       isInitializing = false;
@@ -279,9 +393,9 @@ if (typeof window !== "undefined") {
       initArcFaceEngine().catch(() => {});
     };
     if (typeof (window as any).requestIdleCallback === "function") {
-      (window as any).requestIdleCallback(() => setTimeout(run, 2500), { timeout: 6000 });
+      (window as any).requestIdleCallback(() => setTimeout(run, 1500), { timeout: 4000 });
     } else {
-      setTimeout(run, 4000);
+      setTimeout(run, 2500);
     }
   };
   if (document.readyState === "complete") {

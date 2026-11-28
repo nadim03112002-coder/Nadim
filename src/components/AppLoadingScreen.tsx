@@ -35,8 +35,8 @@ interface AppLoadingScreenProps {
 const CREDIT_PREFIX = 'DEVELOPED BY'.split('');
 const CREDIT_AUTHOR = 'NADIM ANWAR'.split('');
 
-const BOOT_TOTAL_MS = 1900;
-const SWITCH_TOTAL_MS = 1200;
+const BOOT_TOTAL_MS = 260;
+const SWITCH_TOTAL_MS = 0;
 
 export const AppLoadingScreen: React.FC<AppLoadingScreenProps> = ({
   onComplete,
@@ -59,9 +59,9 @@ export const AppLoadingScreen: React.FC<AppLoadingScreenProps> = ({
   const [isUnmounted, setIsUnmounted] = useState(false);
   const [useOledBlack, setUseOledBlack] = useState<boolean>(() => {
     try {
-      return localStorage.getItem('nst_splash_oled_black') !== 'false';
+      return localStorage.getItem('nst_splash_oled_black') === 'true';
     } catch {
-      return true;
+      return false;
     }
   });
 
@@ -164,13 +164,19 @@ export const AppLoadingScreen: React.FC<AppLoadingScreenProps> = ({
     setIsExiting(false);
     setIsUnmounted(false);
 
-    const fadeDurationMs = 280;
-    const minHoldAfterTypeMs = 380;
-    const hardMaxDuration = totalDuration + 900;
+    const fadeDurationMs = isBootMode ? 140 : 0;
+    const minHoldAfterTypeMs = 0;
+    const hardMaxDuration = totalDuration + 140;
     const startTime = performance.now();
     let rafId = 0;
     let exitStartedAt: number | null = null;
     let finished = false;
+
+    if (!isPreview && totalDuration <= 0) {
+      setIsUnmounted(true);
+      onCompleteRef.current();
+      return;
+    }
 
     const tick = (now: number) => {
       const elapsed = now - startTime;
@@ -233,14 +239,12 @@ export const AppLoadingScreen: React.FC<AppLoadingScreenProps> = ({
 
   return (
     <div
-      className={`nst-isolated-modal fixed inset-0 z-[99999] w-screen h-screen min-h-[100dvh] flex flex-col items-center justify-between px-6 py-8 sm:py-10 select-none overflow-hidden font-sans transition-opacity duration-300 ease-out ${
+      className={`nst-isolated-modal fixed inset-0 z-[99999] w-full h-full min-h-[100dvh] flex flex-col items-center justify-between px-6 py-8 sm:py-10 select-none overflow-hidden font-sans transition-opacity duration-300 ease-out ${
         isExiting ? 'opacity-0 pointer-events-none' : 'opacity-100'
       }`}
       style={{
-        background: useOledBlack
-          ? 'radial-gradient(circle at 50% 34%, #110d04 0%, #000000 58%, #000000 100%)'
-          : 'radial-gradient(circle at 50% 30%, #162244 0%, #0B1120 55%, #070C18 100%)',
-        backgroundColor: useOledBlack ? '#000000' : '#0B1120',
+        background: useOledBlack ? '#000000' : '#070B14',
+        backgroundColor: useOledBlack ? '#000000' : '#070B14',
       }}
     >
       <style>{`
@@ -275,13 +279,13 @@ export const AppLoadingScreen: React.FC<AppLoadingScreenProps> = ({
         }
       `}</style>
 
-      {/* Soft Stage Glow — Clean Atmospheric Depth Without Circles */}
+      {/* Soft Centered Logo Halo — Seamless Uniform Canvas */}
       <div
-        className="absolute top-[36%] left-1/2 -translate-x-1/2 -translate-y-1/2 w-[500px] h-[360px] rounded-full pointer-events-none"
+        className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-64 h-64 rounded-full pointer-events-none opacity-55"
         style={{
           background:
-            'radial-gradient(circle, rgba(56, 189, 248, 0.14) 0%, rgba(245, 158, 11, 0.1) 45%, transparent 74%)',
-          filter: 'blur(72px)',
+            'radial-gradient(circle, rgba(251, 191, 36, 0.07) 0%, transparent 68%)',
+          filter: 'blur(48px)',
         }}
       />
 

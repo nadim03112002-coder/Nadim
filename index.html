@@ -7,8 +7,8 @@
          and the OS status/navigation bar are themed correctly from first paint.
          Keep in sync with the manifest theme_color/background_color in vite.config.ts
          and with the dynamic theme-color updates in StudentDashboard.tsx. -->
-    <meta name="theme-color" content="#121212" />
-    <meta name="background-color" content="#121212" />
+    <meta name="theme-color" content="#070B14" />
+    <meta name="background-color" content="#070B14" />
     <meta name="mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
@@ -84,8 +84,8 @@
         position: fixed;
         inset: 0;
         z-index: 99999;
-        width: 100vw;
-        height: 100vh;
+        width: 100%;
+        height: 100%;
         min-height: 100dvh;
         box-sizing: border-box;
         display: flex;
@@ -97,21 +97,21 @@
         color: #e2e8f0;
         font-family: 'Plus Jakarta Sans', Inter, system-ui, sans-serif;
         user-select: none;
-        background: radial-gradient(circle at 50% 30%, #162244 0%, #0B1120 55%, #070C18 100%);
-        background-color: #0B1120;
+        background: #070B14;
+        background-color: #070B14;
       }
       #pre-react-splash::before {
         content: "";
         position: absolute;
-        top: 34%;
+        top: 48%;
         left: 50%;
-        width: 26rem;
-        height: 18rem;
+        width: 15rem;
+        height: 15rem;
         border-radius: 999px;
         pointer-events: none;
         transform: translate(-50%, -50%);
-        background: radial-gradient(circle, rgba(226, 232, 240, .08) 0%, rgba(251, 191, 36, .05) 45%, transparent 72%);
-        filter: blur(52px);
+        background: radial-gradient(circle, rgba(251, 191, 36, .06) 0%, transparent 68%);
+        filter: blur(44px);
       }
       .pre-react-splash-brand,
       .pre-react-splash-footer {
@@ -235,7 +235,7 @@
       }
     </style>
   </head>
-  <body style="margin:0;background-color:#0B1120;">
+  <body style="margin:0;background-color:#070B14;">
     <div id="root">
     </div>
     <div id="pre-react-splash" aria-hidden="true">
@@ -262,10 +262,6 @@
       window.hidePreReactSplash = function() {
         if (window.__nstaReactMounted) return;
         window.__nstaReactMounted = true;
-        try {
-          document.body.style.background = '';
-          document.body.style.backgroundColor = '';
-        } catch(e) {}
         const splash = document.getElementById('pre-react-splash');
         if (splash) {
           splash.style.transition = 'opacity 0.3s ease, transform 0.3s ease';

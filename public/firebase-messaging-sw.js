@@ -32,7 +32,36 @@ function toAbsoluteUrl(path) {
   }
 }
 
+function extractCallIdFromPayload(data) {
+  if (!data) return '';
+  if (data.callId) return String(data.callId).trim();
+  const rawUrl = String(data.url || '');
+  const match = rawUrl.match(/[?&]callId=([^&]+)/i);
+  return match ? decodeURIComponent(match[1]) : '';
+}
+
+function closeIncomingCallNotifications(callId) {
+  return self.registration.getNotifications().then((list) => {
+    for (const notif of list) {
+      const nData = notif.data || {};
+      const nCallId = extractCallIdFromPayload(nData);
+      if (
+        (callId && (notif.tag === 'nsta-call-' + callId || nCallId === callId)) ||
+        (!callId && String(nData.type || '').toUpperCase() === 'CALL_INCOMING')
+      ) {
+        notif.close();
+      }
+    }
+  }).catch(() => {});
+}
+
 function displayPushNotification(title, body, data, iconUrl) {
+  const notifType = String((data && data.type) || '').toUpperCase();
+  const callId = extractCallIdFromPayload(data);
+  if (notifType === 'CALL_CANCELLED' || notifType === 'CALL_ENDED' || notifType === 'CALL_ACCEPTED' || notifType === 'UPI_PROOF_RESOLVED') {
+    return closeIncomingCallNotifications(callId);
+  }
+
   const notifId = data.id || data.messageId || (title + '_' + (data.timestamp || ''));
   if (isDuplicatePush(notifId)) {
     return Promise.resolve();
@@ -42,8 +71,11 @@ function displayPushNotification(title, body, data, iconUrl) {
   const rawIcon = (candidateIcon && !candidateIcon.endsWith('.svg')) ? candidateIcon : '/icons/icon-512.png?v=4';
   const icon = toAbsoluteUrl(rawIcon);
   const badge = toAbsoluteUrl('/icons/badge-monochrome.png?v=4');
-  // Fresh unique tag forces Android to pop up a heads-up banner over other apps instead of silently collapsing
-  const tagKey = 'nsta-alert-' + Date.now() + '-' + Math.random().toString(36).slice(2, 7);
+  // Use deterministic tag for incoming calls so cancellation/answer dismisses cleanly; fresh tag otherwise
+  const tagKey =
+    notifType === 'CALL_INCOMING' && callId
+      ? 'nsta-call-' + callId
+      : 'nsta-alert-' + Date.now() + '-' + Math.random().toString(36).slice(2, 7);
 
   const richOptions = {
     body: body || 'New update received!',
@@ -55,7 +87,7 @@ function displayPushNotification(title, body, data, iconUrl) {
     silent: false,
     vibrate: [500, 200, 500, 200, 500],
     timestamp: Date.now(),
-    data: { url: data.url || '/', title: title || '', body: body || '', ...data },
+    data: { url: data.url || '/', title: title || '', body: body || '', ...data, ...(callId ? { callId: callId } : {}) },
     actions: [
       { action: 'open', title: 'खोलें (Open)' },
       { action: 'dismiss', title: 'हटाएं' },
@@ -74,7 +106,7 @@ function displayPushNotification(title, body, data, iconUrl) {
       silent: false,
       vibrate: [500, 200, 500, 200, 500],
       timestamp: Date.now(),
-      data: { url: data.url || '/', title: title || '', body: body || '', ...data },
+      data: { url: data.url || '/', title: title || '', body: body || '', ...data, ...(callId ? { callId: callId } : {}) },
     });
   });
 }

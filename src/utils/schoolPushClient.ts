@@ -315,7 +315,7 @@ export async function sendSchoolPushNotification(payload: {
   allowSelf?: boolean;
   title: string;
   body: string;
-  type?: "MONTHLY_FEE" | "FEE_RECEIPT" | "SCHOOL_NOTICE" | "SCHOOL_HOLIDAY" | "HOMEWORK" | "DEFAULT" | "NSTA_MESSAGE" | "CALL_INCOMING" | "WALKIE_VOICE" | "WALKIE_TTS" | "UPI_PAYMENT_PROOF" | "UPI_PROOF_RESOLVED";
+  type?: "MONTHLY_FEE" | "FEE_RECEIPT" | "SCHOOL_NOTICE" | "SCHOOL_HOLIDAY" | "HOMEWORK" | "DEFAULT" | "NSTA_MESSAGE" | "CALL_INCOMING" | "CALL_CANCELLED" | "CALL_ENDED" | "CALL_ACCEPTED" | "WALKIE_VOICE" | "WALKIE_TTS" | "UPI_PAYMENT_PROOF" | "UPI_PROOF_RESOLVED";
   threadType?: "CLASS_GROUP" | "SCHOOL_DESK" | "TEACHER_CHAT" | "STUDENT_CHAT";
   voiceSpeak?: boolean;
   url?: string;

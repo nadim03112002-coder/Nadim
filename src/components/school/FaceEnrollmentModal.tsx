@@ -26,6 +26,9 @@ import {
   extractDescriptorFromCanvas,
   extractNeuralDescriptor,
   enrollPersonFromImageFile,
+  loadFaceApiModels,
+  initArcFaceEngine,
+  isArcFaceReady,
   playAttendanceSuccessChime,
   FaceDescriptorRecord
 } from "../../utils/faceRecognitionEngine";
@@ -101,7 +104,10 @@ export const FaceEnrollmentModal: React.FC<FaceEnrollmentModalProps> = ({
       }
 
       try {
-        await updateStudentPhoto(schoolId, st.id, res.photoDataUrl);
+        await Promise.race([
+          updateStudentPhoto(schoolId, st.id, res.photoDataUrl),
+          new Promise((resolve) => setTimeout(resolve, 4500)),
+        ]);
       } catch {}
       st.photoUrl = res.photoDataUrl;
       playAttendanceSuccessChime();
@@ -170,6 +176,15 @@ export const FaceEnrollmentModal: React.FC<FaceEnrollmentModalProps> = ({
   };
 
   useEffect(() => {
+    if (isOpen) {
+      void Promise.all([
+        loadFaceApiModels().catch(() => false),
+        isArcFaceReady() ? Promise.resolve(true) : initArcFaceEngine(true).catch(() => false),
+      ]);
+    }
+  }, [isOpen]);
+
+  useEffect(() => {
     if (liveCaptureTarget) {
       startLiveStudioCamera();
     } else {
@@ -201,40 +216,48 @@ export const FaceEnrollmentModal: React.FC<FaceEnrollmentModalProps> = ({
       height: canvas.height * 0.70
     };
 
-    const neural = await extractNeuralDescriptor(canvas);
-    const has512 = Boolean(neural?.arcfaceDescriptor && neural.arcfaceDescriptor.length === 512);
-
-    if (!has512) {
-      toast.error("⚠️ 512-D ArcFace वेक्टर तैयार नहीं हो सका। कृपया सीधी रोशनी में सामने देखकर दोबारा फ़ोटो लें या 'फोटो जोड़ें' चुनें।");
-      return;
-    }
-
-    const record: FaceDescriptorRecord = {
-      studentId: liveCaptureTarget.id,
-      schoolId,
-      name: liveCaptureTarget.name,
-      rollNo: liveCaptureTarget.rollNo,
-      classId: liveCaptureTarget.classId,
-      className: liveCaptureTarget.className,
-      photoUrl: photoDataUrl,
-      descriptor: neural!.arcfaceDescriptor!,
-      arcfaceDescriptor: neural!.arcfaceDescriptor!,
-      enrolledAt: new Date().toISOString(),
-      source: "arcface_512d",
-      preprocessOrder: "RGB"
-    };
-
-    await saveFaceDescriptor(record);
     try {
-      await updateStudentPhoto(schoolId, liveCaptureTarget.id, photoDataUrl);
-    } catch {}
-    playAttendanceSuccessChime();
-    setCaptureSuccess(true);
-    if (onEnrollmentUpdated) onEnrollmentUpdated();
+      await initArcFaceEngine(!isArcFaceReady()).catch(() => false);
+      const neural = await extractNeuralDescriptor(canvas);
+      const has512 = Boolean(neural?.arcfaceDescriptor && neural.arcfaceDescriptor.length === 512);
 
-    setTimeout(() => {
-      setLiveCaptureTarget(null);
-    }, 1500);
+      if (!has512) {
+        toast.error("⚠️ 512-D ArcFace वेक्टर तैयार नहीं हो सका। कृपया सीधी रोशनी में सामने देखकर दोबारा फ़ोटो लें या 'फोटो जोड़ें' चुनें।");
+        return;
+      }
+
+      const record: FaceDescriptorRecord = {
+        studentId: liveCaptureTarget.id,
+        schoolId,
+        name: liveCaptureTarget.name,
+        rollNo: liveCaptureTarget.rollNo,
+        classId: liveCaptureTarget.classId,
+        className: liveCaptureTarget.className,
+        photoUrl: photoDataUrl,
+        descriptor: neural!.arcfaceDescriptor!,
+        arcfaceDescriptor: neural!.arcfaceDescriptor!,
+        enrolledAt: new Date().toISOString(),
+        source: "arcface_512d",
+        preprocessOrder: "RGB"
+      };
+
+      await saveFaceDescriptor(record);
+      try {
+        await Promise.race([
+          updateStudentPhoto(schoolId, liveCaptureTarget.id, photoDataUrl),
+          new Promise((resolve) => setTimeout(resolve, 4500)),
+        ]);
+      } catch {}
+      playAttendanceSuccessChime();
+      setCaptureSuccess(true);
+      if (onEnrollmentUpdated) onEnrollmentUpdated();
+
+      setTimeout(() => {
+        setLiveCaptureTarget(null);
+      }, 1500);
+    } catch (err: any) {
+      toast.error(err?.message || "फेस कैप्चर में समस्या आई। कृपया पुनः प्रयास करें।");
+    }
   };
 
   // Run Batch Auto-Vectorize from ID Photos

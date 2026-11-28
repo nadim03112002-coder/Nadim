@@ -71,6 +71,11 @@ import {
   verifyStudentSecondFactorServer,
   fetchSafeRemoteImage,
 } from "./api/_qrSecurity.js";
+import {
+  getEmailOtpStatus,
+  sendSchoolEmailOtpServer,
+  verifySchoolEmailOtpServer,
+} from "./api/_emailOtp.js";
 
 // Prevent transient socket resets (e.g. pre-warmer closing connections early)
 // or background async errors from terminating the dev/prod server process.
@@ -387,7 +392,14 @@ async function dispatchFcmToUsers(
           : {}),
       };
 
-      const fcmMessage = isNativeAndroid
+      const notifTypeUpper = String(payload.type || "DEFAULT").trim().toUpperCase();
+      const isSilentControl =
+        notifTypeUpper === "CALL_CANCELLED" ||
+        notifTypeUpper === "CALL_ENDED" ||
+        notifTypeUpper === "CALL_ACCEPTED" ||
+        notifTypeUpper === "UPI_PROOF_RESOLVED";
+
+      const fcmMessage = isNativeAndroid || isSilentControl
         ? {
             token: fcmToken,
             data: dataPayload,
@@ -779,6 +791,7 @@ async function dispatchWebPush(
     urgent?: boolean;
     icon?: string;
     senderPhoto?: string;
+    extraData?: Record<string, string>;
   }
 ): Promise<boolean> {
   try {
@@ -789,6 +802,19 @@ async function dispatchWebPush(
       String(payload.voiceSpeak ?? "").toLowerCase() === "false" ||
       String(payload.threadType || "").toUpperCase() === "TEACHER_CHAT" ||
       String(payload.url || "").includes("subTab=teacher");
+    const sanitizedExtra: Record<string, string> = {};
+    if (payload.extraData && typeof payload.extraData === "object") {
+      for (const [ek, ev] of Object.entries(payload.extraData)) {
+        if (ek && ev !== undefined && ev !== null) {
+          sanitizedExtra[String(ek).slice(0, 64)] = String(ev).slice(0, 600);
+        }
+      }
+    }
+    const notifTypeUp = String(payload.type || "SCHOOL_ALERT").toUpperCase();
+    const callTag =
+      sanitizedExtra.callId && notifTypeUp === "CALL_INCOMING"
+        ? `nsta-call-${sanitizedExtra.callId}`
+        : `nsta-alert-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
     await webpush.sendNotification(
       record.subscription,
       JSON.stringify({
@@ -801,10 +827,11 @@ async function dispatchWebPush(
           renotify: true,
           requireInteraction: true,
           vibrate: [500, 200, 500, 200, 500],
-          tag: `nsta-alert-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+          tag: callTag,
           timestamp: Date.now(),
         },
         data: {
+          ...sanitizedExtra,
           id: payload.id || "",
           title: payload.title,
           body: payload.body,
@@ -1462,6 +1489,7 @@ async function startServer() {
           urgent,
           icon: effectiveIcon,
           senderPhoto: effectiveIcon,
+          extraData: extraData && typeof extraData === "object" ? extraData : undefined,
         });
         if (ok) delivered++;
       }
@@ -2365,18 +2393,53 @@ async function startServer() {
 
   // Serve ONNX WebAssembly & JS runtime files directly from node_modules with proper MIME headers
   // This bypasses Vite's /public directory dynamic import restriction entirely
+  const setWasmHeaders = (res: express.Response, filePath: string) => {
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("Cache-Control", "public, max-age=604800");
+    if (filePath.endsWith(".wasm")) {
+      res.setHeader("Content-Type", "application/wasm");
+    } else if (filePath.endsWith(".mjs") || filePath.endsWith(".js")) {
+      res.setHeader("Content-Type", "application/javascript; charset=utf-8");
+    }
+  };
   app.use(
     "/onnx-wasm",
     express.static(path.join(ROOT_DIR, "node_modules/onnxruntime-web/dist"), {
-      setHeaders: (res, filePath) => {
-        if (filePath.endsWith(".wasm")) {
-          res.setHeader("Content-Type", "application/wasm");
-        } else if (filePath.endsWith(".mjs") || filePath.endsWith(".js")) {
-          res.setHeader("Content-Type", "text/javascript");
-        }
-      },
+      setHeaders: setWasmHeaders,
     })
   );
+  app.use(
+    "/onnx-wasm",
+    express.static(path.join(ROOT_DIR, "public/onnx-wasm"), {
+      setHeaders: setWasmHeaders,
+    })
+  );
+  app.use("/onnx-wasm", (_req, res) => res.status(404).type("text/plain").send("Not found"));
+
+  // Serve AI face models (/models/arcface/*.onnx, /models/face-api/*) explicitly with binary MIME types
+  // so Vite/proxies/SPA fallback NEVER return empty Content-Type or 200 text/html for ONNX/weights files
+  const setModelHeaders = (res: express.Response, filePath: string) => {
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("Cache-Control", "public, max-age=86400");
+    if (filePath.endsWith(".json")) {
+      res.setHeader("Content-Type", "application/json; charset=utf-8");
+    } else {
+      res.setHeader("Content-Type", "application/octet-stream");
+    }
+  };
+  app.use(
+    "/models",
+    express.static(path.join(ROOT_DIR, "public/models"), {
+      setHeaders: setModelHeaders,
+    })
+  );
+  app.use(
+    "/models",
+    express.static(path.join(ROOT_DIR, "dist/models"), {
+      setHeaders: setModelHeaders,
+    })
+  );
+  app.use("/models", (_req, res) => res.status(404).type("text/plain").send("Model not found"));
 
   // Dynamic multi-school PWA manifest & asset proxy (matches Vercel api/push-router.ts)
   const getServerRequestOrigin = (req: express.Request): string => {
@@ -2443,6 +2506,35 @@ async function startServer() {
       return res.status(result.status).json(result.body);
     } catch (err: any) {
       return res.status(500).json({ ok: false, verified: false, error: err?.message || "Second-factor check error" });
+    }
+  });
+
+  app.get("/api/auth/email-otp-status", (_req, res) => {
+    res.setHeader("Cache-Control", "no-store");
+    return res.status(200).json(getEmailOtpStatus());
+  });
+
+  app.post("/api/auth/send-email-otp", async (req, res) => {
+    try {
+      res.setHeader("Cache-Control", "no-store");
+      const origin = getServerRequestOrigin(req);
+      const result = await sendSchoolEmailOtpServer({
+        ...(req.body || {}),
+        origin,
+      });
+      return res.status(result.status).json(result.body);
+    } catch (err: any) {
+      return res.status(500).json({ ok: false, error: err?.message || "Failed to send Email OTP" });
+    }
+  });
+
+  app.post("/api/auth/verify-email-otp", async (req, res) => {
+    try {
+      res.setHeader("Cache-Control", "no-store");
+      const result = await verifySchoolEmailOtpServer(req.body || {});
+      return res.status(result.status).json(result.body);
+    } catch (err: any) {
+      return res.status(500).json({ ok: false, verified: false, error: err?.message || "Failed to verify Email OTP" });
     }
   });
 
@@ -2557,7 +2649,7 @@ async function startServer() {
 
     app.use(express.static(distPath, { index: false }));
     app.use(async (req, res, next) => {
-      if (req.method !== "GET" || req.path.startsWith("/api/")) {
+      if (!isSpaHtmlNavigationRequest(req)) {
         return next();
       }
       try {

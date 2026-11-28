@@ -61,7 +61,6 @@ import {
 } from "../../school-firebase";
 import { computeCompleteBackLedger, type BackLedgerSummary } from "../../utils/reAdmissionUtils";
 import { saveUserToLive } from "../../firebase";
-import { enrollStudentFromPhotoUrl } from "../../utils/faceRecognitionEngine";
 import type {
   School,
   SchoolClass,
@@ -1486,15 +1485,19 @@ export const DirectAdmissionModal: React.FC<Props> = ({
 
           // Auto-enroll biometric Face ID for new student so logout -> Face login works seamlessly
           if (saved.photoUrl) {
-            enrollStudentFromPhotoUrl({
-              id: saved.id,
-              schoolId: school.id,
-              name: saved.name,
-              rollNo: String(saved.rollNo || ""),
-              classId: saved.classId,
-              className: saved.className,
-              photoUrl: saved.photoUrl,
-            }).catch(() => {});
+            void import("../../utils/faceRecognitionEngine")
+              .then(({ enrollStudentFromPhotoUrl }) =>
+                enrollStudentFromPhotoUrl({
+                  id: saved.id,
+                  schoolId: school.id,
+                  name: saved.name,
+                  rollNo: String(saved.rollNo || ""),
+                  classId: saved.classId,
+                  className: saved.className,
+                  photoUrl: saved.photoUrl,
+                })
+              )
+              .catch(() => {});
           }
         } catch {}
 

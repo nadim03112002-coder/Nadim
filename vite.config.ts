@@ -205,6 +205,9 @@ export default defineConfig(async ({ command }) => {
             if (id.includes('commonjsHelpers') || id.includes('vite/preload-helper')) {
               return 'vendor-react';
             }
+            if (id.includes('/src/syllabus_data') || id.includes('/src/utils/full_syllabus_data')) {
+              return 'vendor-syllabus';
+            }
             if (!id.includes('node_modules')) return;
             if (id.includes('/react/') || id.includes('/react-dom/') || id.includes('/scheduler/')) {
               return 'vendor-react';
@@ -214,6 +217,15 @@ export default defineConfig(async ({ command }) => {
             }
             if (id.includes('/@supabase/')) {
               return 'vendor-supabase';
+            }
+            if (id.includes('/@vladmandic/face-api/') || id.includes('/onnxruntime-web/') || id.includes('/@tensorflow/')) {
+              return 'vendor-face';
+            }
+            if (id.includes('/html5-qrcode/') || id.includes('/jsqr/')) {
+              return 'vendor-qr';
+            }
+            if (id.includes('/leaflet/')) {
+              return 'vendor-maps';
             }
             if (id.includes('/recharts/') || id.includes('/d3-')) {
               return 'vendor-charts';

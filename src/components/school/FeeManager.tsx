@@ -11,11 +11,12 @@ import {
   mapFeeSlipRoutingToSignatoryMode,
   mapFeeReceiptRoutingToSignatoryMode,
 } from "../../school-types";
-import { CheckCircle, Clock, Download, ChevronLeft, ChevronRight, ChevronDown, IndianRupee, Users, TrendingUp, AlertCircle, Printer, MessageCircle, MessageSquare, ReceiptText, Building2, Sparkles, X, Check, RotateCcw, CheckCircle2, ShieldCheck, ToggleLeft, ToggleRight, Bus, QrCode, Search, Filter, Loader2, Bell, FileSpreadsheet, FileText, Plus, Trash2, CreditCard, Palette, CalendarClock, PhoneCall, Lock } from "lucide-react";
+import { CheckCircle, Clock, Download, ChevronLeft, ChevronRight, ChevronDown, IndianRupee, Users, TrendingUp, AlertCircle, Printer, MessageCircle, MessageSquare, ReceiptText, Building2, Sparkles, X, Check, RotateCcw, CheckCircle2, ShieldCheck, ToggleLeft, ToggleRight, Bus, QrCode, Search, Filter, Loader2, Bell, FileSpreadsheet, FileText, Plus, Trash2, CreditCard, Palette, CalendarClock, PhoneCall, Lock, Package } from "lucide-react";
 import { FeeTagadaCallerPage, buildFamilyTagadaGroups, getLocalTodayYmd, getPendingActiveTagadaCall, type TagadaStudentFeeRow } from "./FeeTagadaCallerPage";
 import { PremiumLoadingState } from "./PremiumLoadingState";
 import { EliteFeatureLockCard } from "./EliteFeatureLockCard";
 import { FeeTermSchedulerModal } from "./FeeTermSchedulerModal";
+import { AdmissionKitManager } from "./AdmissionKitManager";
 import { resolveScheduledFeesForStudentMonth, mergeSettlementAfterPayment } from "../../utils/feeTermScheduler";
 import { DocumentTemplateStudioModal } from "./DocumentTemplateStudioModal";
 import { DOCUMENT_TEMPLATE_EVENT } from "../../utils/schoolDocumentTemplates";
@@ -172,6 +173,7 @@ export const FeeManager: React.FC<Props> = ({ schoolId, classId, className, scho
   const [showRazorpaySettingsModal, setShowRazorpaySettingsModal] = useState<boolean>(false);
   const [showTemplateStudio, setShowTemplateStudio] = useState<boolean>(false);
   const [showTermSchedulerModal, setShowTermSchedulerModal] = useState<boolean>(false);
+  const [showAdmissionKitModal, setShowAdmissionKitModal] = useState<boolean>(false);
   const [showFeeTagadaModal, setShowFeeTagadaModal] = useState<boolean>(false);
   const [showUpiApprovals, setShowUpiApprovals] = useState<boolean>(false);
   const [upiProofs, setUpiProofs] = useState<UpiPaymentProofRecord[]>([]);
@@ -3352,6 +3354,46 @@ td{padding:8px 10px;border-bottom:1px solid #e2e8f0}</style></head>
     );
   }
 
+  if (showAdmissionKitModal) {
+    return (
+      <AdmissionKitManager
+        school={(liveSchool || school || { id: schoolId, name: schoolName || "School" }) as School}
+        students={students}
+        classes={rawClasses}
+        sessionId={sessionId}
+        actorName={actorName}
+        isAdmin={true}
+        onBack={() => setShowAdmissionKitModal(false)}
+        onOpenTermPlanner={() => {
+          setShowAdmissionKitModal(false);
+          setShowTermSchedulerModal(true);
+        }}
+        onSchoolUpdated={(patch) => {
+          if (patch.feeTermCampaigns) setTermCampaigns(patch.feeTermCampaigns);
+          setLiveSchool((prev) =>
+            prev
+              ? { ...prev, ...patch }
+              : ({ id: schoolId, name: schoolName || "School", ...patch } as School)
+          );
+          void loadData(true, patch.feeTermCampaigns);
+        }}
+        onClassUpdated={(cid, fs) => {
+          setRawClasses((prev) =>
+            prev.map((c) => (c.id === cid ? { ...c, feeStructure: fs, defaultFee: fs.tuitionFee || c.defaultFee } : c))
+          );
+        }}
+        onStudentUpdated={(updated) => {
+          setStudents((prev) =>
+            prev.some((s) => s.id === updated.id)
+              ? prev.map((s) => (s.id === updated.id ? updated : s))
+              : [updated, ...prev]
+          );
+          void loadData(true);
+        }}
+      />
+    );
+  }
+
   if (showFeeTagadaModal) {
     if (!canUseFeeTagada) {
       return (
@@ -3538,6 +3580,17 @@ td{padding:8px 10px;border-bottom:1px solid #e2e8f0}</style></head>
                 {termCampaigns.filter((c) => c.active !== false && c.targetMonth === month).length}
               </span>
             )}
+          </button>
+
+          {/* Quick Admission Kit Control & Tracker Launcher */}
+          <button
+            type="button"
+            onClick={() => setShowAdmissionKitModal(true)}
+            className="inline-flex items-center gap-1.5 px-2.5 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold transition-colors active:scale-95 cursor-pointer whitespace-nowrap shadow-xs"
+            title="Admission Kit Control: One-Time Rates, Term JSON Setup व Student Kit Tracker"
+          >
+            <Package className="w-3.5 h-3.5 shrink-0" />
+            <span className="whitespace-nowrap">Admission Kit</span>
           </button>
 
           {/* Quick Fee Slip Templates Studio */}

@@ -287,18 +287,41 @@ if (typeof window !== "undefined") {
       String(rawVoice).trim() === "0" ||
       String(rawVoice).trim().toLowerCase() === "false";
 
+    if (notifType === "CALL_CANCELLED" || notifType === "CALL_ENDED" || notifType === "CALL_ACCEPTED") {
+      stopIncomingVoiceCallerSpeech();
+      stopVoiceNotification();
+      return;
+    }
+
     if (notifType === "CALL_INCOMING") {
       if (voiceExplicitlyOff || !isCallerVoiceAnnounceEnabled()) return;
-      if (detail && (detail.title || detail.body)) {
-        const spokenText = [detail.title, detail.body].filter(Boolean).join(". ");
+      const extra = detail?.extraData || detail?.payload?.data || {};
+      const callUrl = String(detail?.url || extra?.url || "");
+      const rawCallType = String(detail?.callType || extra?.callType || "").trim().toLowerCase();
+      const resolvedCallType: "voice" | "video" | "sim" =
+        rawCallType === "video" || String(detail?.title || "").toLowerCase().includes("video")
+          ? "video"
+          : rawCallType === "voice" || callUrl.includes("callId=") || Boolean(extra?.callId)
+          ? "voice"
+          : "sim";
+      const callerName = String(
+        extra?.callerName || detail?.senderName || detail?.title || "School Staff"
+      ).trim();
+      const callerRole = String(extra?.callerRole || detail?.callerRole || "").trim();
+      const schoolName = String(extra?.schoolName || detail?.schoolName || "").trim();
+      const dedupeKey =
+        extra?.callId
+          ? `call_${extra.callId}`
+          : detail?.id || detail?.payload?.id || detail?.payload?.data?.id;
+      if (callerName || detail?.body) {
         announceIncomingVoiceCaller({
-          callerName: detail.senderName || detail.title || "School Staff",
-          schoolName: detail.schoolName || "",
-          callType: String(detail.title || "").toLowerCase().includes("video") ? "video" : "sim",
-          dedupeKey: detail.id || detail.payload?.id || detail.payload?.data?.id,
-          force: Boolean(detail.force),
+          callerName,
+          callerRole,
+          schoolName,
+          callType: resolvedCallType,
+          dedupeKey,
+          force: Boolean(detail?.force),
         });
-        if (!spokenText) return;
       }
       return;
     }

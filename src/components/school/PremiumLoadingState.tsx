@@ -148,14 +148,13 @@ export const PremiumLoadingState: React.FC<PremiumLoadingStateProps> = ({
   const isCard = variant === "card";
   const isFullscreen = variant === "fullscreen";
 
+  const hasCustomBg = /\bbg-/.test(className);
   const surfaceClass =
     tone === "dark"
-      ? "nst-isolated-modal bg-[#0B1120] text-slate-100"
+      ? `nst-isolated-modal ${hasCustomBg ? "" : "bg-[#070B14]"} text-slate-100`
       : tone === "light"
-      ? "bg-slate-50 text-slate-900"
-      : isCard
-      ? "bg-transparent text-slate-900 dark:text-slate-100"
-      : "bg-slate-50 dark:bg-[#0B1120] text-slate-900 dark:text-slate-100";
+      ? `${hasCustomBg ? "" : "bg-[#eef2f7]"} text-slate-900`
+      : "bg-transparent text-slate-900 dark:text-slate-100";
 
   const accentGradient =
     accent === "emerald"
@@ -189,8 +188,8 @@ export const PremiumLoadingState: React.FC<PremiumLoadingStateProps> = ({
 
   const auraBg =
     tone === "light"
-      ? "radial-gradient(circle, rgba(245,158,11,0.12) 0%, rgba(15,23,42,0.04) 55%, transparent 75%)"
-      : "radial-gradient(circle, rgba(56,189,248,0.16) 0%, rgba(245,158,11,0.12) 48%, transparent 75%)";
+      ? "radial-gradient(circle, rgba(245,158,11,0.08) 0%, transparent 68%)"
+      : "radial-gradient(circle, rgba(251,191,36,0.08) 0%, transparent 68%)";
 
   const showCustomCrest = brand.hasCustomLogo && !logoFailed;
 
@@ -198,7 +197,7 @@ export const PremiumLoadingState: React.FC<PremiumLoadingStateProps> = ({
     ? "min-h-screen min-h-[100dvh] w-full flex-1 px-6 py-10"
     : isCard
     ? "w-full py-8 px-4"
-    : "min-h-[55vh] w-full flex-1 px-6 py-10";
+    : "min-h-[calc(100dvh-4.5rem)] w-full flex-1 px-6 py-10";
 
   const displaySchoolName = brand.name || (isFullscreen ? "SCHOOL+" : "");
 
@@ -224,11 +223,11 @@ export const PremiumLoadingState: React.FC<PremiumLoadingStateProps> = ({
         }
       `}</style>
 
-      {/* Soft stage ambient light — no circles around logo */}
+      {/* Soft centered logo halo — uniform full-screen background */}
       {!isCard && (
         <div
-          className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[380px] h-[300px] rounded-full pointer-events-none"
-          style={{ background: auraBg, filter: "blur(64px)" }}
+          className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-60 h-60 rounded-full pointer-events-none opacity-60"
+          style={{ background: auraBg, filter: "blur(48px)" }}
         />
       )}
 

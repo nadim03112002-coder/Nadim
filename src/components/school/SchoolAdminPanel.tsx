@@ -42,10 +42,10 @@ import {
 } from "../../school-types";
 import { DEMO_SESSION_ID, seedDemoSchoolData } from "./demoSchoolData";
 import { getDemoSchoolDataset, isDemoDataEnabled, setDemoDataEnabled } from "./demoDataStore";
-import { ContentManager } from "./ContentManager";
-import { SmartClass } from "./SmartClass";
-import { AttendanceManager } from "./AttendanceManager";
 import { lazyWithRetry, LazyPanelBoundary, scheduleIdlePreload } from "../../utils/lazyWithRetry";
+const ContentManager = lazyWithRetry(() => import("./ContentManager").then(m => ({ default: m.ContentManager })), "Content Manager");
+const SmartClass = lazyWithRetry(() => import("./SmartClass").then(m => ({ default: m.SmartClass })), "Smart Class");
+const AttendanceManager = lazyWithRetry(() => import("./AttendanceManager").then(m => ({ default: m.AttendanceManager })), "Attendance Manager");
 import { PremiumLoadingState } from "./PremiumLoadingState";
 import { ScreenInfoGuideButton } from "./ScreenInfoGuideButton";
 import { LanguageToggleButton } from "./LanguageToggleButton";
@@ -75,17 +75,17 @@ const loadErrorNoticeBoard = () => import("../admin/ErrorNoticeBoard").then(m =>
 const ErrorNoticeBoard = lazyWithRetry(loadErrorNoticeBoard, "App Crash Monitor");
 const FaceAttendanceKioskModal = lazyWithRetry(loadFaceAttendanceKiosk, "Face Attendance Kiosk");
 const UniversalFaceIdStudioModal = lazyWithRetry(loadUniversalFaceIdStudio, "Face ID Studio");
-import { FeeManager } from "./FeeManager";
-import { ReportCard } from "./ReportCard";
-import { MarksManager } from "./MarksManager";
-import { ExamResultsPanel } from "./ExamResultsPanel";
+const FeeManager = lazyWithRetry(() => import("./FeeManager").then(m => ({ default: m.FeeManager })), "Fee Manager");
+const ReportCard = lazyWithRetry(() => import("./ReportCard").then(m => ({ default: m.ReportCard })), "Report Card");
+const MarksManager = lazyWithRetry(() => import("./MarksManager").then(m => ({ default: m.MarksManager })), "Marks Manager");
+const ExamResultsPanel = lazyWithRetry(() => import("./ExamResultsPanel").then(m => ({ default: m.ExamResultsPanel })), "Exam Results");
 import { DirectUploadButton } from "../DirectUploadButton";
 const IdCardManager = lazyWithRetry(loadIdCardManager, "ID Card Manager");
 const AdmitCardManager = lazyWithRetry(loadAdmitCardManager, "Admit Card Manager");
 const CertificateManager = lazyWithRetry(loadCertificateManager, "Certificate Manager");
 const MarksheetGenerator = lazyWithRetry(loadMarksheetGenerator, "Marksheet Generator");
-import { StudentReAdmissionManager } from "./StudentReAdmissionManager";
-import { NoticeBoardManager } from "./NoticeBoardManager";
+const StudentReAdmissionManager = lazyWithRetry(() => import("./StudentReAdmissionManager").then(m => ({ default: m.StudentReAdmissionManager })), "Re-Admission");
+const NoticeBoardManager = lazyWithRetry(() => import("./NoticeBoardManager").then(m => ({ default: m.NoticeBoardManager })), "Notice Board");
 const StaffHRMManager = lazyWithRetry(loadStaffHRMManager, "Staff HRM Manager");
 const SchoolReportsHub = lazyWithRetry(loadSchoolReportsHub, "School Reports Hub");
 const PublicSchoolWebsite = lazyWithRetry(loadPublicSchoolWebsite, "Public School Website");
@@ -94,27 +94,29 @@ const OnlineAdmissionManager = lazyWithRetry(loadOnlineAdmissionManager, "Online
 import { getStaffEmployees, saveStaffEmployee, getAccountants, saveAccountant, subscribeToAccountants, deleteAccountant, unassignTeacherForAccountantRole, saveSchoolGalleryItem, deleteSchoolGalleryItem } from "../../school-firebase";
 import { compressImageFileToDataUrl } from "../../utils/imageCompression";
 import type { MonthlyFee, StaffEmployee, StoreSaleRecord, SchoolAccountant, FeeCallFollowUpRecord, SchoolPublicInquiry, UpiPaymentProofRecord, SchoolSignatureRoutingConfig } from "../../school-types";
-import { SchoolHeaderEditorModal, type SchoolHeaderDetails } from "./SchoolHeaderEditorModal";
-import { DigitalSignatureModal, type DigitalSignatureTab } from "./DigitalSignatureModal";
-import { SignatureRoutingSettingsPanel } from "./SignatureRoutingSettingsPanel";
+import type { SchoolHeaderDetails } from "./SchoolHeaderEditorModal";
+import type { DigitalSignatureTab } from "./DigitalSignatureModal";
+const SchoolHeaderEditorModal = lazyWithRetry(() => import("./SchoolHeaderEditorModal").then(m => ({ default: m.SchoolHeaderEditorModal })), "Header Editor");
+const DigitalSignatureModal = lazyWithRetry(() => import("./DigitalSignatureModal").then(m => ({ default: m.DigitalSignatureModal })), "Digital Signature");
+const SignatureRoutingSettingsPanel = lazyWithRetry(() => import("./SignatureRoutingSettingsPanel").then(m => ({ default: m.SignatureRoutingSettingsPanel })), "Signature Routing");
 import { getSavedSchoolLogo, getVisibleSchoolRegNo, isAppLogo, cleanLogoUrl } from "./feeReceiptUtils";
-import { TimetableManager } from "./TimetableManager";
-import { ClassroomVideoArchive } from "./ClassroomVideoArchive";
-import { HomeworkManager } from "./HomeworkManager";
-import { LibraryManager } from "./LibraryManager";
-import { ParentTeacherQueryManager } from "./ParentTeacherQueryManager";
-import { InventoryStoreManager } from "./InventoryStoreManager";
-import { TeacherIdCardModal } from "./TeacherIdCardModal";
-import { StudentIdCardModal } from "./StudentIdCardModal";
-import { SchoolCommunityFeed } from "./SchoolCommunityFeed";
-import { SchoolMessengerBroadcastStudio } from "./SchoolMessengerBroadcastStudio";
+const TimetableManager = lazyWithRetry(() => import("./TimetableManager").then(m => ({ default: m.TimetableManager })), "Timetable Manager");
+const ClassroomVideoArchive = lazyWithRetry(() => import("./ClassroomVideoArchive").then(m => ({ default: m.ClassroomVideoArchive })), "Classroom Videos");
+const HomeworkManager = lazyWithRetry(() => import("./HomeworkManager").then(m => ({ default: m.HomeworkManager })), "Homework Manager");
+const LibraryManager = lazyWithRetry(() => import("./LibraryManager").then(m => ({ default: m.LibraryManager })), "Library Manager");
+const ParentTeacherQueryManager = lazyWithRetry(() => import("./ParentTeacherQueryManager").then(m => ({ default: m.ParentTeacherQueryManager })), "Parent Queries");
+const InventoryStoreManager = lazyWithRetry(() => import("./InventoryStoreManager").then(m => ({ default: m.InventoryStoreManager })), "Inventory Store");
+const AdmissionKitManager = lazyWithRetry(() => import("./AdmissionKitManager").then(m => ({ default: m.AdmissionKitManager })), "Admission Kit");
+const TeacherIdCardModal = lazyWithRetry(() => import("./TeacherIdCardModal").then(m => ({ default: m.TeacherIdCardModal })), "Teacher ID Card");
+const StudentIdCardModal = lazyWithRetry(() => import("./StudentIdCardModal").then(m => ({ default: m.StudentIdCardModal })), "Student ID Card");
+const SchoolCommunityFeed = lazyWithRetry(() => import("./SchoolCommunityFeed").then(m => ({ default: m.SchoolCommunityFeed })), "Community Feed");
 const NstaMessengerSuite = lazyWithRetry(loadNstaMessengerSuite, "NSTA Messenger");
-import { AbsenteeActionPage } from "./AbsenteeActionPage";
+const AbsenteeActionPage = lazyWithRetry(() => import("./AbsenteeActionPage").then(m => ({ default: m.AbsenteeActionPage })), "Absentee Page");
 import { getPendingActiveTagadaCall } from "./FeeTagadaCallerPage";
-import { GroupStudyModal } from "../GroupStudyModal";
-import { TeacherRulesRegulationsView } from "./TeacherRulesRegulationsView";
-import { TeacherSignatureModal } from "./TeacherSignatureModal";
-import { AppointmentLetterModal } from "./AppointmentLetterModal";
+const GroupStudyModal = lazyWithRetry(() => import("../GroupStudyModal").then(m => ({ default: m.GroupStudyModal })), "Study Room");
+const TeacherRulesRegulationsView = lazyWithRetry(() => import("./TeacherRulesRegulationsView").then(m => ({ default: m.TeacherRulesRegulationsView })), "Staff Rules");
+const TeacherSignatureModal = lazyWithRetry(() => import("./TeacherSignatureModal").then(m => ({ default: m.TeacherSignatureModal })), "Teacher Signature");
+const AppointmentLetterModal = lazyWithRetry(() => import("./AppointmentLetterModal").then(m => ({ default: m.AppointmentLetterModal })), "Appointment Letter");
 import { AccountRecoveryCard } from "./AccountRecoveryCard";
 const AdminAccountsDirectory = lazyWithRetry(loadAdminAccountsDirectory, "Accounts Directory");
 import { NstaCallPortalHost } from "./NstaCallModal";
@@ -123,7 +125,7 @@ import { CallSetupChecklistBanner } from "./CallSetupChecklistBanner";
 import { ApkUpdateBanner } from "./ApkUpdateBanner";
 import { IncomingParentCallModal } from "./IncomingParentCallModal";
 import { TodayCommandDigestCard } from "./TodayCommandDigestCard";
-import { WalkieTalkieModal } from "./WalkieTalkieModal";
+const WalkieTalkieModal = lazyWithRetry(() => import("./WalkieTalkieModal").then(m => ({ default: m.WalkieTalkieModal })), "Walkie Talkie");
 import { EliteFeatureLockCard } from "./EliteFeatureLockCard";
 import { useSchoolWalkieChannel } from "../../utils/schoolWalkieService";
 import {
@@ -145,15 +147,16 @@ import {
   Cake, Gift,
   Smartphone, Laptop, Monitor, Compass, CalendarClock, PhoneCall, Radio, Receipt
 } from "lucide-react";
-import { SchoolStore } from "./SchoolStore";
-import { SchoolPlanView } from "./SchoolPlanView";
-import { ClassQrCodeModal } from "./ClassQrCodeModal";
-import { StudentQuickActionModal, type StudentQuickActionTab } from "./StudentQuickActionModal";
-import { ClassFeeStructureSection } from "./ClassFeeStructureSection";
-import { DirectAdmissionModal } from "./DirectAdmissionModal";
-import { AdmissionFormPrintModal } from "./AdmissionFormPrintModal";
-import { BusTransportModal } from "./BusTransportModal";
-import { ClassCurriculumNotesManager } from "./ClassCurriculumNotesManager";
+const SchoolStore = lazyWithRetry(() => import("./SchoolStore").then(m => ({ default: m.SchoolStore })), "School Store");
+const SchoolPlanView = lazyWithRetry(() => import("./SchoolPlanView").then(m => ({ default: m.SchoolPlanView })), "School Plan");
+const ClassQrCodeModal = lazyWithRetry(() => import("./ClassQrCodeModal").then(m => ({ default: m.ClassQrCodeModal })), "Class QR");
+import type { StudentQuickActionTab } from "./StudentQuickActionModal";
+const StudentQuickActionModal = lazyWithRetry(() => import("./StudentQuickActionModal").then(m => ({ default: m.StudentQuickActionModal })), "Quick Actions");
+const ClassFeeStructureSection = lazyWithRetry(() => import("./ClassFeeStructureSection").then(m => ({ default: m.ClassFeeStructureSection })), "Fee Structure");
+const DirectAdmissionModal = lazyWithRetry(() => import("./DirectAdmissionModal").then(m => ({ default: m.DirectAdmissionModal })), "Direct Admission");
+const AdmissionFormPrintModal = lazyWithRetry(() => import("./AdmissionFormPrintModal").then(m => ({ default: m.AdmissionFormPrintModal })), "Admission Form Print");
+const BusTransportModal = lazyWithRetry(() => import("./BusTransportModal").then(m => ({ default: m.BusTransportModal })), "Bus Transport");
+const ClassCurriculumNotesManager = lazyWithRetry(() => import("./ClassCurriculumNotesManager").then(m => ({ default: m.ClassCurriculumNotesManager })), "Curriculum Notes");
 import {
   isSchoolEliteCurriculum,
   hasFaceAttendanceAccess,
@@ -163,44 +166,44 @@ import {
   hasEliteWalkieAccess,
   hasEliteFeeTagadaAccess,
 } from "../../school-types";
-import { SchoolBirthdayCalendar } from "./SchoolBirthdayCalendar";
-import { UniversalAttendanceDesk } from "./UniversalAttendanceDesk";
-import { UniversalAttendanceScannerModal } from "./UniversalAttendanceScannerModal";
-import { SchoolLocationModal } from "./SchoolLocationModal";
-import { DeviceAdminProtectionModal } from "./DeviceAdminProtectionModal";
+const SchoolBirthdayCalendar = lazyWithRetry(() => import("./SchoolBirthdayCalendar").then(m => ({ default: m.SchoolBirthdayCalendar })), "Birthday Calendar");
+const UniversalAttendanceDesk = lazyWithRetry(() => import("./UniversalAttendanceDesk").then(m => ({ default: m.UniversalAttendanceDesk })), "Attendance Desk");
+const UniversalAttendanceScannerModal = lazyWithRetry(() => import("./UniversalAttendanceScannerModal").then(m => ({ default: m.UniversalAttendanceScannerModal })), "QR Scanner");
+const SchoolLocationModal = lazyWithRetry(() => import("./SchoolLocationModal").then(m => ({ default: m.SchoolLocationModal })), "School Location");
+const DeviceAdminProtectionModal = lazyWithRetry(() => import("./DeviceAdminProtectionModal").then(m => ({ default: m.DeviceAdminProtectionModal })), "Device Protection");
 import { speakNotification } from "../../utils/voiceNotifyEngine";
 import { getCombinedDiscountLedger, DISPLAY_DISCOUNT_LABEL } from "../../utils/schoolDiscountAndPayment";
 const SchoolBackupManager = lazyWithRetry(loadSchoolBackupManager, "Backup Manager");
-import { SchoolExpenseManager } from "./SchoolExpenseManager";
-import { ReceiptCancellationModal } from "./ReceiptCancellationModal";
-import { RazorpaySettingsModal } from "./RazorpaySettingsModal";
-import { ParentLeaveManager } from "./ParentLeaveManager";
-import { PtmSchedulerModal } from "./PtmSchedulerModal";
-import { StaffPayrollManager } from "./StaffPayrollManager";
+const SchoolExpenseManager = lazyWithRetry(() => import("./SchoolExpenseManager").then(m => ({ default: m.SchoolExpenseManager })), "Expense Manager");
+const ReceiptCancellationModal = lazyWithRetry(() => import("./ReceiptCancellationModal").then(m => ({ default: m.ReceiptCancellationModal })), "Receipt Cancellation");
+const RazorpaySettingsModal = lazyWithRetry(() => import("./RazorpaySettingsModal").then(m => ({ default: m.RazorpaySettingsModal })), "Razorpay Setup");
+const ParentLeaveManager = lazyWithRetry(() => import("./ParentLeaveManager").then(m => ({ default: m.ParentLeaveManager })), "Parent Leaves");
+const PtmSchedulerModal = lazyWithRetry(() => import("./PtmSchedulerModal").then(m => ({ default: m.PtmSchedulerModal })), "PTM Scheduler");
+const StaffPayrollManager = lazyWithRetry(() => import("./StaffPayrollManager").then(m => ({ default: m.StaffPayrollManager })), "Staff Payroll");
 const QuestionPaperBuilder = lazyWithRetry(loadQuestionPaperBuilder, "Question Paper Builder");
-import { SiblingProfileManager } from "./SiblingProfileManager";
+const SiblingProfileManager = lazyWithRetry(() => import("./SiblingProfileManager").then(m => ({ default: m.SiblingProfileManager })), "Sibling Profiles");
 const MultiBranchManager = lazyWithRetry(loadMultiBranchManager, "Multi-Branch Manager");
 const HostelMessManager = lazyWithRetry(loadHostelMessManager, "Hostel & Mess Manager");
-import { SyllabusPacingTracker } from "./SyllabusPacingTracker";
-import { BusFleetLogbookModal } from "./BusFleetLogbookModal";
-import { VisitorGateSecurityManager } from "./VisitorGateSecurityManager";
+const SyllabusPacingTracker = lazyWithRetry(() => import("./SyllabusPacingTracker").then(m => ({ default: m.SyllabusPacingTracker })), "Syllabus Pacing");
+const BusFleetLogbookModal = lazyWithRetry(() => import("./BusFleetLogbookModal").then(m => ({ default: m.BusFleetLogbookModal })), "Bus Logbook");
+const VisitorGateSecurityManager = lazyWithRetry(() => import("./VisitorGateSecurityManager").then(m => ({ default: m.VisitorGateSecurityManager })), "Visitor Security");
 const DocumentVerificationView = lazyWithRetry(loadDocumentVerificationView, "Document Verification");
-import { AdmissionEnquiryCrm } from "./AdmissionEnquiryCrm";
-import { TeacherAdminGrowthHub } from "./TeacherAdminGrowthHub";
+const AdmissionEnquiryCrm = lazyWithRetry(() => import("./AdmissionEnquiryCrm").then(m => ({ default: m.AdmissionEnquiryCrm })), "Admission CRM");
+const TeacherAdminGrowthHub = lazyWithRetry(() => import("./TeacherAdminGrowthHub").then(m => ({ default: m.TeacherAdminGrowthHub })), "Growth Hub");
 const EntranceTestAdminManager = lazyWithRetry(loadEntranceTestAdminManager, "Entrance Test Hub");
-import { HomeDailyRoutineWidget } from "./HomeDailyRoutineWidget";
-import { AdminDashboardCharts } from "./AdminDashboardCharts";
-import { LessonTopicManagerPanel } from "./LessonTopicManagerPanel";
-import { RolesPermissionsManager } from "./RolesPermissionsManager";
+const HomeDailyRoutineWidget = lazyWithRetry(() => import("./HomeDailyRoutineWidget").then(m => ({ default: m.HomeDailyRoutineWidget })), "Daily Routine");
+const AdminDashboardCharts = lazyWithRetry(() => import("./AdminDashboardCharts").then(m => ({ default: m.AdminDashboardCharts })), "Dashboard Charts");
+const LessonTopicManagerPanel = lazyWithRetry(() => import("./LessonTopicManagerPanel").then(m => ({ default: m.LessonTopicManagerPanel })), "Lesson Topics");
+const RolesPermissionsManager = lazyWithRetry(() => import("./RolesPermissionsManager").then(m => ({ default: m.RolesPermissionsManager })), "Roles & Permissions");
 import {
   getAdminRoleLabel,
   isAdminViewAllowedForProfile,
   resolveAdminProfilePermissions,
 } from "../../utils/schoolRolePermissions";
 import type { SchoolAdminProfile } from "../../school-types";
-import { PendingUpiApprovalsPanel } from "./PendingUpiApprovalsPanel";
-import { UpiProofVerificationPopup } from "./UpiProofVerificationPopup";
-import { OfficialFeeReceiptModal } from "./OfficialFeeReceiptModal";
+const PendingUpiApprovalsPanel = lazyWithRetry(() => import("./PendingUpiApprovalsPanel").then(m => ({ default: m.PendingUpiApprovalsPanel })), "UPI Approvals");
+const UpiProofVerificationPopup = lazyWithRetry(() => import("./UpiProofVerificationPopup").then(m => ({ default: m.UpiProofVerificationPopup })), "UPI Popup");
+const OfficialFeeReceiptModal = lazyWithRetry(() => import("./OfficialFeeReceiptModal").then(m => ({ default: m.OfficialFeeReceiptModal })), "Fee Receipt");
 const DocumentTemplateStudioModal = lazyWithRetry(loadDocumentTemplateStudioModal, "Template Studio");
 const playAttendanceSuccessChimeLazy = () => {
   void import("../../utils/faceRecognitionEngine")
@@ -236,7 +239,7 @@ type AdminView =
   | "community"
   | "absentee"
   | "sessions" | "classes" | "subjects" | "teachers" | "students"
-  | "content" | "class_notes_manager" | "attendance" | "fees" | "fee_class" | "fee_all" | "fee_structure" | "term_scheduler" | "fee_tagada" | "bus_transport" | "live_bus_map" | "qr_pay" | "fee_alerts" | "receipt_header" | "discount_list" | "report_card" | "marks" | "results"
+  | "content" | "class_notes_manager" | "attendance" | "fees" | "fee_class" | "fee_all" | "fee_structure" | "term_scheduler" | "admission_kit" | "fee_tagada" | "bus_transport" | "live_bus_map" | "qr_pay" | "fee_alerts" | "receipt_header" | "discount_list" | "report_card" | "marks" | "results"
   | "sibling_profiles"
   | "store" | "subscription"
   | "id_cards" | "admit_cards" | "certificates" | "marksheet_hub" | "readmission" | "notices" | "holidays" | "staff_hrm" | "reports_hub"
@@ -313,13 +316,7 @@ export const SchoolAdminPanel: React.FC<Props> = ({
   const [schoolLoading, setSchoolLoading] = useState<boolean>(() => !initialCachedSchool);
 
   useEffect(() => {
-    return scheduleIdlePreload([
-      loadNstaMessengerSuite,
-      loadIdCardManager,
-      loadAdmitCardManager,
-      loadCertificateManager,
-      loadMarksheetGenerator,
-    ], 1800);
+    return scheduleIdlePreload([loadNstaMessengerSuite], 4500);
   }, []);
   const [sessions, setSessions] = useState<SchoolSession[]>([]);
   const [classes, setClasses] = useState<SchoolClass[]>([]);
@@ -1204,7 +1201,13 @@ export const SchoolAdminPanel: React.FC<Props> = ({
   }, [schoolId]);
 
   useEffect(() => {
-    if (!schoolId) return;
+    const needsFaceIds =
+      showFaceKioskModal ||
+      showFaceStudioModal ||
+      view === "students" ||
+      view === "teachers" ||
+      view === "attendance";
+    if (!schoolId || !needsFaceIds) return;
     let cancelled = false;
     const timer = setTimeout(() => {
       import("../../utils/faceRecognitionEngine")
@@ -1220,12 +1223,12 @@ export const SchoolAdminPanel: React.FC<Props> = ({
         .catch((err) => {
           console.warn("Failed to fetch face descriptors:", err);
         });
-    }, showFaceKioskModal ? 0 : 1200);
+    }, showFaceKioskModal ? 0 : 400);
     return () => {
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [schoolId, showFaceKioskModal, students.length]);
+  }, [schoolId, showFaceKioskModal, showFaceStudioModal, view, students.length]);
 
   // Fee summary state
   const [feeMonth, setFeeMonth] = useState(currentMonthStr());
@@ -1557,12 +1560,12 @@ export const SchoolAdminPanel: React.FC<Props> = ({
     "Class 11", "Class 12", "Play"
   ];
 
-  // 1-second live ticker for 48h live countdown and instant lockout on 00:00:00
+  // 60-second subscription check ticker (avoids re-rendering 16k-line admin root every 1s)
   const [nowTick, setNowTick] = useState<number>(Date.now());
   useEffect(() => {
     const timer = setInterval(() => {
       setNowTick(Date.now());
-    }, 1000);
+    }, 60000);
     return () => clearInterval(timer);
   }, []);
 
@@ -1756,20 +1759,23 @@ export const SchoolAdminPanel: React.FC<Props> = ({
 
   useEffect(() => {
     if (!schoolId) return;
-    const allowParentCaller = hasEliteFeeTagadaAccess(school);
-    syncSchoolDirectoryToAndroid({
-      school,
-      schoolName: school?.name,
-      teachers,
-      accountants,
-      staffEmployees: staffList,
-      students: allowParentCaller ? students : [],
-      classes: allowParentCaller ? classes : [],
-      fees: allowParentCaller ? (dashboardFeeHistory.length > 0 ? dashboardFeeHistory : allFees) : [],
-      feeCallFollowUps: allowParentCaller ? feeCallFollowUps : [],
-      absentStudentIds: allowParentCaller ? todayAbsentStudentIds : [],
-      inquiries: allowParentCaller ? inquiries : [],
-    });
+    const timer = window.setTimeout(() => {
+      const allowParentCaller = hasEliteFeeTagadaAccess(school);
+      syncSchoolDirectoryToAndroid({
+        school,
+        schoolName: school?.name,
+        teachers,
+        accountants,
+        staffEmployees: staffList,
+        students: allowParentCaller ? students : [],
+        classes: allowParentCaller ? classes : [],
+        fees: allowParentCaller ? (dashboardFeeHistory.length > 0 ? dashboardFeeHistory : allFees) : [],
+        feeCallFollowUps: allowParentCaller ? feeCallFollowUps : [],
+        absentStudentIds: allowParentCaller ? todayAbsentStudentIds : [],
+        inquiries: allowParentCaller ? inquiries : [],
+      });
+    }, 900);
+    return () => window.clearTimeout(timer);
   }, [
     schoolId,
     school,
@@ -3402,6 +3408,7 @@ export const SchoolAdminPanel: React.FC<Props> = ({
         { id: "fee_tagada" as AdminView, label: "Fee Tagada • Offline Caller", icon: PhoneCall, desc: "SIM कॉल रिकॉर्ड, Promise Date सेट करें व न जमा होने पर अगले दिन ऑटो लिस्ट" },
         { id: "fee_structure" as AdminView, label: "Fee Structure & Admission Heads", icon: Sparkles, desc: "कक्षा-वार मासिक, वार्षिक व Online Admission शुल्क सेट-अप" },
         { id: "term_scheduler" as AdminView, label: "Term / Exam Fee & Month Add", icon: CalendarClock, desc: "2-Monthly / कम दाम Exam Fee, Reg-Only छात्र के महीने में फीस जोड़ें व Full-Paid छूट" },
+        { id: "admission_kit" as AdminView, label: "Admission Kit & Term Control", icon: Package, desc: "One-Time किट रेट + 12-Month JSON सेटअप व छात्र-वार Kit/बाकी लिस्ट" },
         { id: "discount_list" as AdminView, label: "Fee Discount List (छूट सूची)", icon: Award, desc: "किसको कितना व कहाँ डिस्काउंट मिला" },
         { id: "expenses" as AdminView, label: "Expense & Daily Cashbook", icon: Receipt, desc: "दैनिक खर्च, पेटी कैश व नेट क्लोजिंग बैलेंस" },
         { id: "qr_pay" as AdminView, label: "Scan QR to Pay (फास्ट पे)", icon: QrCode, desc: "स्मार्ट आईडी कार्ड क्यूआर स्कैनर से फीस" },
@@ -5113,6 +5120,14 @@ export const SchoolAdminPanel: React.FC<Props> = ({
               keywords: "term exam fee campaign 2 monthly registration only month add deferred full paid exempt किस्त परीक्षा शुल्क",
               icon: CalendarClock,
               action: () => setView("term_scheduler"),
+            },
+            {
+              id: "sub_admission_kit",
+              label: "Admission Kit & Term Control (किट व JSON कंट्रोल)",
+              desc: "One-Time किट रेट, Student Checklist और 12-Month JSON Term Schedule",
+              keywords: "admission kit diary id card tie belt folder json rate term schedule किट",
+              icon: Package,
+              action: () => setView("admission_kit"),
             },
             {
               id: "sub_fee_tagada",
@@ -9495,7 +9510,6 @@ export const SchoolAdminPanel: React.FC<Props> = ({
               initialTargetPerson={faceStudioTargetPerson}
               initialTargetType={faceStudioTargetType}
               onEnrollmentUpdated={() => {
-                try { loadAll(); } catch (e) { console.warn("Failed to reload after enrollment:", e); }
                 if (schoolId) {
                   import("../../utils/faceRecognitionEngine")
                     .then(({ getSchoolFaceDescriptors }) => getSchoolFaceDescriptors(schoolId))
@@ -9872,7 +9886,7 @@ export const SchoolAdminPanel: React.FC<Props> = ({
           isEffectiveLandscape ? "overflow-x-auto" : "overflow-x-hidden"
         }`}>
           {renderTopHeader()}
-          <main className={`flex-1 px-2 py-2.5 sm:p-4 lg:p-6 w-full mx-auto pb-20 md:pb-8 print:p-0 print:m-0 print:max-w-none print:min-w-0 ${
+          <main className={`flex-1 flex flex-col px-2 py-2.5 sm:p-4 lg:p-6 w-full mx-auto pb-20 md:pb-8 print:p-0 print:m-0 print:max-w-none print:min-w-0 ${
             isEffectiveLandscape ? "min-w-[980px] sm:min-w-0 max-w-7xl" : "max-w-7xl"
           }`}>
             <Suspense
@@ -9905,7 +9919,9 @@ export const SchoolAdminPanel: React.FC<Props> = ({
         )}
 
         {/* Global Modals */}
-        {renderGlobalModals()}
+        <Suspense fallback={null}>
+          {renderGlobalModals()}
+        </Suspense>
       </div>
     );
   };
@@ -10066,7 +10082,7 @@ export const SchoolAdminPanel: React.FC<Props> = ({
 
             <button
               type="button"
-              onClick={handleLogout}
+              onClick={handlePerformLogout}
               className="w-full py-2 px-4 rounded-xl text-slate-400 hover:text-white text-xs font-semibold flex items-center justify-center gap-1.5 transition cursor-pointer"
             >
               <LogOut className="w-3.5 h-3.5" />
@@ -10081,13 +10097,15 @@ export const SchoolAdminPanel: React.FC<Props> = ({
   // Smart class handler
   if (smartClassLesson) {
     return (
-      <SmartClass
-        lesson={smartClassLesson}
-        initialMode={smartClassMode}
-        schoolId={schoolId}
-        isAdmin={true}
-        onBack={() => setSmartClassLesson(null)}
-      />
+      <Suspense fallback={null}>
+        <SmartClass
+          lesson={smartClassLesson}
+          initialMode={smartClassMode}
+          schoolId={schoolId}
+          isAdmin={true}
+          onBack={() => setSmartClassLesson(null)}
+        />
+      </Suspense>
     );
   }
 
@@ -11301,6 +11319,36 @@ export const SchoolAdminPanel: React.FC<Props> = ({
     );
   }
 
+  if (view === "admission_kit") {
+    return renderErpShell(
+      <AdmissionKitManager
+        school={school!}
+        students={displayedStudents}
+        classes={displayedClasses}
+        sessionId={activeSession?.id || ""}
+        actorName={activeAdminDisplayName}
+        isAdmin={true}
+        onBack={() => setView("dashboard")}
+        onOpenTermPlanner={() => setView("term_scheduler")}
+        onSchoolUpdated={(patch) =>
+          setSchool((prev) => (prev ? { ...prev, ...patch } : prev))
+        }
+        onClassUpdated={(cid, fs) =>
+          setClasses((prev) =>
+            prev.map((c) => (c.id === cid ? { ...c, feeStructure: fs, defaultFee: fs.tuitionFee || c.defaultFee } : c))
+          )
+        }
+        onStudentUpdated={(updated) =>
+          setStudents((prev) =>
+            prev.some((s) => s.id === updated.id)
+              ? prev.map((s) => (s.id === updated.id ? updated : s))
+              : [updated, ...prev]
+          )
+        }
+      />
+    );
+  }
+
   if (view === "fee_tagada") {
     if (!hasEliteFeeTagadaAccess(school)) {
       return renderErpShell(
@@ -12361,6 +12409,7 @@ export const SchoolAdminPanel: React.FC<Props> = ({
     { label: "Teachers & Staff Hub", subtitle: "Directory, Salary, Slips & HRM", icon: <Users className="w-5 h-5 text-green-500" />, view: "teachers", count: displayedTeachers.length, locked: false },
     { label: "Fee Structure & Heads", subtitle: "Class & Online Admission Heads", icon: <IndianRupee className="w-5 h-5 text-emerald-600" />, view: "fee_structure", count: "Class + Adm", locked: false },
     { label: "Term / Exam Fee & Month Add", subtitle: "2-Monthly Exam, Reg-Only Defer & Exempt", icon: <CalendarClock className="w-5 h-5 text-indigo-500" />, view: "term_scheduler", count: "NEW ⚡", locked: false, featured: true },
+    { label: "Admission Kit Control", subtitle: "One-Time Rates, JSON & Kit Tracker", icon: <Package className="w-5 h-5 text-emerald-600" />, view: "admission_kit", count: "Kit Hub", locked: false, featured: true },
     { label: "Marksheet (रिजल्ट)", subtitle: "Report Card & Print", icon: <FileSpreadsheet className="w-5 h-5 text-emerald-600" />, view: "marksheet_hub", count: "Official", locked: false },
     { label: "Notice Board & Holidays", subtitle: "Circulars & Festival Holidays", icon: <Megaphone className="w-5 h-5 text-purple-600" />, view: "notices", count: "Circulars", locked: false },
     { label: "Admit Cards", subtitle: "Exam Hall Tickets", icon: <FileText className="w-5 h-5 text-rose-500" />, view: "admit_cards", count: "Hall Ticket", locked: false },

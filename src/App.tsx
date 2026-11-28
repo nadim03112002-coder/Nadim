@@ -757,6 +757,8 @@ export function App() {
 
   useEffect(() => {
     if (!activePublicSchool?.id) return;
+    if (routePath === '/login') return;
+    if (user && !showPublicWebsite && routePath !== '/admission') return;
     let active = true;
     const sid = activePublicSchool.id;
     const isLifeMaker =
@@ -822,7 +824,7 @@ export function App() {
     return () => {
       active = false;
     };
-  }, [activePublicSchool?.id, activePublicSchool?.name]);
+  }, [activePublicSchool?.id, activePublicSchool?.name, routePath, showPublicWebsite, Boolean(user)]);
 
   // Keep browser document title, manifest link, cached brand, and PWA meta synced with SCHOOL+ / active school
   useEffect(() => {
@@ -883,22 +885,29 @@ export function App() {
 
   const [bootSplashMode, setBootSplashMode] = useState<'boot' | 'to_app' | 'to_website'>('boot');
   const [bootSplashKey, setBootSplashKey] = useState<number>(1);
-  // Play the 5-second 3D boot splash on app launch (excluding standalone verification / driver console)
+  // Show brief boot splash only on cold public launch; never block /login, /verify, Driver console, or returning users
   const [showBootSplash, setShowBootSplash] = useState<boolean>(() => {
     try {
       const path = (window.location.pathname || '').toLowerCase();
       const params = new URLSearchParams(window.location.search);
-      if (path.startsWith('/verify') || params.get('driverConsole') === '1' || params.get('driver') === '1') {
+      if (
+        path.startsWith('/login') ||
+        path.startsWith('/verify') ||
+        params.get('driverConsole') === '1' ||
+        params.get('driver') === '1'
+      ) {
+        return false;
+      }
+      if (localStorage.getItem('nst_current_user') && localStorage.getItem('nst_logged_out') !== 'true') {
         return false;
       }
     } catch {}
     return true;
   });
 
-  const triggerSplash = (mode: 'boot' | 'to_app' | 'to_website') => {
-    setBootSplashMode(mode);
-    setBootSplashKey((k) => k + 1);
-    setShowBootSplash(true);
+  const triggerSplash = (_mode: 'boot' | 'to_app' | 'to_website') => {
+    // Instant navigation without blocking overlay
+    setShowBootSplash(false);
   };
 
   useEffect(() => {
@@ -1202,6 +1211,20 @@ export function App() {
           try { parsedCached = JSON.parse(cachedRaw); } catch {}
         }
 
+        const cachedMatchesFirebase = Boolean(
+          parsedCached &&
+          (parsedCached.uid === firebaseUser.uid ||
+            parsedCached.id === firebaseUser.uid ||
+            parsedCached.linkedGoogleUid === firebaseUser.uid)
+        );
+        if (cachedMatchesFirebase) {
+          if (isSchoolAdminEmail(parsedCached.email)) {
+            parsedCached.role = 'SCHOOL_ADMIN';
+          }
+          handleLogin(parsedCached, { keepWebsiteOpen: !shouldOpenPortal });
+          return;
+        }
+
         // Query Supabase / Firestore for fresh user data including role & isAdmin flags (bounded & parallel)
         let fresh: any = null;
         try {
@@ -1447,6 +1470,12 @@ export function App() {
     } catch {}
   };
 
+  const handleOpenAccountSection = () => {
+    setShowPublicWebsite(false);
+    triggerSplash('to_app');
+    navigateToPath('/login');
+  };
+
   if (isPublicDocVerify) {
     const isLoggedIn = Boolean(user);
     const verifyPortalLabel =
@@ -1495,6 +1524,7 @@ export function App() {
                   tone="dark"
                   variant="fullscreen"
                   accent="emerald"
+                  className="bg-slate-900"
                 />
               }
             >
@@ -1625,14 +1655,24 @@ export function App() {
     );
   };
 
-  const renderSchoolLoader = (subtitle: string, _lightBg = false) => {
+  const renderSchoolLoader = (subtitle: string, lightBg = false) => {
+    const loaderThemeClass = lightBg
+      ? 'bg-[#eef2f7] text-slate-900'
+      : isSchoolErpActive
+      ? erpTheme === 'white'
+        ? 'bg-[#eef2f7] text-slate-900'
+        : erpTheme === 'black'
+        ? 'bg-black text-white'
+        : 'bg-[#08142c] text-slate-100'
+      : 'bg-[#070B14] text-slate-100';
     return (
       <PremiumLoadingState
         title={subtitle}
         subtitle="Preparing digital campus workspace"
-        tone="dark"
+        tone={lightBg || (isSchoolErpActive && erpTheme === 'white') ? 'light' : 'dark'}
         variant="fullscreen"
         accent="amber"
+        className={loaderThemeClass}
         schoolId={user?.schoolId || activePublicSchool?.id}
         schoolName={user?.schoolName || activePublicSchool?.name}
         schoolLogoUrl={activePublicSchool?.logoUrl}
@@ -1647,12 +1687,6 @@ export function App() {
     triggerSplash('to_website');
     setShowPublicWebsite(true);
     navigateToPath('/');
-  };
-
-  const handleOpenAccountSection = () => {
-    setShowPublicWebsite(false);
-    triggerSplash('to_app');
-    navigateToPath('/login');
   };
 
   const renderPublicAdmissionShell = (loggedInMode: boolean) => {

@@ -1,5 +1,4 @@
 import React, { useState } from "react";
-import { jsPDF } from "jspdf";
 import {
   ArrowUpRight,
   BellRing,
@@ -191,8 +190,9 @@ export const TodayCommandDigestCard: React.FC<TodayCommandDigestCardProps> = ({
     window.location.href = url;
   };
 
-  const handleSaveClosingPdf = () => {
+  const handleSaveClosingPdf = async () => {
     try {
+      const { jsPDF } = await import("jspdf");
       const doc = new jsPDF({ unit: "pt", format: "a4" });
       let y = 52;
 

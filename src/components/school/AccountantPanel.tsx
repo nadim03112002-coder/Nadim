@@ -54,7 +54,8 @@ import {
   Send,
   Loader2,
   CalendarClock,
-  Radio
+  Radio,
+  Package
 } from "lucide-react";
 import { rotateToLandscape, rotateToPortrait, setDesktopMode, useDeviceOrientation } from "../../utils/displayPrefs";
 import type {
@@ -126,6 +127,7 @@ const NstaMessengerSuite = lazyWithRetry(loadNstaMessengerSuite, "NSTA Messenger
 import { ReceiptCancellationModal } from "./ReceiptCancellationModal";
 import { RazorpaySettingsModal } from "./RazorpaySettingsModal";
 import { StudentReAdmissionManager } from "./StudentReAdmissionManager";
+import { AdmissionKitManager } from "./AdmissionKitManager";
 import { printElementInIframe, printHtmlInIframe } from "./AdmissionFormPrintModal";
 import { exportElementToPdf } from "../../utils/universalPdfExport";
 import { TeacherRulesRegulationsView } from "./TeacherRulesRegulationsView";
@@ -186,6 +188,7 @@ type AccountantTab =
   | "fee_alerts"
   | "class_rates"
   | "term_scheduler"
+  | "admission_kit"
   | "fee_tagada"
   | "receipt_header"
   | "receipt_cancellation"
@@ -1315,6 +1318,18 @@ export const AccountantPanel: React.FC<Props> = ({
             )}
 
             <button
+              onClick={() => setActiveTab("admission_kit")}
+              className={`w-full flex items-center gap-3 px-3 py-2 rounded-xl text-xs transition text-left cursor-pointer ${
+                activeTab === "admission_kit"
+                  ? "bg-indigo-600 text-white font-semibold shadow-xs"
+                  : `${navInactiveCls} font-medium`
+              }`}
+            >
+              <Package className={`w-4 h-4 shrink-0 ${activeTab === "admission_kit" ? "text-white" : "text-amber-400"}`} />
+              <span className="flex-1 truncate">Admission Kit Control</span>
+            </button>
+
+            <button
               onClick={() => setActiveTab("fee_tagada")}
               className={`w-full flex items-center gap-3 px-3 py-2 rounded-xl text-xs transition text-left cursor-pointer ${
                 activeTab === "fee_tagada"
@@ -1717,6 +1732,19 @@ export const AccountantPanel: React.FC<Props> = ({
                     </button>
                   </>
                 )}
+
+                <button
+                  onClick={() => {
+                    setActiveTab("admission_kit");
+                    setIsMobileMenuOpen(false);
+                  }}
+                  className={`w-full flex items-center gap-3 px-3 py-2 rounded-xl text-xs transition text-left ${
+                    activeTab === "admission_kit" ? "bg-indigo-600 text-white font-semibold" : `${mobileNavInactiveCls} font-medium`
+                  }`}
+                >
+                  <Package className={`w-4 h-4 shrink-0 ${activeTab === "admission_kit" ? "text-white" : "text-amber-400"}`} />
+                  <span className="flex-1 truncate">Admission Kit Control</span>
+                </button>
 
                 <button
                   onClick={() => {
@@ -3141,6 +3169,36 @@ export const AccountantPanel: React.FC<Props> = ({
                 </button>
               </div>
             )
+          )}
+
+          {activeTab === "admission_kit" && school && (
+            <AdmissionKitManager
+              school={school}
+              students={students}
+              classes={classes}
+              sessionId={activeSession?.id || ""}
+              actorName={activeAccountant?.name || "Accountant"}
+              isAdmin={Boolean(permissions.canEditFeeStructure)}
+              onBack={() => setActiveTab("fee_collection")}
+              onOpenTermPlanner={() => {
+                if (permissions.canEditFeeStructure) setActiveTab("term_scheduler");
+              }}
+              onSchoolUpdated={(patch) =>
+                setSchool((prev) => (prev ? { ...prev, ...patch } : prev))
+              }
+              onClassUpdated={(cid, fs) =>
+                setClasses((prev) =>
+                  prev.map((c) => (c.id === cid ? { ...c, feeStructure: fs, defaultFee: fs.tuitionFee || c.defaultFee } : c))
+                )
+              }
+              onStudentUpdated={(updated) =>
+                setStudents((prev) =>
+                  prev.some((s) => s.id === updated.id)
+                    ? prev.map((s) => (s.id === updated.id ? updated : s))
+                    : [updated, ...prev]
+                )
+              }
+            />
           )}
 
           {activeTab === "razorpay_setup" && (

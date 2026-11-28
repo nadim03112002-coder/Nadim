@@ -108,6 +108,10 @@ class MainActivity : AppCompatActivity() {
     private var lastBatteryLevel: Int = -1
     private var lastBatteryCharging: Boolean = false
     private var isBatteryReceiverRegistered: Boolean = false
+    @Volatile
+    var isAppInForeground: Boolean = false
+    @Volatile
+    var activeNstaCallJson: JSONObject? = null
 
     private val fcmTokenReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
@@ -147,6 +151,18 @@ class MainActivity : AppCompatActivity() {
             val payload = intent.getStringExtra(BusGpsForegroundService.EXTRA_BUS_PAYLOAD).orEmpty()
             if (payload.isNotBlank()) {
                 pushBusGpsLocationToWebView(payload)
+            }
+        }
+    }
+
+    private val nstaCallNativeActionReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            if (intent?.action != ParentCallOverlayService.ACTION_NSTA_CALL_NATIVE_ACTION) return
+            val callId = intent.getStringExtra(ParentCallOverlayService.EXTRA_NSTA_CALL_ID).orEmpty().trim()
+            val callAction = intent.getStringExtra(ParentCallOverlayService.EXTRA_NATIVE_ACTION).orEmpty().trim()
+            val url = intent.getStringExtra(ParentCallOverlayService.EXTRA_NATIVE_CALL_URL).orEmpty().trim()
+            if (callId.isNotEmpty() || callAction.isNotEmpty()) {
+                pushNstaCallNativeActionToWebView(callId, callAction, url)
             }
         }
     }
@@ -475,22 +491,33 @@ class MainActivity : AppCompatActivity() {
         val parentCallFilter = IntentFilter(ParentCallerAlertHelper.ACTION_INCOMING_PARENT_CALL)
         val missedCallFilter = IntentFilter(ParentCallerAlertHelper.ACTION_MISSED_SCHOOL_CALL)
         val busGpsFilter = IntentFilter(BusGpsForegroundService.ACTION_BUS_LOCATION_UPDATE)
+        val nstaCallActionFilter = IntentFilter(ParentCallOverlayService.ACTION_NSTA_CALL_NATIVE_ACTION)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             registerReceiver(fcmTokenReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
             registerReceiver(incomingParentCallReceiver, parentCallFilter, Context.RECEIVER_NOT_EXPORTED)
             registerReceiver(missedSchoolCallReceiver, missedCallFilter, Context.RECEIVER_NOT_EXPORTED)
             registerReceiver(busGpsReceiver, busGpsFilter, Context.RECEIVER_NOT_EXPORTED)
+            registerReceiver(nstaCallNativeActionReceiver, nstaCallActionFilter, Context.RECEIVER_NOT_EXPORTED)
         } else {
             registerReceiver(fcmTokenReceiver, filter)
             registerReceiver(incomingParentCallReceiver, parentCallFilter)
             registerReceiver(missedSchoolCallReceiver, missedCallFilter)
             registerReceiver(busGpsReceiver, busGpsFilter)
+            registerReceiver(nstaCallNativeActionReceiver, nstaCallActionFilter)
         }
         registerBatteryReceiver()
         registerNetworkObserver()
     }
 
     override fun onStop() {
+        isAppInForeground = false
+        val activeCall = activeNstaCallJson
+        if (activeCall != null) {
+            val phase = activeCall.optString("phase", "").trim().lowercase()
+            if (phase == "ringing_incoming" || phase == "ringing_outgoing" || phase == "connecting" || phase == "connected") {
+                ParentCallOverlayService.showNstaCall(applicationContext, activeCall)
+            }
+        }
         try {
             unregisterReceiver(fcmTokenReceiver)
         } catch (_: Exception) {}
@@ -503,6 +530,9 @@ class MainActivity : AppCompatActivity() {
         try {
             unregisterReceiver(busGpsReceiver)
         } catch (_: Exception) {}
+        try {
+            unregisterReceiver(nstaCallNativeActionReceiver)
+        } catch (_: Exception) {}
         unregisterBatteryReceiver()
         unregisterNetworkObserver()
         super.onStop()
@@ -510,6 +540,12 @@ class MainActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
+        isAppInForeground = true
+        val activeCall = activeNstaCallJson
+        if (activeCall != null) {
+            val activeId = activeCall.optString("callId", "").trim()
+            ParentCallOverlayService.hideNstaCall(applicationContext, activeId)
+        }
         if (pendingDeviceAdminSyncOnResume) {
             pendingDeviceAdminSyncOnResume = false
             pushDeviceAdminStatusToWebView()
@@ -1733,6 +1769,27 @@ class MainActivity : AppCompatActivity() {
                 (function() {
                   try {
                     window.dispatchEvent(new CustomEvent('android-incoming-parent-call', { detail: $payloadJson }));
+                  } catch (e) {}
+                })();
+                """.trimIndent(),
+                null
+            )
+        }
+    }
+
+    fun pushNstaCallNativeActionToWebView(callId: String, callAction: String, url: String = "") {
+        if (!::webView.isInitialized || !webAppBridge.isTrustedHostActive) return
+        val payloadJson = JSONObject().apply {
+            put("callId", callId)
+            put("callAction", callAction)
+            put("url", url)
+        }.toString()
+        webView.post {
+            webView.evaluateJavascript(
+                """
+                (function() {
+                  try {
+                    window.dispatchEvent(new CustomEvent('android-incoming-call-action', { detail: $payloadJson }));
                   } catch (e) {}
                 })();
                 """.trimIndent(),

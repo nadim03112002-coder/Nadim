@@ -2172,15 +2172,11 @@ export async function enrollPersonFromImageFile(
 ): Promise<{ record: FaceDescriptorRecord; photoDataUrl: string } | null> {
   if (!file || !person?.id || !schoolId) return null;
 
-  const arcReady = await initArcFaceEngine().catch(() => false);
-  if (!arcReady) {
-    const errDetail = getArcFaceError();
-    throw new Error(
-      errDetail
-        ? `512-D ArcFace ONNX इंजन तैयार नहीं हो सका: ${errDetail}`
-        : "512-D ArcFace ONNX इंजन लोड नहीं हो सका। कृपया पेज रीलोड करके दोबारा प्रयास करें।"
-    );
-  }
+  // Warm Face-API & 512-D ArcFace ONNX in parallel with reading/decoding the image file
+  const modelsWarmPromise = Promise.all([
+    loadFaceApiModels().catch(() => false),
+    initArcFaceEngine(!isArcFaceReady()).catch(() => false),
+  ]);
 
   const dataUrl: string = await new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -2197,6 +2193,16 @@ export async function enrollPersonFromImageFile(
     image.onerror = () => reject(new Error("फ़ोटो लोड नहीं हो सकी। कृपया JPG/PNG फ़ोटो चुनें।"));
     image.src = dataUrl;
   });
+
+  const [, arcReady] = await modelsWarmPromise;
+  if (!arcReady && !isArcFaceReady()) {
+    const errDetail = getArcFaceError();
+    throw new Error(
+      errDetail
+        ? `512-D ArcFace ONNX इंजन तैयार नहीं हो सका: ${errDetail}`
+        : "512-D ArcFace ONNX इंजन लोड नहीं हो सका। कृपया पेज रीलोड करके दोबारा प्रयास करें।"
+    );
+  }
 
   const maxDim = 720;
   const srcW = img.naturalWidth || img.width || 480;

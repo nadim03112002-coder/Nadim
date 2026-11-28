@@ -295,6 +295,7 @@ const PanelLoadingFallback = ({
       tone={isWhite ? "light" : "dark"}
       variant="fullscreen"
       accent="emerald"
+      className={bgClass}
     />
   );
 };
@@ -711,7 +712,7 @@ export const SchoolEcosystem: React.FC<Props> = ({
     let mounted = true;
     const safetyTimer = window.setTimeout(() => {
       if (mounted) setHydratingLinkedAccount(false);
-    }, 3500);
+    }, 1400);
 
     const hydrateAndPrune = async () => {
       try {
@@ -1990,6 +1991,7 @@ export const SchoolEcosystem: React.FC<Props> = ({
         tone={erpTheme === "white" ? "light" : "dark"}
         variant="fullscreen"
         accent="emerald"
+        className={shellThemeClass}
       />
     );
   }
@@ -2515,7 +2517,7 @@ export const SchoolEcosystem: React.FC<Props> = ({
                 <span>Visit Our Website</span>
               </button>
             )}
-            {onLogout ? (
+            {onLogout && !["", "STUDENT", "SCHOOL_STUDENT", "PARENT"].includes(String(userRole || user?.role || "").trim().toUpperCase()) ? (
               <button
                 onClick={onLogout}
                 className={`text-xs font-semibold cursor-pointer ${erpTheme === "white" ? "text-rose-600 hover:text-rose-800" : "text-rose-400 hover:text-rose-300"}`}

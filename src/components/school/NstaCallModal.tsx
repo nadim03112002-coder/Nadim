@@ -26,8 +26,10 @@ import {
   acceptIncomingCall,
   checkAndJoinCallFromNotification,
   clearCallErrorNote,
+  clearLastCallStatusBanner,
   endCurrentCall,
   flipCallCamera,
+  handleRemoteCallControlAction,
   refreshIncomingRingtoneMode,
   registerCallIdentity,
   registerCallModalHost,
@@ -205,7 +207,54 @@ export const NstaCallModal: React.FC = () => {
     94
   );
 
-  if (call.phase === "idle") return null;
+  const renderPortal = (node: React.ReactNode) => {
+    if (typeof document !== "undefined" && document.body) {
+      return createPortal(node, document.body);
+    }
+    return <>{node}</>;
+  };
+
+  if (call.phase === "idle") {
+    if (!call.lastCallBanner) return null;
+    const isMissedOrDeclined = call.lastCallBanner.kind === "missed" || call.lastCallBanner.kind === "declined";
+    return renderPortal(
+      <div
+        className={`nst-isolated-modal fixed top-[max(0.75rem,env(safe-area-inset-top))] left-1/2 -translate-x-1/2 z-[9998] w-[calc(100%-24px)] max-w-md rounded-2xl px-3.5 py-2.5 flex items-center justify-between gap-2.5 shadow-2xl backdrop-blur-md text-white border ${
+          isMissedOrDeclined
+            ? "bg-rose-950/95 border-rose-500/60"
+            : "bg-slate-900/95 border-indigo-500/50"
+        }`}
+      >
+        <div className="flex items-center gap-2.5 min-w-0 flex-1">
+          <div
+            className={`w-9 h-9 rounded-xl flex items-center justify-center shrink-0 border ${
+              isMissedOrDeclined
+                ? "bg-rose-500/20 border-rose-400/40 text-rose-300"
+                : "bg-indigo-500/20 border-indigo-400/40 text-indigo-300"
+            }`}
+          >
+            <PhoneOff className="w-4 h-4" />
+          </div>
+          <div className="min-w-0 flex-1">
+            <p className="text-xs font-extrabold text-white truncate" style={{ color: "#ffffff" }}>
+              {call.lastCallBanner.title}
+            </p>
+            <p className="text-[11px] font-semibold text-slate-200 truncate">
+              {call.lastCallBanner.subtitle}
+            </p>
+          </div>
+        </div>
+        <button
+          type="button"
+          onClick={clearLastCallStatusBanner}
+          className="min-h-[36px] min-w-[36px] rounded-xl bg-white/10 hover:bg-white/20 text-slate-200 flex items-center justify-center cursor-pointer shrink-0"
+          title="Close"
+        >
+          <X className="w-4 h-4" />
+        </button>
+      </div>
+    );
+  }
 
   const isVideoCall = call.callType === "video";
   const showLocalVideo =
@@ -215,13 +264,6 @@ export const NstaCallModal: React.FC = () => {
     isVideoCall &&
     !call.remoteVideoOff &&
     Boolean(call.remoteStream?.getVideoTracks().some((t) => t.readyState === "live"));
-
-  const renderPortal = (node: React.ReactNode) => {
-    if (typeof document !== "undefined" && document.body) {
-      return createPortal(node, document.body);
-    }
-    return <>{node}</>;
-  };
 
   // ── 1. MINIMIZED FLOATING CALL STRIP (Never blocks chat/work) ────────────
   if (call.isMinimized && call.phase !== "ringing_incoming") {
@@ -246,9 +288,12 @@ export const NstaCallModal: React.FC = () => {
                 style={{ color: "#ffffff" }}
               >
                 {call.remoteName}
+                {call.remoteRoleLabel ? ` (${call.remoteRoleLabel})` : ""}
               </p>
               <p className="text-[11px] font-mono tabular-nums text-emerald-300 truncate">
+                {isVideoCall ? "Video" : "Voice"} •{" "}
                 {call.connectedAtMs ? formatElapsed(call.connectedAtMs, nowMs) : call.statusNote}
+                {call.remoteSchoolName ? ` · ${call.remoteSchoolName}` : ""}
                 {call.mode === "group" ? ` · ${1 + call.groupPeers.length} Live` : ""}
               </p>
             </div>
@@ -321,8 +366,15 @@ export const NstaCallModal: React.FC = () => {
             <h2 className="text-2xl font-black tracking-tight text-white break-words">
               {call.remoteName}
             </h2>
+            {call.remoteRoleLabel && (
+              <p className="text-xs font-bold uppercase tracking-wider text-emerald-300">
+                {call.remoteRoleLabel}
+              </p>
+            )}
             <p className="text-sm font-medium text-slate-300">
-              {isVideoCall ? "Video call par baat karna chahte hain" : "Voice call aa rahi hai"}
+              {isVideoCall
+                ? "NSTA Messenger par video call aa rahi hai"
+                : "NSTA Messenger par voice call aa rahi hai"}
             </p>
             <button
               type="button"
@@ -390,7 +442,10 @@ export const NstaCallModal: React.FC = () => {
       <div className="relative z-20 px-4 pt-[max(1rem,env(safe-area-inset-top))] pb-3 flex items-center justify-between gap-3 bg-gradient-to-b from-slate-950/90 to-transparent">
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
-            <h2 className="text-base font-extrabold text-white truncate">{call.remoteName}</h2>
+            <h2 className="text-base font-extrabold text-white truncate">
+              {call.remoteName}
+              {call.remoteRoleLabel ? ` (${call.remoteRoleLabel})` : ""}
+            </h2>
             {call.mode === "group" && (
               <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-slate-800 border border-slate-700 text-xs font-bold text-emerald-300 shrink-0 tabular-nums">
                 <Users className="w-3.5 h-3.5" />
@@ -398,10 +453,12 @@ export const NstaCallModal: React.FC = () => {
               </span>
             )}
           </div>
-          <p className="text-xs font-medium text-slate-300 font-mono tabular-nums mt-0.5">
+          <p className="text-xs font-medium text-slate-300 font-mono tabular-nums mt-0.5 truncate">
+            {isVideoCall ? "📹 Video" : "📞 Voice"} •{" "}
             {call.connectedAtMs
               ? formatElapsed(call.connectedAtMs, nowMs)
               : call.statusNote || (call.mode === "group" ? "Live Class Room" : "Connecting...")}
+            {call.remoteSchoolName ? ` · ${call.remoteSchoolName}` : ""}
             {call.mode === "direct" && call.remoteAudioMuted && call.phase === "connected"
               ? " · Mic Muted"
               : ""}
@@ -683,7 +740,25 @@ export const NstaCallPortalHost: React.FC<{ identity: CallIdentity | null }> = (
     const onNativeCallAction = (ev: Event) => {
       const detail = (ev as CustomEvent)?.detail || {};
       const callId = String(detail.callId || "").trim();
-      const callAction = String(detail.callAction || "").trim();
+      const callAction = String(detail.callAction || "").trim().toLowerCase();
+      if (callAction === "decline") {
+        void rejectIncomingCall();
+        return;
+      }
+      if (callAction === "hangup") {
+        void endCurrentCall(false);
+        return;
+      }
+      if (
+        callAction === "remote_cancelled" ||
+        callAction === "remote_ended" ||
+        callAction === "remote_accepted"
+      ) {
+        if (callId) {
+          handleRemoteCallControlAction(callId, callAction);
+        }
+        return;
+      }
       if (!callId) return;
       void checkAndJoinCallFromNotification(callId, {
         autoAccept: callAction === "accept",

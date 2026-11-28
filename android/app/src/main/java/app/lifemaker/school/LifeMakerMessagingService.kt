@@ -63,10 +63,62 @@ class LifeMakerMessagingService : FirebaseMessagingService() {
         val threadType = data["threadType"]?.trim()?.uppercase().orEmpty()
         val notifType = data["type"]?.trim()?.uppercase().orEmpty()
         val isIncomingCall = notifType == "CALL_INCOMING"
+        val isCallControlClear =
+            notifType == "CALL_CANCELLED" || notifType == "CALL_ENDED" || notifType == "CALL_ACCEPTED"
         val isWalkieMsg = notifType == "WALKIE_VOICE" || notifType == "WALKIE_TTS"
         val isUpiProofAlert = notifType == "UPI_PAYMENT_PROOF"
         val isUpiProofResolved = notifType == "UPI_PROOF_RESOLVED"
         val voiceExplicitlyOff = voiceSpeakRaw == "false" || voiceSpeakRaw == "0"
+
+        if (isCallControlClear) {
+            val resolvedCallId = data["callId"].orEmpty().trim().ifBlank {
+                try {
+                    android.net.Uri.parse(targetUrl.orEmpty()).getQueryParameter("callId").orEmpty().trim()
+                } catch (_: Exception) {
+                    ""
+                }
+            }
+            VoiceAnnouncer.stopSpeaking()
+            if (resolvedCallId.isNotEmpty()) {
+                NotificationHelper.cancelNstaCallNotification(applicationContext, resolvedCallId)
+            }
+            NotificationHelper.cancelNstaCallNotification(applicationContext, msgId)
+            val reason = data["reason"]?.trim()?.lowercase().orEmpty()
+            if (notifType == "CALL_CANCELLED" && reason == "missed") {
+                val callerName = data["callerName"].orEmpty().ifBlank { title }
+                val callerRole = data["callerRole"].orEmpty()
+                val schoolName = data["schoolName"].orEmpty().ifBlank { "School" }
+                val callType = data["callType"].orEmpty().ifBlank { "voice" }
+                val missedObj = JSONObject().apply {
+                    put("callId", resolvedCallId)
+                    put("callerName", callerName)
+                    put("callerRole", callerRole)
+                    put("schoolName", schoolName)
+                    put("callType", callType)
+                    put("phase", "missed")
+                    put("statusText", "Call miss ho gayi — wapas call karne ke liye tap karein")
+                    put("url", targetUrl ?: "/?schoolPortal=1&schoolTab=messenger")
+                }
+                ParentCallOverlayService.showNstaCall(applicationContext, missedObj)
+            } else {
+                ParentCallOverlayService.hideNstaCall(applicationContext, resolvedCallId)
+            }
+            try {
+                sendBroadcast(Intent(ParentCallOverlayService.ACTION_NSTA_CALL_NATIVE_ACTION).apply {
+                    setPackage(packageName)
+                    putExtra(ParentCallOverlayService.EXTRA_NSTA_CALL_ID, resolvedCallId)
+                    putExtra(
+                        ParentCallOverlayService.EXTRA_NATIVE_ACTION,
+                        when (notifType) {
+                            "CALL_ACCEPTED" -> "remote_accepted"
+                            "CALL_CANCELLED" -> "remote_cancelled"
+                            else -> "remote_ended"
+                        }
+                    )
+                })
+            } catch (_: Exception) {}
+            return
+        }
 
         if (isUpiProofResolved) {
             val resolvedId = data["proofId"].orEmpty().trim()
@@ -130,21 +182,66 @@ class LifeMakerMessagingService : FirebaseMessagingService() {
                 )
             }
         } else if (isIncomingCall) {
+            val isNstaCall = targetUrl.orEmpty().contains("callId=") || data["callId"].orEmpty().isNotBlank()
+            val resolvedCallId = data["callId"].orEmpty().trim().ifBlank {
+                try {
+                    android.net.Uri.parse(targetUrl.orEmpty()).getQueryParameter("callId").orEmpty().trim()
+                } catch (_: Exception) {
+                    msgId
+                }
+            }
+            val callerName = data["callerName"].orEmpty().trim().ifBlank { title }
+            val callerRole = data["callerRole"].orEmpty().trim()
+            val schoolName = data["schoolName"].orEmpty().trim().ifBlank { "School" }
+            val callType = data["callType"].orEmpty().trim().lowercase().ifBlank {
+                if (title.contains("video", ignoreCase = true) || body.contains("video", ignoreCase = true)) "video" else "voice"
+            }
             if (!voiceExplicitlyOff && AppPrefs.isCallerVoiceAnnounceEnabled(applicationContext)) {
+                val speechText = if (isNstaCall) {
+                    val roleTag = if (callerRole.isNotBlank()) " ($callerRole)" else ""
+                    val modeTag = if (callType == "video") "video call" else "voice call"
+                    "Dhyan dein, $schoolName se $callerName$roleTag aapko $modeTag kar rahe hain."
+                } else {
+                    "$title. $body"
+                }
                 VoiceAnnouncer.speakIncomingCall(
                     context = applicationContext,
-                    rawText = "$title. $body",
-                    dedupeKey = msgId
+                    rawText = speechText,
+                    dedupeKey = "call_${resolvedCallId}",
+                    bypassGlobalCooldown = true
                 )
             }
-            if (targetUrl.orEmpty().contains("callId=")) {
+            if (isNstaCall) {
+                val overlayJson = JSONObject().apply {
+                    put("callId", resolvedCallId)
+                    put("callerName", callerName)
+                    put("callerRole", callerRole)
+                    put("schoolName", schoolName)
+                    put("callType", callType)
+                    put("phase", "ringing_incoming")
+                    put("statusText", body.ifBlank { if (callType == "video") "Incoming Video Call" else "Incoming Voice Call" })
+                    put("url", targetUrl ?: "/?schoolPortal=1&schoolTab=messenger&callId=$resolvedCallId")
+                }
+                ParentCallOverlayService.showNstaCall(applicationContext, overlayJson)
                 NotificationHelper.showIncomingNstaCallNotification(
                     context = applicationContext,
                     notifKey = msgId,
                     title = title,
                     body = body,
-                    deepLinkUrl = targetUrl
+                    deepLinkUrl = targetUrl,
+                    explicitCallId = resolvedCallId
                 )
+                try {
+                    sendBroadcast(Intent(ParentCallOverlayService.ACTION_NSTA_CALL_NATIVE_ACTION).apply {
+                        setPackage(packageName)
+                        putExtra(ParentCallOverlayService.EXTRA_NSTA_CALL_ID, resolvedCallId)
+                        putExtra(ParentCallOverlayService.EXTRA_NATIVE_ACTION, "incoming_push")
+                        putExtra(
+                            ParentCallOverlayService.EXTRA_NATIVE_CALL_URL,
+                            targetUrl ?: "/?schoolPortal=1&schoolTab=messenger&callId=$resolvedCallId"
+                        )
+                    })
+                } catch (_: Exception) {}
             } else {
                 NotificationHelper.showIncomingCallerBanner(
                     context = applicationContext,

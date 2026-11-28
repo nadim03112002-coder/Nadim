@@ -217,6 +217,63 @@ class WebAppBridge(private val activity: MainActivity) {
     }
 
     @JavascriptInterface
+    fun syncNativeNstaCallState(jsonStr: String?) {
+        if (!isTrustedHostActive) return
+        val raw = jsonStr?.trim().orEmpty()
+        if (raw.isEmpty()) return
+        try {
+            val obj = JSONObject(raw)
+            val callId = obj.optString("callId", "").trim()
+            val phase = obj.optString("phase", "idle").trim().lowercase()
+            val isTerminal = phase == "idle" || phase == "ended" || phase == "cancelled" || phase == "missed" || phase == "rejected"
+            val ctx = activity.applicationContext
+
+            if (isTerminal) {
+                activity.activeNstaCallJson = null
+                VoiceAnnouncer.stopSpeaking()
+                if (callId.isNotEmpty()) {
+                    NotificationHelper.cancelNstaCallNotification(ctx, callId)
+                }
+                val showOverlayOnEnd = obj.optBoolean("showOverlayOnEnd", false)
+                if (phase != "idle" && (!activity.isAppInForeground || showOverlayOnEnd)) {
+                    ParentCallOverlayService.showNstaCall(ctx, obj)
+                } else {
+                    ParentCallOverlayService.hideNstaCall(ctx, callId)
+                }
+                return
+            }
+
+            activity.activeNstaCallJson = obj
+            if (phase != "ringing_incoming") {
+                VoiceAnnouncer.stopSpeaking()
+                if (callId.isNotEmpty()) {
+                    NotificationHelper.cancelNstaCallNotification(ctx, callId)
+                }
+            }
+
+            val forceOverlay = obj.optBoolean("showOverlay", false)
+            if (!activity.isAppInForeground || forceOverlay) {
+                ParentCallOverlayService.showNstaCall(ctx, obj)
+            } else {
+                ParentCallOverlayService.hideNstaCall(ctx, callId)
+            }
+        } catch (_: Exception) {}
+    }
+
+    @JavascriptInterface
+    fun dismissNativeNstaCallAlert(callId: String?) {
+        if (!isTrustedHostActive) return
+        val cleanId = callId?.trim().orEmpty()
+        val ctx = activity.applicationContext
+        activity.activeNstaCallJson = null
+        VoiceAnnouncer.stopSpeaking()
+        if (cleanId.isNotEmpty()) {
+            NotificationHelper.cancelNstaCallNotification(ctx, cleanId)
+        }
+        ParentCallOverlayService.hideNstaCall(ctx, cleanId)
+    }
+
+    @JavascriptInterface
     fun getAppVersionInfo(): String {
         if (!isTrustedHostActive) {
             return """{"supported":false,"versionCode":0,"versionName":""}"""

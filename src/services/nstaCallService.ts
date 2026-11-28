@@ -100,6 +100,12 @@ export interface NstaCallState {
   errorNote: string | null;
   activeGroupCalls: Record<string, ActiveGroupCallInfo>;
   threadContext: CallThreadContext | null;
+  lastCallBanner?: {
+    id: string;
+    title: string;
+    subtitle: string;
+    kind: "missed" | "cancelled" | "declined" | "ended";
+  } | null;
 }
 
 const DEFAULT_ICE_SERVERS: RTCIceServer[] = [
@@ -294,13 +300,206 @@ const INITIAL_STATE: NstaCallState = {
   errorNote: null,
   activeGroupCalls: {},
   threadContext: null,
+  lastCallBanner: null,
 };
 
 let state: NstaCallState = { ...INITIAL_STATE };
 const listeners = new Set<() => void>();
+let lastCallBannerTimer: ReturnType<typeof setTimeout> | null = null;
+
+function buildCallDeepLink(callId: string, ctx?: CallThreadContext | null): string {
+  const schoolId = currentIdentity?.schoolId || "";
+  const subTab =
+    ctx?.threadType === "TEACHER_CHAT"
+      ? "teacher"
+      : ctx?.threadType === "STUDENT_CHAT"
+      ? "friend"
+      : ctx?.threadType === "SCHOOL_DESK"
+      ? "school"
+      : "class";
+  return `/?schoolPortal=1&schoolId=${encodeURIComponent(schoolId)}&schoolTab=messenger&subTab=${subTab}${
+    callId ? `&callId=${encodeURIComponent(callId)}` : ""
+  }`;
+}
+
+function syncNativeNstaOverlay(override?: {
+  phase?: string;
+  callId?: string;
+  callerName?: string;
+  callerRole?: string;
+  schoolName?: string;
+  callType?: CallType;
+  statusText?: string;
+  showOverlay?: boolean;
+  showOverlayOnEnd?: boolean;
+}) {
+  if (typeof window === "undefined") return;
+  try {
+    const bridge = (window as any).LifeMakerAndroid;
+    if (!bridge || typeof bridge.syncNativeNstaCallState !== "function") return;
+    const resolvedCallId = override?.callId ?? state.callId;
+    const resolvedPhase = override?.phase ?? state.phase;
+    const resolvedName = override?.callerName ?? state.remoteName;
+    const resolvedRole = override?.callerRole ?? state.remoteRoleLabel ?? "";
+    const resolvedSchool =
+      override?.schoolName ?? state.remoteSchoolName ?? currentIdentity?.schoolName ?? "School";
+    const resolvedType = override?.callType ?? state.callType;
+    const resolvedStatus = override?.statusText ?? state.statusNote;
+    bridge.syncNativeNstaCallState(
+      JSON.stringify({
+        callId: resolvedCallId,
+        phase: resolvedPhase,
+        callerName: resolvedName,
+        callerRole: resolvedRole,
+        schoolName: resolvedSchool,
+        callType: resolvedType,
+        statusText: resolvedStatus,
+        isMinimized: Boolean(state.isMinimized),
+        showOverlay: Boolean(override?.showOverlay ?? state.isMinimized),
+        showOverlayOnEnd: Boolean(override?.showOverlayOnEnd),
+        url: buildCallDeepLink(resolvedCallId, state.threadContext),
+      })
+    );
+  } catch {}
+}
+
+export function dismissIncomingCallAlerts(callId?: string) {
+  stopIncomingVoiceCallerSpeech();
+  if (typeof window === "undefined") return;
+  const cleanId = String(callId || "").trim();
+  try {
+    const bridge = (window as any).LifeMakerAndroid;
+    if (bridge && typeof bridge.dismissNativeNstaCallAlert === "function") {
+      bridge.dismissNativeNstaCallAlert(cleanId);
+    }
+  } catch {}
+  try {
+    if ("serviceWorker" in navigator) {
+      void navigator.serviceWorker.getRegistrations().then((regs) => {
+        regs.forEach((reg) => {
+          void reg.getNotifications().then((list) => {
+            list.forEach((n) => {
+              const nd = (n.data || {}) as Record<string, string>;
+              const urlStr = String(nd.url || "");
+              const matchesId =
+                (cleanId &&
+                  (n.tag === `nsta-call-${cleanId}` ||
+                    nd.callId === cleanId ||
+                    urlStr.includes(`callId=${cleanId}`))) ||
+                (!cleanId && String(nd.type || "").toUpperCase() === "CALL_INCOMING");
+              if (matchesId) {
+                n.close();
+              }
+            });
+          });
+        });
+      });
+    }
+  } catch {}
+}
+
+function showTransientCallStatusBanner(banner: {
+  title: string;
+  subtitle: string;
+  kind: "missed" | "cancelled" | "declined" | "ended";
+}) {
+  if (lastCallBannerTimer) {
+    clearTimeout(lastCallBannerTimer);
+    lastCallBannerTimer = null;
+  }
+  const id = `banner_${Date.now()}`;
+  emitState({ lastCallBanner: { id, ...banner } });
+  lastCallBannerTimer = setTimeout(() => {
+    lastCallBannerTimer = null;
+    if (state.lastCallBanner?.id === id) {
+      emitState({ lastCallBanner: null });
+    }
+  }, 4500);
+}
+
+export function clearLastCallStatusBanner() {
+  if (lastCallBannerTimer) {
+    clearTimeout(lastCallBannerTimer);
+    lastCallBannerTimer = null;
+  }
+  if (state.lastCallBanner) {
+    emitState({ lastCallBanner: null });
+  }
+}
+
+function sendDirectCallControlPush(
+  controlType: "CALL_CANCELLED" | "CALL_ENDED" | "CALL_ACCEPTED",
+  callId: string,
+  reason: string,
+  ctxSnapshot: CallThreadContext | null,
+  metaSnapshot: {
+    targetIds: string[];
+    callerId?: string;
+    callerName?: string;
+    callerRole?: string;
+    targetName?: string;
+  } | null,
+  callTypeSnapshot: CallType
+) {
+  if (!currentIdentity || !callId || !metaSnapshot?.targetIds?.length) return;
+  const subTab =
+    ctxSnapshot?.threadType === "TEACHER_CHAT"
+      ? "teacher"
+      : ctxSnapshot?.threadType === "STUDENT_CHAT"
+      ? "friend"
+      : ctxSnapshot?.threadType === "SCHOOL_DESK"
+      ? "school"
+      : "class";
+  const targets = metaSnapshot.targetIds;
+  const isStudentTarget =
+    targets[0] !== "STAFF_ADMIN" &&
+    (ctxSnapshot?.threadType === "STUDENT_CHAT" ||
+      ((ctxSnapshot?.threadType === "TEACHER_CHAT" ||
+        ctxSnapshot?.threadType === "SCHOOL_DESK") &&
+        currentIdentity.userRole !== "STUDENT"));
+  const schoolLabel = String(currentIdentity.schoolName || "School").trim();
+  const statusLabel =
+    controlType === "CALL_ACCEPTED"
+      ? "Call accepted"
+      : reason === "missed"
+      ? "Missed Call"
+      : controlType === "CALL_CANCELLED"
+      ? "Call cancelled"
+      : "Call ended";
+
+  void sendSchoolPushNotification({
+    schoolId: currentIdentity.schoolId,
+    ...(isStudentTarget ? { studentIds: targets } : { userId: targets[0] }),
+    senderId: currentIdentity.userId,
+    senderName: currentIdentity.userName,
+    title: statusLabel,
+    body: `${currentIdentity.userName} • ${statusLabel}`,
+    type: controlType,
+    threadType: ctxSnapshot?.threadType,
+    voiceSpeak: false,
+    url: `/?schoolPortal=1&schoolId=${encodeURIComponent(currentIdentity.schoolId)}&schoolTab=messenger&subTab=${subTab}&callId=${encodeURIComponent(callId)}`,
+    urgent: false,
+    extraData: {
+      callId,
+      reason,
+      callType: callTypeSnapshot,
+      callerName: currentIdentity.userName,
+      callerRole: formatCallerRoleLabel(currentIdentity.userRole),
+      schoolName: schoolLabel,
+    },
+  }).catch(() => {});
+}
 
 function emitState(patch: Partial<NstaCallState>) {
+  const prevPhase = state.phase;
+  const prevMinimized = state.isMinimized;
   state = { ...state, ...patch };
+  if (
+    state.phase !== "idle" &&
+    (state.phase !== prevPhase || state.isMinimized !== prevMinimized)
+  ) {
+    syncNativeNstaOverlay();
+  }
   listeners.forEach((l) => {
     try {
       l();
@@ -754,9 +953,27 @@ export function registerCallIdentity(identity: CallIdentity | null) {
   ch.on("broadcast", { event: "direct_cancel" }, ({ payload }) => {
     if (!payload?.callId) return;
     if (state.callId === payload.callId && state.phase === "ringing_incoming") {
+      const cName = state.remoteName || "Caller";
+      const cSchool = state.remoteSchoolName || "School";
+      const cId = state.callId;
+      const cType = state.callType;
       stopCallTones();
+      dismissIncomingCallAlerts(cId);
+      syncNativeNstaOverlay({
+        callId: cId,
+        phase: "cancelled",
+        callerName: cName,
+        schoolName: cSchool,
+        callType: cType,
+        statusText: `${cName} ne call cancel kar di`,
+      });
       cleanupDirectCallResources();
       emitState({ ...INITIAL_STATE, activeGroupCalls: state.activeGroupCalls });
+      showTransientCallStatusBanner({
+        kind: "cancelled",
+        title: `${cName} (${cSchool})`,
+        subtitle: "Caller ne call cancel kar di",
+      });
     }
   });
 
@@ -1033,7 +1250,18 @@ function attachDirectSignalingHandlers(
     const ctx = state.threadContext;
     const cType = state.callType;
     const shouldLog = state.isCaller;
+    const cName = state.remoteName || "Receiver";
+    const cSchool = state.remoteSchoolName || "School";
     const metaSnap = currentDirectMeta;
+    dismissIncomingCallAlerts(callId);
+    syncNativeNstaOverlay({
+      callId,
+      phase: "rejected",
+      callerName: cName,
+      schoolName: cSchool,
+      callType: cType,
+      statusText: `${cName} ne call decline ki`,
+    });
     cleanupDirectCallResources();
     void sbSetDocument(`call_sessions/${callId}`, { status: "rejected", endedAt: new Date().toISOString() }, true);
     if (shouldLog) {
@@ -1053,6 +1281,11 @@ function attachDirectSignalingHandlers(
       activeGroupCalls: state.activeGroupCalls,
       statusNote: "Call declined",
     });
+    showTransientCallStatusBanner({
+      kind: "declined",
+      title: `${cName} (${cSchool})`,
+      subtitle: "Call decline ki gayi",
+    });
   });
 
   ch.on("broadcast", { event: "call_busy" }, () => {
@@ -1060,7 +1293,18 @@ function attachDirectSignalingHandlers(
     const ctx = state.threadContext;
     const cType = state.callType;
     const shouldLog = state.isCaller;
+    const cName = state.remoteName || "Receiver";
+    const cSchool = state.remoteSchoolName || "School";
     const metaSnap = currentDirectMeta;
+    dismissIncomingCallAlerts(callId);
+    syncNativeNstaOverlay({
+      callId,
+      phase: "rejected",
+      callerName: cName,
+      schoolName: cSchool,
+      callType: cType,
+      statusText: "User doosri call par vyast hain",
+    });
     cleanupDirectCallResources();
     void sbSetDocument(`call_sessions/${callId}`, { status: "missed", endedAt: new Date().toISOString() }, true);
     if (shouldLog) {
@@ -1080,6 +1324,11 @@ function attachDirectSignalingHandlers(
       activeGroupCalls: state.activeGroupCalls,
       errorNote: "User doosri call par vyast hain (User busy).",
     });
+    showTransientCallStatusBanner({
+      kind: "missed",
+      title: `${cName} (${cSchool})`,
+      subtitle: "User doosri call par vyast hain (Busy)",
+    });
   });
 
   ch.on("broadcast", { event: "call_hangup" }, () => {
@@ -1089,7 +1338,18 @@ function attachDirectSignalingHandlers(
     const shouldLog = state.isCaller && wasConnected;
     const ctx = state.threadContext;
     const cType = state.callType;
+    const cName = state.remoteName || "Caller";
+    const cSchool = state.remoteSchoolName || "School";
     const metaSnap = currentDirectMeta;
+    dismissIncomingCallAlerts(callId);
+    syncNativeNstaOverlay({
+      callId,
+      phase: wasConnected ? "ended" : "cancelled",
+      callerName: cName,
+      schoolName: cSchool,
+      callType: cType,
+      statusText: wasConnected ? `Call Ended (${dur}s)` : "Call Cancelled",
+    });
     cleanupDirectCallResources();
     void sbSetDocument(`call_sessions/${callId}`, { status: "ended", durationSec: dur, endedAt: new Date().toISOString() }, true);
     if (shouldLog) {
@@ -1106,6 +1366,11 @@ function attachDirectSignalingHandlers(
       });
     }
     emitState({ ...INITIAL_STATE, activeGroupCalls: state.activeGroupCalls });
+    showTransientCallStatusBanner({
+      kind: wasConnected ? "ended" : "cancelled",
+      title: `${cName} (${cSchool})`,
+      subtitle: wasConnected ? `NSTA Call samapt (${dur}s)` : "Call cancel ki gayi",
+    });
   });
 
   // WebRTC PeerConnection lifecycle hooks
@@ -1323,13 +1588,14 @@ export async function startDirectCall(params: {
         currentIdentity.userRole !== "STUDENT"));
 
   const callerSchoolLabel = String(currentIdentity.schoolName || "School").trim();
+  const callerRoleLabel = formatCallerRoleLabel(currentIdentity.userRole);
   void sendSchoolPushNotification({
     schoolId: currentIdentity.schoolId,
     ...(isStudentTarget ? { studentIds: pushTargets } : { userId: pushTargets[0] }),
     senderId: currentIdentity.userId,
     senderName: currentIdentity.userName,
     title: `${effectiveCallType === "video" ? "📹 Video Call" : "📞 Voice Call"} • ${callerSchoolLabel}`,
-    body: `${callerSchoolLabel} se ${currentIdentity.userName} aapko ${effectiveCallType === "video" ? "Video" : "Voice"} Call kar rahe hain — uthane ke liye tap karein.`,
+    body: `${callerSchoolLabel} se ${currentIdentity.userName}${callerRoleLabel ? ` (${callerRoleLabel})` : ""} aapko ${effectiveCallType === "video" ? "Video" : "Voice"} Call kar rahe hain — uthane ke liye tap karein.`,
     type: "CALL_INCOMING",
     threadType: params.threadContext.threadType,
     voiceSpeak: true,
@@ -1337,6 +1603,13 @@ export async function startDirectCall(params: {
     senderPhoto: currentIdentity.userPhoto || undefined,
     url: `/?schoolPortal=1&schoolId=${encodeURIComponent(currentIdentity.schoolId)}&schoolTab=messenger&subTab=${subTab}&callId=${encodeURIComponent(callId)}`,
     urgent: true,
+    extraData: {
+      callId,
+      callType: effectiveCallType,
+      callerName: currentIdentity.userName,
+      callerRole: callerRoleLabel,
+      schoolName: callerSchoolLabel,
+    },
   }).catch(() => {});
 
   // 45-second unanswered timeout
@@ -1352,6 +1625,17 @@ export async function startDirectCall(params: {
       const ctx = state.threadContext;
       const cType = state.callType;
       const metaSnap = currentDirectMeta;
+      const cName = state.remoteName || params.targetName;
+      sendDirectCallControlPush("CALL_CANCELLED", callId, "missed", ctx, metaSnap, cType);
+      dismissIncomingCallAlerts(callId);
+      syncNativeNstaOverlay({
+        callId,
+        phase: "missed",
+        callerName: cName,
+        schoolName: callerSchoolLabel,
+        callType: cType,
+        statusText: "Call uthayi nahi gayi (No Answer)",
+      });
       cleanupDirectCallResources();
       void sbSetDocument(`call_sessions/${callId}`, { status: "missed", endedAt: new Date().toISOString() }, true);
       void logCallHistoryMessage({
@@ -1369,6 +1653,11 @@ export async function startDirectCall(params: {
         activeGroupCalls: state.activeGroupCalls,
         errorNote: "Call uthayi nahi gayi (No Answer).",
       });
+      showTransientCallStatusBanner({
+        kind: "missed",
+        title: `${cName} (${callerSchoolLabel})`,
+        subtitle: "Call uthayi nahi gayi (No Answer)",
+      });
     }
   }, 45_000);
 }
@@ -1383,6 +1672,7 @@ export async function acceptIncomingCall() {
   acceptInFlightCallId = callId;
   primeCallAudioOnGesture();
   stopCallTones();
+  dismissIncomingCallAlerts(callId);
 
   // Transition immediately on 1st tap so UI responds right away and double-taps can't collide
   emitState({
@@ -1514,7 +1804,19 @@ export async function acceptIncomingCall() {
 export async function rejectIncomingCall() {
   if (!state.callId) return;
   const callId = state.callId;
+  const cName = state.remoteName || "Caller";
+  const cSchool = state.remoteSchoolName || "School";
+  const cType = state.callType;
   stopCallTones();
+  dismissIncomingCallAlerts(callId);
+  syncNativeNstaOverlay({
+    callId,
+    phase: "rejected",
+    callerName: cName,
+    schoolName: cSchool,
+    callType: cType,
+    statusText: "Call decline ki gayi",
+  });
 
   if (supabase) {
     const tmp = supabase.channel(`nsta_webrtc_call_${callId}`, {
@@ -1539,6 +1841,29 @@ export async function rejectIncomingCall() {
   void sbSetDocument(`call_sessions/${callId}`, { status: "rejected", endedAt: new Date().toISOString() }, true);
   cleanupDirectCallResources();
   emitState({ ...INITIAL_STATE, activeGroupCalls: state.activeGroupCalls });
+  showTransientCallStatusBanner({
+    kind: "declined",
+    title: `${cName} (${cSchool})`,
+    subtitle: "Call decline ki gayi",
+  });
+}
+
+// ── Handle remote cancellation/end from push or native overlay ───────────────
+export function handleRemoteCallControlAction(callId: string, action: "remote_cancelled" | "remote_ended" | "remote_accepted") {
+  dismissIncomingCallAlerts(callId);
+  if (state.callId !== callId || state.phase === "idle") return;
+  const cName = state.remoteName || "Caller";
+  const cSchool = state.remoteSchoolName || "School";
+  stopCallTones();
+  cleanupDirectCallResources();
+  emitState({ ...INITIAL_STATE, activeGroupCalls: state.activeGroupCalls });
+  if (action !== "remote_accepted") {
+    showTransientCallStatusBanner({
+      kind: action === "remote_cancelled" ? "cancelled" : "ended",
+      title: `${cName} (${cSchool})`,
+      subtitle: action === "remote_cancelled" ? "Call cancel ho gayi" : "NSTA Call samapt hui",
+    });
+  }
 }
 
 // ── Multi-Peer Class Group Voice / Video Call Room ───────────────────────────
@@ -1970,7 +2295,11 @@ export async function endCurrentCall(endRoomForAll = false) {
   const { mode, callId, roomKey, callType, connectedAtMs, threadContext, isCaller, isHost } = state;
 
   if (mode === "direct") {
+    const wasOutgoingRinging = state.phase === "ringing_outgoing";
+    const cName = state.remoteName || "Caller";
+    const cSchool = state.remoteSchoolName || "School";
     stopCallTones();
+    dismissIncomingCallAlerts(callId);
     if (directChannel) {
       void directChannel.send({
         type: "broadcast",
@@ -1978,7 +2307,7 @@ export async function endCurrentCall(endRoomForAll = false) {
         payload: { callId },
       });
     }
-    if (state.phase === "ringing_outgoing" && inboxChannel) {
+    if (wasOutgoingRinging && inboxChannel) {
       void inboxChannel.send({
         type: "broadcast",
         event: "direct_cancel",
@@ -1986,8 +2315,24 @@ export async function endCurrentCall(endRoomForAll = false) {
       });
     }
     const dur = connectedAtMs ? Math.max(1, Math.round((Date.now() - connectedAtMs) / 1000)) : 0;
-    const status: "completed" | "missed" | "ended" = dur > 0 ? "completed" : state.phase === "ringing_outgoing" ? "missed" : "ended";
+    const status: "completed" | "missed" | "ended" = dur > 0 ? "completed" : wasOutgoingRinging ? "missed" : "ended";
     const metaSnap = currentDirectMeta;
+    sendDirectCallControlPush(
+      wasOutgoingRinging ? "CALL_CANCELLED" : "CALL_ENDED",
+      callId,
+      wasOutgoingRinging ? "cancelled" : "ended",
+      threadContext,
+      metaSnap,
+      callType
+    );
+    syncNativeNstaOverlay({
+      callId,
+      phase: wasOutgoingRinging ? "cancelled" : "ended",
+      callerName: cName,
+      schoolName: cSchool,
+      callType,
+      statusText: dur > 0 ? `Call Ended (${dur}s)` : wasOutgoingRinging ? "Call Cancelled" : "Call Ended",
+    });
     if (isCaller) {
       void logCallHistoryMessage({
         status,
@@ -2004,6 +2349,11 @@ export async function endCurrentCall(endRoomForAll = false) {
     void sbSetDocument(`call_sessions/${callId}`, { status, durationSec: dur, endedAt: new Date().toISOString() }, true);
     cleanupDirectCallResources();
     emitState({ ...INITIAL_STATE, activeGroupCalls: state.activeGroupCalls });
+    showTransientCallStatusBanner({
+      kind: wasOutgoingRinging ? "cancelled" : "ended",
+      title: `${cName} (${cSchool})`,
+      subtitle: dur > 0 ? `NSTA Call samapt (${dur}s)` : wasOutgoingRinging ? "Call cancel ki gayi" : "NSTA Call samapt",
+    });
     return;
   }
 

@@ -67,6 +67,11 @@ import {
   verifyStudentSecondFactorServer,
   fetchSafeRemoteImage,
 } from "./_qrSecurity.js";
+import {
+  getEmailOtpStatus,
+  sendSchoolEmailOtpServer,
+  verifySchoolEmailOtpServer,
+} from "./_emailOtp.js";
 
 let cachedBuiltHtmlTemplate: string | null = null;
 
@@ -310,6 +315,7 @@ async function dispatchWebPush(
     urgent?: boolean;
     icon?: string;
     senderPhoto?: string;
+    extraData?: Record<string, string>;
   }
 ): Promise<boolean> {
   try {
@@ -321,6 +327,19 @@ async function dispatchWebPush(
       String(payload.voiceSpeak ?? "").toLowerCase() === "false" ||
       String(payload.threadType || "").toUpperCase() === "TEACHER_CHAT" ||
       String(payload.url || "").includes("subTab=teacher");
+    const sanitizedExtra: Record<string, string> = {};
+    if (payload.extraData && typeof payload.extraData === "object") {
+      for (const [ek, ev] of Object.entries(payload.extraData)) {
+        if (ek && ev !== undefined && ev !== null) {
+          sanitizedExtra[String(ek).slice(0, 64)] = String(ev).slice(0, 600);
+        }
+      }
+    }
+    const notifTypeUp = String(payload.type || "SCHOOL_ALERT").toUpperCase();
+    const callTag =
+      sanitizedExtra.callId && notifTypeUp === "CALL_INCOMING"
+        ? `nsta-call-${sanitizedExtra.callId}`
+        : `nsta-alert-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
     await webpush.sendNotification(
       record.subscription,
       JSON.stringify({
@@ -333,8 +352,10 @@ async function dispatchWebPush(
           renotify: true,
           requireInteraction: true,
           vibrate: [300, 150, 300, 150, 300],
+          tag: callTag,
         },
         data: {
+          ...sanitizedExtra,
           id: payload.id || "",
           title: payload.title,
           body: payload.body,
@@ -574,7 +595,14 @@ async function dispatchFcmToUsers(
           : {}),
       };
 
-      const fcmMessage = isNativeAndroid
+      const notifTypeUpper = String(payload.type || "DEFAULT").trim().toUpperCase();
+      const isSilentControl =
+        notifTypeUpper === "CALL_CANCELLED" ||
+        notifTypeUpper === "CALL_ENDED" ||
+        notifTypeUpper === "CALL_ACCEPTED" ||
+        notifTypeUpper === "UPI_PROOF_RESOLVED";
+
+      const fcmMessage = isNativeAndroid || isSilentControl
         ? {
             token: fcmToken,
             data: dataPayload,
@@ -1023,6 +1051,7 @@ export default async function handler(req: any, res: any) {
           urgent,
           icon: effectiveIcon,
           senderPhoto: effectiveIcon,
+          extraData: extraData && typeof extraData === "object" ? extraData : undefined,
         });
         if (ok) delivered++;
       }
@@ -1695,6 +1724,27 @@ export default async function handler(req: any, res: any) {
     if (method === "POST" && rawPath === "qr/verify-second-factor") {
       res.setHeader("Cache-Control", "no-store");
       const result = await verifyStudentSecondFactorServer(req.body || {});
+      return res.status(result.status).json(result.body);
+    }
+
+    if (method === "GET" && rawPath === "auth/email-otp-status") {
+      res.setHeader("Cache-Control", "no-store");
+      return res.status(200).json(getEmailOtpStatus());
+    }
+
+    if (method === "POST" && rawPath === "auth/send-email-otp") {
+      res.setHeader("Cache-Control", "no-store");
+      const origin = getRequestOrigin(req);
+      const result = await sendSchoolEmailOtpServer({
+        ...(req.body || {}),
+        origin,
+      });
+      return res.status(result.status).json(result.body);
+    }
+
+    if (method === "POST" && rawPath === "auth/verify-email-otp") {
+      res.setHeader("Cache-Control", "no-store");
+      const result = await verifySchoolEmailOtpServer(req.body || {});
       return res.status(result.status).json(result.body);
     }
 

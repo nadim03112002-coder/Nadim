@@ -101,13 +101,41 @@ type NstaPushPayload = {
   fcmOptions?: unknown;
 };
 
+const extractCallId = (data: Record<string, string>) => {
+  if (data.callId) return String(data.callId).trim();
+  const rawUrl = String(data.url || '');
+  const match = rawUrl.match(/[?&]callId=([^&]+)/i);
+  return match ? decodeURIComponent(match[1]) : '';
+};
+
+const closeCallNotifications = async (callId: string) => {
+  try {
+    const list = await self.registration.getNotifications();
+    for (const notif of list) {
+      const nData = (notif.data || {}) as Record<string, string>;
+      const nCallId = extractCallId(nData);
+      if (
+        (callId && (notif.tag === `nsta-call-${callId}` || nCallId === callId)) ||
+        (!callId && String(nData.type || '').toUpperCase() === 'CALL_INCOMING')
+      ) {
+        notif.close();
+      }
+    }
+  } catch {}
+};
+
 const showNstaNotification = (payload: NstaPushPayload) => {
   const data = payload.data || {};
   const notification = payload.notification || {};
   const title = notification.title || data.title || 'NSTA Study App';
   const body = notification.body || data.body || 'New notification received!';
-  const type = data.type || 'DEFAULT';
+  const type = String(data.type || 'DEFAULT').toUpperCase();
   const url = data.url || '/';
+  const callId = extractCallId(data);
+
+  if (type === 'CALL_CANCELLED' || type === 'CALL_ENDED' || type === 'CALL_ACCEPTED' || type === 'UPI_PROOF_RESOLVED') {
+    return closeCallNotifications(callId);
+  }
 
   const toAbsoluteUrl = (path: string) => {
     if (!path) return '';
@@ -123,12 +151,15 @@ const showNstaNotification = (payload: NstaPushPayload) => {
   const icon = toAbsoluteUrl((rawIcon && !rawIcon.endsWith('.svg')) ? rawIcon : '/icons/icon-512.png?v=4');
   const badge = toAbsoluteUrl('/icons/badge-monochrome.png?v=4');
 
-  // Unique tag per notification with renotify=true ensures Android OS plays sound & pops banner every time
-  const tagKey = data.messageId
-    ? `nsta-${type}-${data.messageId}`
-    : data.senderId
-    ? `nsta-${type}-${data.senderId}-${Date.now()}`
-    : `nsta-${type}-${Date.now()}`;
+  // Use deterministic tag for incoming calls so cancellation/answer dismisses cleanly
+  const tagKey =
+    type === 'CALL_INCOMING' && callId
+      ? `nsta-call-${callId}`
+      : data.messageId
+      ? `nsta-${type}-${data.messageId}`
+      : data.senderId
+      ? `nsta-${type}-${data.senderId}-${Date.now()}`
+      : `nsta-${type}-${Date.now()}`;
 
   const options: NotificationOptions & {
     renotify?: boolean;
@@ -144,7 +175,7 @@ const showNstaNotification = (payload: NstaPushPayload) => {
     requireInteraction: true,
     silent: false,
     vibrate: [300, 150, 300, 150, 300],
-    data: { url, title, body, ...data },
+    data: { url, title, body, ...data, ...(callId ? { callId } : {}) },
     actions: [
       { action: 'open', title: 'Open App' },
       { action: 'dismiss', title: 'Dismiss' },
@@ -161,7 +192,7 @@ const showNstaNotification = (payload: NstaPushPayload) => {
       renotify: true,
       requireInteraction: true,
       silent: false,
-      data: { url, title, body, ...data },
+      data: { url, title, body, ...data, ...(callId ? { callId } : {}) },
     });
   });
 };

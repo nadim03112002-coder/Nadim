@@ -428,12 +428,22 @@ object NotificationHelper {
         }
     }
 
+    private fun extractCallId(rawUrl: String?, fallbackKey: String): String {
+        val urlStr = rawUrl.orEmpty()
+        try {
+            val fromQuery = Uri.parse(urlStr).getQueryParameter("callId").orEmpty().trim()
+            if (fromQuery.isNotEmpty()) return fromQuery
+        } catch (_: Exception) {}
+        return fallbackKey.trim()
+    }
+
     fun showIncomingNstaCallNotification(
         context: Context,
         notifKey: String,
         title: String,
         body: String,
-        deepLinkUrl: String?
+        deepLinkUrl: String?,
+        explicitCallId: String = ""
     ) {
         ensureChannels(context)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -446,7 +456,8 @@ object NotificationHelper {
 
         val safeUrl = sanitizeAppUrl(deepLinkUrl)
         val acceptUrl = appendQueryParam(safeUrl, "callAction", "accept")
-        val reqCode = (("nsta_call_$notifKey").hashCode() and 0x7FFFFFFF)
+        val resolvedCallId = explicitCallId.trim().ifBlank { extractCallId(safeUrl, notifKey) }
+        val reqCode = (("nsta_call_$resolvedCallId").hashCode() and 0x7FFFFFFF)
 
         val contentIntent = Intent(context, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
@@ -473,6 +484,7 @@ object NotificationHelper {
         val declineIntent = Intent(context, CallNotificationActionReceiver::class.java).apply {
             action = CallNotificationActionReceiver.ACTION_DECLINE_CALL
             putExtra(CallNotificationActionReceiver.EXTRA_NOTIF_ID, reqCode)
+            putExtra(CallNotificationActionReceiver.EXTRA_CALL_ID, resolvedCallId)
         }
         val declinePi = PendingIntent.getBroadcast(
             context,
@@ -501,6 +513,15 @@ object NotificationHelper {
             .build()
 
         NotificationManagerCompat.from(context).notify(reqCode, notification)
+    }
+
+    fun cancelNstaCallNotification(context: Context, callIdOrKey: String) {
+        val clean = callIdOrKey.trim()
+        if (clean.isEmpty()) return
+        val reqCode = (("nsta_call_$clean").hashCode() and 0x7FFFFFFF)
+        try {
+            NotificationManagerCompat.from(context).cancel(reqCode)
+        } catch (_: Exception) {}
     }
 
     fun showUpiProofOngoingNotification(

@@ -37,6 +37,8 @@ import {
   initArcFaceEngine,
   isArcFaceReady,
   getArcFaceError,
+  loadFaceApiModels,
+  isFaceApiLoaded,
   estimateHeadPose,
   draw3DHolographicMesh,
   playAttendanceSuccessChime,
@@ -286,11 +288,17 @@ export const UniversalFaceIdStudioModal: React.FC<Props> = ({
 
       if (role === "STUDENT") {
         try {
-          await updateStudentPhoto(schoolId, person.id, result.photoDataUrl);
+          await Promise.race([
+            updateStudentPhoto(schoolId, person.id, result.photoDataUrl),
+            new Promise((resolve) => setTimeout(resolve, 4500)),
+          ]);
         } catch {}
       } else {
         try {
-          await updateTeacher(schoolId, person.id, { photoUrl: result.photoDataUrl });
+          await Promise.race([
+            updateTeacher(schoolId, person.id, { photoUrl: result.photoDataUrl }),
+            new Promise((resolve) => setTimeout(resolve, 4500)),
+          ]);
         } catch {}
       }
 
@@ -383,6 +391,11 @@ export const UniversalFaceIdStudioModal: React.FC<Props> = ({
   useEffect(() => {
     if (isOpen && hasFaceAccess) {
       loadDescriptors();
+      // Pre-warm Face-API & 512-D ArcFace ONNX immediately when studio opens
+      void Promise.all([
+        isFaceApiLoaded() ? Promise.resolve(true) : loadFaceApiModels().catch(() => false),
+        isArcFaceReady() ? Promise.resolve(true) : initArcFaceEngine(true).catch(() => false),
+      ]);
     } else {
       hasLoadedDescriptorsRef.current = false;
       if (streamRef.current) {
@@ -890,11 +903,17 @@ export const UniversalFaceIdStudioModal: React.FC<Props> = ({
 
       if (targetType === "STUDENT" && photoDataUrl) {
         try {
-          await updateStudentPhoto(schoolId, targetPerson.id, photoDataUrl);
+          await Promise.race([
+            updateStudentPhoto(schoolId, targetPerson.id, photoDataUrl),
+            new Promise<void>((resolve) => setTimeout(resolve, 4500)),
+          ]);
         } catch {}
       } else if (targetType === "TEACHER" && photoDataUrl) {
         try {
-          await updateTeacher(schoolId, targetPerson.id, { photoUrl: photoDataUrl });
+          await Promise.race([
+            updateTeacher(schoolId, targetPerson.id, { photoUrl: photoDataUrl }),
+            new Promise<void>((resolve) => setTimeout(resolve, 4500)),
+          ]);
         } catch {}
       }
 
@@ -951,17 +970,41 @@ export const UniversalFaceIdStudioModal: React.FC<Props> = ({
       const photoDataUrl = canvas.toDataURL("image/jpeg", 0.90);
 
       // Strictly extract 512-D ArcFace neural embedding with bounded timeout
-      await withStepTimeout(initArcFaceEngine().catch(() => false), 10000, "AI इंजन लोड होने में अधिक समय लगा");
+      if (!isFaceApiLoaded() || !isArcFaceReady()) {
+        setGuidanceMsg("AI बायोमेट्रिक इंजन तैयार हो रहा है...");
+      }
+      const [, arcReady] = await withStepTimeout(
+        Promise.all([
+          isFaceApiLoaded() ? Promise.resolve(true) : loadFaceApiModels().catch(() => false),
+          isArcFaceReady() ? Promise.resolve(true) : initArcFaceEngine(true).catch(() => false),
+        ]),
+        60000,
+        getArcFaceError()
+          ? `ArcFace 512-D इंजन लोड नहीं हो सका: ${getArcFaceError()}`
+          : "AI इंजन लोड होने में अधिक समय लगा"
+      );
+      if (!arcReady && !isArcFaceReady()) {
+        const arcErr = getArcFaceError();
+        setGuidanceMsg(
+          arcErr
+            ? `⚠️ ArcFace 512-D इंजन लोड नहीं हो सका: ${arcErr}`
+            : "⚠️ AI बायोमेट्रिक इंजन तैयार नहीं हो सका। कृपया दोबारा प्रयास करें।"
+        );
+        setIsProcessingCapture(false);
+        return;
+      }
+
+      setGuidanceMsg("बायोमेट्रिक स्कैन किया जा रहा है...");
       const neuralStd = await withStepTimeout(
         extractNeuralDescriptor(canvas).catch(() => null),
-        9000,
+        12000,
         "चेहरा स्कैन टाइमआउट हो गया"
       );
       const neuralResult =
         neuralStd ||
         (await withStepTimeout(
           extractNeuralDescriptorWith3DPose(canvas).catch(() => null),
-          6000,
+          8000,
           "चेहरा स्कैन टाइमआउट हो गया"
         ));
 

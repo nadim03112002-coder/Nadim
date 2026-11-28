@@ -16,6 +16,9 @@ import {
   Layers,
   UserCheck,
   Wand2,
+  FileJson,
+  Copy,
+  Check,
 } from "lucide-react";
 import type {
   DeferredScheduledFeeHead,
@@ -32,11 +35,15 @@ import { updateSchool, updateStudent } from "../../school-firebase";
 import {
   FEE_HEAD_OPTIONS,
   addMonthsToYYYYMM,
+  buildRecommended12MonthSchoolJson,
   canonicalizeFeeHeadKey,
   computeStudentHeadSettlement,
+  exportCurrentPlansToJson,
   getConfiguredHeadAmountForClass,
   isStudentRegOnlyOrPending,
+  parseScheduleJsonInput,
   previewSchedulePlanImpact,
+  stripUndefinedDeep,
   syncCampaignsWithPlan,
 } from "../../utils/feeTermScheduler";
 import { formatMonthLabel } from "../../utils/feeFifoAllocation";
@@ -214,6 +221,11 @@ export const FeeTermSchedulerModal: React.FC<Props> = ({
   const [savingPlan, setSavingPlan] = useState<boolean>(false);
   const [feedbackMsg, setFeedbackMsg] = useState<string | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+
+  // JSON 1-Click Auto-Setup State
+  const [showJsonPanel, setShowJsonPanel] = useState<boolean>(false);
+  const [jsonText, setJsonText] = useState<string>("");
+  const [savingJsonBulk, setSavingJsonBulk] = useState<boolean>(false);
 
   // Registration-Only Students Page & 1-Student Defer State
   const [studentSearch, setStudentSearch] = useState<string>("");
@@ -495,24 +507,26 @@ export const FeeTermSchedulerModal: React.FC<Props> = ({
 
     setSavingPlan(true);
     try {
-      const finalPlan: FeeTypeSchedulePlan = {
+      const finalPlan: FeeTypeSchedulePlan = stripUndefinedDeep({
         ...draftPlan,
         enabled: enableOnSave ? true : draftPlan.enabled,
         termCount: draftPlan.terms.length,
         updatedAt: new Date().toISOString(),
-        updatedBy: actorName,
-      };
-      const nextPlans: Record<string, FeeTypeSchedulePlan> = {
+        ...(actorName ? { updatedBy: actorName } : {}),
+      });
+      const nextPlans: Record<string, FeeTypeSchedulePlan> = stripUndefinedDeep({
         ...savedPlans,
         [finalPlan.headKey]: finalPlan,
-      };
-      const nextCampaigns = syncCampaignsWithPlan({
-        existingCampaigns: campaigns,
-        schoolId,
-        plan: finalPlan,
-        sessionId,
-        actorName,
       });
+      const nextCampaigns = stripUndefinedDeep(
+        syncCampaignsWithPlan({
+          existingCampaigns: campaigns,
+          schoolId,
+          plan: finalPlan,
+          sessionId,
+          actorName,
+        })
+      );
 
       await updateSchool(schoolId, {
         feeTypeSchedulePlans: nextPlans,
@@ -554,6 +568,95 @@ export const FeeTermSchedulerModal: React.FC<Props> = ({
     }
   };
 
+  const jsonParsedPreview = useMemo(() => {
+    if (!showJsonPanel) return null;
+    return parseScheduleJsonInput({
+      rawJson: jsonText,
+      schoolId,
+      classes: sortedClasses,
+      sessionId,
+      actorName,
+      existingPlans: savedPlans,
+      existingCampaigns: campaigns,
+      existingKitRates: school?.admissionKitRates || {},
+      mergeWithExisting: true,
+    });
+  }, [showJsonPanel, jsonText, schoolId, sortedClasses, sessionId, actorName, savedPlans, campaigns, school?.admissionKitRates]);
+
+  const handleOpenJsonPanel = () => {
+    setShowJsonPanel((prev) => {
+      const nextOpen = !prev;
+      if (nextOpen && !jsonText.trim()) {
+        const doc =
+          Object.keys(savedPlans).length > 0
+            ? exportCurrentPlansToJson({ plans: savedPlans, classes: sortedClasses, school })
+            : buildRecommended12MonthSchoolJson({ classes: sortedClasses, school });
+        setJsonText(JSON.stringify(doc, null, 2));
+      }
+      return nextOpen;
+    });
+  };
+
+  const handleSaveBulkJsonPlans = async () => {
+    setErrorMsg(null);
+    setFeedbackMsg(null);
+    const res = parseScheduleJsonInput({
+      rawJson: jsonText,
+      schoolId,
+      classes: sortedClasses,
+      sessionId,
+      actorName,
+      existingPlans: savedPlans,
+      existingCampaigns: campaigns,
+      existingKitRates: school?.admissionKitRates || {},
+      mergeWithExisting: true,
+    });
+    if (!res.ok) {
+      setErrorMsg(res.error || "JSON मान्य नहीं है।");
+      return;
+    }
+    setSavingJsonBulk(true);
+    try {
+      const cleanPlans = stripUndefinedDeep(res.plans);
+      const cleanCampaigns = stripUndefinedDeep(res.campaigns);
+      const cleanKitRates = stripUndefinedDeep(res.oneTimeKitRates);
+
+      await updateSchool(schoolId, {
+        feeTypeSchedulePlans: cleanPlans,
+        feeTermCampaigns: cleanCampaigns,
+        admissionKitRates: cleanKitRates,
+      });
+
+      setSavedPlans(cleanPlans);
+      setCampaigns(cleanCampaigns);
+      if (cleanPlans[activePageKey]) {
+        setDraftPlan(cleanPlans[activePageKey]);
+      }
+      onCampaignsUpdated(cleanCampaigns);
+      if (onPlansUpdated) onPlansUpdated(cleanPlans, cleanCampaigns);
+      window.dispatchEvent(
+        new CustomEvent("school-profile-updated", {
+          detail: {
+            schoolId,
+            data: {
+              feeTypeSchedulePlans: cleanPlans,
+              feeTermCampaigns: cleanCampaigns,
+              admissionKitRates: cleanKitRates,
+            },
+          },
+        })
+      );
+      setFeedbackMsg(
+        `✅ JSON से सभी ${res.summary.feePagesCount} Fee Pages (${res.summary.totalTermsCount} Terms) एक साथ सेव व लागू हो गए!`
+      );
+      setShowJsonPanel(false);
+    } catch (err: any) {
+      setErrorMsg(err?.message || "JSON सेव करने में समस्या आई।");
+    } finally {
+      setSavingJsonBulk(false);
+    }
+  };
+
   const handleTogglePlanEnabled = async () => {
     const nextEnabled = !draftPlan.enabled;
     const updatedDraft = { ...draftPlan, enabled: nextEnabled };
@@ -562,19 +665,21 @@ export const FeeTermSchedulerModal: React.FC<Props> = ({
     if (savedPlans[draftPlan.headKey]) {
       setSavingPlan(true);
       try {
-        const finalPlan: FeeTypeSchedulePlan = {
+        const finalPlan: FeeTypeSchedulePlan = stripUndefinedDeep({
           ...updatedDraft,
           updatedAt: new Date().toISOString(),
-          updatedBy: actorName,
-        };
-        const nextPlans = { ...savedPlans, [finalPlan.headKey]: finalPlan };
-        const nextCampaigns = syncCampaignsWithPlan({
-          existingCampaigns: campaigns,
-          schoolId,
-          plan: finalPlan,
-          sessionId,
-          actorName,
+          ...(actorName ? { updatedBy: actorName } : {}),
         });
+        const nextPlans = stripUndefinedDeep({ ...savedPlans, [finalPlan.headKey]: finalPlan });
+        const nextCampaigns = stripUndefinedDeep(
+          syncCampaignsWithPlan({
+            existingCampaigns: campaigns,
+            schoolId,
+            plan: finalPlan,
+            sessionId,
+            actorName,
+          })
+        );
         await updateSchool(schoolId, {
           feeTypeSchedulePlans: nextPlans,
           feeTermCampaigns: nextCampaigns,
@@ -812,17 +917,131 @@ export const FeeTermSchedulerModal: React.FC<Props> = ({
           </div>
         </div>
 
-        {!asPage && (
+        <div className="flex items-center gap-2 shrink-0">
           <button
             type="button"
-            onClick={onClose}
-            className="p-2 rounded-lg text-slate-500 hover:text-slate-900 dark:hover:text-white hover:bg-slate-200/70 dark:hover:bg-slate-800 cursor-pointer shrink-0"
-            aria-label="Close"
+            onClick={handleOpenJsonPanel}
+            className={`inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold border transition cursor-pointer whitespace-nowrap ${
+              showJsonPanel
+                ? "bg-indigo-600 text-white border-indigo-600"
+                : "bg-indigo-50 dark:bg-indigo-950/50 text-indigo-700 dark:text-indigo-300 border-indigo-200 dark:border-indigo-800 hover:border-indigo-400"
+            }`}
           >
-            <X className="w-4 h-4" />
+            <FileJson className="w-3.5 h-3.5" />
+            <span>JSON Auto-Setup</span>
           </button>
-        )}
+
+          {!asPage && (
+            <button
+              type="button"
+              onClick={onClose}
+              className="p-2 rounded-lg text-slate-500 hover:text-slate-900 dark:hover:text-white hover:bg-slate-200/70 dark:hover:bg-slate-800 cursor-pointer shrink-0"
+              aria-label="Close"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          )}
+        </div>
       </div>
+
+      {showJsonPanel && (
+        <div className="bg-slate-100/80 dark:bg-slate-950/80 border-b border-slate-200 dark:border-slate-800 px-4 sm:px-5 py-4">
+          <div className="max-w-5xl mx-auto rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-4 space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <h3 className="text-sm font-bold text-slate-900 dark:text-white">
+                  JSON se Sabhi Fee Pages 1-Click Me Set Karein
+                </h3>
+                <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                  12-Month Calendar Preset लोड करें या अपना JSON डालकर सीधे सभी Fee Pages एक साथ Save करें
+                </p>
+              </div>
+              <div className="flex flex-wrap items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={() =>
+                    setJsonText(
+                      JSON.stringify(
+                        buildRecommended12MonthSchoolJson({ classes: sortedClasses, school }),
+                        null,
+                        2
+                      )
+                    )
+                  }
+                  className="px-2.5 py-1.5 rounded-lg bg-slate-900 dark:bg-slate-800 text-white text-[11px] font-semibold cursor-pointer"
+                >
+                  Load 12-Month Preset
+                </button>
+                <button
+                  type="button"
+                  onClick={() =>
+                    setJsonText(
+                      JSON.stringify(
+                        exportCurrentPlansToJson({ plans: savedPlans, classes: sortedClasses, school }),
+                        null,
+                        2
+                      )
+                    )
+                  }
+                  className="px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 text-[11px] font-semibold cursor-pointer"
+                >
+                  Export Current
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    navigator.clipboard?.writeText(jsonText);
+                    setFeedbackMsg("JSON कॉपी हो गया!");
+                  }}
+                  className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 text-[11px] font-semibold cursor-pointer"
+                >
+                  <Copy className="w-3 h-3" />
+                  <span>Copy</span>
+                </button>
+              </div>
+            </div>
+
+            <textarea
+              value={jsonText}
+              onChange={(e) => setJsonText(e.target.value)}
+              rows={10}
+              spellCheck={false}
+              className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 p-3 font-mono text-xs text-slate-800 dark:text-slate-200"
+            />
+
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              {jsonParsedPreview?.ok ? (
+                <div className="inline-flex items-center gap-1.5 text-xs font-semibold text-emerald-600 dark:text-emerald-400">
+                  <Check className="w-4 h-4" />
+                  <span>
+                    {jsonParsedPreview.summary.feePagesCount} Fee Pages ·{" "}
+                    {jsonParsedPreview.summary.totalTermsCount} Terms ·{" "}
+                    {jsonParsedPreview.summary.matchedClassesCount} Classes Matched
+                  </span>
+                </div>
+              ) : (
+                <div className="text-xs font-semibold text-rose-600 dark:text-rose-400">
+                  {jsonParsedPreview?.error}
+                </div>
+              )}
+
+              <button
+                type="button"
+                disabled={savingJsonBulk || !jsonParsedPreview?.ok}
+                onClick={handleSaveBulkJsonPlans}
+                className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white text-xs font-bold cursor-pointer"
+              >
+                {savingJsonBulk ? (
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                ) : (
+                  <Save className="w-3.5 h-3.5" />
+                )}
+                <span>Apply JSON &amp; Save All Pages</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Dedicated Page Tabs Bar for Every Fee Type */}
       <div className="bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 px-3 sm:px-5 py-2.5 shrink-0">

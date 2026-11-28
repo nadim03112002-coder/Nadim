@@ -328,36 +328,37 @@ export async function sbBridgeGetDocs(colRef: SbColRef): Promise<SbQuerySnap> {
     }
 
     if (Array.isArray(allRows) && allRows.length > 0) {
-      if (db && !(await hasCollectionBackfilledFromFirestore(colRef.path))) {
-        let migrationTask = inflightColMigrations.get(colRef.path);
-        if (!migrationTask) {
-          migrationTask = (async () => {
-            try {
-              const snap = await fsGetDocs(fsCollection(db, colRef.path));
-              const existingIds = new Set(allRows!.map((r) => r.id));
-              const missingRows = snap.docs
-                .map((docItem) => ({ id: docItem.id, data: docItem.data() as Record<string, any> }))
-                .filter((r) => r.id && !existingIds.has(r.id));
-              if (missingRows.length > 0) {
-                if (colRef.path === 'schools') {
-                  missingRows.forEach((r) => void sbSaveSchool(r.id, r.data, true));
-                } else if (colRef.path === 'users') {
-                  missingRows.forEach((r) => void sbSaveUser({ ...r.data, id: r.id }, true));
-                } else {
-                  await sbBatchSetDocuments(
-                    missingRows.map((r) => ({ path: `${colRef.path}/${r.id}`, data: r.data }))
-                  );
+      if (db && !inflightColMigrations.has(colRef.path)) {
+        const snapshotRows = allRows;
+        void hasCollectionBackfilledFromFirestore(colRef.path)
+          .then((alreadyDone) => {
+            if (alreadyDone || inflightColMigrations.has(colRef.path)) return;
+            const migrationTask = (async () => {
+              try {
+                const snap = await fsGetDocs(fsCollection(db, colRef.path));
+                const existingIds = new Set(snapshotRows.map((r) => r.id));
+                const missingRows = snap.docs
+                  .map((docItem) => ({ id: docItem.id, data: docItem.data() as Record<string, any> }))
+                  .filter((r) => r.id && !existingIds.has(r.id));
+                if (missingRows.length > 0) {
+                  if (colRef.path === 'schools') {
+                    missingRows.forEach((r) => void sbSaveSchool(r.id, r.data, true));
+                  } else if (colRef.path === 'users') {
+                    missingRows.forEach((r) => void sbSaveUser({ ...r.data, id: r.id }, true));
+                  } else {
+                    await sbBatchSetDocuments(
+                      missingRows.map((r) => ({ path: `${colRef.path}/${r.id}`, data: r.data }))
+                    );
+                  }
                 }
+                markCollectionBackfilled(colRef.path, snapshotRows.length + missingRows.length);
+              } catch {} finally {
+                inflightColMigrations.delete(colRef.path);
               }
-              markCollectionBackfilled(colRef.path, allRows!.length + missingRows.length);
-            } catch {} finally {
-              inflightColMigrations.delete(colRef.path);
-            }
-          })();
-          inflightColMigrations.set(colRef.path, migrationTask);
-        }
-        // Backfill missing legacy docs in background without blocking current read
-        void migrationTask;
+            })();
+            inflightColMigrations.set(colRef.path, migrationTask);
+          })
+          .catch(() => {});
       }
       return makeQuerySnap(matchesConstraints(allRows, colRef));
     }

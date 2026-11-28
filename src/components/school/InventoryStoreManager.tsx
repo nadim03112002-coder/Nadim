@@ -410,6 +410,7 @@ export const InventoryStoreManager: React.FC<Props> = ({
   const [billLines, setBillLines] = useState<BillCartLine[]>([]);
   const [billPaymentMode, setBillPaymentMode] = useState<"cash" | "online_upi" | "card">("cash");
   const [billSaving, setBillSaving] = useState(false);
+  const [showFeeKitInStore, setShowFeeKitInStore] = useState(false);
 
   // Printable Receipt State & Slip Filter Mode (combined vs fee_only vs store_only vs single_item)
   const [printableReceipt, setPrintableReceipt] = useState<StoreSaleRecord | null>(null);
@@ -883,9 +884,30 @@ export const InventoryStoreManager: React.FC<Props> = ({
           updatedAt: nowIso,
         };
 
+        const nextKitDelivery: Record<string, any> = {
+          ...(selectedStd.kitDeliveryStatus || {}),
+        };
+        billLines.forEach((l) => {
+          const hk = l.headKey || canonicalizeFeeHeadKey(l.itemName);
+          if (
+            l.categoryType === "kit_item" ||
+            hk === "smart_id_card" ||
+            hk === "school_diary" ||
+            hk === "tie_belt_set" ||
+            hk === "progress_folder"
+          ) {
+            nextKitDelivery[hk] = {
+              delivered: true,
+              deliveredDate: todayStr,
+              deliveredBy: saleRecord.soldBy,
+            };
+          }
+        });
+
         const nextPurchases = [...(selectedStd.postAdmissionPurchases || []), purchaseEntry];
         const studentPatch: Partial<SchoolStudent> = {
           settledFeeHeads: nextSettled,
+          kitDeliveryStatus: nextKitDelivery,
           ...(Object.keys(nextWaived).length > 0 ? { waivedFeeHeads: nextWaived } : {}),
           ...(nextPaidCampaignIds.size > 0 ? { paidCampaignIds: Array.from(nextPaidCampaignIds) } : {}),
           advanceMonthlyFeePaid: nextAdvanceTuitionPaid,
@@ -1735,9 +1757,25 @@ export const InventoryStoreManager: React.FC<Props> = ({
                 )}
               </div>
 
-              {/* 2. Student Pending Kit, Fee Heads & Saved Exam Terms (only when a student is selected) */}
+              {/* 2. Notice: Admission Kit & Fee Dues now have dedicated hub, optional expand if needed */}
               {selectedBillStudent && studentPendingBreakdown && (
                 <div className="space-y-3">
+                  <div className="p-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/60 flex flex-wrap items-center justify-between gap-2 text-xs">
+                    <span className="text-slate-600 dark:text-slate-300">
+                      Admission Kit (ID Card, Diary, Tie-Belt, Folder) और Term Fee के लिए{" "}
+                      <strong>Admission Kit &amp; Term Control</strong> पेज का उपयोग करें।
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setShowFeeKitInStore((v) => !v)}
+                      className="px-2.5 py-1 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 text-[11px] font-semibold text-indigo-600 dark:text-indigo-400 cursor-pointer whitespace-nowrap"
+                    >
+                      {showFeeKitInStore ? "Hide Fee/Kit Items" : "यहीं Pending Fee/Kit देखें"}
+                    </button>
+                  </div>
+
+                  {showFeeKitInStore && (
+                    <>
                   {/* 2A. Individual Kit Items: Smart QR ID Card, School Diary, Tie & Belt */}
                   <div className="p-3 rounded-2xl bg-indigo-50/50 dark:bg-indigo-950/20 border border-indigo-200 dark:border-indigo-800/60 space-y-2">
                     <div className="flex flex-wrap items-center justify-between gap-2">
@@ -1900,6 +1938,8 @@ export const InventoryStoreManager: React.FC<Props> = ({
                       </p>
                     </div>
                   </div>
+                    </>
+                  )}
                 </div>
               )}
 
